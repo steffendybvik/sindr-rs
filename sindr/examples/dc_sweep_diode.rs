@@ -9,7 +9,7 @@
 //   Reverse-bias (V < 0): near-zero current
 //   Forward-bias (V > ~0.5): exponential current turn-on
 
-use sindr::{Circuit, CircuitElement, dc_sweep};
+use sindr::{dc_sweep, Circuit, CircuitElement};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit = Circuit {

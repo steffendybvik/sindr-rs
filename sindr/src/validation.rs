@@ -41,12 +41,8 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
         let nodes: Vec<&str> = comp.all_nodes().into_iter().map(|s| s.as_str()).collect();
         for i in 0..nodes.len() {
             for j in (i + 1)..nodes.len() {
-                adj.entry(nodes[i])
-                    .or_default()
-                    .push(nodes[j]);
-                adj.entry(nodes[j])
-                    .or_default()
-                    .push(nodes[i]);
+                adj.entry(nodes[i]).or_default().push(nodes[j]);
+                adj.entry(nodes[j]).or_default().push(nodes[i]);
             }
         }
     }

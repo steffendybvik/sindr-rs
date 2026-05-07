@@ -18,7 +18,11 @@ pub struct VaractorParams {
 
 impl Default for VaractorParams {
     fn default() -> Self {
-        Self { cj0: 10e-12, phi: 0.7, m: 0.5 }
+        Self {
+            cj0: 10e-12,
+            phi: 0.7,
+            m: 0.5,
+        }
     }
 }
 
@@ -83,8 +87,12 @@ mod tests {
         let c_at_zero = junction_capacitance(0.0, &params);
         let c_at_reverse = junction_capacitance(-2.0, &params);
         // At 0V: denom = 1.0; at -2V: denom = (1 + 2/0.7)^0.5 > 1, so C(-2) < C(0)
-        assert!(c_at_zero > c_at_reverse,
-            "C(0V)={} should be > C(-2V)={}", c_at_zero, c_at_reverse);
+        assert!(
+            c_at_zero > c_at_reverse,
+            "C(0V)={} should be > C(-2V)={}",
+            c_at_zero,
+            c_at_reverse
+        );
     }
 
     #[test]
@@ -95,8 +103,12 @@ mod tests {
         let (g_eq, i_eq) = varactor_companion(v_prev, dt, &params);
         // At v=0: C_j = cj0 / 1.0 = cj0
         let expected_g = params.cj0 / dt;
-        assert!((g_eq - expected_g).abs() < 1e-20,
-            "g_eq={} expected {}", g_eq, expected_g);
+        assert!(
+            (g_eq - expected_g).abs() < 1e-20,
+            "g_eq={} expected {}",
+            g_eq,
+            expected_g
+        );
         // i_eq = -g_eq * v_prev = 0 at v=0
         assert_eq!(i_eq, 0.0);
     }
@@ -107,7 +119,11 @@ mod tests {
         // Forward bias approaching phi should clamp and return finite value > cj0
         let c_clamped = junction_capacitance(0.65, &params);
         assert!(c_clamped.is_finite(), "capacitance should be finite");
-        assert!(c_clamped > params.cj0,
-            "forward-biased C={} should be > cj0={}", c_clamped, params.cj0);
+        assert!(
+            c_clamped > params.cj0,
+            "forward-biased C={} should be > cj0={}",
+            c_clamped,
+            params.cj0
+        );
     }
 }

@@ -234,7 +234,12 @@ mod tests {
         assert!(comp.g_bc > 1e-3, "g_bc={} should be significant", comp.g_bc);
 
         // g_be > g_bc (forward junction more strongly biased at 0.7V vs 0.6V)
-        assert!(comp.g_be > comp.g_bc, "g_be={} should > g_bc={}", comp.g_be, comp.g_bc);
+        assert!(
+            comp.g_be > comp.g_bc,
+            "g_be={} should > g_bc={}",
+            comp.g_be,
+            comp.g_bc
+        );
 
         // Both junction currents should be positive (both forward)
         let i_f = params.is * ((0.7 / (params.nf * V_T)).exp() - 1.0);
@@ -244,7 +249,12 @@ mod tests {
 
         // Ic should be less than in pure active mode (reverse junction subtracts)
         let active_comp = bjt_companion(0.7, -5.0, &params);
-        assert!(comp.ic < active_comp.ic, "Saturation Ic={} should < Active Ic={}", comp.ic, active_comp.ic);
+        assert!(
+            comp.ic < active_comp.ic,
+            "Saturation Ic={} should < Active Ic={}",
+            comp.ic,
+            active_comp.ic
+        );
 
         // KCL: Ic + Ib + Ie = 0, where Ie = -(Ic + Ib)
         let ie = -(comp.ic + comp.ib);
@@ -266,7 +276,10 @@ mod tests {
         let mut params = BjtParams::new(100.0);
         params.vaf = 100.0;
         let comp = bjt_companion(0.7, -5.0, &params);
-        assert!(comp.g_ce > 0.0, "g_ce should be positive when vaf>0 and Ic>0");
+        assert!(
+            comp.g_ce > 0.0,
+            "g_ce should be positive when vaf>0 and Ic>0"
+        );
         // g_ce should equal |Ic| / vaf
         let expected_g_ce = comp.ic.abs() / 100.0;
         assert_relative_eq!(comp.g_ce, expected_g_ce, epsilon = 1e-15);

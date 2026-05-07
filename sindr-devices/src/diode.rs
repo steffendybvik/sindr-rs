@@ -291,7 +291,12 @@ mod tests {
         let t0 = 300.15;
         let is_300 = temperature_scale_is(is_t0, 300.15, t0, 1.11, 3.0);
         let is_350 = temperature_scale_is(is_t0, 350.0, t0, 1.11, 3.0);
-        assert!(is_350 > is_300, "IS should increase with temperature: IS(350K)={} IS(300K)={}", is_350, is_300);
+        assert!(
+            is_350 > is_300,
+            "IS should increase with temperature: IS(350K)={} IS(300K)={}",
+            is_350,
+            is_300
+        );
     }
 
     /// rs=0.0 should give the same result as the original companion model (backward compatible).

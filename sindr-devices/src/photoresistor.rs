@@ -14,7 +14,10 @@ pub struct PhotoresistorParams {
 
 impl Default for PhotoresistorParams {
     fn default() -> Self {
-        Self { r_dark: 1_000_000.0, r_bright: 1_000.0 }
+        Self {
+            r_dark: 1_000_000.0,
+            r_bright: 1_000.0,
+        }
     }
 }
 
