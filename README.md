@@ -2,8 +2,6 @@
 
 Pure-Rust circuit simulator. SPICE-style MNA solver with first-class semiconductor models.
 
-> *Sindr* — Old Norse for "sparks", and the dwarf smith who forged Mjölnir, Gungnir, and Draupnir. The maker of the gods' tools.
-
 ## Crates
 
 | Crate | Purpose |
