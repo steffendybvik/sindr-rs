@@ -1,20 +1,36 @@
+//! BJT (Bipolar Junction Transistor) device model.
+//!
+//! Ebers–Moll companion model with Early voltage. Produces a 3×3 conductance
+//! / current contribution that an MNA solver stamps for [base, collector,
+//! emitter] terminals at each Newton–Raphson iteration.
+//!
+//! Both NPN and PNP are supported via [`BjtKind`]; the PNP case mirrors NPN
+//! through sign conventions on `vbe` and `vbc`.
+
 use crate::diode::V_T;
 
+/// BJT polarity.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BjtKind {
+    /// NPN (electrons are majority carriers in base region).
     #[cfg_attr(feature = "serde", serde(rename = "npn"))]
     Npn,
+    /// PNP (holes are majority carriers in base region).
     #[cfg_attr(feature = "serde", serde(rename = "pnp"))]
     Pnp,
 }
 
-/// Operating region of a BJT.
+/// Operating region of a BJT — useful for diagnostics and circuit
+/// classification (amplifier biased "active", switch in "saturation", …).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BjtRegion {
+    /// Both junctions reverse-biased — negligible currents.
     Cutoff,
+    /// Forward-active: BE forward-biased, BC reverse-biased. Linear amplifier region.
     Active,
+    /// Both junctions forward-biased — output voltage clamped near `VCE_sat`.
     Saturation,
 }
 

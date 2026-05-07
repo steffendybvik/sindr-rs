@@ -328,12 +328,71 @@ fn stamp_complex_conductance(
     }
 }
 
-/// Perform AC small-signal analysis.
+/// Performs AC small-signal frequency-domain analysis.
+///
+/// Returns the complex node voltages at every frequency in the configured
+/// sweep, plus helpers on [`AcResult`] for extracting gain (dB) and phase
+/// (degrees) curves — i.e. Bode plot data.
 ///
 /// # Algorithm
-/// 1. Solve DC operating point
-/// 2. Linearize nonlinear elements
-/// 3. For each frequency: build complex MNA, solve, extract phasors
+///
+/// 1. Solve the DC operating point of `circuit`.
+/// 2. Linearise every nonlinear element at that operating point.
+/// 3. At each frequency, build a complex-valued MNA system (capacitors and
+///    inductors become `jωC` / `jωL` admittances), solve it, and store the
+///    complex node voltage phasors.
+///
+/// # Errors
+///
+/// - Any [`SimError`] from the DC operating-point solve
+/// - [`SimError::SingularMatrix`] if the linearised AC system is singular
+///   at any frequency
+///
+/// # Example
+///
+/// ```
+/// use sindr::{Circuit, CircuitElement};
+/// use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+///
+/// // Simple RC low-pass: V1 -> R1 -> n_out -> C1 -> gnd
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["n_in".into(), "0".into()],
+///             voltage: 0.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["n_in".into(), "n_out".into()],
+///             resistance: 1_000.0,
+///         },
+///         CircuitElement::Capacitor {
+///             id: "C1".into(),
+///             nodes: ["n_out".into(), "0".into()],
+///             capacitance: 1e-6,
+///         },
+///     ],
+/// };
+///
+/// let config = AcConfig {
+///     f_start: 1.0,
+///     f_stop: 100_000.0,
+///     num_points: 11,
+///     spacing: FrequencySpacing::Logarithmic,
+///     source_id: "V1".into(),
+///     ac_magnitude: 1.0,
+/// };
+///
+/// let result = solve_ac(&circuit, &config).unwrap();
+/// assert_eq!(result.points.len(), 11);
+///
+/// // Bode plot data for the output node:
+/// let gain = result.gain_curve("n_out");
+/// let phase = result.phase_curve("n_out");
+/// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
     // Step 1: DC operating point
     let dc_result = crate::solve_circuit(circuit)?;

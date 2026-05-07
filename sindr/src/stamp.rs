@@ -310,11 +310,13 @@ pub fn stamp_circuit(
     Ok(())
 }
 
-/// Stamp a resistor (conductance g = 1/R) into the G submatrix.
+/// Stamp a resistor (conductance `g = 1/R`) into the G submatrix.
 ///
-/// For nodes p and q with conductance g:
+/// For nodes `p` and `q` with conductance `g`:
+/// ```text
 ///   A[p,p] += g,  A[q,q] += g,  A[p,q] -= g,  A[q,p] -= g
-/// Ground entries (where index is None) are skipped.
+/// ```
+/// Ground entries (where index is `None`) are skipped.
 pub fn stamp_resistor(
     system: &mut MnaSystem,
     node_map: &NodeMap,
@@ -339,10 +341,13 @@ pub fn stamp_resistor(
 
 /// Stamp an independent voltage source into B, C submatrices and RHS.
 ///
-/// nodes[0] = positive terminal (p), nodes[1] = negative terminal (q).
+/// `nodes[0]` is the positive terminal (`p`), `nodes[1]` the negative (`q`).
 /// Branch index `k` is the row/column for this source in the MNA system.
 ///
-/// Stamps: A[p,k] += 1, A[q,k] -= 1, A[k,p] += 1, A[k,q] -= 1, b[k] = voltage.
+/// Stamps:
+/// ```text
+///   A[p,k] += 1, A[q,k] -= 1, A[k,p] += 1, A[k,q] -= 1, b[k] = voltage
+/// ```
 pub fn stamp_voltage_source(
     system: &mut MnaSystem,
     node_map: &NodeMap,
@@ -375,10 +380,12 @@ pub fn stamp_voltage_source(
 
 /// Stamp an independent current source into the RHS vector.
 ///
-/// Current flows from nodes[0] toward nodes[1].
+/// Current flows from `nodes[0]` toward `nodes[1]`.
 /// KCL convention: current *entering* a node is positive.
+/// ```text
 ///   b[to]   += current   (current enters the to-node)
 ///   b[from] -= current   (current leaves the from-node)
+/// ```
 pub fn stamp_current_source(
     system: &mut MnaSystem,
     node_map: &NodeMap,
@@ -474,12 +481,16 @@ pub(crate) fn stamp_zener_companion(
 /// Stamp a capacitor companion model (Backward Euler) into the MNA system.
 ///
 /// Converts a capacitor into a conductance + current source pair:
+/// ```text
 ///   G_eq = C / dt
 ///   I_eq = G_eq * V_prev_across = (C / dt) * V(n-1)
+/// ```
 ///
 /// The conductance is stamped like a resistor. The current source
-/// flows from nodes[1] to nodes[0] (into positive terminal):
+/// flows from `nodes[1]` to `nodes[0]` (into positive terminal):
+/// ```text
 ///   b[p] += I_eq,  b[q] -= I_eq
+/// ```
 pub fn stamp_capacitor_companion(
     system: &mut MnaSystem,
     node_map: &NodeMap,
@@ -518,12 +529,16 @@ pub fn stamp_capacitor_companion(
 /// Stamp an inductor companion model (Backward Euler) into the MNA system.
 ///
 /// Converts an inductor into a conductance + current source pair:
+/// ```text
 ///   G_eq = dt / L
 ///   I_eq = I_prev (previous inductor current)
+/// ```
 ///
 /// The conductance is stamped like a resistor. The current source
-/// flows from nodes[1] to nodes[0] (into positive terminal):
+/// flows from `nodes[1]` to `nodes[0]` (into positive terminal):
+/// ```text
 ///   b[p] += I_eq,  b[q] -= I_eq
+/// ```
 pub fn stamp_inductor_companion(
     system: &mut MnaSystem,
     node_map: &NodeMap,

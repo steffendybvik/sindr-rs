@@ -23,11 +23,17 @@ pub struct TempSweepPoint {
 }
 
 /// Result of a temperature sweep analysis.
+///
+/// One operating-point solution per temperature step. Use the `points`
+/// vector to iterate `(temperature, result)` pairs.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct TempSweepResult {
+    /// Start of the swept temperature range (K).
     pub temp_start: f64,
+    /// End of the swept temperature range (K).
     pub temp_end: f64,
+    /// Operating points, in order from `temp_start` to `temp_end`.
     pub points: Vec<TempSweepPoint>,
 }
 
@@ -43,22 +49,55 @@ fn scale_is(is_t0: f64, t: f64, xti: f64) -> f64 {
     temperature_scale_is(is_t0, t, T0, 1.11, xti)
 }
 
-/// Solve the circuit across a temperature range.
+/// Sweeps junction temperature across a range and solves the circuit at
+/// each step.
 ///
-/// For each temperature step:
-/// 1. Clone the circuit.
-/// 2. Set `temperature` on all IS-bearing components (Bjt, Diode, Led, ZenerDiode,
-///    SchottkyDiode, Photodiode).
-/// 3. Solve the modified circuit.
+/// At each temperature, the saturation current `IS` of every IS-bearing
+/// component (BJT, diode, LED, Zener, Schottky, photodiode) is rescaled
+/// using the SPICE temperature formula before solving. The base circuit is
+/// not modified.
 ///
-/// `temperature` is the junction temperature, not the thermistor temperature.
-/// T0 = 300.15 K (reference IS temperature).
+/// `temperature` here is junction temperature — the thermistor's own
+/// temperature input is independent.
 ///
 /// # Arguments
-/// - `circuit`:    Circuit to sweep (not modified).
-/// - `temp_start`: Start temperature in Kelvin (e.g. 250.0).
-/// - `temp_end`:   End temperature in Kelvin (e.g. 400.0).
-/// - `num_steps`:  Number of evaluation points (must be >= 2).
+///
+/// - `circuit` — circuit to sweep (cloned per point, not modified)
+/// - `temp_start`, `temp_end` — sweep endpoints in kelvin (e.g. 250.0 to 400.0)
+/// - `num_steps` — total points including both endpoints (minimum 2)
+///
+/// # Errors
+///
+/// - [`SimError::InvalidComponent`] if `num_steps < 2`
+/// - Any [`SimError`] from solving at one of the temperatures (propagated
+///   immediately)
+///
+/// # Example
+///
+/// ```
+/// use sindr::{Circuit, CircuitElement, temperature_sweep};
+///
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["n1".into(), "0".into()],
+///             voltage: 1.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Diode {
+///             id: "D1".into(),
+///             nodes: ["n1".into(), "0".into()],
+///             temperature: 300.15,
+///         },
+///     ],
+/// };
+///
+/// // Sweep from 250 K (-23 °C) to 400 K (127 °C) in 4 steps.
+/// let sweep = temperature_sweep(&circuit, 250.0, 400.0, 4).unwrap();
+/// assert_eq!(sweep.points.len(), 4);
+/// ```
 pub fn temperature_sweep(
     circuit: &Circuit,
     temp_start: f64,

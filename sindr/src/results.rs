@@ -12,107 +12,176 @@ use crate::circuit::{Circuit, CircuitElement};
 use crate::node_map::NodeMap;
 use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
-/// Per-component simulation results.
+/// Per-component voltage, current, and power.
+///
+/// Reported for every two-terminal component. Sign convention: current
+/// flows from `nodes[0]` to `nodes[1]`; positive `power` means the
+/// component is dissipating energy.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ComponentResult {
+    /// Component id (matches the id on the source [`CircuitElement`]).
     pub id: String,
+    /// Voltage from `nodes[0]` to `nodes[1]` (V).
     pub voltage_across: f64,
+    /// Current from `nodes[0]` to `nodes[1]` (A).
     pub current_through: f64,
+    /// Instantaneous power dissipation (W). Positive = dissipating.
     pub power: f64,
 }
 
-/// Per-BJT terminal simulation results.
+/// Per-BJT operating-point results: terminal voltages, terminal currents,
+/// power, and which region of operation the device is in.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct BjtResult {
+    /// Component id.
     pub id: String,
+    /// Base–emitter voltage (V).
     pub vbe: f64,
+    /// Collector–emitter voltage (V).
     pub vce: f64,
+    /// Base current (A).
     pub ib: f64,
+    /// Collector current (A).
     pub ic: f64,
+    /// Emitter current (A).
     pub ie: f64,
+    /// Total dissipation (W).
     pub power: f64,
+    /// Operating region: `"active"`, `"saturation"`, or `"cutoff"`.
     pub region: String,
 }
 
-/// Per-MOSFET terminal simulation results.
+/// Per-MOSFET operating-point results.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct MosfetResult {
+    /// Component id.
     pub id: String,
+    /// Gate–source voltage (V).
     pub vgs: f64,
+    /// Drain–source voltage (V).
     pub vds: f64,
+    /// Drain current (A).
     pub id_current: f64,
+    /// Total dissipation (W).
     pub power: f64,
+    /// Operating region: `"cutoff"`, `"triode"`, or `"saturation"`.
     pub region: String,
 }
 
-/// Per-OpAmp/Comparator terminal simulation results.
+/// Per-op-amp / comparator results: input/output voltages.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct OpAmpResult {
+    /// Component id.
     pub id: String,
+    /// Voltage at the non-inverting input (V).
     pub v_in_plus: f64,
+    /// Voltage at the inverting input (V).
     pub v_in_minus: f64,
+    /// `v_in_plus - v_in_minus` (V).
     pub v_differential: f64,
+    /// Output voltage (V), clipped to the rail range.
     pub v_out: f64,
 }
 
-/// Per-Relay simulation results.
+/// Per-relay results: coil voltage and contact state.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct RelayResult {
+    /// Component id.
     pub id: String,
+    /// Voltage across the coil terminals (V).
     pub coil_voltage: f64,
+    /// `true` when coil voltage exceeds the pickup threshold.
     pub contact_closed: bool,
 }
 
-/// Per-Microcontroller simulation results: per-pin GPIO output currents.
+/// Per-microcontroller results: per-pin GPIO output currents.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct McuResult {
+    /// Component id.
     pub id: String,
+    /// Current sourced/sunk by each GPIO pin (A), in pin index order.
     pub pin_currents: Vec<f64>,
+    /// GPIO logic-high voltage used for this MCU (V).
     pub gpio_voltage: f64,
 }
 
-/// Single timestep snapshot in a transient time series.
+/// One timestep of a transient simulation: time, node voltages, per-component
+/// state at that instant.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct TimestepSnapshot {
+    /// Simulation time at this snapshot (s).
     pub time: f64,
+    /// Node voltages at this instant (V).
     pub node_voltages: HashMap<String, f64>,
+    /// Per-component voltage/current/power at this instant.
     pub component_results: Vec<ComponentResult>,
 }
 
-/// Transient analysis data (time-series of snapshots).
+/// Time-series data from a transient simulation.
+///
+/// Present on [`SimulationResult::transient`] when the circuit contains
+/// reactive elements (capacitors, inductors) or time-varying sources.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct TransientData {
+    /// Snapshots at each integration step, in time order.
     pub timesteps: Vec<TimestepSnapshot>,
+    /// Integration time step (s).
     pub time_step: f64,
+    /// Total simulated duration (s).
     pub duration: f64,
 }
 
-/// Complete simulation output including node voltages, branch currents,
-/// and per-component results (V, I, P).
+/// Complete simulation output.
+///
+/// At minimum, contains node voltages, branch currents (for voltage sources
+/// and other branch-current-bearing elements), and per-component results.
+/// The optional fields are populated only when the corresponding
+/// component types appear in the circuit:
+///
+/// - `bjt_results` — for [`Bjt`](crate::CircuitElement::Bjt) components
+/// - `mosfet_results` — for [`Mosfet`](crate::CircuitElement::Mosfet)
+/// - `op_amp_results` — for op-amps and comparators
+/// - `relay_results` — for relays
+/// - `mcu_results` — for microcontrollers
+/// - `transient` — for circuits with capacitors, inductors, or waveform
+///   sources (DC analysis returns `None`)
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct SimulationResult {
+    /// Voltage at every node (V), keyed by node name. Includes the ground
+    /// node (always 0.0).
     pub node_voltages: HashMap<String, f64>,
+    /// Branch currents (A) for components that introduce a current unknown
+    /// — voltage sources, op-amps, transformers, etc. Keyed by component id.
     pub branch_currents: HashMap<String, f64>,
+    /// Per-component voltage, current, and power for every two-terminal
+    /// component.
     pub component_results: Vec<ComponentResult>,
+    /// Detailed per-BJT results. Empty when the circuit has no BJTs.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
     pub bjt_results: Vec<BjtResult>,
+    /// Detailed per-MOSFET results. Empty when the circuit has no MOSFETs.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
     pub mosfet_results: Vec<MosfetResult>,
+    /// Detailed per-op-amp / comparator results.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
     pub op_amp_results: Vec<OpAmpResult>,
+    /// Detailed per-relay results.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
     pub relay_results: Vec<RelayResult>,
+    /// Detailed per-microcontroller results.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
     pub mcu_results: Vec<McuResult>,
+    /// Transient time-series, present only when the circuit has reactive
+    /// elements or waveform sources.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub transient: Option<TransientData>,
 }
