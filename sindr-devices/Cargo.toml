@@ -1,6 +1,6 @@
 [package]
 name = "sindr-devices"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2021"
 description = "Pure electronics device physics: diode, BJT, MOSFET companion models for MNA circuit simulation. Companion crate to sindr."
 license = "MIT OR Apache-2.0"
