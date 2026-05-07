@@ -166,19 +166,34 @@ pub struct SimulationResult {
     /// component.
     pub component_results: Vec<ComponentResult>,
     /// Detailed per-BJT results. Empty when the circuit has no BJTs.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "Vec::is_empty", default)
+    )]
     pub bjt_results: Vec<BjtResult>,
     /// Detailed per-MOSFET results. Empty when the circuit has no MOSFETs.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "Vec::is_empty", default)
+    )]
     pub mosfet_results: Vec<MosfetResult>,
     /// Detailed per-op-amp / comparator results.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "Vec::is_empty", default)
+    )]
     pub op_amp_results: Vec<OpAmpResult>,
     /// Detailed per-relay results.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "Vec::is_empty", default)
+    )]
     pub relay_results: Vec<RelayResult>,
     /// Detailed per-microcontroller results.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "Vec::is_empty", default)
+    )]
     pub mcu_results: Vec<McuResult>,
     /// Transient time-series, present only when the circuit has reactive
     /// elements or waveform sources.
@@ -261,10 +276,7 @@ pub fn extract_results(
                 vsource_index += 1;
             }
             CircuitElement::CurrentSource {
-                id,
-                nodes,
-                current,
-                ..
+                id, nodes, current, ..
             } => {
                 // Passive sign convention: V_across = v(from) - v(to)
                 let vp = node_voltage(&nodes[0], node_map, solution);
@@ -278,11 +290,7 @@ pub fn extract_results(
                     power,
                 });
             }
-            CircuitElement::Switch {
-                id,
-                nodes,
-                closed,
-            } => {
+            CircuitElement::Switch { id, nodes, closed } => {
                 // Switch modeled as resistor: R_closed = 0.01, R_open = 1e9
                 let resistance = if *closed { 0.01 } else { 1e9 };
                 let vp = node_voltage(&nodes[0], node_map, solution);
@@ -311,7 +319,9 @@ pub fn extract_results(
                     power,
                 });
             }
-            CircuitElement::Led { id, nodes, color, .. } => {
+            CircuitElement::Led {
+                id, nodes, color, ..
+            } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -326,8 +336,7 @@ pub fn extract_results(
                 });
             }
             // Stubs: open-circuit in DC, return 0V/0A/0W
-            CircuitElement::Capacitor { id, .. }
-            | CircuitElement::Inductor { id, .. } => {
+            CircuitElement::Capacitor { id, .. } | CircuitElement::Inductor { id, .. } => {
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: 0.0,
@@ -335,7 +344,14 @@ pub fn extract_results(
                     power: 0.0,
                 });
             }
-            CircuitElement::Bjt { id, nodes, kind, bf, temperature, .. } => {
+            CircuitElement::Bjt {
+                id,
+                nodes,
+                kind,
+                bf,
+                temperature,
+                ..
+            } => {
                 let vb = node_voltage(&nodes[0], node_map, solution);
                 let vc = node_voltage(&nodes[1], node_map, solution);
                 let ve = node_voltage(&nodes[2], node_map, solution);
@@ -349,7 +365,8 @@ pub fn extract_results(
 
                 let mut params = BjtParams::new(*bf);
                 if (*temperature - 300.15).abs() > 1e-6 {
-                    params.is = diode::temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
+                    params.is =
+                        diode::temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
                 }
                 let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
                 let region = bjt::detect_region(vbe_eff, vbc_eff);
@@ -386,7 +403,11 @@ pub fn extract_results(
                 });
             }
             CircuitElement::Mosfet {
-                id, nodes, kind, params, ..
+                id,
+                nodes,
+                kind,
+                params,
+                ..
             } => {
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
@@ -423,8 +444,7 @@ pub fn extract_results(
                     region: comp.region.as_str().to_string(),
                 });
             }
-            CircuitElement::Vcvs { id, nodes, .. }
-            | CircuitElement::Ccvs { id, nodes, .. } => {
+            CircuitElement::Vcvs { id, nodes, .. } | CircuitElement::Ccvs { id, nodes, .. } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -480,7 +500,11 @@ pub fn extract_results(
                 });
             }
             CircuitElement::Pushbutton { id, nodes, closed } => {
-                let resistance = if *closed { SWITCH_R_CLOSED } else { SWITCH_R_OPEN };
+                let resistance = if *closed {
+                    SWITCH_R_CLOSED
+                } else {
+                    SWITCH_R_OPEN
+                };
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -492,7 +516,11 @@ pub fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::Photoresistor { id, nodes, light_level } => {
+            CircuitElement::Photoresistor {
+                id,
+                nodes,
+                light_level,
+            } => {
                 let resistance = ldr_resistance(*light_level);
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
@@ -516,7 +544,13 @@ pub fn extract_results(
                     power: 0.0,
                 });
             }
-            CircuitElement::Relay { id, nodes, coil_resistance, pickup_voltage, .. } => {
+            CircuitElement::Relay {
+                id,
+                nodes,
+                coil_resistance,
+                pickup_voltage,
+                ..
+            } => {
                 let vc_pos = node_voltage(&nodes[0], node_map, solution);
                 let vc_neg = node_voltage(&nodes[1], node_map, solution);
                 let coil_voltage = vc_pos - vc_neg;
@@ -553,12 +587,15 @@ pub fn extract_results(
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
                 let schottky_params = sindr_devices::schottky::SchottkyParams::default();
-                let i_through = diode::diode_current(v_across, &DiodeParams {
-                    is: schottky_params.is,
-                    n: schottky_params.n,
-                    rs: 0.0,
-                    temperature: 300.15,
-                });
+                let i_through = diode::diode_current(
+                    v_across,
+                    &DiodeParams {
+                        is: schottky_params.is,
+                        n: schottky_params.n,
+                        rs: 0.0,
+                        temperature: 300.15,
+                    },
+                );
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_across,
@@ -566,9 +603,14 @@ pub fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::Thermistor { id, nodes, temperature } => {
+            CircuitElement::Thermistor {
+                id,
+                nodes,
+                temperature,
+            } => {
                 let therm_params = sindr_devices::thermistor::ThermistorParams::default();
-                let r = sindr_devices::thermistor::thermistor_resistance(*temperature, &therm_params);
+                let r =
+                    sindr_devices::thermistor::thermistor_resistance(*temperature, &therm_params);
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -580,18 +622,26 @@ pub fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::Photodiode { id, nodes, irradiance, .. } => {
+            CircuitElement::Photodiode {
+                id,
+                nodes,
+                irradiance,
+                ..
+            } => {
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
                 let photo_params = sindr_devices::photodiode::PhotodiodeParams::default();
                 // Total current = dark diode current - photocurrent
-                let i_dark = diode::diode_current(v_across, &DiodeParams {
-                    is: photo_params.is,
-                    n: photo_params.n,
-                    rs: 0.0,
-                    temperature: 300.15,
-                });
+                let i_dark = diode::diode_current(
+                    v_across,
+                    &DiodeParams {
+                        is: photo_params.is,
+                        n: photo_params.n,
+                        rs: 0.0,
+                        temperature: 300.15,
+                    },
+                );
                 let i_photo = photo_params.responsivity * irradiance.max(0.0);
                 let i_through = i_dark - i_photo;
                 component_results.push(ComponentResult {
@@ -613,7 +663,9 @@ pub fn extract_results(
                     power: 0.0,
                 });
             }
-            CircuitElement::Igbt { id, nodes, params, .. } => {
+            CircuitElement::Igbt {
+                id, nodes, params, ..
+            } => {
                 // IGBT: report gate-emitter voltage, collector-emitter voltage, and drain current
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vc = node_voltage(&nodes[1], node_map, solution);
@@ -642,7 +694,14 @@ pub fn extract_results(
                 });
                 vsource_index += 2; // Transformer uses 2 branch current slots in MNA
             }
-            CircuitElement::Jfet { id, nodes, kind, idss, vp, .. } => {
+            CircuitElement::Jfet {
+                id,
+                nodes,
+                kind,
+                idss,
+                vp,
+                ..
+            } => {
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
@@ -659,7 +718,9 @@ pub fn extract_results(
                     power,
                 });
             }
-            CircuitElement::Fuse { id, nodes, blown, .. } => {
+            CircuitElement::Fuse {
+                id, nodes, blown, ..
+            } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;

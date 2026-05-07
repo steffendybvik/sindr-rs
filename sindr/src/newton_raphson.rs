@@ -76,18 +76,18 @@ fn nr_inner(
         // Add Gmin shunts
         add_gmin_shunts(&mut system, num_nodes);
 
-
         let v_new = system.solve()?;
 
         let v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
 
-
         if debug_nr && _iteration < 30 {
-            eprintln!("NR iter {}: v_prev={:.4?} -> v_new={:.4?} -> v_limited={:.4?}",
+            eprintln!(
+                "NR iter {}: v_prev={:.4?} -> v_new={:.4?} -> v_limited={:.4?}",
                 _iteration,
                 v_prev.iter().take(num_nodes).collect::<Vec<_>>(),
                 v_new.iter().take(num_nodes).collect::<Vec<_>>(),
-                v_limited.iter().take(num_nodes).collect::<Vec<_>>());
+                v_limited.iter().take(num_nodes).collect::<Vec<_>>()
+            );
         }
 
         if converged(&v_prev, &v_limited, num_nodes) {
@@ -130,7 +130,9 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
 
     for component in &circuit.components {
         match component {
-            CircuitElement::Diode { nodes, temperature, .. } => {
+            CircuitElement::Diode {
+                nodes, temperature, ..
+            } => {
                 let mut params = DiodeParams::silicon();
                 if (*temperature - 300.15).abs() > 1e-6 {
                     params.is = temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
@@ -144,7 +146,12 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                 });
             }
-            CircuitElement::Led { nodes, color, temperature, .. } => {
+            CircuitElement::Led {
+                nodes,
+                color,
+                temperature,
+                ..
+            } => {
                 let mut params = DiodeParams::for_led_color(color);
                 if (*temperature - 300.15).abs() > 1e-6 {
                     params.is = temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
@@ -192,7 +199,13 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                 });
             }
-            CircuitElement::Bjt { nodes, kind, bf, temperature, .. } => {
+            CircuitElement::Bjt {
+                nodes,
+                kind,
+                bf,
+                temperature,
+                ..
+            } => {
                 let mut params = BjtParams::new(*bf);
                 if (*temperature - 300.15).abs() > 1e-6 {
                     params.is = temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
@@ -329,11 +342,6 @@ pub(crate) fn add_gmin_shunts(system: &mut MnaSystem, num_nodes: usize) {
     }
 }
 
-/// Add output conductance shunts between BJT collector and emitter.
-///
-/// This stabilizes the NR Jacobian by increasing the collector node's
-/// self-conductance. Equivalent to a high resistance (~10kΩ) from C to E.
-
 /// Check if Newton-Raphson has converged.
 ///
 /// Uses SPICE-style convergence criterion: for each node voltage,
@@ -357,17 +365,19 @@ pub(crate) fn converged(v_prev: &DVector<f64>, v_new: &DVector<f64>, num_nodes: 
 ///
 /// This dramatically improves convergence for saturation and PNP circuits
 /// by starting the NR iteration near the physical solution.
-fn init_bjt_voltages(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    v_prev: &mut DVector<f64>,
-) {
+fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector<f64>) {
     const VBE_GUESS: f64 = 0.65;
 
-    let has_nonlinear = circuit.components.iter().any(|c|
-        matches!(c, CircuitElement::Bjt { .. } | CircuitElement::Mosfet { .. } | CircuitElement::ZenerDiode { .. }
-            | CircuitElement::SchottkyDiode { .. } | CircuitElement::Photodiode { .. })
-    );
+    let has_nonlinear = circuit.components.iter().any(|c| {
+        matches!(
+            c,
+            CircuitElement::Bjt { .. }
+                | CircuitElement::Mosfet { .. }
+                | CircuitElement::ZenerDiode { .. }
+                | CircuitElement::SchottkyDiode { .. }
+                | CircuitElement::Photodiode { .. }
+        )
+    });
     if !has_nonlinear {
         return;
     }
@@ -382,7 +392,9 @@ fn init_bjt_voltages(
     let mut vsource_index: usize = 0;
     for component in &circuit.components {
         match component {
-            CircuitElement::Resistor { nodes, resistance, .. } => {
+            CircuitElement::Resistor {
+                nodes, resistance, ..
+            } => {
                 if *resistance > 0.0 {
                     stamp::stamp_resistor(&mut system, node_map, nodes, *resistance);
                 }
@@ -422,7 +434,7 @@ fn init_bjt_voltages(
                         // Only adjust if current base voltage doesn't already
                         // provide reasonable Vbe (e.g. from resistor divider)
                         let current_vbe = v_prev[bi] - ve;
-                        if current_vbe > 1.0 || current_vbe < 0.3 {
+                        if !(0.3..=1.0).contains(&current_vbe) {
                             v_prev[bi] = ve + VBE_GUESS;
                         }
                     }
@@ -430,7 +442,7 @@ fn init_bjt_voltages(
                 BjtKind::Pnp => {
                     if let Some(bi) = base_idx {
                         let current_vbe = v_prev[bi] - ve;
-                        if current_vbe < -1.0 || current_vbe > -0.3 {
+                        if !(-1.0..=-0.3).contains(&current_vbe) {
                             v_prev[bi] = ve - VBE_GUESS;
                         }
                     }

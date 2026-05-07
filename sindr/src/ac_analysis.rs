@@ -161,12 +161,7 @@ fn linearize_at_dc(
                 let (g_d, _) = diode::diode_companion(v_d, &params);
 
                 models.push(SmallSignalModel {
-                    conductances: vec![
-                        (p, p, g_d),
-                        (q, q, g_d),
-                        (p, q, -g_d),
-                        (q, p, -g_d),
-                    ],
+                    conductances: vec![(p, p, g_d), (q, q, g_d), (p, q, -g_d), (q, p, -g_d)],
                 });
             }
             CircuitElement::Led { nodes, color, .. } => {
@@ -180,12 +175,7 @@ fn linearize_at_dc(
                 let (g_d, _) = diode::diode_companion(v_d, &params);
 
                 models.push(SmallSignalModel {
-                    conductances: vec![
-                        (p, p, g_d),
-                        (q, q, g_d),
-                        (p, q, -g_d),
-                        (q, p, -g_d),
-                    ],
+                    conductances: vec![(p, p, g_d), (q, q, g_d), (p, q, -g_d), (q, p, -g_d)],
                 });
             }
             CircuitElement::Bjt {
@@ -217,33 +207,34 @@ fn linearize_at_dc(
                 // Stamp as linearized 3-terminal model:
                 // Ib ~ gpi * vbe
                 // Ic ~ gm * vbe + go * vce
-                let mut conds = Vec::new();
-
-                // gpi between base and emitter
-                conds.push((b, b, gpi));
-                conds.push((e, e, gpi));
-                conds.push((b, e, -gpi));
-                conds.push((e, b, -gpi));
-
-                // gm: Ic = gm * Vbe => dIc/dVb = gm, dIc/dVe = -gm
-                conds.push((c, b, gm));
-                conds.push((c, e, -gm));
-                // KCL: emitter absorbs
-                conds.push((e, b, -gm));
-                conds.push((e, e, gm));
-
-                // go between collector and emitter
-                conds.push((c, c, go));
-                conds.push((e, e, go));
-                conds.push((c, e, -go));
-                conds.push((e, c, -go));
+                let conds = vec![
+                    // gpi between base and emitter
+                    (b, b, gpi),
+                    (e, e, gpi),
+                    (b, e, -gpi),
+                    (e, b, -gpi),
+                    // gm: Ic = gm * Vbe => dIc/dVb = gm, dIc/dVe = -gm
+                    (c, b, gm),
+                    (c, e, -gm),
+                    // KCL: emitter absorbs
+                    (e, b, -gm),
+                    (e, e, gm),
+                    // go between collector and emitter
+                    (c, c, go),
+                    (e, e, go),
+                    (c, e, -go),
+                    (e, c, -go),
+                ];
 
                 models.push(SmallSignalModel {
                     conductances: conds,
                 });
             }
             CircuitElement::Mosfet {
-                nodes, kind, params, ..
+                nodes,
+                kind,
+                params,
+                ..
             } => {
                 let g = node_map.index(&nodes[0]);
                 let d = node_map.index(&nodes[1]);
@@ -260,19 +251,18 @@ fn linearize_at_dc(
 
                 let comp = mosfet::mosfet_companion(vgs, vds, vbs, params);
 
-                let mut conds = Vec::new();
-
-                // gm: Id depends on Vgs => dId/dVg = gm, dId/dVs += -gm
-                conds.push((d, g, comp.gm));
-                conds.push((d, s, -comp.gm));
-                conds.push((s, g, -comp.gm));
-                conds.push((s, s, comp.gm));
-
-                // gds: output conductance between drain and source
-                conds.push((d, d, comp.gds));
-                conds.push((s, s, comp.gds));
-                conds.push((d, s, -comp.gds));
-                conds.push((s, d, -comp.gds));
+                let mut conds = vec![
+                    // gm: Id depends on Vgs => dId/dVg = gm, dId/dVs += -gm
+                    (d, g, comp.gm),
+                    (d, s, -comp.gm),
+                    (s, g, -comp.gm),
+                    (s, s, comp.gm),
+                    // gds: output conductance between drain and source
+                    (d, d, comp.gds),
+                    (s, s, comp.gds),
+                    (d, s, -comp.gds),
+                    (s, d, -comp.gds),
+                ];
 
                 // gmb: body transconductance (similar to gm but from Vbs)
                 if comp.gmb.abs() > 1e-15 {
@@ -746,12 +736,7 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
         // Stamp small-signal models
         for model in &ss_models {
             for &(row, col, val) in &model.conductances {
-                stamp_complex_conductance(
-                    &mut system,
-                    row,
-                    col,
-                    Complex64::new(val, 0.0),
-                );
+                stamp_complex_conductance(&mut system, row, col, Complex64::new(val, 0.0));
             }
         }
 

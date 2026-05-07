@@ -24,7 +24,11 @@ pub struct IgbtParams {
 
 impl Default for IgbtParams {
     fn default() -> Self {
-        Self { vth: 5.0, k: 5.0, vce_sat: 2.0 }
+        Self {
+            vth: 5.0,
+            k: 5.0,
+            vce_sat: 2.0,
+        }
     }
 }
 
@@ -55,7 +59,12 @@ pub fn igbt_companion(vge: f64, vce: f64, params: &IgbtParams) -> IgbtCompanion 
 
     if vgs_eff <= 0.0 {
         // Cutoff: gate not driven, no collector current
-        return IgbtCompanion { gm: 0.0, g_ce: 0.0, ids: 0.0, i_eq: 0.0 };
+        return IgbtCompanion {
+            gm: 0.0,
+            g_ce: 0.0,
+            ids: 0.0,
+            i_eq: 0.0,
+        };
     }
 
     // MOSFET Level-1 saturation (VCE_sat is the saturation boundary)
@@ -86,7 +95,12 @@ pub fn igbt_companion(vge: f64, vce: f64, params: &IgbtParams) -> IgbtCompanion 
     // Companion current source: I_eq = Ids - gm * vge - g_ce * vce
     let i_eq = ids - gm * vge - g_ce * vce;
 
-    IgbtCompanion { gm, g_ce, ids, i_eq }
+    IgbtCompanion {
+        gm,
+        g_ce,
+        ids,
+        i_eq,
+    }
 }
 
 #[cfg(test)]
@@ -96,7 +110,7 @@ mod tests {
     #[test]
     fn igbt_cutoff_when_vge_below_vth() {
         let params = IgbtParams::default(); // vth = 5.0
-        // vge = 0.0 < vth: cutoff region
+                                            // vge = 0.0 < vth: cutoff region
         let c = igbt_companion(0.0, 10.0, &params);
         assert_eq!(c.ids, 0.0);
         assert_eq!(c.gm, 0.0);
@@ -107,7 +121,7 @@ mod tests {
     #[test]
     fn igbt_cutoff_at_threshold() {
         let params = IgbtParams::default(); // vth = 5.0
-        // vge = vth exactly: vgs_eff = 0 → cutoff
+                                            // vge = vth exactly: vgs_eff = 0 → cutoff
         let c = igbt_companion(5.0, 10.0, &params);
         assert_eq!(c.ids, 0.0);
         assert_eq!(c.gm, 0.0);
@@ -116,35 +130,59 @@ mod tests {
     #[test]
     fn igbt_conducts_in_saturation() {
         let params = IgbtParams::default(); // vth=5, k=5
-        // vge=10 → vgs_eff=5; vce=8 >= vgs_eff=5 → saturation
+                                            // vge=10 → vgs_eff=5; vce=8 >= vgs_eff=5 → saturation
         let c = igbt_companion(10.0, 8.0, &params);
-        assert!(c.ids > 0.0, "ids should be positive in saturation, got {}", c.ids);
-        assert!(c.gm > 0.0, "gm should be positive in saturation, got {}", c.gm);
+        assert!(
+            c.ids > 0.0,
+            "ids should be positive in saturation, got {}",
+            c.ids
+        );
+        assert!(
+            c.gm > 0.0,
+            "gm should be positive in saturation, got {}",
+            c.gm
+        );
         // ids = 0.5 * 5 * 5^2 = 62.5 A
         let expected_ids = 0.5 * 5.0 * 5.0_f64.powi(2);
-        assert!((c.ids - expected_ids).abs() < 1e-9,
-            "ids={} expected {}", c.ids, expected_ids);
+        assert!(
+            (c.ids - expected_ids).abs() < 1e-9,
+            "ids={} expected {}",
+            c.ids,
+            expected_ids
+        );
     }
 
     #[test]
     fn igbt_conducts_in_triode() {
         let params = IgbtParams::default(); // vth=5, k=5
-        // vge=10 → vgs_eff=5; vce=2 < vgs_eff=5 → triode region
+                                            // vge=10 → vgs_eff=5; vce=2 < vgs_eff=5 → triode region
         let c = igbt_companion(10.0, 2.0, &params);
-        assert!(c.ids > 0.0, "ids should be positive in triode, got {}", c.ids);
+        assert!(
+            c.ids > 0.0,
+            "ids should be positive in triode, got {}",
+            c.ids
+        );
         // ids = k * (vgs_eff - vce/2) * vce = 5 * (5 - 1) * 2 = 40 A
         let expected_ids = 5.0 * (5.0 - 2.0 / 2.0) * 2.0;
-        assert!((c.ids - expected_ids).abs() < 1e-9,
-            "ids={} expected {}", c.ids, expected_ids);
+        assert!(
+            (c.ids - expected_ids).abs() < 1e-9,
+            "ids={} expected {}",
+            c.ids,
+            expected_ids
+        );
     }
 
     #[test]
     fn igbt_g_ce_is_ids_over_vce_sat() {
         let params = IgbtParams::default(); // vce_sat=2.0
-        // Saturation: vge=10, vce=8
+                                            // Saturation: vge=10, vce=8
         let c = igbt_companion(10.0, 8.0, &params);
         let expected_g_ce = c.ids / params.vce_sat;
-        assert!((c.g_ce - expected_g_ce).abs() < 1e-9,
-            "g_ce={} expected ids/vce_sat={}", c.g_ce, expected_g_ce);
+        assert!(
+            (c.g_ce - expected_g_ce).abs() < 1e-9,
+            "g_ce={} expected ids/vce_sat={}",
+            c.g_ce,
+            expected_g_ce
+        );
     }
 }

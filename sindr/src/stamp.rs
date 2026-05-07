@@ -53,21 +53,15 @@ pub fn stamp_circuit(
                 }
                 stamp_resistor(system, node_map, nodes, *resistance);
             }
-            CircuitElement::VoltageSource {
-                nodes, voltage, ..
-            } => {
+            CircuitElement::VoltageSource { nodes, voltage, .. } => {
                 let branch = num_nodes + vsource_index;
                 stamp_voltage_source(system, node_map, nodes, *voltage, branch);
                 vsource_index += 1;
             }
-            CircuitElement::CurrentSource {
-                nodes, current, ..
-            } => {
+            CircuitElement::CurrentSource { nodes, current, .. } => {
                 stamp_current_source(system, node_map, nodes, *current);
             }
-            CircuitElement::Switch {
-                nodes, closed, ..
-            } => {
+            CircuitElement::Switch { nodes, closed, .. } => {
                 let resistance = if *closed {
                     SWITCH_R_CLOSED
                 } else {
@@ -78,35 +72,56 @@ pub fn stamp_circuit(
             // Open-circuit stubs -- simulation added in future phases
             CircuitElement::Capacitor { .. } => {}
             CircuitElement::Inductor { .. } => {}
-            CircuitElement::Diode { nodes, temperature, .. } => {
+            CircuitElement::Diode {
+                nodes, temperature, ..
+            } => {
                 if let Some(vp) = v_prev {
                     let mut params = DiodeParams::silicon();
                     if (*temperature - 300.15).abs() > 1e-6 {
-                        params.is = temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
+                        params.is =
+                            temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
                     }
                     stamp_diode_companion(system, node_map, nodes, vp, &params);
                 }
             }
-            CircuitElement::Led { nodes, color, temperature, .. } => {
+            CircuitElement::Led {
+                nodes,
+                color,
+                temperature,
+                ..
+            } => {
                 if let Some(vp) = v_prev {
                     let mut params = led_params_from_str(color);
                     if (*temperature - 300.15).abs() > 1e-6 {
-                        params.is = temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
+                        params.is =
+                            temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
                     }
                     stamp_diode_companion(system, node_map, nodes, vp, &params);
                 }
             }
-            CircuitElement::Bjt { nodes, kind, bf, temperature, .. } => {
+            CircuitElement::Bjt {
+                nodes,
+                kind,
+                bf,
+                temperature,
+                ..
+            } => {
                 if let Some(vp) = v_prev {
                     let mut params = BjtParams::new(*bf);
                     if (*temperature - 300.15).abs() > 1e-6 {
                         // Scale IS for temperature: xti=3 for BJT (SPICE standard)
-                        params.is = temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
+                        params.is =
+                            temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
                     }
                     stamp_bjt_companion(system, node_map, nodes, vp, &params, *kind);
                 }
             }
-            CircuitElement::Mosfet { nodes, kind, params, .. } => {
+            CircuitElement::Mosfet {
+                nodes,
+                kind,
+                params,
+                ..
+            } => {
                 if let Some(vp) = v_prev {
                     stamp_mosfet_companion(system, node_map, nodes, vp, params, *kind);
                 }
@@ -156,7 +171,11 @@ pub fn stamp_circuit(
                 }
             }
             CircuitElement::Pushbutton { nodes, closed, .. } => {
-                let resistance = if *closed { SWITCH_R_CLOSED } else { SWITCH_R_OPEN };
+                let resistance = if *closed {
+                    SWITCH_R_CLOSED
+                } else {
+                    SWITCH_R_OPEN
+                };
                 stamp_resistor(system, node_map, nodes, resistance);
             }
             CircuitElement::Fuse { nodes, blown, .. } => {
@@ -165,11 +184,18 @@ pub fn stamp_circuit(
                 let resistance = if *blown { SWITCH_R_OPEN } else { 0.001 };
                 stamp_resistor(system, node_map, nodes, resistance);
             }
-            CircuitElement::Photoresistor { nodes, light_level, .. } => {
+            CircuitElement::Photoresistor {
+                nodes, light_level, ..
+            } => {
                 let resistance = ldr_resistance(*light_level);
                 stamp_resistor(system, node_map, nodes, resistance);
             }
-            CircuitElement::Potentiometer { nodes, resistance, position, .. } => {
+            CircuitElement::Potentiometer {
+                nodes,
+                resistance,
+                position,
+                ..
+            } => {
                 let pos = position.clamp(0.001, 0.999);
                 let r_top = resistance * pos;
                 let r_bot = resistance * (1.0 - pos);
@@ -178,12 +204,18 @@ pub fn stamp_circuit(
                 stamp_resistor(system, node_map, &top_wiper, r_top);
                 stamp_resistor(system, node_map, &wiper_bot, r_bot);
             }
-            CircuitElement::Relay { nodes, coil_resistance, pickup_voltage, inductance, .. } => {
+            CircuitElement::Relay {
+                nodes,
+                coil_resistance,
+                pickup_voltage,
+                inductance,
+                ..
+            } => {
                 // Coil: passive resistive load
                 let coil_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
                 stamp_resistor(system, node_map, &coil_nodes, *coil_resistance);
                 let _ = inductance; // inductance is handled in transient solver
-                // Contact: determined by previous iteration coil voltage
+                                    // Contact: determined by previous iteration coil voltage
                 let contact_closed = if let Some(vp) = v_prev {
                     let vc_pos = node_map.index(&nodes[0]).map_or(0.0, |i| vp[i]);
                     let vc_neg = node_map.index(&nodes[1]).map_or(0.0, |i| vp[i]);
@@ -191,16 +223,26 @@ pub fn stamp_circuit(
                 } else {
                     false
                 };
-                let contact_r = if contact_closed { SWITCH_R_CLOSED } else { SWITCH_R_OPEN };
+                let contact_r = if contact_closed {
+                    SWITCH_R_CLOSED
+                } else {
+                    SWITCH_R_OPEN
+                };
                 let contact_nodes: [String; 2] = [nodes[2].clone(), nodes[3].clone()];
                 stamp_resistor(system, node_map, &contact_nodes, contact_r);
             }
             // ZenerDiode: piecewise nonlinear companion model with breakdown clamping
-            CircuitElement::ZenerDiode { nodes, vz, temperature, .. } => {
+            CircuitElement::ZenerDiode {
+                nodes,
+                vz,
+                temperature,
+                ..
+            } => {
                 if let Some(vp) = v_prev {
                     let mut zparams = ZenerParams::new(*vz);
                     if (*temperature - 300.15).abs() > 1e-6 {
-                        zparams.is = temperature_scale_is(zparams.is, *temperature, 300.15, 1.11, 2.0);
+                        zparams.is =
+                            temperature_scale_is(zparams.is, *temperature, 300.15, 1.11, 2.0);
                     }
                     stamp_zener_companion(system, node_map, nodes, vp, &zparams);
                 }
@@ -222,7 +264,9 @@ pub fn stamp_circuit(
                 vsource_index += 1;
             }
             // Schottky diode — same nonlinear pattern as silicon Diode but with Schottky IS/N
-            CircuitElement::SchottkyDiode { nodes, temperature, .. } => {
+            CircuitElement::SchottkyDiode {
+                nodes, temperature, ..
+            } => {
                 if let Some(vp) = v_prev {
                     let schottky = sindr_devices::schottky::SchottkyParams::default();
                     let is_scaled = if (*temperature - 300.15).abs() > 1e-6 {
@@ -230,16 +274,24 @@ pub fn stamp_circuit(
                     } else {
                         schottky.is
                     };
-                    stamp_diode_companion(system, node_map, nodes, vp, &DiodeParams {
-                        is: is_scaled,
-                        n: schottky.n,
-                        rs: 0.0,
-                        temperature: *temperature,
-                    });
+                    stamp_diode_companion(
+                        system,
+                        node_map,
+                        nodes,
+                        vp,
+                        &DiodeParams {
+                            is: is_scaled,
+                            n: schottky.n,
+                            rs: 0.0,
+                            temperature: *temperature,
+                        },
+                    );
                 }
             }
             // Thermistor — passive resistor, resistance computed from temperature param
-            CircuitElement::Thermistor { nodes, temperature, .. } => {
+            CircuitElement::Thermistor {
+                nodes, temperature, ..
+            } => {
                 let params = sindr_devices::thermistor::ThermistorParams::default();
                 let r = sindr_devices::thermistor::thermistor_resistance(*temperature, &params);
                 stamp_resistor(system, node_map, nodes, r);
@@ -255,7 +307,13 @@ pub fn stamp_circuit(
                 }
             }
             // JFET — Shockley square-law, NR companion (no branch variable)
-            CircuitElement::Jfet { nodes, kind, idss, vp, .. } => {
+            CircuitElement::Jfet {
+                nodes,
+                kind,
+                idss,
+                vp,
+                ..
+            } => {
                 if let Some(vp_prev) = v_prev {
                     stamp_jfet_companion(system, node_map, nodes, *kind, *idss, *vp, vp_prev);
                 }
@@ -263,8 +321,18 @@ pub fn stamp_circuit(
             // Transformer — DC: both windings are near-short-circuit resistors
             CircuitElement::Transformer { nodes, .. } => {
                 // DC: pure inductors are short circuits. Use very small resistance to avoid singular matrix.
-                stamp_resistor(system, node_map, &[nodes[0].clone(), nodes[1].clone()], 1e-9);
-                stamp_resistor(system, node_map, &[nodes[2].clone(), nodes[3].clone()], 1e-9);
+                stamp_resistor(
+                    system,
+                    node_map,
+                    &[nodes[0].clone(), nodes[1].clone()],
+                    1e-9,
+                );
+                stamp_resistor(
+                    system,
+                    node_map,
+                    &[nodes[2].clone(), nodes[3].clone()],
+                    1e-9,
+                );
             }
             // VoltageRegulator — ideal voltage source between output (nodes[1]) and gnd (nodes[2]).
             // Input node (nodes[0]) is wiring-only and is ignored.
@@ -275,14 +343,20 @@ pub fn stamp_circuit(
                 vsource_index += 1;
             }
             // Photodiode — diode + photocurrent offset
-            CircuitElement::Photodiode { nodes, irradiance, temperature, .. } => {
+            CircuitElement::Photodiode {
+                nodes,
+                irradiance,
+                temperature,
+                ..
+            } => {
                 if let Some(vp) = v_prev {
                     let _ = temperature; // temperature scaling for photodiode IS reserved for temp_sweep
                     let params = sindr_devices::photodiode::PhotodiodeParams::default();
                     let v_a = node_map.index(&nodes[0]).map_or(0.0, |i| vp[i]);
                     let v_c = node_map.index(&nodes[1]).map_or(0.0, |i| vp[i]);
                     let v_d = v_a - v_c;
-                    let (g_d, i_eq) = sindr_devices::photodiode::photodiode_companion(v_d, *irradiance, &params);
+                    let (g_d, i_eq) =
+                        sindr_devices::photodiode::photodiode_companion(v_d, *irradiance, &params);
                     // Stamp Norton equivalent: conductance between anode/cathode + current source
                     let p = node_map.index(&nodes[0]);
                     let q = node_map.index(&nodes[1]);
@@ -467,15 +541,23 @@ pub(crate) fn stamp_zener_companion(
 
     let (g_eq, i_eq) = rs_zener_companion(v_d, params);
 
-    if let Some(pi) = p { system.a[(pi, pi)] += g_eq; }
-    if let Some(qi) = q { system.a[(qi, qi)] += g_eq; }
+    if let Some(pi) = p {
+        system.a[(pi, pi)] += g_eq;
+    }
+    if let Some(qi) = q {
+        system.a[(qi, qi)] += g_eq;
+    }
     if let (Some(pi), Some(qi)) = (p, q) {
         system.a[(pi, qi)] -= g_eq;
         system.a[(qi, pi)] -= g_eq;
     }
 
-    if let Some(pi) = p { system.b[pi] -= i_eq; }
-    if let Some(qi) = q { system.b[qi] += i_eq; }
+    if let Some(pi) = p {
+        system.b[pi] -= i_eq;
+    }
+    if let Some(qi) = q {
+        system.b[qi] += i_eq;
+    }
 }
 
 /// Stamp a capacitor companion model (Backward Euler) into the MNA system.
@@ -616,12 +698,11 @@ pub(crate) fn stamp_bjt_companion(
     let alpha_r = params.br / (params.br + 1.0);
 
     // Helper closure: stamp a value into G matrix (skip ground nodes)
-    let stamp_g =
-        |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {
-            if let (Some(r), Some(c)) = (row, col) {
-                system.a[(r, c)] += val;
-            }
-        };
+    let stamp_g = |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {
+        if let (Some(r), Some(c)) = (row, col) {
+            system.a[(r, c)] += val;
+        }
+    };
 
     // --- G matrix stamp (9 entries) ---
     // These entries are IDENTICAL for NPN and PNP because the sign cancels
@@ -634,15 +715,15 @@ pub(crate) fn stamp_bjt_companion(
 
     // Row C (collector KCL -- dIc/dV):
     // Ic = IF - IR/alpha_R, so dIc/dVbc = -g_bc/alpha_R (NEGATIVE)
-    stamp_g(system, c, b, g_be - g_bc / alpha_r);           // dIc/dVbe * 1 + dIc/dVbc * 1
-    stamp_g(system, c, c, g_bc / alpha_r);                   // dIc/dVbc * (-1)
-    stamp_g(system, c, e, -g_be);                            // dIc/dVbe * (-1) -- unchanged
+    stamp_g(system, c, b, g_be - g_bc / alpha_r); // dIc/dVbe * 1 + dIc/dVbc * 1
+    stamp_g(system, c, c, g_bc / alpha_r); // dIc/dVbc * (-1)
+    stamp_g(system, c, e, -g_be); // dIc/dVbe * (-1) -- unchanged
 
     // Row E (emitter KCL -- Ie = -IF/alpha_F + IR):
     // dIe/dVbe = -g_be/alpha_F, dIe/dVbc = g_bc
-    stamp_g(system, e, b, -g_be / alpha_f + g_bc);           // dIe/dVbe * 1 + dIe/dVbc * 1
-    stamp_g(system, e, c, -g_bc);                            // dIe/dVbc * (-1)
-    stamp_g(system, e, e, g_be / alpha_f);                   // dIe/dVbe * (-1) -- unchanged
+    stamp_g(system, e, b, -g_be / alpha_f + g_bc); // dIe/dVbe * 1 + dIe/dVbc * 1
+    stamp_g(system, e, c, -g_bc); // dIe/dVbc * (-1)
+    stamp_g(system, e, e, g_be / alpha_f); // dIe/dVbe * (-1) -- unchanged
 
     // --- RHS stamp (3 entries) ---
     // Companion current sources (linearization residuals):
@@ -718,12 +799,11 @@ pub(crate) fn stamp_mosfet_companion(
     let comp = mosfet::mosfet_companion(vgs, vds, vbs, params);
 
     // Helper closure
-    let stamp_g =
-        |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {
-            if let (Some(r), Some(c)) = (row, col) {
-                system.a[(r, c)] += val;
-            }
-        };
+    let stamp_g = |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {
+        if let (Some(r), Some(c)) = (row, col) {
+            system.a[(r, c)] += val;
+        }
+    };
 
     // For NMOS: Id flows drain->source, controlled by Vgs and Vds
     // Linearized: Id = Id0 + gm*(vgs - Vgs0) + gds*(vds - Vds0) + gmb*(vbs - Vbs0)
@@ -766,11 +846,7 @@ pub(crate) fn stamp_mosfet_companion(
 /// Stamp a varactor in DC analysis: open circuit via very large shunt resistor (1e12 Ω).
 ///
 /// In transient analysis, use stamp_varactor_transient instead.
-pub(crate) fn stamp_varactor_dc(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-) {
+pub(crate) fn stamp_varactor_dc(system: &mut MnaSystem, node_map: &NodeMap, nodes: &[String; 2]) {
     // 1e12 Ω shunt = open circuit for practical purposes
     stamp_resistor(system, node_map, nodes, 1e12);
 }
@@ -792,8 +868,12 @@ pub(crate) fn stamp_varactor_transient(
     let q = node_map.index(&nodes[1]);
 
     // Stamp conductance (same pattern as capacitor companion)
-    if let Some(pi) = p { system.a[(pi, pi)] += g_eq; }
-    if let Some(qi) = q { system.a[(qi, qi)] += g_eq; }
+    if let Some(pi) = p {
+        system.a[(pi, pi)] += g_eq;
+    }
+    if let Some(qi) = q {
+        system.a[(qi, qi)] += g_eq;
+    }
     if let (Some(pi), Some(qi)) = (p, q) {
         system.a[(pi, qi)] -= g_eq;
         system.a[(qi, pi)] -= g_eq;
@@ -801,8 +881,12 @@ pub(crate) fn stamp_varactor_transient(
 
     // Stamp history current source: enters positive terminal (nodes[0])
     // i_eq = -g_eq * v_prev (from varactor_companion sign convention)
-    if let Some(pi) = p { system.b[pi] += i_eq; }
-    if let Some(qi) = q { system.b[qi] -= i_eq; }
+    if let Some(pi) = p {
+        system.b[pi] += i_eq;
+    }
+    if let Some(qi) = q {
+        system.b[qi] -= i_eq;
+    }
 }
 
 /// Stamp an IGBT companion model (nonlinear, called each NR iteration).
@@ -831,8 +915,12 @@ pub(crate) fn stamp_igbt_companion(
     let g_total = comp.gm + comp.g_ce;
 
     // Stamp gm + g_ce between collector and emitter (output conductance)
-    if let Some(ci) = c { system.a[(ci, ci)] += g_total; }
-    if let Some(ei) = e { system.a[(ei, ei)] += g_total; }
+    if let Some(ci) = c {
+        system.a[(ci, ci)] += g_total;
+    }
+    if let Some(ei) = e {
+        system.a[(ei, ei)] += g_total;
+    }
     if let (Some(ci), Some(ei)) = (c, e) {
         system.a[(ci, ei)] -= g_total;
         system.a[(ei, ci)] -= g_total;
@@ -840,8 +928,12 @@ pub(crate) fn stamp_igbt_companion(
 
     // Stamp companion current source: I_eq from emitter to collector
     // i_eq = ids - gm*vge - g_ce*vce (companion source value)
-    if let Some(ci) = c { system.b[ci] -= comp.i_eq; }
-    if let Some(ei) = e { system.b[ei] += comp.i_eq; }
+    if let Some(ci) = c {
+        system.b[ci] -= comp.i_eq;
+    }
+    if let Some(ei) = e {
+        system.b[ei] += comp.i_eq;
+    }
 }
 
 /// Stamp a JFET companion model into the MNA system.
@@ -872,8 +964,12 @@ pub(crate) fn stamp_jfet_companion(
     let c = sindr_devices::jfet::jfet_companion(vgs, vds, kind, idss, vp);
 
     // Stamp drain-source conductance gds
-    if let Some(di) = d { system.a[(di, di)] += c.gds; }
-    if let Some(si) = s { system.a[(si, si)] += c.gds; }
+    if let Some(di) = d {
+        system.a[(di, di)] += c.gds;
+    }
+    if let Some(si) = s {
+        system.a[(si, si)] += c.gds;
+    }
     if let (Some(di), Some(si)) = (d, s) {
         system.a[(di, si)] -= c.gds;
         system.a[(si, di)] -= c.gds;
@@ -881,15 +977,27 @@ pub(crate) fn stamp_jfet_companion(
 
     // Stamp VCCS: gm * Vgs = gm * (Vg - Vs)
     // Current flows drain->source (exits drain, enters source)
-    if let (Some(di), Some(gi)) = (d, g) { system.a[(di, gi)] += c.gm; }
-    if let (Some(di), Some(si)) = (d, s) { system.a[(di, si)] -= c.gm; }
-    if let (Some(si), Some(gi)) = (s, g) { system.a[(si, gi)] -= c.gm; }
-    if let (Some(si2), Some(si)) = (s, s) { system.a[(si2, si)] += c.gm; }
+    if let (Some(di), Some(gi)) = (d, g) {
+        system.a[(di, gi)] += c.gm;
+    }
+    if let (Some(di), Some(si)) = (d, s) {
+        system.a[(di, si)] -= c.gm;
+    }
+    if let (Some(si), Some(gi)) = (s, g) {
+        system.a[(si, gi)] -= c.gm;
+    }
+    if let (Some(si2), Some(si)) = (s, s) {
+        system.a[(si2, si)] += c.gm;
+    }
 
     // Stamp equivalent current source i_eq (flows from source to drain in MNA)
     // Id = gm*Vgs + gds*Vds + i_eq
-    if let Some(di) = d { system.b[di] -= c.i_eq; }
-    if let Some(si) = s { system.b[si] += c.i_eq; }
+    if let Some(di) = d {
+        system.b[di] -= c.i_eq;
+    }
+    if let Some(si) = s {
+        system.b[si] += c.i_eq;
+    }
 }
 
 /// Stamp BJT parasitic capacitances as companion capacitors.
@@ -993,14 +1101,26 @@ pub(crate) fn stamp_transformer_companion(
     let q2 = node_map.index(&nodes[3]);
 
     // Primary winding: branch k1 between p1 and q1
-    if let Some(p1i) = p1 { system.a[(p1i, k1)] += 1.0; system.a[(k1, p1i)] += 1.0; }
-    if let Some(q1i) = q1 { system.a[(q1i, k1)] -= 1.0; system.a[(k1, q1i)] -= 1.0; }
+    if let Some(p1i) = p1 {
+        system.a[(p1i, k1)] += 1.0;
+        system.a[(k1, p1i)] += 1.0;
+    }
+    if let Some(q1i) = q1 {
+        system.a[(q1i, k1)] -= 1.0;
+        system.a[(k1, q1i)] -= 1.0;
+    }
     system.a[(k1, k1)] += l1 / dt;
     system.a[(k1, k2)] += m / dt;
 
     // Secondary winding: branch k2 between p2 and q2
-    if let Some(p2i) = p2 { system.a[(p2i, k2)] += 1.0; system.a[(k2, p2i)] += 1.0; }
-    if let Some(q2i) = q2 { system.a[(q2i, k2)] -= 1.0; system.a[(k2, q2i)] -= 1.0; }
+    if let Some(p2i) = p2 {
+        system.a[(p2i, k2)] += 1.0;
+        system.a[(k2, p2i)] += 1.0;
+    }
+    if let Some(q2i) = q2 {
+        system.a[(q2i, k2)] -= 1.0;
+        system.a[(k2, q2i)] -= 1.0;
+    }
     system.a[(k2, k2)] += l2 / dt;
     system.a[(k2, k1)] += m / dt; // symmetric
 
@@ -1211,7 +1331,7 @@ mod tests {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 10.0,
-                    waveform: None,
+                waveform: None,
             }],
         };
         let node_map = NodeMap::from_circuit(&circuit);
@@ -1235,7 +1355,7 @@ mod tests {
                 id: "I1".into(),
                 nodes: ["0".into(), "n1".into()],
                 current: 0.002,
-                    waveform: None,
+                waveform: None,
             }],
         };
         let node_map = NodeMap::from_circuit(&circuit);
@@ -1445,7 +1565,14 @@ mod tests {
         // Stamp only the BJT
         let params = BjtParams::new(100.0);
         let nodes: [String; 3] = ["n1".into(), "n2".into(), "0".into()];
-        stamp_bjt_companion(&mut system, &node_map, &nodes, &v_prev, &params, BjtKind::Npn);
+        stamp_bjt_companion(
+            &mut system,
+            &node_map,
+            &nodes,
+            &v_prev,
+            &params,
+            BjtKind::Npn,
+        );
 
         // Hand-calculate expected companion values at Vbe=0.7, Vbc=0.7-5.0=-4.3
         let vbe = 0.7;
@@ -1545,7 +1672,14 @@ mod tests {
 
         let params = BjtParams::new(100.0);
         let nodes: [String; 3] = ["n_b".into(), "n_c".into(), "0".into()];
-        stamp_bjt_companion(&mut system, &node_map, &nodes, &v_prev, &params, BjtKind::Npn);
+        stamp_bjt_companion(
+            &mut system,
+            &node_map,
+            &nodes,
+            &v_prev,
+            &params,
+            BjtKind::Npn,
+        );
 
         let params2 = BjtParams::new(100.0);
         let bf = params2.bf;
@@ -1559,16 +1693,32 @@ mod tests {
         let g_be = comp.g_be;
         let g_bc = comp.g_bc;
 
-        assert!(g_bc > 1e-6, "g_bc={} should be significant in saturation", g_bc);
+        assert!(
+            g_bc > 1e-6,
+            "g_bc={} should be significant in saturation",
+            g_bc
+        );
 
         let col_b = (g_be / bf + g_bc / br) + (g_be - g_bc / alpha_r) + (-g_be / alpha_f + g_bc);
-        assert!(col_b.abs() < 1e-12, "Column B should sum to 0 (KCL), got {}", col_b);
+        assert!(
+            col_b.abs() < 1e-12,
+            "Column B should sum to 0 (KCL), got {}",
+            col_b
+        );
 
         let col_c = (-g_bc / br) + (g_bc / alpha_r) + (-g_bc);
-        assert!(col_c.abs() < 1e-12, "Column C should sum to 0 (KCL), got {}", col_c);
+        assert!(
+            col_c.abs() < 1e-12,
+            "Column C should sum to 0 (KCL), got {}",
+            col_c
+        );
 
         let col_e = (-g_be / bf) + (-g_be) + (g_be / alpha_f);
-        assert!(col_e.abs() < 1e-12, "Column E should sum to 0 (KCL), got {}", col_e);
+        assert!(
+            col_e.abs() < 1e-12,
+            "Column E should sum to 0 (KCL), got {}",
+            col_e
+        );
 
         assert_relative_eq!(system.a[(bi, bi)], g_be / bf + g_bc / br, epsilon = 1e-12);
         assert_relative_eq!(system.a[(bi, ci)], -g_bc / br, epsilon = 1e-12);
@@ -1633,7 +1783,14 @@ mod tests {
 
         let params = BjtParams::new(100.0);
         let nodes: [String; 3] = ["n_b".into(), "n_c".into(), "n_e".into()];
-        stamp_bjt_companion(&mut system, &node_map, &nodes, &v_prev, &params, BjtKind::Npn);
+        stamp_bjt_companion(
+            &mut system,
+            &node_map,
+            &nodes,
+            &v_prev,
+            &params,
+            BjtKind::Npn,
+        );
 
         let vbe = 0.7;
         let vbc = 0.7 - 5.0;
@@ -1713,7 +1870,14 @@ mod tests {
 
         let params = BjtParams::new(100.0);
         let nodes: [String; 3] = ["n_b".into(), "n_c".into(), "n_e".into()];
-        stamp_bjt_companion(&mut system, &node_map, &nodes, &v_prev, &params, BjtKind::Npn);
+        stamp_bjt_companion(
+            &mut system,
+            &node_map,
+            &nodes,
+            &v_prev,
+            &params,
+            BjtKind::Npn,
+        );
 
         let vbe = 0.7;
         let vbc = 0.7;
@@ -1725,7 +1889,11 @@ mod tests {
         let alpha_f = bf / (bf + 1.0);
         let alpha_r = br / (br + 1.0);
 
-        assert!(g_bc > 1e-3, "g_bc={} should be significant in saturation", g_bc);
+        assert!(
+            g_bc > 1e-3,
+            "g_bc={} should be significant in saturation",
+            g_bc
+        );
 
         assert_relative_eq!(system.a[(bi, bi)], g_be / bf + g_bc / br, epsilon = 0.01);
         assert_relative_eq!(system.a[(bi, ci)], -g_bc / br, epsilon = 0.01);
@@ -1776,7 +1944,11 @@ mod tests {
         };
 
         let result = solve_circuit(&circuit);
-        assert!(result.is_ok(), "Transformer DC circuit solve failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Transformer DC circuit solve failed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
         // n1 should be very close to 10V (primary is near-short-circuit)
         let v_n1 = result.node_voltages["n1"];
@@ -1813,15 +1985,27 @@ mod tests {
         };
 
         let result = solve_circuit(&circuit);
-        assert!(result.is_ok(), "Varactor DC circuit solve failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Varactor DC circuit solve failed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
         // n1 = 5V (voltage source), n2 should be very close to 5V (varactor = open circuit = 1e12 Ohm)
         let v_n1 = result.node_voltages["n1"];
         assert_relative_eq!(v_n1, 5.0, epsilon = 1e-6);
         // Varactor result should be present
-        let cv1 = result.component_results.iter().find(|c| c.id == "CV1").unwrap();
+        let cv1 = result
+            .component_results
+            .iter()
+            .find(|c| c.id == "CV1")
+            .unwrap();
         // Voltage across varactor is approximately 5V (n2 ≈ 5V due to 1e12 shunt)
-        assert!(cv1.voltage_across > 4.9, "Varactor voltage should be ~5V, got {}", cv1.voltage_across);
+        assert!(
+            cv1.voltage_across > 4.9,
+            "Varactor voltage should be ~5V, got {}",
+            cv1.voltage_across
+        );
     }
 
     /// IGBT cutoff test: Vge=0 (gate at 0V, below threshold) → ids=0 in result.
@@ -1861,9 +2045,17 @@ mod tests {
         };
 
         let result = solve_circuit(&circuit);
-        assert!(result.is_ok(), "IGBT cutoff circuit failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "IGBT cutoff circuit failed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
-        let t1 = result.component_results.iter().find(|c| c.id == "T1").unwrap();
+        let t1 = result
+            .component_results
+            .iter()
+            .find(|c| c.id == "T1")
+            .unwrap();
         // With Vge=0 < Vth=5V, IGBT is in cutoff: ids = 0
         assert_relative_eq!(t1.current_through, 0.0, epsilon = 1e-9);
     }
@@ -1905,10 +2097,22 @@ mod tests {
         };
 
         let result = solve_circuit(&circuit);
-        assert!(result.is_ok(), "IGBT active circuit failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "IGBT active circuit failed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
-        let t1 = result.component_results.iter().find(|c| c.id == "T1").unwrap();
+        let t1 = result
+            .component_results
+            .iter()
+            .find(|c| c.id == "T1")
+            .unwrap();
         // With Vge=10 > Vth=5, IGBT should conduct
-        assert!(t1.current_through > 0.0, "IGBT should have non-zero collector current, got {}", t1.current_through);
+        assert!(
+            t1.current_through > 0.0,
+            "IGBT should have non-zero collector current, got {}",
+            t1.current_through
+        );
     }
 }

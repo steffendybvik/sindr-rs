@@ -4,7 +4,7 @@
 //! but with higher saturation current (IS ≈ 1e-8 A) and lower forward
 //! voltage (~0.3V vs ~0.6V silicon). Reuses diode_companion().
 
-use crate::diode::{DiodeParams, diode_companion};
+use crate::diode::{diode_companion, DiodeParams};
 
 /// Schottky diode parameters.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -24,7 +24,9 @@ impl SchottkyParams {
 }
 
 impl Default for SchottkyParams {
-    fn default() -> Self { Self::standard() }
+    fn default() -> Self {
+        Self::standard()
+    }
 }
 
 /// Linearized companion model for a Schottky diode at operating point v_d.
@@ -32,7 +34,15 @@ impl Default for SchottkyParams {
 /// Returns (g_d, i_eq): conductance and equivalent Norton current.
 /// Delegates to diode_companion with Schottky parameters.
 pub fn schottky_companion(v_d: f64, params: &SchottkyParams) -> (f64, f64) {
-    diode_companion(v_d, &DiodeParams { is: params.is, n: params.n, rs: 0.0, temperature: 300.15 })
+    diode_companion(
+        v_d,
+        &DiodeParams {
+            is: params.is,
+            n: params.n,
+            rs: 0.0,
+            temperature: 300.15,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -49,8 +59,19 @@ mod tests {
         assert!(g_s > 1e-6, "Schottky should conduct at 0.3V, got g={}", g_s);
 
         // Silicon diode at same voltage conducts much less
-        let (g_si, _) = diode_companion(0.3, &crate::diode::DiodeParams { is: 1e-14, n: 1.0, rs: 0.0, temperature: 300.15 });
-        assert!(g_s > g_si * 1000.0, "Schottky should have >> 1000x conductance of silicon at 0.3V");
+        let (g_si, _) = diode_companion(
+            0.3,
+            &crate::diode::DiodeParams {
+                is: 1e-14,
+                n: 1.0,
+                rs: 0.0,
+                temperature: 300.15,
+            },
+        );
+        assert!(
+            g_s > g_si * 1000.0,
+            "Schottky should have >> 1000x conductance of silicon at 0.3V"
+        );
     }
 
     #[test]
@@ -58,7 +79,11 @@ mod tests {
         let params = SchottkyParams::standard();
         let (g_d, i_eq) = schottky_companion(-5.0, &params);
         // At -5V reverse bias, conductance is essentially zero (exp(-193) ≈ 0)
-        assert!(g_d < 1e-6, "Reverse bias conductance should be near zero, got g={}", g_d);
+        assert!(
+            g_d < 1e-6,
+            "Reverse bias conductance should be near zero, got g={}",
+            g_d
+        );
         assert!(i_eq.abs() < 1e-6, "Reverse i_eq should be tiny");
     }
 }

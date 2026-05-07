@@ -20,12 +20,18 @@ impl ThermistorParams {
     /// Standard 10 kΩ NTC thermistor (Epcos B57164K0103K000 or equivalent).
     /// R0 = 10kΩ at 25°C, Beta = 3950 K.
     pub fn ntc_10k() -> Self {
-        Self { r0: 10_000.0, beta: 3950.0, t0: 298.15 }
+        Self {
+            r0: 10_000.0,
+            beta: 3950.0,
+            t0: 298.15,
+        }
     }
 }
 
 impl Default for ThermistorParams {
-    fn default() -> Self { Self::ntc_10k() }
+    fn default() -> Self {
+        Self::ntc_10k()
+    }
 }
 
 /// Compute thermistor resistance at a given temperature (Kelvin).
@@ -56,8 +62,14 @@ mod tests {
         let r_25c = thermistor_resistance(298.15, &params);
         let r_10c = thermistor_resistance(283.15, &params);
         let r_50c = thermistor_resistance(323.15, &params);
-        assert!(r_10c > r_25c, "NTC resistance should increase as temp drops");
-        assert!(r_50c < r_25c, "NTC resistance should decrease as temp rises");
+        assert!(
+            r_10c > r_25c,
+            "NTC resistance should increase as temp drops"
+        );
+        assert!(
+            r_50c < r_25c,
+            "NTC resistance should decrease as temp rises"
+        );
     }
 
     #[test]
@@ -65,6 +77,10 @@ mod tests {
         let params = ThermistorParams::ntc_10k();
         let r_0c = thermistor_resistance(273.15, &params);
         // At 0°C, typical 10k NTC is ~27-33 kΩ
-        assert!(r_0c > 20_000.0 && r_0c < 40_000.0, "R at 0°C = {} (expected 20-40 kΩ)", r_0c);
+        assert!(
+            r_0c > 20_000.0 && r_0c < 40_000.0,
+            "R at 0°C = {} (expected 20-40 kΩ)",
+            r_0c
+        );
     }
 }

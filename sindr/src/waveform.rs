@@ -26,14 +26,14 @@ pub enum Waveform {
     /// SPICE-compatible pulse waveform.
     #[cfg_attr(feature = "serde", serde(rename = "pulse"))]
     Pulse {
-        v1: f64,          // initial value
-        v2: f64,          // pulsed value
+        v1: f64, // initial value
+        v2: f64, // pulsed value
         #[cfg_attr(feature = "serde", serde(default))]
-        delay: f64,       // delay before first pulse (s)
-        rise_time: f64,   // rise time (s)
-        fall_time: f64,   // fall time (s)
+        delay: f64, // delay before first pulse (s)
+        rise_time: f64, // rise time (s)
+        fall_time: f64, // fall time (s)
         pulse_width: f64, // pulse width (s)
-        period: f64,      // period (s)
+        period: f64, // period (s)
     },
 
     /// Square wave with configurable duty cycle.

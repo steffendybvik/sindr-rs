@@ -53,19 +53,19 @@ impl MosfetParams {
     /// Default NMOS parameters (typical educational values).
     pub fn default_nmos() -> Self {
         Self {
-            kp: 2e-4,    // 200 uA/V^2
-            vto: 0.7,    // 0.7V threshold
+            kp: 2e-4,     // 200 uA/V^2
+            vto: 0.7,     // 0.7V threshold
             lambda: 0.02, // 0.02 /V
-            gamma: 0.4,  // 0.4 V^0.5
-            phi: 0.6,    // 0.6V
+            gamma: 0.4,   // 0.4 V^0.5
+            phi: 0.6,     // 0.6V
         }
     }
 
     /// Default PMOS parameters (typical educational values).
     pub fn default_pmos() -> Self {
         Self {
-            kp: 1e-4,     // 100 uA/V^2 (typically half of NMOS)
-            vto: -0.7,    // -0.7V threshold (negative for PMOS)
+            kp: 1e-4,  // 100 uA/V^2 (typically half of NMOS)
+            vto: -0.7, // -0.7V threshold (negative for PMOS)
             lambda: 0.02,
             gamma: 0.4,
             phi: 0.6,
@@ -249,7 +249,10 @@ mod tests {
     fn body_effect_gmb_nonzero() {
         let params = MosfetParams::default_nmos();
         let comp = mosfet_companion(3.0, 5.0, -1.0, &params);
-        assert!(comp.gmb.abs() > 0.0, "gmb should be nonzero with body effect");
+        assert!(
+            comp.gmb.abs() > 0.0,
+            "gmb should be nonzero with body effect"
+        );
     }
 
     #[test]

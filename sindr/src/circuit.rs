@@ -67,7 +67,10 @@ pub enum CircuitElement {
         id: String,
         nodes: [String; 2],
         voltage: f64,
-        #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
         waveform: Option<Waveform>,
     },
 
@@ -78,7 +81,10 @@ pub enum CircuitElement {
         id: String,
         nodes: [String; 2],
         current: f64,
-        #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
         waveform: Option<Waveform>,
     },
 
@@ -140,7 +146,10 @@ pub enum CircuitElement {
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
         /// Optional parasitic capacitances (Cbe, Cbc). None = no parasitic caps (default).
-        #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
         parasitic_caps: Option<BjtParasiticCaps>,
     },
 
@@ -153,7 +162,10 @@ pub enum CircuitElement {
         #[cfg_attr(feature = "serde", serde(default))]
         params: MosfetParams,
         /// Optional parasitic capacitances (Cgs, Cgd). None = no parasitic caps (default).
-        #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
         parasitic_caps: Option<MosfetParasiticCaps>,
     },
 
@@ -370,7 +382,7 @@ pub enum CircuitElement {
         l1: f64,            // Primary inductance (H)
         l2: f64,            // Secondary inductance (H)
         #[cfg_attr(feature = "serde", serde(default = "default_coupling"))]
-        k: f64,             // Coupling coefficient [0, 0.999]. Default 0.999 (near-ideal).
+        k: f64, // Coupling coefficient [0, 0.999]. Default 0.999 (near-ideal).
     },
 
     /// Fuse between two nodes.
@@ -489,10 +501,18 @@ impl CircuitElement {
     /// Returns all node names referenced by this component, including control nodes.
     pub fn all_nodes(&self) -> Vec<&String> {
         match self {
-            CircuitElement::Vcvs { nodes, control_nodes, .. } => {
+            CircuitElement::Vcvs {
+                nodes,
+                control_nodes,
+                ..
+            } => {
                 vec![&nodes[0], &nodes[1], &control_nodes[0], &control_nodes[1]]
             }
-            CircuitElement::Vccs { nodes, control_nodes, .. } => {
+            CircuitElement::Vccs {
+                nodes,
+                control_nodes,
+                ..
+            } => {
                 vec![&nodes[0], &nodes[1], &control_nodes[0], &control_nodes[1]]
             }
             CircuitElement::Ccvs { nodes, .. } => vec![&nodes[0], &nodes[1]],
@@ -610,9 +630,8 @@ impl Circuit {
                     | CircuitElement::SchottkyDiode { .. }
                     | CircuitElement::Photodiode { .. }
                     | CircuitElement::Igbt { .. }
-                    | CircuitElement::Jfet { .. }
-                // Thermistor is passive (temperature-dependent resistance, no NR)
-                // Varactor is passive in DC (open circuit), no NR needed
+                    | CircuitElement::Jfet { .. } // Thermistor is passive (temperature-dependent resistance, no NR)
+                                                  // Varactor is passive in DC (open circuit), no NR needed
             )
         })
     }
@@ -626,10 +645,14 @@ impl Circuit {
             | CircuitElement::Varactor { .. }
             | CircuitElement::Transformer { .. } => true,
             CircuitElement::Relay { inductance, .. } if *inductance > 0.0 => true,
-            CircuitElement::Bjt { parasitic_caps: Some(caps), .. }
-                if caps.cbe > 0.0 || caps.cbc > 0.0 => true,
-            CircuitElement::Mosfet { parasitic_caps: Some(caps), .. }
-                if caps.cgs > 0.0 || caps.cgd > 0.0 => true,
+            CircuitElement::Bjt {
+                parasitic_caps: Some(caps),
+                ..
+            } if caps.cbe > 0.0 || caps.cbc > 0.0 => true,
+            CircuitElement::Mosfet {
+                parasitic_caps: Some(caps),
+                ..
+            } if caps.cgs > 0.0 || caps.cgd > 0.0 => true,
             _ => false,
         })
     }
@@ -723,10 +746,16 @@ mod tests {
                 kind: sindr_devices::bjt::BjtKind::Npn,
                 bf: 100.0,
                 temperature: 300.15,
-                parasitic_caps: Some(BjtParasiticCaps { cbe: 10e-12, cbc: 0.0 }),
+                parasitic_caps: Some(BjtParasiticCaps {
+                    cbe: 10e-12,
+                    cbc: 0.0,
+                }),
             }],
         };
-        assert!(circuit.has_reactive_elements(), "BJT with cbe>0 should be reactive");
+        assert!(
+            circuit.has_reactive_elements(),
+            "BJT with cbe>0 should be reactive"
+        );
     }
 
     #[test]
@@ -743,7 +772,10 @@ mod tests {
             }],
         };
         // BJT without parasitic caps is not reactive (nonlinear, but not reactive)
-        assert!(!circuit.has_reactive_elements(), "BJT without parasitic caps should not be reactive");
+        assert!(
+            !circuit.has_reactive_elements(),
+            "BJT without parasitic caps should not be reactive"
+        );
     }
 
     #[test]
@@ -755,10 +787,16 @@ mod tests {
                 nodes: ["g".into(), "d".into(), "s".into()],
                 kind: sindr_devices::mosfet::MosfetKind::Nmos,
                 params: sindr_devices::mosfet::MosfetParams::default(),
-                parasitic_caps: Some(MosfetParasiticCaps { cgs: 100e-12, cgd: 50e-12 }),
+                parasitic_caps: Some(MosfetParasiticCaps {
+                    cgs: 100e-12,
+                    cgd: 50e-12,
+                }),
             }],
         };
-        assert!(circuit.has_reactive_elements(), "MOSFET with cgs>0 should be reactive");
+        assert!(
+            circuit.has_reactive_elements(),
+            "MOSFET with cgs>0 should be reactive"
+        );
     }
 
     #[cfg(feature = "serde")]
@@ -884,7 +922,9 @@ mod tests {
         }"#;
         let circuit: Circuit = serde_json::from_str(json).unwrap();
         match &circuit.components[0] {
-            CircuitElement::Relay { coil_resistance, .. } => {
+            CircuitElement::Relay {
+                coil_resistance, ..
+            } => {
                 assert_eq!(*coil_resistance, 500.0)
             }
             _ => panic!("Expected Relay variant"),

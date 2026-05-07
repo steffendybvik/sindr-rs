@@ -191,7 +191,11 @@ mod tests {
         };
 
         let result = temperature_sweep(&circuit, 250.0, 350.0, 11);
-        assert!(result.is_ok(), "temperature_sweep should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "temperature_sweep should succeed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
         assert_eq!(result.points.len(), 11, "Expected 11 points");
         assert_eq!(result.points[0].temperature_kelvin, 250.0);
@@ -241,7 +245,11 @@ mod tests {
         };
 
         let result = temperature_sweep(&circuit, 250.0, 350.0, 3);
-        assert!(result.is_ok(), "temp sweep BJT should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "temp sweep BJT should succeed: {:?}",
+            result.err()
+        );
         let result = result.unwrap();
         assert_eq!(result.points.len(), 3);
 
@@ -256,7 +264,7 @@ mod tests {
                 .unwrap_or(0.0)
         };
 
-        let ic_low = get_ic(&result.points[0]);  // 250K
+        let ic_low = get_ic(&result.points[0]); // 250K
         let ic_high = get_ic(&result.points[2]); // 350K
 
         assert!(

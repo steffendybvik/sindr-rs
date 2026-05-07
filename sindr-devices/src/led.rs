@@ -20,22 +20,23 @@ impl LedColor {
     /// Typical forward voltage at 20 mA for this colour.
     pub fn forward_voltage(self) -> f64 {
         match self {
-            LedColor::Red    => 1.8,
-            LedColor::Green  => 2.2,
-            LedColor::Blue   => 3.2,
+            LedColor::Red => 1.8,
+            LedColor::Green => 2.2,
+            LedColor::Blue => 3.2,
             LedColor::Yellow => 2.0,
-            LedColor::White  => 3.0,
+            LedColor::White => 3.0,
         }
     }
 
     /// Parse from a lowercase string. Unknown strings default to `Red`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
-            "green"  => LedColor::Green,
-            "blue"   => LedColor::Blue,
+            "green" => LedColor::Green,
+            "blue" => LedColor::Blue,
             "yellow" => LedColor::Yellow,
-            "white"  => LedColor::White,
-            _        => LedColor::Red,
+            "white" => LedColor::White,
+            _ => LedColor::Red,
         }
     }
 }

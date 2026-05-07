@@ -3,7 +3,6 @@
 //! Sweeps a voltage source value across a range and collects operating point
 //! results at each step. Used for generating I-V curves and transfer characteristics.
 
-
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
 use crate::results::SimulationResult;
@@ -126,9 +125,10 @@ pub fn dc_sweep(
     }
 
     // Verify source exists
-    let source_exists = circuit.components.iter().any(|c| {
-        matches!(c, CircuitElement::VoltageSource { id, .. } if id == source_id)
-    });
+    let source_exists = circuit
+        .components
+        .iter()
+        .any(|c| matches!(c, CircuitElement::VoltageSource { id, .. } if id == source_id));
     if !source_exists {
         return Err(SimError::InvalidComponent(format!(
             "Voltage source '{}' not found in circuit",
@@ -199,11 +199,7 @@ mod tests {
         for (i, point) in result.points.iter().enumerate() {
             let expected_v = i as f64;
             assert_relative_eq!(point.sweep_value, expected_v, epsilon = 1e-10);
-            assert_relative_eq!(
-                point.result.node_voltages["n1"],
-                expected_v,
-                epsilon = 1e-6
-            );
+            assert_relative_eq!(point.result.node_voltages["n1"], expected_v, epsilon = 1e-6);
         }
     }
 
@@ -279,7 +275,7 @@ mod tests {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 0.0,
-                    waveform: None,
+                waveform: None,
             }],
         };
 

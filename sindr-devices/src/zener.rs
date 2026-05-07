@@ -18,7 +18,11 @@ pub struct ZenerParams {
 
 impl ZenerParams {
     pub fn new(vz: f64) -> Self {
-        Self { vz, rz: 1.0, is: 1e-14 }
+        Self {
+            vz,
+            rz: 1.0,
+            is: 1e-14,
+        }
     }
 }
 
@@ -76,6 +80,9 @@ mod tests {
         let (g, i_eq) = zener_companion(-6.0, &p);
         // At v_d = -Vz: I = g * (-Vz) + i_eq should equal 0
         let i_at_vz = g * (-p.vz) + i_eq;
-        assert!(i_at_vz.abs() < 1e-10, "Current at -Vz should be zero, got {i_at_vz}");
+        assert!(
+            i_at_vz.abs() < 1e-10,
+            "Current at -Vz should be zero, got {i_at_vz}"
+        );
     }
 }
