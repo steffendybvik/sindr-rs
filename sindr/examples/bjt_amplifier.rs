@@ -1,4 +1,4 @@
-// EX-05: Common-emitter NPN amplifier nonlinear DC operating point
+// Common-emitter NPN amplifier nonlinear DC operating point
 //
 // Topology: Vcc (10V) → Rb (470kΩ) → base; Vcc → Rc (1kΩ) → collector; emitter → GND
 //

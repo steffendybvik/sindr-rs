@@ -1,4 +1,4 @@
-// EX-04: DC sweep of a series-resistor + diode circuit (I-V curve)
+// DC sweep of a series-resistor + diode circuit (I-V curve)
 //
 // Topology: V1 (swept) → R_series (100 Ω) → D1 (diode) → GND
 //
