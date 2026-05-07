@@ -21,6 +21,8 @@ Pre-release alpha (`0.1.0-alpha.1`). API is liable to change. Not yet on crates.
 
 sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, SPICE netlist import, vendor model cards, noise/Monte-Carlo/pole-zero analyses, BSIM-class device models, and self-heating co-simulation are **not** supported today. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
+AI coding agents (Claude Code, Codex, Cursor, etc.) working on this repo should read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
+
 ## License
 
 Dual-licensed under either of:
