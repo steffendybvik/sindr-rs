@@ -1,4 +1,46 @@
-/target
+# Cargo / Rust build artifacts
+/target/
 **/*.rs.bk
 Cargo.lock.bak
+
+# rust-analyzer / rustdoc workspace metadata
+/rust-project.json
+
+# Coverage / profiling output
+*.profraw
+*.profdata
+/tarpaulin-report.html
+/lcov.info
+
+# Local-only planning notes (GSD)
+.planning/
+
+# Local-only scratch / todo notes
+TODO.md
+TODO.txt
+NOTES.md
+NOTES.txt
+
+# Editor / IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.fleet/
+.zed/
+
+# Operating system
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# Direnv / dotenv
+.envrc
+.env
+.env.local
+
+# Misc local
+/tmp/
+/scratch/
