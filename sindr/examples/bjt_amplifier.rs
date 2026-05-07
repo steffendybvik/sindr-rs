@@ -35,7 +35,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 resistance: 1_000.0,
             },
             // NPN BJT: nodes order is [base, collector, emitter]
-            // BjtKind imported from sindr::BjtKind (not sindr_devices — Pitfall 4)
             CircuitElement::Bjt {
                 id: "Q1".into(),
                 nodes: ["base".into(), "collector".into(), "0".into()], // emitter to GND

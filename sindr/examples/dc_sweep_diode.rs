@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 voltage: 0.0, // initial value irrelevant; dc_sweep overrides it
                 waveform: None,
             },
-            // Series resistor required (Pitfall 2): diode directly across V-source is degenerate
+            // Series resistor required: diode directly across V-source is degenerate
             CircuitElement::Resistor {
                 id: "R_series".into(),
                 nodes: ["n1".into(), "n2".into()],
