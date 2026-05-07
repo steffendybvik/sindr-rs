@@ -394,10 +394,8 @@ fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector
         match component {
             CircuitElement::Resistor {
                 nodes, resistance, ..
-            } => {
-                if *resistance > 0.0 {
-                    stamp::stamp_resistor(&mut system, node_map, nodes, *resistance);
-                }
+            } if *resistance > 0.0 => {
+                stamp::stamp_resistor(&mut system, node_map, nodes, *resistance);
             }
             CircuitElement::VoltageSource { nodes, voltage, .. } => {
                 let branch = num_nodes + vsource_index;
