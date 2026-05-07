@@ -13,9 +13,47 @@ Pure-Rust circuit simulator. SPICE-style MNA solver with first-class semiconduct
 
 `sindr` depends on `sindr-devices`. The split lets you use the device-physics models with your own solver if you don't want the `nalgebra` linear-algebra stack.
 
+## Quick example
+
+A 10 V source across a 1 kΩ / 2 kΩ divider — `n2` should sit at 6.667 V:
+
+```rust
+use sindr::{Circuit, CircuitElement, solve_circuit};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            CircuitElement::VoltageSource {
+                id: "V1".into(),
+                nodes: ["n1".into(), "0".into()],
+                voltage: 10.0,
+                waveform: None,
+            },
+            CircuitElement::Resistor {
+                id: "R1".into(),
+                nodes: ["n1".into(), "n2".into()],
+                resistance: 1_000.0,
+            },
+            CircuitElement::Resistor {
+                id: "R2".into(),
+                nodes: ["n2".into(), "0".into()],
+                resistance: 2_000.0,
+            },
+        ],
+    };
+
+    let result = solve_circuit(&circuit)?;
+    println!("V(n2) = {:.4} V", result.node_voltages["n2"]);
+    Ok(())
+}
+```
+
+More circuits (RC transient, BJT amplifier, AC Bode plot, DC sweep) live in [`sindr/examples/`](./sindr/examples).
+
 ## Status
 
-Pre-release alpha (`0.1.0-alpha.1`). API is liable to change. Not yet on crates.io.
+Pre-release alpha (`0.1.0-alpha.2`). API is liable to change. Not yet on crates.io.
 
 ## Scope & limitations
 
