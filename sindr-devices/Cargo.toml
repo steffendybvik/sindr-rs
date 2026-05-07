@@ -1,0 +1,21 @@
+[package]
+name = "sindr-devices"
+version = "0.1.0-alpha.1"
+edition = "2021"
+description = "Pure electronics device physics: diode, BJT, MOSFET companion models for MNA circuit simulation. Companion crate to sindr."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/steffendybvik/sindr-rs"
+homepage = "https://github.com/steffendybvik/sindr-rs"
+documentation = "https://docs.rs/sindr-devices"
+readme = "README.md"
+keywords = ["electronics", "simulation", "spice", "circuit", "physics"]
+categories = ["science", "simulation"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = ["serde"]
+
+[dev-dependencies]
+approx = "0.5"
