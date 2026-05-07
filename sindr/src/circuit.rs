@@ -29,6 +29,25 @@ pub struct MosfetParasiticCaps {
 }
 
 /// A single circuit component.
+///
+/// Each variant carries an `id` (unique per circuit, used to look up results)
+/// and a `nodes` array naming its terminals. Node names are arbitrary
+/// strings — components share a node by referencing the same string.
+///
+/// # Sign conventions
+///
+/// - **Two-terminal components** (resistor, source, capacitor, …):
+///   `nodes[0]` is the positive / first terminal, `nodes[1]` is the
+///   negative / second.
+/// - **Polarised components** (voltage/current sources, diodes, BJTs, …):
+///   exact terminal order is documented per variant.
+/// - **Currents** are reported as flowing from `nodes[0]` to `nodes[1]` for
+///   two-terminal components.
+///
+/// # Serde
+///
+/// With the default `serde` feature enabled, `CircuitElement` serialises
+/// using a `type` discriminator: `{"type": "resistor", "id": "R1", ...}`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
@@ -375,10 +394,10 @@ pub enum CircuitElement {
 
     /// Ideal linear voltage regulator — holds output node at a fixed regulated voltage.
     ///
-    /// Modelled as an ideal voltage source between output (nodes[1]) and gnd (nodes[2]).
-    /// The input node (nodes[0]) is wiring-only; it is not stamped into MNA.
+    /// Modelled as an ideal voltage source between output (`nodes[1]`) and gnd (`nodes[2]`).
+    /// The input node (`nodes[0]`) is wiring-only; it is not stamped into MNA.
     ///
-    /// nodes: [input, output, gnd]
+    /// `nodes: [input, output, gnd]`
     #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
     VoltageRegulator {
         id: String,
@@ -520,10 +539,40 @@ impl CircuitElement {
 }
 
 /// A complete circuit description ready for simulation.
+///
+/// A circuit is a flat list of [`CircuitElement`]s plus the name of the
+/// ground node. Components share a node simply by referencing the same
+/// node-name string. Pass to [`solve_circuit`](crate::solve_circuit) to run.
+///
+/// # Example
+///
+/// ```
+/// use sindr::{Circuit, CircuitElement};
+///
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["n1".into(), "0".into()],
+///             voltage: 9.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["n1".into(), "0".into()],
+///             resistance: 1_000.0,
+///         },
+///     ],
+/// };
+/// ```
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Circuit {
+    /// All components in the circuit. Order has no semantic meaning.
     pub components: Vec<CircuitElement>,
+    /// Name of the reference (0 V) node. Must match the node string used by
+    /// at least one component (typically `"0"` or `"gnd"`).
     pub ground_node: String,
 }
 

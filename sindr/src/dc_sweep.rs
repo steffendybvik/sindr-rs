@@ -8,17 +8,25 @@ use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
 use crate::results::SimulationResult;
 
-/// Result of a single DC sweep point.
+/// One operating point of a DC sweep: the sweep value and the full result
+/// at that value.
 #[derive(Debug, Clone)]
 pub struct DcSweepPoint {
+    /// The voltage applied to the swept source at this point (V).
     pub sweep_value: f64,
+    /// Full simulation result at this sweep value.
     pub result: SimulationResult,
 }
 
-/// Complete DC sweep result.
+/// Result of a DC sweep — one [`DcSweepPoint`] per swept value.
+///
+/// Use [`DcSweepResult::node_voltage_curve`] or
+/// [`DcSweepResult::component_current_curve`] to extract a plottable curve.
 #[derive(Debug, Clone)]
 pub struct DcSweepResult {
+    /// Component id of the source that was swept.
     pub source_id: String,
+    /// Operating points, in sweep order from `start` to `stop`.
     pub points: Vec<DcSweepPoint>,
 }
 
@@ -51,17 +59,59 @@ impl DcSweepResult {
     }
 }
 
-/// Perform a DC sweep of a voltage source across a range.
+/// Sweeps a voltage source across a range and solves the operating point at
+/// each step.
 ///
-/// Creates a modified circuit for each sweep point with the source voltage
-/// set to the sweep value, then solves using the standard pipeline.
+/// Used for generating I-V curves and transfer characteristics. The returned
+/// [`DcSweepResult`] has helpers to pull out plottable curves for any node
+/// voltage or component current.
 ///
 /// # Arguments
-/// * `circuit` - The base circuit
-/// * `source_id` - ID of the voltage source to sweep
-/// * `start` - Starting voltage
-/// * `stop` - Ending voltage
-/// * `num_points` - Number of points in the sweep (minimum 2)
+///
+/// - `circuit` — the base circuit (unchanged; each sweep point gets a
+///   modified copy)
+/// - `source_id` — id of the [`VoltageSource`](CircuitElement::VoltageSource)
+///   to sweep
+/// - `start`, `stop` — sweep endpoints (V), inclusive
+/// - `num_points` — total points including both endpoints (minimum 2)
+///
+/// # Errors
+///
+/// - [`SimError::InvalidComponent`] if `num_points < 2` or `source_id`
+///   doesn't match any voltage source in the circuit
+/// - Any [`SimError`] returned by [`solve_circuit`](crate::solve_circuit)
+///   at one of the sweep points (propagated immediately)
+///
+/// # Example
+///
+/// ```
+/// use sindr::{Circuit, CircuitElement, dc_sweep};
+///
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["n1".into(), "0".into()],
+///             voltage: 0.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["n1".into(), "0".into()],
+///             resistance: 1_000.0,
+///         },
+///     ],
+/// };
+///
+/// // Sweep V1 from 0 V to 10 V in 11 steps.
+/// let sweep = dc_sweep(&circuit, "V1", 0.0, 10.0, 11).unwrap();
+/// assert_eq!(sweep.points.len(), 11);
+///
+/// // I = V/R should rise linearly from 0 to 10 mA.
+/// let curve = sweep.component_current_curve("R1");
+/// assert!((curve.last().unwrap().1 - 0.010).abs() < 1e-9);
+/// ```
 pub fn dc_sweep(
     circuit: &Circuit,
     source_id: &str,

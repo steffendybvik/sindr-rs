@@ -3,7 +3,7 @@ members = ["sindr", "sindr-devices"]
 resolver = "2"
 
 [workspace.package]
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/steffendybvik/sindr-rs"
 edition = "2021"
 

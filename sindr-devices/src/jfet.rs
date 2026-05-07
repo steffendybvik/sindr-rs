@@ -1,5 +1,12 @@
-//! JFET device model: Shockley square-law.
-//! N-channel and P-channel supported via sign conventions.
+//! JFET (Junction Field-Effect Transistor) device model.
+//!
+//! Shichman–Hodges square-law model. N-channel and P-channel are both
+//! supported via [`JfetKind`]; the P-channel case mirrors N-channel through
+//! sign conventions on `vgs` and `vds`.
+//!
+//! At each Newton–Raphson iteration, [`jfet_companion`] returns a
+//! linearised contribution that an MNA solver stamps for the [gate, drain,
+//! source] terminals.
 
 const GMIN: f64 = 1e-12; // minimum conductance floor
 
@@ -12,11 +19,15 @@ pub enum JfetKind {
     PChannel,
 }
 
-/// Newton-Raphson linearised companion for JFET
+/// Linearised JFET companion model — the output of one Newton–Raphson
+/// iteration ready for MNA stamping.
 pub struct JfetCompanion {
-    pub gm: f64,   // transconductance dId/dVgs
-    pub gds: f64,  // drain-source conductance dId/dVds
-    pub i_eq: f64, // equivalent current for MNA stamp
+    /// Transconductance `∂Id/∂Vgs` (S).
+    pub gm: f64,
+    /// Drain–source conductance `∂Id/∂Vds` (S).
+    pub gds: f64,
+    /// Equivalent current source for the MNA right-hand side (A).
+    pub i_eq: f64,
 }
 
 /// Compute JFET companion at operating point (vgs, vds).
