@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-05-07
+
+### Changed
+
+- Declared MSRV (`rust-version = "1.87"`) on both crates. Required by
+  `nalgebra 0.34.2` (which declares MSRV 1.87) and the transitive
+  `nalgebra-macros 0.3.0` (which uses Rust edition 2024, requiring
+  Cargo 1.85+).
+- Pinned workspace path dependencies with explicit `version` fields so
+  `cargo publish` can resolve `sindr-devices` to a registry coordinate
+  when publishing `sindr`.
+- One-time `rustfmt` sweep across the workspace.
+
+### Added
+
+- `[package.metadata.docs.rs]` blocks in both crates so docs.rs renders
+  feature-gated items with `--cfg docsrs`.
+- `NOTICE` shipped inside each crate's package (the root `NOTICE` is not
+  picked up by `cargo package`).
+- `CHANGELOG.md` (Keep a Changelog format).
+- GitHub Actions CI workflow: `cargo fmt --check`, `cargo clippy -D warnings`,
+  test matrix on stable + MSRV with `--all-features` and
+  `--no-default-features`, `cargo doc -D warnings`.
+- Quick voltage-divider example in the README.
+
 ## [0.1.0-alpha.2] - 2026-05-07
 
 ### Fixed
@@ -30,7 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semiconductor models (diode, BJT, MOSFET, JFET, IGBT, varactor, zener,
   Schottky, LED, photodiode, photoresistor, thermistor).
 
-[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.2...HEAD
+[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.3...HEAD
+[0.1.0-alpha.3]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.1
 [#4]: https://github.com/steffendybvik/sindr-rs/issues/4
