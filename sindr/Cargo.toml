@@ -2,6 +2,7 @@
 name = "sindr"
 version = "0.1.0-alpha.2"
 edition = "2021"
+rust-version = "1.80"
 description = "Pure-Rust circuit simulator: MNA solver with Newton-Raphson convergence, transient, AC analysis, and DC sweep. SPICE-style with first-class semiconductor models."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/steffendybvik/sindr-rs"
@@ -10,6 +11,10 @@ documentation = "https://docs.rs/sindr"
 readme = "README.md"
 keywords = ["electronics", "simulation", "spice", "circuit", "mna"]
 categories = ["science", "simulation"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 sindr-devices = { workspace = true }
