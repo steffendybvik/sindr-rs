@@ -925,7 +925,7 @@ pub fn solve_transient_nonlinear(
                     node_map,
                     &solution,
                     num_nodes,
-                    time,
+                    time + current_dt,
                     current_dt,
                     &cap_voltages,
                     &ind_currents,
@@ -1455,7 +1455,7 @@ pub fn solve_transient(
         node_map,
         &solution_0,
         num_nodes,
-        0.0,
+        dt,
         dt,
         &cap_voltages,
         &ind_currents,
@@ -1480,7 +1480,7 @@ pub fn solve_transient(
             node_map,
             &solution,
             num_nodes,
-            time,
+            time + dt,
             dt,
             &cap_voltages,
             &ind_currents,
@@ -1655,6 +1655,40 @@ mod tests {
             .find(|c| c.id == "C1")
             .unwrap();
         assert_relative_eq!(c1_final.voltage_across, 5.0, epsilon = 0.05);
+    }
+
+    #[test]
+    fn timestep_time_label_matches_be_solution() {
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["n1".into(), "0".into()],
+                    voltage: 5.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["n1".into(), "n2".into()],
+                    resistance: 1_000.0,
+                },
+                CircuitElement::Capacitor {
+                    id: "C1".into(),
+                    nodes: ["n2".into(), "0".into()],
+                    capacitance: 1e-6,
+                },
+            ],
+        };
+        let result = solve_circuit(&circuit).unwrap();
+        let transient = result.transient.unwrap();
+        let dt = transient.time_step;
+        let first = &transient.timesteps[0];
+
+        assert_relative_eq!(first.time, dt, epsilon = dt * 1e-9);
+
+        let v_be_step1 = 5.0 / (1.0 + 1_000.0 * 1e-6 / dt);
+        assert_relative_eq!(first.node_voltages["n2"], v_be_step1, epsilon = 1e-9);
     }
 
     /// Test 2: RL current rise.
