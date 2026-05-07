@@ -1,60 +1,15 @@
-// Common-emitter NPN amplifier nonlinear DC operating point
-//
-// Topology: Vcc (10V) → Rb (470kΩ) → base; Vcc → Rc (1kΩ) → collector; emitter → GND
-//
-// Run: cargo run -p sindr --example bjt_amplifier
-//
-// Expected approximate values (Rb=470kΩ, Vcc=10V, bf=100):
-//   Ib ≈ (10-0.7)/470k ≈ 19.8 µA
-//   Ic ≈ 100 × Ib     ≈ 1.98 mA
-//   Vce ≈ 10 - 1.98×1k ≈ 8.02 V
-//   Region: active
-
-use sindr::{Circuit, CircuitElement, BjtKind, solve_circuit};
+use sindr::{examples, solve_circuit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let circuit = Circuit {
-        ground_node: "0".into(),
-        components: vec![
-            CircuitElement::VoltageSource {
-                id: "Vcc".into(),
-                nodes: ["vcc".into(), "0".into()],
-                voltage: 10.0,
-                waveform: None,
-            },
-            // Base bias resistor from Vcc to base
-            CircuitElement::Resistor {
-                id: "Rb".into(),
-                nodes: ["vcc".into(), "base".into()],
-                resistance: 470_000.0,
-            },
-            // Collector load resistor from Vcc to collector
-            CircuitElement::Resistor {
-                id: "Rc".into(),
-                nodes: ["vcc".into(), "collector".into()],
-                resistance: 1_000.0,
-            },
-            // NPN BJT: nodes order is [base, collector, emitter]
-            CircuitElement::Bjt {
-                id: "Q1".into(),
-                nodes: ["base".into(), "collector".into(), "0".into()], // emitter to GND
-                kind: BjtKind::Npn,
-                bf: 100.0,
-                temperature: 300.15,
-                parasitic_caps: None,
-            },
-        ],
-    };
-
+    let circuit = examples::npn_common_emitter();
     let result = solve_circuit(&circuit)?;
 
     let bjt = result
         .bjt_results
-        .iter()
-        .find(|b| b.id == "Q1")
-        .ok_or("Q1 not found in bjt_results")?;
+        .first()
+        .ok_or("expected at least one BJT in the result")?;
 
-    println!("=== BJT Operating Point (Q1) ===");
+    println!("=== NPN Common Emitter Operating Point ===");
     println!("Vbe    = {:.4} V",  bjt.vbe);
     println!("Vce    = {:.4} V",  bjt.vce);
     println!("Ib     = {:.4} mA", bjt.ib * 1e3);

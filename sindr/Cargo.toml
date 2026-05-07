@@ -19,9 +19,17 @@ serde = { version = "1", features = ["derive"], optional = true }
 thiserror = { workspace = true }
 
 [features]
-default = ["serde"]
+default = ["serde", "examples"]
 examples = ["serde"]
 
 [dev-dependencies]
 approx = "0.5"
 serde_json = { workspace = true }
+
+[[example]]
+name = "list_examples"
+required-features = ["examples"]
+
+[[example]]
+name = "run_example"
+required-features = ["examples"]

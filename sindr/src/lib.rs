@@ -88,7 +88,6 @@
 //! - [`Waveform`] — time-varying source shapes
 //! - [`SimError`] — what can go wrong
 
-#[cfg(feature = "examples")]
 pub mod examples;
 #[cfg(feature = "examples")]
 pub use examples::{get_examples, ExampleCircuit};
