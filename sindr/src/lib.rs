@@ -1,5 +1,5 @@
-//! Pure-Rust circuit simulator. SPICE-style MNA solver with first-class
-//! semiconductor models.
+//! Rust circuit simulator. SPICE-style MNA solver with built-in
+//! semiconductor device models.
 //!
 //! `sindr` solves a [`Circuit`] — a list of components and a ground node —
 //! and returns voltages, currents, and power for every component. The solver
