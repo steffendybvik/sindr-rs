@@ -56,7 +56,7 @@ More circuits (RC transient, BJT amplifier, AC Bode plot, DC sweep) live in [`si
 
 ## Status
 
-Pre-release alpha (`0.1.0-alpha.3`). API is liable to change. Not yet on crates.io.
+Pre-release alpha (`0.1.0-alpha.4`). API is liable to change. Not yet on crates.io.
 
 ## Scope & limitations
 

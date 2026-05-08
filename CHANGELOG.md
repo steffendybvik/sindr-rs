@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.4] - 2026-05-08
+
+### Changed
+
+- README tagline + crate description for `sindr` rewritten to
+  "Rust circuit simulator. SPICE-style MNA solver with built-in
+  semiconductor device models." (replaces "first-class semiconductor
+  models", which overclaimed SPICE-grade fidelity).
+
+### Removed
+
+- **Breaking:** `SimError::UnsupportedCircuit(String)` variant. It was
+  declared but never produced by the solver — pure dead code. Downstream
+  pattern matches against this variant must be removed. If a future
+  topology check needs to reject an unsupported configuration, a
+  variant will be reintroduced with a real call site and a triggering
+  test.
+
+### Added
+
+- README badges for CI, crates.io, docs.rs, and licence.
+- `CLAUDE.md` at the repo root pointing to `AGENTS.md` as the canonical
+  agent-orientation document.
+- `.github/dependabot.yml` for weekly cargo + GitHub Actions updates.
+
 ## [0.1.0-alpha.3] - 2026-05-07
 
 ### Changed
@@ -55,7 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semiconductor models (diode, BJT, MOSFET, JFET, IGBT, varactor, zener,
   Schottky, LED, photodiode, photoresistor, thermistor).
 
-[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.3...HEAD
+[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.4...HEAD
+[0.1.0-alpha.4]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.1

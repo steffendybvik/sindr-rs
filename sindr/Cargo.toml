@@ -1,9 +1,9 @@
 [package]
 name = "sindr"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 edition = "2021"
 rust-version = "1.87"
-description = "Pure-Rust circuit simulator: MNA solver with Newton-Raphson convergence, transient, AC analysis, and DC sweep. SPICE-style with first-class semiconductor models."
+description = "Rust circuit simulator: SPICE-style MNA solver with built-in semiconductor device models. Transient, AC, DC sweep, temperature sweep."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/steffendybvik/sindr-rs"
 homepage = "https://github.com/steffendybvik/sindr-rs"
