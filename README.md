@@ -1,6 +1,6 @@
 # sindr
 
-Pure-Rust circuit simulator. SPICE-style MNA solver with first-class semiconductor models.
+Rust circuit simulator. SPICE-style MNA solver with built-in semiconductor device models.
 
 ## Crates
 
