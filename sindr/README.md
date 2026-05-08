@@ -347,7 +347,6 @@ pub enum SimError {
     InvalidComponent(String),
     InvalidResistance(String),
     ConvergenceFailed,
-    UnsupportedCircuit(String),
 }
 ```
 

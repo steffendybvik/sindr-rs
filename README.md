@@ -1,5 +1,10 @@
 # sindr
 
+[![CI](https://github.com/steffendybvik/sindr-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/steffendybvik/sindr-rs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/sindr.svg)](https://crates.io/crates/sindr)
+[![docs.rs](https://docs.rs/sindr/badge.svg)](https://docs.rs/sindr)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
+
 Rust circuit simulator. SPICE-style MNA solver with built-in semiconductor device models.
 
 ## Crates

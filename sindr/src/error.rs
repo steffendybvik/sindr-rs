@@ -18,9 +18,8 @@ use thiserror::Error;
 ///   [`ConvergenceFailed`](Self::ConvergenceFailed)) — the matrix has no
 ///   unique solution or Newton–Raphson failed to converge.
 /// - **Configuration errors** ([`InvalidComponent`](Self::InvalidComponent),
-///   [`InvalidResistance`](Self::InvalidResistance),
-///   [`UnsupportedCircuit`](Self::UnsupportedCircuit)) — a component value
-///   or topology that the solver explicitly rejects.
+///   [`InvalidResistance`](Self::InvalidResistance)) — a component value
+///   that the solver explicitly rejects.
 #[derive(Debug, Error)]
 pub enum SimError {
     /// No ground node was defined. Every circuit needs a reference node.
@@ -78,9 +77,4 @@ pub enum SimError {
          The circuit may have no valid operating point."
     )]
     ConvergenceFailed,
-
-    /// The circuit uses a topology or component combination the solver
-    /// explicitly does not support.
-    #[error("Unsupported circuit configuration: {0}")]
-    UnsupportedCircuit(String),
 }
