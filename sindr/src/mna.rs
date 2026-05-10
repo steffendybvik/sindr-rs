@@ -1,3 +1,15 @@
+//! Modified Nodal Analysis (MNA) matrix system.
+//!
+//! Holds the dense `(n+m) × (n+m)` MNA matrix and right-hand-side vector
+//! that every analysis path eventually solves, where `n` is the number of
+//! non-ground nodes and `m` is the number of branch-current unknowns
+//! (independent voltage sources, controlled sources that introduce a branch,
+//! etc.).
+//!
+//! Components write themselves into this system via [`stamp`](crate::stamp);
+//! the linear DC, Newton–Raphson, and transient pipelines all build an
+//! [`MnaSystem`], stamp into it, and call [`MnaSystem::solve`].
+
 use nalgebra::{DMatrix, DVector};
 
 use crate::error::SimError;

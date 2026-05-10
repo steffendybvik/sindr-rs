@@ -1,6 +1,6 @@
 [package]
 name = "sindr-devices"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 edition = "2021"
 rust-version = "1.87"
 description = "Pure electronics device physics: diode, BJT, MOSFET companion models for MNA circuit simulation. Companion crate to sindr."

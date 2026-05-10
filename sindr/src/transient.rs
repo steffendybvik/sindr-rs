@@ -1093,11 +1093,11 @@ pub fn solve_transient_nonlinear(
                     consecutive_successes = 0;
                 }
             }
-            Err(SimError::ConvergenceFailed) => {
+            Err(e @ SimError::ConvergenceFailed { .. }) => {
                 current_dt /= 2.0;
                 consecutive_successes = 0;
                 if current_dt < DT_FLOOR {
-                    return Err(SimError::ConvergenceFailed);
+                    return Err(e);
                 }
                 // Restore reactive state and retry same time point
                 cap_voltages = saved_cap_v;
@@ -1295,6 +1295,7 @@ fn nr_at_timestep_with_parasitic(
 ) -> Result<(DVector<f64>, Vec<f64>, Vec<f64>), SimError> {
     let size = num_nodes + num_vsources;
     let mut v_prev = DVector::zeros(size);
+    let mut last_step = f64::INFINITY;
 
     for _iteration in 0..MAX_NR_ITERATIONS {
         // Build fresh MNA system each iteration
@@ -1774,10 +1775,14 @@ fn nr_at_timestep_with_parasitic(
             return Ok((v_limited, new_cap_v, new_ind_i));
         }
 
+        last_step = newton_raphson::max_node_step(&v_prev, &v_limited, num_nodes);
         v_prev = v_limited;
     }
 
-    Err(SimError::ConvergenceFailed)
+    Err(SimError::ConvergenceFailed {
+        iterations: MAX_NR_ITERATIONS,
+        max_step_volts: last_step,
+    })
 }
 
 /// Solve a transient simulation for circuits with reactive elements.

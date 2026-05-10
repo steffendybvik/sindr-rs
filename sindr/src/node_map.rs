@@ -1,3 +1,10 @@
+//! Node-name ↔ matrix-index mapping.
+//!
+//! MNA matrices are indexed by integer; circuits are described in terms of
+//! arbitrary node-name strings. [`NodeMap`] is the bidirectional translation
+//! table between the two. The ground node is excluded from the matrix and
+//! maps to `None` — every other unique node string gets a sequential index.
+
 use std::collections::{BTreeSet, HashMap};
 
 use crate::circuit::Circuit;

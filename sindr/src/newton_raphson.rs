@@ -45,8 +45,116 @@ pub fn solve_nonlinear(
     num_nodes: usize,
     num_vsources: usize,
 ) -> Result<SimulationResult, SimError> {
-    let (result, _) = nr_inner(circuit, node_map, num_nodes, num_vsources, None)?;
-    Ok(result)
+    solve_nonlinear_with_seeds(circuit, node_map, num_nodes, num_vsources, None)
+}
+
+fn solve_nonlinear_with_seeds(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    num_nodes: usize,
+    num_vsources: usize,
+    initial_voltages: Option<&std::collections::HashMap<String, f64>>,
+) -> Result<SimulationResult, SimError> {
+    // First attempt: plain Newton–Raphson with the default GMIN floor.
+    match nr_inner(
+        circuit,
+        node_map,
+        num_nodes,
+        num_vsources,
+        None,
+        initial_voltages,
+        0.0,
+    ) {
+        Ok((result, _)) => Ok(result),
+        Err(SimError::ConvergenceFailed { .. }) => {
+            // Fall back to gmin stepping: progressively softens the Jacobian
+            // by adding extra conductance to ground on every node, then ramps
+            // it down while warm-starting from the previous step's solution.
+            gmin_stepping(circuit, node_map, num_nodes, num_vsources, initial_voltages)
+        }
+        // SingularMatrix and InvalidSolution are topology / numerical errors
+        // that gmin stepping cannot fix — propagate immediately.
+        Err(e) => Err(e),
+    }
+}
+
+/// Gmin-stepping homotopy fallback for nonlinear DC.
+///
+/// Solves the circuit at a sequence of decreasing gmin shunts, warm-starting
+/// each step from the previous solution. Recovers convergence on circuits
+/// where plain Newton–Raphson fails to find a starting point — e.g. diodes
+/// or BJTs whose default initial guess sits on the wrong branch of the I-V
+/// curve.
+fn gmin_stepping(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    num_nodes: usize,
+    num_vsources: usize,
+    initial_voltages: Option<&std::collections::HashMap<String, f64>>,
+) -> Result<SimulationResult, SimError> {
+    // Geometric ladder, ending at 0.0 (default GMIN floor).
+    const LADDER: &[f64] = &[1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-8, 1e-10, 0.0];
+
+    let mut warm_start: Option<DVector<f64>> = None;
+    let mut last_err = SimError::ConvergenceFailed {
+        iterations: 0,
+        max_step_volts: f64::INFINITY,
+    };
+
+    for &gmin_extra in LADDER {
+        let seeds = if warm_start.is_some() {
+            None
+        } else {
+            initial_voltages
+        };
+        match nr_inner(
+            circuit,
+            node_map,
+            num_nodes,
+            num_vsources,
+            warm_start.as_ref(),
+            seeds,
+            gmin_extra,
+        ) {
+            Ok((result, v)) => {
+                if gmin_extra == 0.0 {
+                    return Ok(result);
+                }
+                warm_start = Some(v);
+            }
+            Err(e) => {
+                last_err = e;
+                // Couldn't soften enough to converge, or ramp-down step
+                // failed — bail with the diagnostic.
+                return Err(last_err);
+            }
+        }
+    }
+
+    // Should be unreachable: the final ladder entry is 0.0 which returns Ok above.
+    Err(last_err)
+}
+
+/// Like [`solve_nonlinear`] but seeds the Newton initial guess with the
+/// supplied per-node voltages (V), keyed by node name. Equivalent to SPICE's
+/// `.NODESET` directive — useful when a circuit has multiple operating
+/// points or when default heuristics fail to converge. Unknown node names
+/// are silently ignored; nodes not in the map fall back to the default
+/// initialisation.
+pub fn solve_nonlinear_with_initial_voltages(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    num_nodes: usize,
+    num_vsources: usize,
+    initial_voltages: &std::collections::HashMap<String, f64>,
+) -> Result<SimulationResult, SimError> {
+    solve_nonlinear_with_seeds(
+        circuit,
+        node_map,
+        num_nodes,
+        num_vsources,
+        Some(initial_voltages),
+    )
 }
 
 /// Inner NR iteration loop. Returns simulation result and final voltage vector.
@@ -56,6 +164,8 @@ fn nr_inner(
     num_nodes: usize,
     num_vsources: usize,
     v_init: Option<&DVector<f64>>,
+    initial_voltages: Option<&std::collections::HashMap<String, f64>>,
+    gmin_extra: f64,
 ) -> Result<(SimulationResult, DVector<f64>), SimError> {
     let size = num_nodes + num_vsources;
     let mut v_prev = match v_init {
@@ -67,14 +177,29 @@ fn nr_inner(
         }
     };
 
+    // Apply user-supplied initial node voltages on top of heuristic init.
+    if let Some(seed) = initial_voltages {
+        for (name, value) in seed {
+            if let Some(idx) = node_map.index(name) {
+                v_prev[idx] = *value;
+            }
+        }
+    }
+
     let diode_info = collect_diode_info(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
+    let mut last_step = f64::INFINITY;
     for _iteration in 0..MAX_NR_ITERATIONS {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
         stamp::stamp_circuit(circuit, &mut system, node_map, Some(&v_prev))?;
 
-        // Add Gmin shunts
+        // Add Gmin shunts (default GMIN floor + any homotopy extra).
         add_gmin_shunts(&mut system, num_nodes);
+        if gmin_extra > 0.0 {
+            for i in 0..num_nodes {
+                system.a[(i, i)] += gmin_extra;
+            }
+        }
 
         let v_new = system.solve()?;
 
@@ -95,10 +220,14 @@ fn nr_inner(
             return Ok((result, v_limited));
         }
 
+        last_step = max_node_step(&v_prev, &v_limited, num_nodes);
         v_prev = v_limited;
     }
 
-    Err(SimError::ConvergenceFailed)
+    Err(SimError::ConvergenceFailed {
+        iterations: MAX_NR_ITERATIONS,
+        max_step_volts: last_step,
+    })
 }
 
 /// Information about a diode/junction needed for voltage limiting.
@@ -357,6 +486,21 @@ pub(crate) fn converged(v_prev: &DVector<f64>, v_new: &DVector<f64>, num_nodes: 
     true
 }
 
+/// Largest per-node voltage step `max_i |v_new[i] − v_prev[i]|` (V).
+///
+/// Used to populate [`SimError::ConvergenceFailed`] diagnostics when NR
+/// runs out of iterations.
+pub(crate) fn max_node_step(v_prev: &DVector<f64>, v_new: &DVector<f64>, num_nodes: usize) -> f64 {
+    let mut max = 0.0f64;
+    for i in 0..num_nodes {
+        let diff = (v_new[i] - v_prev[i]).abs();
+        if diff > max {
+            max = diff;
+        }
+    }
+    max
+}
+
 /// Set initial voltage guesses for BJT circuits.
 ///
 /// Strategy: First solve the linear-only subcircuit (treating BJTs as open circuits)
@@ -484,5 +628,140 @@ fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::circuit::CircuitElement;
+
+    fn diode_resistor_circuit(vsource: f64) -> Circuit {
+        Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["n1".into(), "0".into()],
+                    voltage: vsource,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["n1".into(), "n2".into()],
+                    resistance: 100.0,
+                },
+                CircuitElement::Diode {
+                    id: "D1".into(),
+                    nodes: ["n2".into(), "0".into()],
+                    temperature: 300.15,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn max_node_step_picks_largest_diff() {
+        let prev = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+        let new = DVector::from_vec(vec![1.05, 1.9, 3.5, 4.0]);
+        // Diffs: 0.05, 0.1, 0.5, 0.0  → max = 0.5 over the first 4 nodes.
+        let r = max_node_step(&prev, &new, 4);
+        assert!((r - 0.5).abs() < 1e-12, "got {r}");
+    }
+
+    #[test]
+    fn max_node_step_only_considers_node_range() {
+        // num_nodes = 2 means branch unknowns at index 2,3 are ignored.
+        let prev = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+        let new = DVector::from_vec(vec![1.01, 2.01, 99.0, 99.0]);
+        let r = max_node_step(&prev, &new, 2);
+        assert!((r - 0.01).abs() < 1e-12, "got {r}");
+    }
+
+    /// Direct exercise of the gmin-stepping homotopy. Bypasses the
+    /// plain-NR first attempt and verifies the homotopy alone produces
+    /// the correct DC operating point on a diode-resistor divider.
+    #[test]
+    fn gmin_stepping_solves_diode_resistor_directly() {
+        let circuit = diode_resistor_circuit(5.0);
+        let node_map = NodeMap::from_circuit(&circuit);
+        let num_nodes = node_map.num_nodes();
+        let num_vsources = circuit.count_voltage_sources();
+
+        let result = gmin_stepping(&circuit, &node_map, num_nodes, num_vsources, None)
+            .expect("gmin stepping should converge on a diode-R circuit");
+
+        // Forward-biased silicon diode: V(n2) ≈ 0.65 V, current ≈ 43 mA.
+        let v_n2 = result.node_voltages["n2"];
+        assert!(
+            (0.5..=0.9).contains(&v_n2),
+            "expected forward-bias diode drop, got V(n2) = {v_n2}"
+        );
+
+        // The standard solver should agree (modulo gmin bias).
+        let plain = crate::solve_circuit(&circuit).expect("plain solve should converge");
+        let v_n2_plain = plain.node_voltages["n2"];
+        assert!(
+            (v_n2 - v_n2_plain).abs() < 1e-3,
+            "gmin path ({v_n2}) and plain NR ({v_n2_plain}) should agree to ~mV"
+        );
+    }
+
+    /// gmin stepping with a wildly wrong initial seed must still converge.
+    /// This is the "rescue" use case — plain NR with this seed often diverges.
+    #[test]
+    fn gmin_stepping_rescues_pathological_initial_seed() {
+        let circuit = diode_resistor_circuit(5.0);
+        let node_map = NodeMap::from_circuit(&circuit);
+        let num_nodes = node_map.num_nodes();
+        let num_vsources = circuit.count_voltage_sources();
+
+        let mut bad_seed = std::collections::HashMap::new();
+        bad_seed.insert("n1".to_string(), 1e6);
+        bad_seed.insert("n2".to_string(), -1e6);
+
+        let result = gmin_stepping(
+            &circuit,
+            &node_map,
+            num_nodes,
+            num_vsources,
+            Some(&bad_seed),
+        )
+        .expect("gmin stepping should rescue absurd initial seed");
+
+        let v_n2 = result.node_voltages["n2"];
+        assert!(
+            (0.5..=0.9).contains(&v_n2),
+            "rescued solution should still be physical, got V(n2) = {v_n2}"
+        );
+    }
+
+    /// Solver still produces correct results on a normal nonlinear
+    /// circuit — the gmin fallback wrapper must not regress the easy path.
+    #[test]
+    fn solve_nonlinear_still_correct_for_easy_circuit() {
+        let circuit = diode_resistor_circuit(5.0);
+        let result = crate::solve_circuit(&circuit).expect("should converge");
+        let v_n2 = result.node_voltages["n2"];
+        assert!((0.5..=0.9).contains(&v_n2), "V(n2) = {v_n2}");
+    }
+
+    /// At very low forward bias the diode current is tiny and convergence
+    /// is sensitive — exercises the homotopy + warm-start chain end-to-end.
+    #[test]
+    fn gmin_stepping_handles_low_bias() {
+        let circuit = diode_resistor_circuit(0.3);
+        let node_map = NodeMap::from_circuit(&circuit);
+        let num_nodes = node_map.num_nodes();
+        let num_vsources = circuit.count_voltage_sources();
+
+        let result = gmin_stepping(&circuit, &node_map, num_nodes, num_vsources, None)
+            .expect("low-bias diode should still converge via homotopy");
+        let v_n2 = result.node_voltages["n2"];
+        // 0.3 V applied across 100 Ω + diode → diode is below knee, V(n2) ≈ V(n1) ≈ 0.3 V
+        assert!(
+            (0.0..=0.35).contains(&v_n2),
+            "low-bias diode should sit below knee, got V(n2) = {v_n2}"
+        );
     }
 }

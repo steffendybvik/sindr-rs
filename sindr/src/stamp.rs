@@ -1,3 +1,16 @@
+//! Component → MNA matrix stamps.
+//!
+//! Each supported [`CircuitElement`] variant has a
+//! "stamp": a routine that writes its conductance / constraint contributions
+//! into the [`MnaSystem`]. For nonlinear devices, the
+//! stamp evaluates the device's companion model at the current operating
+//! point passed in via the optional `v_prev` solution vector — Newton–Raphson
+//! re-stamps every iteration as the operating point moves.
+//!
+//! [`stamp_circuit`] is the dispatcher used by every analysis path; the
+//! per-element helpers (`stamp_resistor`, `stamp_voltage_source`, …) are also
+//! exposed for the transient and AC pipelines.
+
 use nalgebra::DVector;
 
 use sindr_devices::bjt::{self, BjtKind, BjtParams};

@@ -1,3 +1,11 @@
+//! Solver output types.
+//!
+//! [`SimulationResult`] is what every analysis path returns: node voltages,
+//! branch currents, per-component V/I/P, and (when relevant) per-device
+//! operating-point detail and a transient time-series. The optional
+//! per-device fields are populated only when the matching component types
+//! appear in the circuit.
+
 use std::collections::HashMap;
 
 use nalgebra::DVector;
@@ -158,6 +166,11 @@ pub struct TransientData {
 pub struct SimulationResult {
     /// Voltage at every node (V), keyed by node name. Includes the ground
     /// node (always 0.0).
+    ///
+    /// Indexing with `[]` panics on a missing key, the same as any
+    /// [`HashMap`]. If the node name might be absent (e.g. typos, or a
+    /// node only referenced via a control terminal), use
+    /// `node_voltages.get("n2")` to get an `Option<&f64>` instead.
     pub node_voltages: HashMap<String, f64>,
     /// Branch currents (A) for components that introduce a current unknown
     /// — voltage sources, op-amps, transformers, etc. Keyed by component id.
