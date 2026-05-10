@@ -1,3 +1,11 @@
+//! Pre-solve circuit validation.
+//!
+//! Catches obvious topology mistakes (no ground, disconnected subgraphs,
+//! floating nodes) before they reach the matrix solver, where the failure
+//! mode would be a less helpful "singular matrix" error. Run automatically
+//! by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
+//! [`validate_circuit`].
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::circuit::Circuit;

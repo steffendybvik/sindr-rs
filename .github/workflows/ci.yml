@@ -57,3 +57,36 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --all-features
+
+  version-bumped:
+    # Fails if a PR to main leaves any crate version unchanged from main.
+    # Forces a Cargo.toml bump + matching CHANGELOG section before merge.
+    name: version bumped
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Versions must differ from base branch
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          fail=0
+          for manifest in sindr/Cargo.toml sindr-devices/Cargo.toml; do
+            pr_ver=$(grep -m1 '^version' "$manifest" | cut -d'"' -f2)
+            base_ver=$(git show "$base:$manifest" | grep -m1 '^version' | cut -d'"' -f2)
+            if [ "$pr_ver" = "$base_ver" ]; then
+              echo "::error file=$manifest::version $pr_ver matches $base — bump it before merging"
+              fail=1
+            else
+              echo "$manifest: $base_ver → $pr_ver"
+            fi
+          done
+          # The bumped version must also appear as a CHANGELOG section header.
+          new_ver=$(grep -m1 '^version' sindr/Cargo.toml | cut -d'"' -f2)
+          if ! grep -qE "^## \[$new_ver\]" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::no '## [$new_ver]' section found — promote [Unreleased] before merging"
+            fail=1
+          fi
+          exit $fail

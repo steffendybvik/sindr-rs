@@ -72,9 +72,78 @@ pub enum SimError {
     InvalidResistance(String),
 
     /// Newton–Raphson exhausted its iteration budget without converging.
+    ///
+    /// Carries the iteration count reached and the largest per-node voltage
+    /// step `max_i |Vᵢ_new − Vᵢ_prev|` (V) at the final iteration. A step
+    /// near the convergence tolerance suggests slow convergence — try
+    /// scaling component values or supplying initial conditions. A large
+    /// step usually means the circuit has no valid operating point (e.g. a
+    /// nonlinear element with no DC path to ground).
+    ///
+    /// Note: this is the maximum *Newton step* between consecutive
+    /// iterations, not a KCL residual `|F(x)|`.
     #[error(
-        "Newton-Raphson failed to converge after 100 iterations. \
+        "Newton-Raphson failed to converge after {iterations} iterations \
+         (max node-voltage step {max_step_volts:.3e} V). \
          The circuit may have no valid operating point."
     )]
-    ConvergenceFailed,
+    ConvergenceFailed {
+        /// Number of Newton iterations executed before giving up.
+        iterations: usize,
+        /// Largest per-node Newton step on the final iteration (V): the max
+        /// over node indices of `|V_new[i] − V_prev[i]|`.
+        max_step_volts: f64,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn convergence_failed_carries_diagnostics() {
+        let err = SimError::ConvergenceFailed {
+            iterations: 100,
+            max_step_volts: 1.234e-3,
+        };
+
+        // Pattern-destructure: both fields are accessible as named struct fields.
+        match err {
+            SimError::ConvergenceFailed {
+                iterations,
+                max_step_volts,
+            } => {
+                assert_eq!(iterations, 100);
+                assert!((max_step_volts - 1.234e-3).abs() < 1e-12);
+            }
+            _ => panic!("expected ConvergenceFailed variant"),
+        }
+    }
+
+    #[test]
+    fn convergence_failed_display_includes_iterations_and_step() {
+        let err = SimError::ConvergenceFailed {
+            iterations: 42,
+            max_step_volts: 7.5e-4,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("42 iterations"),
+            "Display should mention iteration count: {msg}"
+        );
+        assert!(
+            msg.contains("7.500e-4") || msg.contains("step"),
+            "Display should mention step size: {msg}"
+        );
+    }
+
+    #[test]
+    fn other_variants_still_format_cleanly() {
+        // Sanity check that adding fields to one variant didn't break others.
+        assert!(SimError::NoGround.to_string().contains("ground"));
+        assert!(SimError::SingularMatrix.to_string().contains("singular"));
+        assert!(SimError::DisconnectedNodes(vec!["n1".into(), "n2".into()])
+            .to_string()
+            .contains("n1"));
+    }
 }

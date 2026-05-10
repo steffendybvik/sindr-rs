@@ -1,3 +1,15 @@
+//! Circuit input format.
+//!
+//! [`Circuit`] is the root struct passed to [`solve_circuit`](crate::solve_circuit):
+//! a flat list of [`CircuitElement`]s plus the name of the ground node.
+//! Components share a node by referencing the same node-name string; there
+//! are no separate "wire" or "net" objects.
+//!
+//! [`CircuitElement`] is the open-ended enum of supported component types
+//! (resistors, sources, semiconductors, magnetics, …). Each variant carries
+//! its own parameters and a fixed-size `nodes` array; sign conventions are
+//! documented per variant.
+
 use sindr_devices::bjt::BjtKind;
 use sindr_devices::jfet::JfetKind;
 use sindr_devices::mosfet::{MosfetKind, MosfetParams};
@@ -97,7 +109,8 @@ pub enum CircuitElement {
         closed: bool,
     },
 
-    /// Capacitor between two nodes. Stub for DC analysis (open circuit).
+    /// Capacitor. Open-circuit in DC analysis; charges/discharges in
+    /// transient. `voltage_across` is reported as `nodes[0] − nodes[1]`.
     #[cfg_attr(feature = "serde", serde(rename = "capacitor"))]
     Capacitor {
         id: String,
@@ -105,7 +118,12 @@ pub enum CircuitElement {
         capacitance: f64,
     },
 
-    /// Inductor between two nodes. Stub for DC analysis (open circuit).
+    /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
+    /// solves DC as a single algebraic step, not as t→∞ of a transient);
+    /// integrates `dI/dt` properly during transient. `voltage_across` is
+    /// reported as `nodes[0] − nodes[1]`, `current_through` flows
+    /// `nodes[0] → nodes[1]`. To get steady-state current, run a
+    /// transient long enough to settle.
     #[cfg_attr(feature = "serde", serde(rename = "inductor"))]
     Inductor {
         id: String,
@@ -113,7 +131,9 @@ pub enum CircuitElement {
         inductance: f64,
     },
 
-    /// Diode between two nodes. Stub for DC analysis (open circuit).
+    /// Diode (silicon Shockley model). `nodes: [anode, cathode]`.
+    /// Forward current flows from anode → cathode; positive
+    /// `voltage_across` corresponds to forward bias.
     #[cfg_attr(feature = "serde", serde(rename = "diode"))]
     Diode {
         id: String,
@@ -123,7 +143,8 @@ pub enum CircuitElement {
         temperature: f64,
     },
 
-    /// LED between two nodes. Stub for DC analysis (open circuit).
+    /// LED. `nodes: [anode, cathode]`. Forward voltage drop depends on
+    /// `color` (e.g. `"red"` ≈ 1.8 V, `"blue"` ≈ 3.2 V).
     #[cfg_attr(feature = "serde", serde(rename = "led"))]
     Led {
         id: String,

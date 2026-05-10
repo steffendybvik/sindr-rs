@@ -209,3 +209,89 @@ pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
         ))
     }
 }
+
+/// Like [`solve_circuit`] but seeds the Newton–Raphson initial guess with
+/// the supplied per-node voltages (V), keyed by node name. Equivalent to
+/// SPICE's `.NODESET` directive — useful when a circuit has multiple
+/// operating points (e.g. Schmitt triggers, latches) or when the default
+/// heuristic fails to converge.
+///
+/// Only consulted when the circuit contains nonlinear elements; for purely
+/// linear DC and for transient analysis the seed is ignored. Unknown node
+/// names in `initial_voltages` are silently skipped.
+///
+/// # Example
+///
+/// ```
+/// use std::collections::HashMap;
+/// use sindr::{Circuit, CircuitElement, solve_circuit_with_initial_voltages};
+///
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["vcc".into(), "0".into()],
+///             voltage: 5.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["vcc".into(), "n1".into()],
+///             resistance: 1_000.0,
+///         },
+///         CircuitElement::Diode {
+///             id: "D1".into(),
+///             nodes: ["n1".into(), "0".into()],
+///             temperature: 300.15,
+///         },
+///     ],
+/// };
+///
+/// let mut nodeset = HashMap::new();
+/// nodeset.insert("n1".to_string(), 0.7); // hint forward-bias diode drop
+/// let result = solve_circuit_with_initial_voltages(&circuit, &nodeset).unwrap();
+/// assert!(result.node_voltages["n1"] > 0.5);
+/// ```
+pub fn solve_circuit_with_initial_voltages(
+    circuit: &Circuit,
+    initial_voltages: &std::collections::HashMap<String, f64>,
+) -> Result<SimulationResult, SimError> {
+    validation::validate_circuit(circuit)?;
+
+    let node_map = NM::from_circuit(circuit);
+    let num_nodes = node_map.num_nodes();
+    let num_vsources = circuit.count_voltage_sources();
+
+    if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
+        // Transient / AC paths don't currently consume the seed; fall back
+        // to the standard solver.
+        if circuit.has_nonlinear_elements() {
+            return transient::solve_transient_nonlinear(
+                circuit,
+                &node_map,
+                num_nodes,
+                num_vsources,
+            );
+        }
+        return transient::solve_transient(circuit, &node_map, num_nodes, num_vsources);
+    }
+
+    if circuit.has_nonlinear_elements() {
+        newton_raphson::solve_nonlinear_with_initial_voltages(
+            circuit,
+            &node_map,
+            num_nodes,
+            num_vsources,
+            initial_voltages,
+        )
+    } else {
+        // Linear DC: initial guess has no effect on the result.
+        let mut system = MnaSystem::new(num_nodes, num_vsources);
+        stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
+        let solution = system.solve()?;
+        Ok(results::extract_results(
+            circuit, &node_map, &solution, num_nodes,
+        ))
+    }
+}

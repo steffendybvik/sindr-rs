@@ -2,7 +2,7 @@
 
 sindr is an **analog circuit simulator**: a SPICE-style MNA solver with semiconductor companion models, written in pure Rust. This document is the honest counterpart to the READMEs — it lists capabilities sindr does **not** have today, so you can decide whether it fits your use case before investing.
 
-Status: pre-release alpha (`0.1.0-alpha.1`). Anything below may change.
+Status: pre-release alpha (`0.1.0-alpha.5`). Anything below may change.
 
 ## What sindr is
 
@@ -82,8 +82,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **Backward Euler is the only transient integrator.** No trapezoidal, no Gear-2, no variable-order. BE is L-stable but numerically dissipative — expect amplitude decay on lightly-damped LC tanks. This is not tunable.
 - **Dense LU factorisation** (via `nalgebra`). No sparse solver. Practical circuit size is bounded by `O(N²)` memory and `O(N³)` factorisation; large boards (hundreds of nodes) will be slow.
-- **No convergence aids beyond Newton-Raphson with damping.** No gmin stepping, no source stepping, no pseudo-transient continuation, no homotopy. `ConvergenceFailed` is the failure mode and the user is on their own to perturb the circuit.
-- **No initial-condition (`.ic`) directives or `.nodeset`.** First Newton iteration starts from zero.
+- **Convergence aids: gmin stepping + Newton damping only.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr automatically retries with a gmin-stepping homotopy (geometric ladder from `1e-2` down to the `1e-12` floor, warm-starting between steps). No source stepping, no pseudo-transient continuation, no general homotopy. `ConvergenceFailed` carries the iteration count and final residual to help diagnose.
+- **`.nodeset`-style seeding via `solve_circuit_with_initial_voltages`.** Pass a `HashMap<String, f64>` of node-name → voltage to pre-warm the Newton initial guess. No `.ic` (force-fixed initial conditions) directive yet.
 - **No `uic` (use-initial-conditions) skip-DC option** for transient.
 - **No checkpointing / restart** of long transient runs.
 - **No multithreading** in the solver.

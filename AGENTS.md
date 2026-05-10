@@ -60,7 +60,7 @@ There is no integration-test directory; tests live inline in `#[cfg(test)] mod t
 - **Errors flow through `SimError`** (see `sindr/src/error.rs`). When adding a new failure mode, prefer extending the enum over `String` errors.
 - **`f64` everywhere.** No generic numeric backend, no `f32`.
 - **Serde is feature-gated** but on by default. Any new public type that is part of `Circuit` or `SimulationResult` must derive `Serialize`/`Deserialize` under `#[cfg(feature = "serde")]`. Component types use `snake_case` tags (see existing `#[serde(rename_all = "snake_case")]`).
-- **Public API stability**: the crate is `0.1.0-alpha.1` — breaking changes are allowed, but call them out in the commit message.
+- **Public API stability**: the crate is `0.1.0-alpha.5` — breaking changes are allowed, but call them out in the commit message.
 - **Comments**: lean. Don't restate what well-named code already says. Do explain *why* for non-obvious numerical choices (e.g. damping factors, why `k ≤ 0.999`, why `gmin` thresholds).
 - **No GSD planning-artefact references in source.** Strip `EX-NN`, `Pitfall N`, `RESEARCH.md` / `PLAN.md` mentions. They belong in `.planning/`, not in code or commits.
 
@@ -98,7 +98,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Switches** are `0.01 Ω` closed / `1 GΩ` open — not ideal. In high-impedance circuits prefer explicit resistors.
 - **Capacitors / inductors / varactors / transformers / waveforms automatically trigger transient analysis.** Don't expect a pure DC solve if any are present.
 - **Backward Euler is L-stable but dissipative.** Lightly damped LC tanks will lose amplitude. Don't use sindr to verify ringing amplitude in resonant circuits today.
-- **`ConvergenceFailed`**: usually a nonlinear element with no DC path to ground, or component values orders of magnitude outside typical ranges. There is no `gmin` stepping or source stepping — perturb the circuit, do not retry.
+- **`ConvergenceFailed { iterations, max_step_volts }`**: usually a nonlinear element with no DC path to ground, or component values orders of magnitude outside typical ranges. `max_step_volts` is the max Newton step (not a KCL residual). The solver already retries with gmin stepping (homotopy ladder `1e-2` → `1e-12`) before giving up; no source stepping. If gmin stepping doesn't rescue it, perturb the circuit or pass a starting guess via `solve_circuit_with_initial_voltages` — don't blindly retry.
 
 When in doubt, run `cargo run --example list_examples` and copy the closest existing example; the bundled circuits are known-good.
 

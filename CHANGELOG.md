@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] - 2026-05-10
+
+### Added
+
+- `solve_circuit_with_initial_voltages` — SPICE-style `.NODESET` seeding for
+  nonlinear DC solves. Pass a `HashMap<String, f64>` to pre-warm the Newton
+  initial guess.
+- Gmin-stepping homotopy fallback for nonlinear DC. When plain Newton–Raphson
+  fails to converge, the solver now automatically retries with a geometric
+  ladder of gmin shunts (`1e-2` → `1e-12`), warm-starting between steps.
+- Module-level `//!` documentation on `circuit`, `mna`, `stamp`, `node_map`,
+  `transient`, `results`, `validation`. Spelled out `[anode, cathode]` on
+  `Diode` / `Led` and clarified `Capacitor` / `Inductor` polarity.
+- Math-correctness integration test suite (`sindr/tests/math_correctness.rs`):
+  KCL residual, Shockley-equation, power-balance, and seed/gmin-path
+  agreement checks across linear and nonlinear DC. Two known limitations
+  locked in as regression tests (supply-rail seed; series-diode singular
+  Jacobian).
+
+### Changed
+
+- **Breaking:** `SimError::ConvergenceFailed` now carries `iterations: usize`
+  and `max_step_volts: f64` fields with the iteration count and largest
+  per-node Newton step at the point of failure. (`max_step_volts` is a step
+  magnitude, not a KCL residual.) Match arms must be updated:
+  `ConvergenceFailed { .. }` instead of `ConvergenceFailed`.
+- README "Status" line corrected — the crate is published on crates.io.
+
 ## [0.1.0-alpha.4] - 2026-05-08
 
 ### Changed
@@ -80,7 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semiconductor models (diode, BJT, MOSFET, JFET, IGBT, varactor, zener,
   Schottky, LED, photodiode, photoresistor, thermistor).
 
-[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.4...HEAD
+[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.5...HEAD
+[0.1.0-alpha.5]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.2
