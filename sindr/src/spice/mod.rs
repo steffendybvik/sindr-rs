@@ -8,29 +8,88 @@
 //! a [`SourceMap`] is returned so callers can recover the original
 //! instance path for any flattened node.
 //!
+//! Enable the optional `spice` feature to pull this module in
+//! (`sindr = { version = "0.1", features = ["spice"] }`); it is off by
+//! default so the parser dependencies stay out of the baseline build.
+//!
 //! # Quick start
 //!
+//! Parse a deck, hand the flattened [`Circuit`](crate::Circuit) to the
+//! solver, then dispatch each parsed analysis directive to the matching
+//! `sindr` routine:
+//!
 //! ```no_run
-//! let netlist = sindr::spice::parse_file("amp.cir").unwrap();
-//! let _circuit = netlist.circuit;
-//! for analysis in netlist.analyses {
-//!     // dispatch on `analysis` and run the matching sindr routine
-//!     let _ = analysis;
+//! use sindr::spice::{parse_file, AnalysisRequest};
+//!
+//! let netlist = parse_file("amp.cir")?;
+//! println!("parsed `{}` ({} components)", netlist.title, netlist.circuit.components.len());
+//!
+//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac`
+//! // directives, in source order. The parser does not run them — you do.
+//! for analysis in &netlist.analyses {
+//!     match analysis {
+//!         AnalysisRequest::Op => {
+//!             let result = sindr::solve_circuit(&netlist.circuit)?;
+//!             println!("op: {} node voltages", result.node_voltages.len());
+//!         }
+//!         AnalysisRequest::Dc { source, start, stop, step } => {
+//!             let points = ((stop - start) / step).abs() as usize + 1;
+//!             let sweep = sindr::dc_sweep(&netlist.circuit, source, *start, *stop, points)?;
+//!             println!("dc sweep of {source}: {} points", sweep.points.len());
+//!         }
+//!         AnalysisRequest::Tran { tstop, .. } => {
+//!             // Reactive elements / waveform sources make `solve_circuit`
+//!             // take the transient path automatically.
+//!             let _ = sindr::solve_circuit(&netlist.circuit)?;
+//!             println!("transient to {tstop} s");
+//!         }
+//!         AnalysisRequest::Ac { fstart, fstop, .. } => {
+//!             // Build an `AcConfig` and call `sindr::ac_analysis::solve_ac`.
+//!             println!("ac sweep {fstart}..{fstop} Hz");
+//!         }
+//!     }
 //! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! # Strictness
+//! # Strictness and warnings
 //!
 //! By default the parser runs in **strict** mode: any unsupported card,
 //! device, model type, or grammar failure aborts with a
-//! [`SpiceParseError`] carrying a labelled span. Pass
-//! [`ParseOptions::strict = false`](ParseOptions) to downgrade the
-//! recoverable cases (unsupported devices/cards) to
-//! [`ParseWarning`]s collected in [`ParsedNetlist::warnings`].
+//! [`SpiceParseError`] carrying a labelled span. Set
+//! [`ParseOptions::strict`] to `false` to downgrade the recoverable cases
+//! (unsupported devices/cards) to [`ParseWarning`]s collected in
+//! [`ParsedNetlist::warnings`], so a deck containing an unsupported element
+//! still parses:
+//!
+//! ```no_run
+//! use sindr::spice::{parse_str_with_options, ParseOptions};
+//! # let deck = "* deck\nV1 n1 0 1\nR1 n1 0 1k\n.end\n";
+//!
+//! let opts = ParseOptions { strict: false, include_search_path: None };
+//! let netlist = parse_str_with_options(deck, opts)?;
+//! for warning in &netlist.warnings {
+//!     eprintln!("warning: {warning:?}");
+//! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! # Diagnostics
+//!
+//! [`SpiceParseError`] implements [`miette::Diagnostic`] and embeds the
+//! source text with labelled spans. Add `miette` with its `fancy` feature
+//! and render the error through a [`miette::Report`] for annotated,
+//! underlined output pointing at the offending line:
+//!
+//! ```ignore
+//! match sindr::spice::parse_file("bad.cir") {
+//!     Ok(netlist) => { /* ... */ }
+//!     Err(e) => eprintln!("{:?}", miette::Report::new(e)),
+//! }
+//! ```
 //!
 //! See the crate `README` for the exact supported subset and known limits.
 
-#![deny(missing_docs)]
 // SpiceParseError variants embed `NamedSource<String>` so callers using
 // miette's fancy reporter get pretty diagnostics for free. The trade-off is
 // a ~140-byte error enum, which clippy flags as `result_large_err`. We

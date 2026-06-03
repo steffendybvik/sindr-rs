@@ -9,10 +9,15 @@ use crate::diode::DiodeParams;
 /// Common LED colour variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LedColor {
+    /// Red LED (~1.8 V typical forward voltage).
     Red,
+    /// Green LED (~2.2 V typical forward voltage).
     Green,
+    /// Blue LED (~3.2 V typical forward voltage).
     Blue,
+    /// Yellow LED (~2.0 V typical forward voltage).
     Yellow,
+    /// White LED (~3.0 V typical forward voltage).
     White,
 }
 

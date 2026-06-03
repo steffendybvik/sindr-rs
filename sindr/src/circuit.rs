@@ -67,8 +67,11 @@ pub enum CircuitElement {
     /// Resistor between two nodes.
     #[cfg_attr(feature = "serde", serde(rename = "resistor"))]
     Resistor {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[a, b]`.
         nodes: [String; 2],
+        /// Resistance (Ω).
         resistance: f64,
     },
 
@@ -76,9 +79,13 @@ pub enum CircuitElement {
     /// `nodes[1]` is the negative terminal.
     #[cfg_attr(feature = "serde", serde(rename = "voltage_source"))]
     VoltageSource {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[positive, negative]`.
         nodes: [String; 2],
+        /// DC voltage (V); also the offset added to any `waveform`.
         voltage: f64,
+        /// Optional time-varying waveform added on top of `voltage`.
         #[cfg_attr(
             feature = "serde",
             serde(default, skip_serializing_if = "Option::is_none")
@@ -90,9 +97,13 @@ pub enum CircuitElement {
     /// `nodes[1]`.
     #[cfg_attr(feature = "serde", serde(rename = "current_source"))]
     CurrentSource {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[from, to]`; current flows from `nodes[0]` to `nodes[1]`.
         nodes: [String; 2],
+        /// DC current (A); also the offset added to any `waveform`.
         current: f64,
+        /// Optional time-varying waveform added on top of `current`.
         #[cfg_attr(
             feature = "serde",
             serde(default, skip_serializing_if = "Option::is_none")
@@ -104,8 +115,11 @@ pub enum CircuitElement {
     /// or very high (open) resistance for DC analysis.
     #[cfg_attr(feature = "serde", serde(rename = "switch"))]
     Switch {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[a, b]`.
         nodes: [String; 2],
+        /// When true the switch conducts (closed); when false it is open.
         closed: bool,
     },
 
@@ -113,8 +127,11 @@ pub enum CircuitElement {
     /// transient. `voltage_across` is reported as `nodes[0] − nodes[1]`.
     #[cfg_attr(feature = "serde", serde(rename = "capacitor"))]
     Capacitor {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[a, b]`.
         nodes: [String; 2],
+        /// Capacitance (F).
         capacitance: f64,
     },
 
@@ -126,8 +143,11 @@ pub enum CircuitElement {
     /// transient long enough to settle.
     #[cfg_attr(feature = "serde", serde(rename = "inductor"))]
     Inductor {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[a, b]`; `current_through` flows `nodes[0] → nodes[1]`.
         nodes: [String; 2],
+        /// Inductance (H).
         inductance: f64,
     },
 
@@ -136,7 +156,9 @@ pub enum CircuitElement {
     /// `voltage_across` corresponds to forward bias.
     #[cfg_attr(feature = "serde", serde(rename = "diode"))]
     Diode {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
         /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
@@ -147,8 +169,11 @@ pub enum CircuitElement {
     /// `color` (e.g. `"red"` ≈ 1.8 V, `"blue"` ≈ 3.2 V).
     #[cfg_attr(feature = "serde", serde(rename = "led"))]
     Led {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
+        /// Emission colour (e.g. `"red"`, `"blue"`); sets the forward voltage drop.
         color: String,
         /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
@@ -158,9 +183,13 @@ pub enum CircuitElement {
     /// BJT transistor (3 terminals). Stub for DC analysis until Phase 18.
     #[cfg_attr(feature = "serde", serde(rename = "bjt"))]
     Bjt {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[base, collector, emitter]`.
         nodes: [String; 3], // [base, collector, emitter]
+        /// Polarity (NPN or PNP).
         kind: BjtKind,
+        /// Forward current gain β (unitless). Default 100.
         #[cfg_attr(feature = "serde", serde(default = "default_bf"))]
         bf: f64,
         /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
@@ -177,9 +206,13 @@ pub enum CircuitElement {
     /// MOSFET transistor (3 terminals: gate, drain, source).
     #[cfg_attr(feature = "serde", serde(rename = "mosfet"))]
     Mosfet {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[gate, drain, source]`.
         nodes: [String; 3], // [gate, drain, source]
+        /// Channel type (NMOS or PMOS).
         kind: MosfetKind,
+        /// Model parameters (threshold voltage, transconductance, etc.).
         #[cfg_attr(feature = "serde", serde(default))]
         params: MosfetParams,
         /// Optional parasitic capacitances (Cgs, Cgd). None = no parasitic caps (default).
@@ -194,8 +227,11 @@ pub enum CircuitElement {
     /// nodes: [gate, drain, source]
     #[cfg_attr(feature = "serde", serde(rename = "jfet"))]
     Jfet {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[gate, drain, source]`.
         nodes: [String; 3], // [gate, drain, source]
+        /// Channel type (N-channel or P-channel).
         kind: JfetKind,
         /// Drain saturation current at Vgs=0 (A). Typical: 1–20 mA.
         #[cfg_attr(feature = "serde", serde(default = "default_jfet_idss"))]
@@ -209,9 +245,13 @@ pub enum CircuitElement {
     /// nodes: [out+, out-], control_nodes: [ctrl+, ctrl-]
     #[cfg_attr(feature = "serde", serde(rename = "vcvs"))]
     Vcvs {
+        /// Unique component identifier.
         id: String,
+        /// Output terminals `[out+, out-]`.
         nodes: [String; 2],
+        /// Sensing terminals `[ctrl+, ctrl-]`.
         control_nodes: [String; 2],
+        /// Voltage gain μ (V/V): `V_out = gain * V_control`.
         gain: f64, // mu
     },
 
@@ -219,9 +259,13 @@ pub enum CircuitElement {
     /// nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-]
     #[cfg_attr(feature = "serde", serde(rename = "vccs"))]
     Vccs {
+        /// Unique component identifier.
         id: String,
+        /// Output terminals `[out_from, out_to]`.
         nodes: [String; 2],
+        /// Sensing terminals `[ctrl+, ctrl-]`.
         control_nodes: [String; 2],
+        /// Transconductance gm (A/V): `I_out = gm * V_control`.
         gm: f64,
     },
 
@@ -229,9 +273,13 @@ pub enum CircuitElement {
     /// nodes: [out+, out-], control_source: id of controlling voltage source
     #[cfg_attr(feature = "serde", serde(rename = "ccvs"))]
     Ccvs {
+        /// Unique component identifier.
         id: String,
+        /// Output terminals `[out+, out-]`.
         nodes: [String; 2],
+        /// Id of the voltage source whose current is sensed.
         control_source: String,
+        /// Transresistance rm (Ω): `V_out = rm * I_control`.
         rm: f64,
     },
 
@@ -239,9 +287,13 @@ pub enum CircuitElement {
     /// nodes: [out_from, out_to], control_source: id of controlling voltage source
     #[cfg_attr(feature = "serde", serde(rename = "cccs"))]
     Cccs {
+        /// Unique component identifier.
         id: String,
+        /// Output terminals `[out_from, out_to]`.
         nodes: [String; 2],
+        /// Id of the voltage source whose current is sensed.
         control_source: String,
+        /// Current gain α (A/A): `I_out = alpha * I_control`.
         alpha: f64,
     },
 
@@ -249,8 +301,11 @@ pub enum CircuitElement {
     /// When closed = true, current flows; when false, open circuit.
     #[cfg_attr(feature = "serde", serde(rename = "pushbutton"))]
     Pushbutton {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[a, b]`.
         nodes: [String; 2],
+        /// When true the button conducts (pressed); when false it is open.
         closed: bool,
     },
 
@@ -259,10 +314,14 @@ pub enum CircuitElement {
     /// Contact closes when |V_coil| >= pickup_voltage.
     #[cfg_attr(feature = "serde", serde(rename = "relay"))]
     Relay {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[coil+, coil-, contact1, contact2]`.
         nodes: [String; 4],
+        /// Coil resistance (Ω). Default 500.
         #[cfg_attr(feature = "serde", serde(default = "default_relay_coil_resistance"))]
         coil_resistance: f64,
+        /// Coil voltage magnitude at which the contact closes (V).
         pickup_voltage: f64,
         /// Coil inductance in Henry. 0.0 = purely resistive coil (backward compatible).
         #[cfg_attr(feature = "serde", serde(default))]
@@ -273,8 +332,11 @@ pub enum CircuitElement {
     /// light_level = 0.0 → ~1 MΩ (dark), 1.0 → ~1 kΩ (bright).
     #[cfg_attr(feature = "serde", serde(rename = "photoresistor"))]
     Photoresistor {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[a, b]`.
         nodes: [String; 2],
+        /// Incident light level, 0.0 (dark, ~1 MΩ) to 1.0 (bright, ~1 kΩ).
         light_level: f64,
     },
 
@@ -283,9 +345,13 @@ pub enum CircuitElement {
     /// position = 0.0 → wiper at top, 1.0 → wiper at bottom.
     #[cfg_attr(feature = "serde", serde(rename = "potentiometer"))]
     Potentiometer {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[top, wiper, bottom]`.
         nodes: [String; 3],
+        /// End-to-end resistance (Ω).
         resistance: f64,
+        /// Wiper position, 0.0 (at top) to 1.0 (at bottom).
         position: f64,
     },
 
@@ -294,8 +360,11 @@ pub enum CircuitElement {
     /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "zener_diode"))]
     ZenerDiode {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
+        /// Reverse breakdown (Zener) voltage (V).
         vz: f64,
         /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
@@ -306,10 +375,14 @@ pub enum CircuitElement {
     /// nodes: [in_plus, in_minus, out]
     #[cfg_attr(feature = "serde", serde(rename = "op_amp"))]
     OpAmp {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[in_plus, in_minus, out]`.
         nodes: [String; 3], // [in_plus, in_minus, out]
+        /// Positive supply rail / output clamp (V). Default 15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
         v_pos: f64,
+        /// Negative supply rail / output clamp (V). Default -15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
         v_neg: f64,
     },
@@ -318,10 +391,14 @@ pub enum CircuitElement {
     /// nodes: [in_plus, in_minus, out]
     #[cfg_attr(feature = "serde", serde(rename = "comparator"))]
     Comparator {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[in_plus, in_minus, out]`.
         nodes: [String; 3], // [in_plus, in_minus, out]
+        /// Positive supply rail / output high level (V). Default 15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
         v_pos: f64,
+        /// Negative supply rail / output low level (V). Default -15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
         v_neg: f64,
     },
@@ -330,7 +407,9 @@ pub enum CircuitElement {
     /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "schottky_diode"))]
     SchottkyDiode {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
         /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
@@ -341,7 +420,9 @@ pub enum CircuitElement {
     /// nodes: [n1, n2]
     #[cfg_attr(feature = "serde", serde(rename = "thermistor"))]
     Thermistor {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[n1, n2]`.
         nodes: [String; 2],
         /// Temperature in Kelvin. Default: 298.15 K (25°C).
         #[cfg_attr(feature = "serde", serde(default = "default_temperature"))]
@@ -352,7 +433,9 @@ pub enum CircuitElement {
     /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "photodiode"))]
     Photodiode {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
         /// Incident irradiance in W (optical power, not W/m²).
         /// 0.0 = dark, 0.1 = ~50mA photocurrent with default responsivity.
@@ -368,8 +451,11 @@ pub enum CircuitElement {
     /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "varactor"))]
     Varactor {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
+        /// Model parameters (zero-bias capacitance, grading, etc.).
         #[cfg_attr(feature = "serde", serde(default))]
         params: sindr_devices::varactor::VaractorParams,
     },
@@ -379,8 +465,11 @@ pub enum CircuitElement {
     /// nodes: [gate, collector, emitter]
     #[cfg_attr(feature = "serde", serde(rename = "igbt"))]
     Igbt {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[gate, collector, emitter]`.
         nodes: [String; 3],
+        /// Model parameters (threshold voltage, transconductance, etc.).
         #[cfg_attr(feature = "serde", serde(default))]
         params: sindr_devices::igbt::IgbtParams,
     },
@@ -398,10 +487,15 @@ pub enum CircuitElement {
     /// In transient: coupled inductor Backward Euler stamp with 2 branch current unknowns.
     #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
     Transformer {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[p1, q1, p2, q2]`: primary `[p1, q1]`, secondary `[p2, q2]`.
         nodes: [String; 4], // [p1, q1, p2, q2]
-        l1: f64,            // Primary inductance (H)
-        l2: f64,            // Secondary inductance (H)
+        /// Primary winding inductance (H).
+        l1: f64, // Primary inductance (H)
+        /// Secondary winding inductance (H).
+        l2: f64, // Secondary inductance (H)
+        /// Coupling coefficient (unitless) in `[0, 0.999]`. Default 0.999 (near-ideal).
         #[cfg_attr(feature = "serde", serde(default = "default_coupling"))]
         k: f64, // Coupling coefficient [0, 0.999]. Default 0.999 (near-ideal).
     },
@@ -415,7 +509,9 @@ pub enum CircuitElement {
     /// rating is stored for display purposes only (v1 — no auto-blow logic).
     #[cfg_attr(feature = "serde", serde(rename = "fuse"))]
     Fuse {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[a, b]`.
         nodes: [String; 2],
         /// Current rating in Amperes (display only — no auto-blow logic in v1).
         #[cfg_attr(feature = "serde", serde(default = "default_fuse_rating"))]
@@ -433,7 +529,9 @@ pub enum CircuitElement {
     /// `nodes: [input, output, gnd]`
     #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
     VoltageRegulator {
+        /// Unique component identifier.
         id: String,
+        /// Terminals `[input, output, gnd]`.
         nodes: [String; 3], // [input, output, gnd]
         /// Regulated output voltage (V). E.g. 5.0 for a 7805.
         voltage: f64,

@@ -11,10 +11,13 @@
 const GMIN: f64 = 1e-12; // minimum conductance floor
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+/// JFET channel polarity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum JfetKind {
+    /// N-channel JFET (pinch-off voltage `Vp < 0`).
     #[cfg_attr(feature = "serde", serde(rename = "nchannel"))]
     NChannel,
+    /// P-channel JFET (pinch-off voltage `Vp > 0`); sign-mirrored from N-channel.
     #[cfg_attr(feature = "serde", serde(rename = "pchannel"))]
     PChannel,
 }

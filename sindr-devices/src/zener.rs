@@ -17,6 +17,7 @@ pub struct ZenerParams {
 }
 
 impl ZenerParams {
+    /// Construct default Zener parameters for the given breakdown voltage `vz` (V).
     pub fn new(vz: f64) -> Self {
         Self {
             vz,

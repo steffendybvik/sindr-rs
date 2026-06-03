@@ -380,9 +380,13 @@ mod meta {
     /// A named, simulatable example circuit with display metadata.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct ExampleCircuit {
+        /// Stable identifier used for lookup and routing.
         pub id: String,
+        /// Human-readable display name.
         pub name: String,
+        /// Short description of what the circuit demonstrates.
         pub description: String,
+        /// The simulatable circuit definition.
         pub circuit: Circuit,
     }
 

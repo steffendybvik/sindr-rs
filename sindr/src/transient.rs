@@ -1,3 +1,8 @@
+//! Transient (time-domain) analysis.
+//!
+//! Integrates the circuit over time, solving the MNA system at each step
+//! while reactive components contribute companion-model stamps.
+
 use std::collections::HashMap;
 
 use nalgebra::DVector;

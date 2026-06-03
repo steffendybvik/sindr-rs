@@ -35,6 +35,7 @@ pub enum BjtRegion {
 }
 
 impl BjtRegion {
+    /// Lowercase string label for the region (`"cutoff"`, `"active"`, `"saturation"`).
     pub fn as_str(&self) -> &'static str {
         match self {
             BjtRegion::Cutoff => "cutoff",
@@ -44,19 +45,29 @@ impl BjtRegion {
     }
 }
 
+/// Ebers–Moll model parameters for a BJT.
 #[derive(Debug, Clone)]
 pub struct BjtParams {
-    pub is: f64,          // Saturation current (A)
-    pub bf: f64,          // Forward current gain
-    pub nf: f64,          // Forward emission coefficient
-    pub br: f64,          // Reverse current gain
-    pub nr: f64,          // Reverse emission coefficient
-    pub vaf: f64,         // Forward Early voltage (V). 0.0 = infinite (no Early effect).
-    pub var: f64,         // Reverse Early voltage (V). 0.0 = infinite.
+    /// Saturation current (A).
+    pub is: f64, // Saturation current (A)
+    /// Forward current gain (unitless).
+    pub bf: f64, // Forward current gain
+    /// Forward emission coefficient (unitless).
+    pub nf: f64, // Forward emission coefficient
+    /// Reverse current gain (unitless).
+    pub br: f64, // Reverse current gain
+    /// Reverse emission coefficient (unitless).
+    pub nr: f64, // Reverse emission coefficient
+    /// Forward Early voltage (V). 0.0 = infinite (no Early effect).
+    pub vaf: f64, // Forward Early voltage (V). 0.0 = infinite (no Early effect).
+    /// Reverse Early voltage (V). 0.0 = infinite.
+    pub var: f64, // Reverse Early voltage (V). 0.0 = infinite.
+    /// Junction temperature (K). Default 300.15 K = 27°C.
     pub temperature: f64, // Junction temperature (K). Default 300.15 K = 27°C.
 }
 
 impl BjtParams {
+    /// Construct default Ebers–Moll parameters for the given forward gain `bf`.
     pub fn new(bf: f64) -> Self {
         Self {
             is: 1e-14,
@@ -74,13 +85,20 @@ impl BjtParams {
 /// Companion model output for one NR iteration.
 /// Contains conductances and equivalent currents for MNA stamping.
 pub struct BjtCompanion {
+    /// B–E forward junction conductance (S).
     pub g_be: f64, // B-E forward junction conductance
+    /// B–C reverse junction conductance (S).
     pub g_bc: f64, // B-C reverse junction conductance
+    /// Early-voltage output conductance between C and E (S).
     pub g_ce: f64, // Early voltage output conductance between C and E
-    pub ic: f64,   // collector current at operating point
-    pub ib: f64,   // base current at operating point
-    pub vbe: f64,  // junction voltage (for RHS computation)
-    pub vbc: f64,  // junction voltage (for RHS computation)
+    /// Collector current at the operating point (A).
+    pub ic: f64, // collector current at operating point
+    /// Base current at the operating point (A).
+    pub ib: f64, // base current at operating point
+    /// B–E junction voltage at the operating point (V), for RHS computation.
+    pub vbe: f64, // junction voltage (for RHS computation)
+    /// B–C junction voltage at the operating point (V), for RHS computation.
+    pub vbc: f64, // junction voltage (for RHS computation)
 }
 
 /// Evaluate Ebers-Moll transport model at given junction voltages.
@@ -92,6 +110,9 @@ pub struct BjtCompanion {
 /// Beyond this, use linear extrapolation to prevent overflow.
 const V_MAX_EXP: f64 = 40.0 * V_T; // ~1.034V
 
+/// Evaluate the Ebers–Moll transport model at junction voltages `vbe`/`vbc`
+/// (V, sign-adjusted for PNP by the caller), returning the linearised
+/// [`BjtCompanion`] for MNA stamping.
 pub fn bjt_companion(vbe: f64, vbc: f64, params: &BjtParams) -> BjtCompanion {
     let nf_vt = params.nf * V_T;
     let nr_vt = params.nr * V_T;

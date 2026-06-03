@@ -70,6 +70,12 @@ let result = sindr::solve_circuit(&netlist.circuit)?;
 
 It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`, `.lib`), flattens hierarchy with `.`-separated node naming, and returns a `SourceMap` to recover original instance paths. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
+A runnable walkthrough (parse → solve → dispatch directives → render a diagnostic) lives in [`sindr/examples/parse_netlist.rs`](./sindr/examples/parse_netlist.rs):
+
+```bash
+cargo run --example parse_netlist --features spice
+```
+
 ## Status
 
 Pre-release alpha (`0.1.0-alpha.6`), [published on crates.io](https://crates.io/crates/sindr). API is liable to change.

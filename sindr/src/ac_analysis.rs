@@ -48,7 +48,9 @@ pub struct AcConfig {
 /// Result at a single frequency point.
 #[derive(Debug, Clone)]
 pub struct AcPoint {
+    /// Frequency of this point (Hz).
     pub frequency: f64,
+    /// Complex node voltages (V) keyed by node name.
     pub node_voltages: HashMap<String, Complex64>,
 }
 
@@ -70,7 +72,9 @@ impl AcPoint {
 /// Complete AC analysis result.
 #[derive(Debug, Clone)]
 pub struct AcResult {
+    /// Result points, one per swept frequency.
     pub points: Vec<AcPoint>,
+    /// Configuration used to produce this result.
     pub config: AcConfig,
 }
 

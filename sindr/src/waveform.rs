@@ -15,10 +15,14 @@ pub enum Waveform {
     /// Sinusoidal: amplitude * sin(2*pi*frequency*t + phase) + offset
     #[cfg_attr(feature = "serde", serde(rename = "sine"))]
     Sine {
+        /// Peak amplitude (V or A).
         amplitude: f64,
+        /// Frequency (Hz).
         frequency: f64,
+        /// DC offset added to the sine (V or A). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         offset: f64,
+        /// Phase offset (radians). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         phase: f64, // radians
     },
@@ -26,23 +30,34 @@ pub enum Waveform {
     /// SPICE-compatible pulse waveform.
     #[cfg_attr(feature = "serde", serde(rename = "pulse"))]
     Pulse {
+        /// Initial (low) value (V or A).
         v1: f64, // initial value
+        /// Pulsed (high) value (V or A).
         v2: f64, // pulsed value
+        /// Delay before the first pulse (s). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         delay: f64, // delay before first pulse (s)
+        /// Rise time from `v1` to `v2` (s).
         rise_time: f64, // rise time (s)
+        /// Fall time from `v2` back to `v1` (s).
         fall_time: f64, // fall time (s)
+        /// Width of the high portion of the pulse (s).
         pulse_width: f64, // pulse width (s)
+        /// Repetition period (s).
         period: f64, // period (s)
     },
 
     /// Square wave with configurable duty cycle.
     #[cfg_attr(feature = "serde", serde(rename = "square"))]
     Square {
+        /// Peak amplitude about the offset (V or A).
         amplitude: f64,
+        /// Frequency (Hz).
         frequency: f64,
+        /// DC offset added to the wave (V or A). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         offset: f64,
+        /// Duty cycle (fraction high), 0.0 to 1.0. Default 0.5.
         #[cfg_attr(feature = "serde", serde(default = "default_duty"))]
         duty: f64, // 0.0 to 1.0, default 0.5
     },
@@ -50,8 +65,11 @@ pub enum Waveform {
     /// Triangle wave.
     #[cfg_attr(feature = "serde", serde(rename = "triangle"))]
     Triangle {
+        /// Peak amplitude about the offset (V or A).
         amplitude: f64,
+        /// Frequency (Hz).
         frequency: f64,
+        /// DC offset added to the wave (V or A). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         offset: f64,
     },
@@ -59,9 +77,13 @@ pub enum Waveform {
     /// PWM (pulse width modulation) — square wave with variable duty.
     #[cfg_attr(feature = "serde", serde(rename = "pwm"))]
     Pwm {
+        /// High-level amplitude above the offset (V or A).
         amplitude: f64,
+        /// Frequency (Hz).
         frequency: f64,
+        /// Duty cycle (fraction high), 0.0 to 1.0.
         duty: f64, // 0.0 to 1.0
+        /// DC offset (low level) (V or A). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         offset: f64,
     },
@@ -72,7 +94,10 @@ pub enum Waveform {
     /// for `t > points.last().0` the last value is held. An empty list
     /// evaluates to `0.0` everywhere.
     #[cfg_attr(feature = "serde", serde(rename = "pwl"))]
-    Pwl { points: Vec<(f64, f64)> },
+    Pwl {
+        /// Breakpoints as `(time_s, value)` pairs sorted by time.
+        points: Vec<(f64, f64)>,
+    },
 }
 
 fn default_duty() -> f64 {

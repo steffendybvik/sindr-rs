@@ -106,6 +106,8 @@
 //! - [`Waveform`] — time-varying source shapes
 //! - [`SimError`] — what can go wrong
 
+#![deny(missing_docs)]
+
 pub mod examples;
 #[cfg(feature = "examples")]
 pub use examples::{get_examples, ExampleCircuit};

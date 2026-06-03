@@ -46,3 +46,7 @@ required-features = ["examples"]
 [[example]]
 name = "run_example"
 required-features = ["examples"]
+
+[[example]]
+name = "parse_netlist"
+required-features = ["spice"]
