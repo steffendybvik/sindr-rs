@@ -180,7 +180,7 @@ pub enum CircuitElement {
         temperature: f64,
     },
 
-    /// BJT transistor (3 terminals). Stub for DC analysis until Phase 18.
+    /// BJT transistor (3 terminals). Stub for DC analysis.
     #[cfg_attr(feature = "serde", serde(rename = "bjt"))]
     Bjt {
         /// Unique component identifier.
