@@ -80,6 +80,24 @@
 //! sindr = { version = "0.1", default-features = false }
 //! ```
 //!
+//! # SPICE netlist input
+//!
+//! Parsing SPICE3 `.cir` decks into a [`Circuit`] lives behind the optional
+//! `spice` feature (off by default, so the heavier parser dependencies stay
+//! out of the baseline build):
+//!
+//! ```toml
+//! [dependencies]
+//! sindr = { version = "0.1", features = ["spice"] }
+//! ```
+//!
+//! ```ignore
+//! let netlist = sindr::spice::parse_file("amp.cir")?;
+//! let result = sindr::solve_circuit(&netlist.circuit)?;
+//! ```
+//!
+//! See the [`spice`] module for the supported subset and strictness options.
+//!
 //! # Where to look next
 //!
 //! - [`Circuit`] / [`CircuitElement`] — the input format
@@ -100,6 +118,8 @@ pub mod mna;
 pub mod newton_raphson;
 pub mod node_map;
 pub mod results;
+#[cfg(feature = "spice")]
+pub mod spice;
 pub mod stamp;
 pub mod temp_sweep;
 pub mod transient;

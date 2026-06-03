@@ -1,0 +1,6 @@
+* Top-level netlist that pulls in a model lib
+.include 'include_lib.sub'
+Vin in 0 5
+R1 in 0 {r_default}
+.op
+.end

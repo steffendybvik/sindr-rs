@@ -1,6 +1,6 @@
 [package]
 name = "sindr"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 edition = "2021"
 rust-version = "1.87"
 description = "Rust circuit simulator: SPICE-style MNA solver with built-in semiconductor device models. Transient, AC, DC sweep, temperature sweep."
@@ -22,14 +22,22 @@ nalgebra = "0.34"
 num-complex = "0.4"
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = { workspace = true }
+# SPICE netlist parser deps — only pulled in by the `spice` feature.
+winnow = { version = "1.0", optional = true }
+miette = { version = "7", optional = true }
 
 [features]
 default = ["serde", "examples"]
 examples = ["serde"]
+# SPICE3 netlist parsing (`sindr::spice`). Off by default to keep the
+# baseline dependency tree lean.
+spice = ["dep:winnow", "dep:miette"]
 
 [dev-dependencies]
 approx = "0.5"
 serde_json = { workspace = true }
+# Fancy diagnostic rendering used by the SPICE end-to-end tests.
+miette = { version = "7", features = ["fancy"] }
 
 [[example]]
 name = "list_examples"

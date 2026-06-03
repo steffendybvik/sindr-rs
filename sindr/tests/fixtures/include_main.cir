@@ -1,0 +1,4 @@
+main title
+R1 a b 1k
+.include 'include_sub.cir'
+.end

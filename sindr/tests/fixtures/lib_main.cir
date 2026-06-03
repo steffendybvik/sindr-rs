@@ -1,0 +1,3 @@
+lib main title
+.lib 'lib_models.cir' slow
+.end

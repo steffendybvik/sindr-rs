@@ -65,6 +65,14 @@ pub enum Waveform {
         #[cfg_attr(feature = "serde", serde(default))]
         offset: f64,
     },
+
+    /// Piecewise-linear waveform. `points` is a list of `(t, value)`
+    /// breakpoints sorted by `t`. Values are linearly interpolated between
+    /// adjacent points; for `t < points[0].0` the first value is held, and
+    /// for `t > points.last().0` the last value is held. An empty list
+    /// evaluates to `0.0` everywhere.
+    #[cfg_attr(feature = "serde", serde(rename = "pwl"))]
+    Pwl { points: Vec<(f64, f64)> },
 }
 
 fn default_duty() -> f64 {
@@ -162,6 +170,35 @@ impl Waveform {
                     *offset
                 }
             }
+
+            Waveform::Pwl { points } => {
+                if points.is_empty() {
+                    return 0.0;
+                }
+                // Edge clamps: hold first value before first t, last value after last t.
+                if t <= points[0].0 {
+                    return points[0].1;
+                }
+                let last = points.len() - 1;
+                if t >= points[last].0 {
+                    return points[last].1;
+                }
+                // Binary search for the bracketing pair (t_i, t_{i+1}) with t_i <= t < t_{i+1}.
+                let idx = match points.binary_search_by(|(ti, _)| {
+                    ti.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal)
+                }) {
+                    Ok(i) => return points[i].1,
+                    Err(i) => i, // first index where points[i].0 > t
+                };
+                let (t0, v0) = points[idx - 1];
+                let (t1, v1) = points[idx];
+                let dt = t1 - t0;
+                if dt == 0.0 {
+                    v0
+                } else {
+                    v0 + (v1 - v0) * ((t - t0) / dt)
+                }
+            }
         }
     }
 
@@ -185,6 +222,8 @@ impl Waveform {
                     None
                 }
             }
+            // PWL has no inherent period.
+            Waveform::Pwl { .. } => None,
         }
     }
 }
@@ -302,6 +341,55 @@ mod tests {
         assert_relative_eq!(w.evaluate(0.1e-3), 3.3, epsilon = 1e-10);
         // Remaining 75%: low (0V)
         assert_relative_eq!(w.evaluate(0.5e-3), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn pwl_interpolates_between_breakpoints() {
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1e-3, 5.0)],
+        };
+        // Midpoint should linearly interpolate to 2.5
+        assert_relative_eq!(w.evaluate(0.5e-3), 2.5, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn pwl_clamps_at_edges() {
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1e-3, 5.0)],
+        };
+        // Before first breakpoint: hold first value
+        assert_relative_eq!(w.evaluate(-1.0), 0.0, epsilon = 1e-12);
+        // After last breakpoint: hold last value
+        assert_relative_eq!(w.evaluate(1.0), 5.0, epsilon = 1e-12);
+        // Exactly at a breakpoint
+        assert_relative_eq!(w.evaluate(0.0), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(w.evaluate(1e-3), 5.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn pwl_empty_returns_zero() {
+        let w = Waveform::Pwl { points: vec![] };
+        assert_relative_eq!(w.evaluate(0.0), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(w.evaluate(42.0), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn pwl_multi_segment() {
+        // 0->1 then 1->-1 then -1->0
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1.0, 1.0), (2.0, -1.0), (3.0, 0.0)],
+        };
+        assert_relative_eq!(w.evaluate(0.5), 0.5, epsilon = 1e-12);
+        assert_relative_eq!(w.evaluate(1.5), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(w.evaluate(2.5), -0.5, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn pwl_period_is_none() {
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1e-3, 5.0)],
+        };
+        assert!(w.period().is_none());
     }
 
     #[test]

@@ -1,0 +1,8 @@
+* Common-emitter NPN amplifier
+Vcc vcc 0 DC 12
+Rc  vcc c 4.7k
+Rb  vcc b 470k
+Q1  c b 0 q2n2222
+.model q2n2222 NPN BF=200
+.op
+.end
