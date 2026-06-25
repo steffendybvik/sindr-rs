@@ -18,7 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 sindr-devices = { workspace = true }
-nalgebra = "0.34"
+nalgebra = "0.35"
 num-complex = "0.4"
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = { workspace = true }
