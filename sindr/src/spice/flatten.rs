@@ -41,7 +41,7 @@ use crate::spice::ast::{
     ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawModel, RawSubckt,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
-use crate::spice::param_eval::{eval_param_list, EvalError, ParamScope};
+use crate::spice::param_eval::{eval_error_to_parse_error, eval_param_list, ParamScope};
 use crate::spice::source_map::{HierarchyPath, SourceMap};
 
 /// Result of flattening: the elements to lower, the model table, populated
@@ -122,7 +122,7 @@ pub(crate) fn flatten(
     let mut scope = ParamScope::new();
     for list in &top_param_lists {
         if let Err(e) = eval_param_list(list, &mut scope) {
-            return Err(eval_error_to_spice(e));
+            return Err(eval_error_to_parse_error(e, "<param>"));
         }
     }
 
@@ -224,12 +224,12 @@ fn expand_instance(
     if let Err(e) = eval_param_list(&def.defaults, scope) {
         scope.pop_scope();
         active_stack.remove(&subckt_name);
-        return Err(eval_error_to_spice(e));
+        return Err(eval_error_to_parse_error(e, "<param>"));
     }
     if let Err(e) = eval_param_list(&instance_overrides, scope) {
         scope.pop_scope();
         active_stack.remove(&subckt_name);
-        return Err(eval_error_to_spice(e));
+        return Err(eval_error_to_parse_error(e, "<param>"));
     }
 
     // Build the instance path for renaming.
@@ -294,7 +294,7 @@ fn expand_instance(
                 if let Err(e) = eval_param_list(list, scope) {
                     scope.pop_scope();
                     active_stack.remove(&subckt_name);
-                    return Err(eval_error_to_spice(e));
+                    return Err(eval_error_to_parse_error(e, "<param>"));
                 }
             }
             RawCard::Subckt(_) | RawCard::Model(_) => {
@@ -371,27 +371,6 @@ fn snapshot_scope(scope: &ParamScope) -> HashMap<String, f64> {
     // via a public method we add next to it. To keep the seam minimal,
     // we use the new `snapshot_flat` method on ParamScope.
     scope.snapshot_flat()
-}
-
-fn eval_error_to_spice(e: EvalError) -> SpiceParseError {
-    // Param expressions reach this layer without per-node spans; we lift
-    // to a Syntax error with a synthetic NamedSource.
-    let (msg, _hint): (String, &str) = match e {
-        EvalError::UndefinedParam(name) => (
-            format!("undefined parameter `{name}`"),
-            "define it via .param",
-        ),
-        EvalError::DivByZero => ("division by zero in parameter expression".to_string(), ""),
-        EvalError::Circular(cycle) => (
-            format!("circular parameter reference: {}", cycle.join(" -> ")),
-            "break the cycle by substituting a literal value",
-        ),
-    };
-    SpiceParseError::Syntax {
-        message: msg,
-        src: NamedSource::new("<param>", String::new()),
-        bad_span: (0, 0).into(),
-    }
 }
 
 fn span_to_named_source(el: &RawElement) -> NamedSource<String> {

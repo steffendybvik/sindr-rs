@@ -33,8 +33,14 @@ use crate::spice::ast::{
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::flatten::{FlatElement, Flattened};
-use crate::spice::param_eval::{eval, EvalError, ParamScope};
+use crate::spice::param_eval::{eval, eval_error_to_parse_error, ParamScope};
 use crate::spice::ParsedNetlist;
+
+/// Upper bound on `.ac` sweep point count. Far above any realistic sweep, but
+/// finite so an absurd value (e.g. a fat-fingered exponent) is rejected with a
+/// diagnostic instead of saturating the `as usize` cast and aborting the
+/// process in `Vec::with_capacity`.
+const MAX_AC_POINTS: usize = 10_000_000;
 
 /// Lift a `Flattened` form into a public [`ParsedNetlist`].
 pub(crate) fn build_netlist(
@@ -341,10 +347,10 @@ fn build_analysis(
                     bad_span: (0, 0).into(),
                 });
             }
-            let tstep = eval_or_lift(&args[0], scope)?;
-            let tstop = eval_or_lift(&args[1], scope)?;
+            let tstep = eval_finite(&args[0], scope, ".tran", "tstep")?;
+            let tstop = eval_finite(&args[1], scope, ".tran", "tstop")?;
             let tstart = if args.len() == 3 {
-                Some(eval_or_lift(&args[2], scope)?)
+                Some(eval_finite(&args[2], scope, ".tran", "tstart")?)
             } else {
                 None
             };
@@ -364,9 +370,9 @@ fn build_analysis(
                     bad_span: (0, 0).into(),
                 });
             }
-            let start = eval_or_lift(&args[0], scope)?;
-            let stop = eval_or_lift(&args[1], scope)?;
-            let step = eval_or_lift(&args[2], scope)?;
+            let start = eval_finite(&args[0], scope, ".dc", "start")?;
+            let stop = eval_finite(&args[1], scope, ".dc", "stop")?;
+            let step = eval_finite(&args[2], scope, ".dc", "step")?;
             Ok(AnalysisRequest::Dc {
                 source: source.clone(),
                 start,
@@ -380,10 +386,15 @@ fn build_analysis(
             fstart,
             fstop,
         } => {
-            let pts = eval_or_lift(points, scope)?;
-            if pts < 1.0 || !pts.is_finite() {
+            let pts = eval_finite(points, scope, ".ac", "points")?;
+            // Bound the count before the `as usize` cast: a float→int cast
+            // saturates (e.g. `1e18 as usize == usize::MAX`), which would make
+            // the downstream `Vec::with_capacity` abort the process.
+            if pts < 1.0 || pts > MAX_AC_POINTS as f64 {
                 return Err(SpiceParseError::Syntax {
-                    message: "`.ac` points must be a positive integer".to_string(),
+                    message: format!(
+                        "`.ac` points must be a positive integer in 1..={MAX_AC_POINTS} (got {pts})"
+                    ),
                     src: NamedSource::new("<build>", String::new()),
                     bad_span: (0, 0).into(),
                 });
@@ -395,8 +406,8 @@ fn build_analysis(
                     AcSweepKind::Lin => AcSweep::Lin,
                 },
                 points: pts as usize,
-                fstart: eval_or_lift(fstart, scope)?,
-                fstop: eval_or_lift(fstop, scope)?,
+                fstart: eval_finite(fstart, scope, ".ac", "fstart")?,
+                fstop: eval_finite(fstop, scope, ".ac", "fstop")?,
             })
         }
     }
@@ -442,23 +453,28 @@ fn scope_from_snapshot(snapshot: &HashMap<String, f64>) -> ParamScope {
 }
 
 fn eval_or_lift(expr: &ParamExpr, scope: &ParamScope) -> Result<f64, SpiceParseError> {
-    eval(expr, scope).map_err(|e| match e {
-        EvalError::UndefinedParam(name) => SpiceParseError::UndefinedParam {
-            name,
+    eval(expr, scope).map_err(|e| eval_error_to_parse_error(e, "<build>"))
+}
+
+/// Like [`eval_or_lift`], but additionally rejects non-finite (NaN / ±∞)
+/// results. Analysis-directive arguments flow straight into the solver, so a
+/// non-finite timestep / frequency would otherwise silently produce a
+/// degenerate sweep. `card`/`what` name the directive and field for the error.
+fn eval_finite(
+    expr: &ParamExpr,
+    scope: &ParamScope,
+    card: &str,
+    what: &str,
+) -> Result<f64, SpiceParseError> {
+    let v = eval_or_lift(expr, scope)?;
+    if !v.is_finite() {
+        return Err(SpiceParseError::Syntax {
+            message: format!("`{card}` {what} must be a finite number (got {v})"),
             src: NamedSource::new("<build>", String::new()),
             bad_span: (0, 0).into(),
-        },
-        EvalError::DivByZero => SpiceParseError::Syntax {
-            message: "division by zero in parameter expression".to_string(),
-            src: NamedSource::new("<build>", String::new()),
-            bad_span: (0, 0).into(),
-        },
-        EvalError::Circular(cycle) => SpiceParseError::CircularParam {
-            cycle,
-            src: NamedSource::new("<build>", String::new()),
-            bad_span: (0, 0).into(),
-        },
-    })
+        });
+    }
+    Ok(v)
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +689,94 @@ mod tests {
             }
             other => panic!("expected Ac, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ac_points_absurd_value_is_rejected_not_panicked() {
+        // A fat-fingered exponent saturates the `as usize` cast to usize::MAX,
+        // which would abort in Vec::with_capacity. It must surface as an error.
+        let cards = vec![RawCard::Analysis(RawAnalysis::Ac {
+            sweep: AcSweepKind::Dec,
+            points: ParamExpr::Number(1e18),
+            fstart: ParamExpr::Number(10.0),
+            fstop: ParamExpr::Number(1e5),
+        })];
+        let err = build_from_cards(cards).unwrap_err();
+        assert!(
+            matches!(err, SpiceParseError::Syntax { .. }),
+            "expected Syntax error for out-of-range points, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn ac_points_just_above_max_is_rejected() {
+        let cards = vec![RawCard::Analysis(RawAnalysis::Ac {
+            sweep: AcSweepKind::Dec,
+            points: ParamExpr::Number((MAX_AC_POINTS + 1) as f64),
+            fstart: ParamExpr::Number(10.0),
+            fstop: ParamExpr::Number(1e5),
+        })];
+        assert!(build_from_cards(cards).is_err());
+    }
+
+    #[test]
+    fn tran_nonfinite_arg_is_rejected() {
+        let cards = vec![RawCard::Analysis(RawAnalysis::Tran {
+            args: vec![ParamExpr::Number(f64::INFINITY), ParamExpr::Number(1e-3)],
+        })];
+        let err = build_from_cards(cards).unwrap_err();
+        assert!(
+            matches!(err, SpiceParseError::Syntax { .. }),
+            "expected Syntax error for non-finite tstep, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn dc_nonfinite_arg_is_rejected() {
+        let cards = vec![RawCard::Analysis(RawAnalysis::Dc {
+            source: "V1".to_string(),
+            args: vec![
+                ParamExpr::Number(0.0),
+                ParamExpr::Number(f64::NAN),
+                ParamExpr::Number(1.0),
+            ],
+        })];
+        assert!(build_from_cards(cards).is_err());
+    }
+
+    #[test]
+    fn undefined_param_keeps_precise_variant_through_build() {
+        // Regression: the param-error lift must preserve UndefinedParam rather
+        // than collapsing to a generic Syntax error.
+        let cards = vec![RawCard::Element(RawElement {
+            id: "R1".to_string(),
+            prefix: 'r',
+            nodes: vec!["a".to_string(), "0".to_string()],
+            body: RawElementBody::Passive {
+                value: ParamExpr::Ref("missing".to_string()),
+            },
+            span: span(),
+        })];
+        let err = build_from_cards(cards).unwrap_err();
+        assert!(
+            matches!(err, SpiceParseError::UndefinedParam { .. }),
+            "expected UndefinedParam, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn undefined_param_in_param_list_keeps_precise_variant_through_flatten() {
+        // The flatten-layer lift must also preserve UndefinedParam (previously
+        // it flattened every EvalError into Syntax).
+        let cards = vec![RawCard::Param(vec![(
+            "a".to_string(),
+            ParamExpr::Ref("missing".to_string()),
+        )])];
+        let err = build_from_cards(cards).unwrap_err();
+        assert!(
+            matches!(err, SpiceParseError::UndefinedParam { .. }),
+            "expected UndefinedParam from flatten, got {err:?}"
+        );
     }
 
     #[test]

@@ -20,7 +20,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use miette::NamedSource;
+
 use crate::spice::ast::{BinOp, ParamExpr};
+use crate::spice::error::SpiceParseError;
 
 /// Lexically-scoped parameter table. Push a new frame when entering a
 /// `.subckt` instantiation; pop it when leaving.
@@ -93,6 +96,34 @@ pub(crate) enum EvalError {
     DivByZero,
     /// Cyclic dependencies among bindings in the same `.param` list.
     Circular(Vec<String>),
+}
+
+/// Lift an [`EvalError`] to a [`SpiceParseError`], preserving the variant so
+/// callers get a precise diagnostic (undefined-parameter, circular-reference)
+/// rather than a generic syntax error. `src_name` names the synthetic miette
+/// source shown in diagnostics (e.g. `"<build>"`, `"<param>"`); param
+/// expressions reach this layer without per-node spans, so the span is a
+/// zero-width placeholder.
+pub(crate) fn eval_error_to_parse_error(e: EvalError, src_name: &str) -> SpiceParseError {
+    let src = NamedSource::new(src_name, String::new());
+    let bad_span = (0, 0).into();
+    match e {
+        EvalError::UndefinedParam(name) => SpiceParseError::UndefinedParam {
+            name,
+            src,
+            bad_span,
+        },
+        EvalError::DivByZero => SpiceParseError::Syntax {
+            message: "division by zero in parameter expression".to_string(),
+            src,
+            bad_span,
+        },
+        EvalError::Circular(cycle) => SpiceParseError::CircularParam {
+            cycle,
+            src,
+            bad_span,
+        },
+    }
 }
 
 /// Evaluate a single expression against `scope`.

@@ -230,11 +230,12 @@ fn paren_value_list(input: &mut Input<'_>) -> ModalResult<Vec<ParamExpr>> {
 
 /// Element ID: prefix character + remainder of identifier.
 fn element_id(input: &mut Input<'_>) -> ModalResult<(String, char, Range<usize>)> {
+    // `verify_map` returns `None` (a parse error) for an empty identifier,
+    // which also makes `chars().next()` total — no unwrap needed.
     ident
-        .verify(|(s, _)| !s.is_empty())
-        .map(|(s, span)| {
-            let prefix = s.chars().next().unwrap();
-            (s, prefix, span)
+        .verify_map(|(s, span)| {
+            let prefix = s.chars().next()?;
+            Some((s, prefix, span))
         })
         .parse_next(input)
 }
@@ -402,9 +403,13 @@ fn parse_bjt(input: &mut Input<'_>) -> ModalResult<RawElement> {
     if !input.is_empty() || tokens.len() < 4 || tokens.len() > 5 {
         return Err(ErrMode::from_input(input));
     }
-    let model = tokens.pop().unwrap();
+    // `tokens.len()` is 4 or 5 here (checked above), so both pops are
+    // guaranteed `Some`; handle the `None` arm without panicking anyway.
+    let Some(model) = tokens.pop() else {
+        return Err(ErrMode::from_input(input));
+    };
     let substrate = if tokens.len() == 4 {
-        Some(tokens.pop().unwrap())
+        tokens.pop()
     } else {
         None
     };
@@ -453,7 +458,9 @@ fn parse_subckt_instance(input: &mut Input<'_>) -> ModalResult<RawElement> {
     if !input.is_empty() || tokens.is_empty() {
         return Err(ErrMode::from_input(input));
     }
-    let name = tokens.pop().unwrap();
+    let Some(name) = tokens.pop() else {
+        return Err(ErrMode::from_input(input));
+    };
     Ok(RawElement {
         id,
         prefix,
@@ -674,10 +681,9 @@ enum LineOutcome {
 /// [`SpiceParseError`] with absolute spans.
 fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
     let trimmed = text.trim();
-    if trimmed.is_empty() {
+    let Some(first) = trimmed.chars().next() else {
         return Err(LocalError::Empty);
-    }
-    let first = trimmed.chars().next().unwrap();
+    };
     if first == '.' {
         // Control card: dispatch by keyword.
         let mut input = LocatingSlice::new(&trimmed[1..]);
