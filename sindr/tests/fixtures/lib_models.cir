@@ -1,0 +1,7 @@
+lib library file title
+.lib slow
+Rslow s g 10k
+.endl
+.lib fast
+Rfast s g 100
+.endl

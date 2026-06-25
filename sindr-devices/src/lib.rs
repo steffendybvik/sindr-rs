@@ -55,6 +55,8 @@
 //!   `(g_eq, i_eq)` at the operating point — the form Newton–Raphson stamps
 //!   directly.
 
+#![deny(missing_docs)]
+
 pub mod bjt;
 pub mod diode;
 pub mod igbt;

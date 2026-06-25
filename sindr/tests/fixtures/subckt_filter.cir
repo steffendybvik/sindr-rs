@@ -1,0 +1,10 @@
+* Two cascaded RC stages via subckt + parameter override
+Vin in 0 DC 5
+X1 in mid rcfilter R=1k
+X2 mid out rcfilter R=2k
+.subckt rcfilter a b R=10k
+R1 a b {R}
+C1 b 0 1u
+.ends
+.tran 10u 1m
+.end

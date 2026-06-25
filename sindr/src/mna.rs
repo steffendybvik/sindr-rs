@@ -20,9 +20,13 @@ use crate::error::SimError;
 /// right-hand-side vector `b`, where n = number of non-ground nodes and
 /// m = number of independent voltage sources.
 pub struct MnaSystem {
+    /// (n+m)x(n+m) conductance/constraint matrix (siemens S in the node block).
     pub a: DMatrix<f64>,
+    /// (n+m) right-hand-side vector (amperes A in the node block, volts V in the source block).
     pub b: DVector<f64>,
+    /// Number of non-ground nodes (n).
     pub num_nodes: usize,
+    /// Number of independent voltage sources contributing branch-current unknowns (m).
     pub num_vsources: usize,
 }
 

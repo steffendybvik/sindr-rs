@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6] - 2026-06-03
+
+### Added
+
+- SPICE3 netlist parsing, now built in to `sindr` behind the optional `spice`
+  feature (`sindr = { version = "0.1", features = ["spice"] }`). Exposes
+  `sindr::spice::{parse_file, parse_str, ParsedNetlist, AnalysisRequest, …}`.
+  Reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X,
+  `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`,
+  `.lib`), flattens hierarchy with `.`-separated node naming, and returns a
+  `SourceMap` for recovering original instance paths. Strict by default;
+  lenient mode downgrades unsupported cards to collected warnings.
+
+### Changed
+
+- The standalone `sindr-spice` crate has been folded into `sindr` as the
+  `spice` feature. The parser dependencies (`winnow`, `miette`) are pulled in
+  only when the feature is enabled, so the default dependency tree is
+  unchanged. Migration: replace `sindr_spice::` with `sindr::spice::` and drop
+  the separate `sindr-spice` dependency in favour of the feature.
+
 ## [0.1.0-alpha.5] - 2026-05-10
 
 ### Added

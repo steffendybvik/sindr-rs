@@ -1,0 +1,3 @@
+cycle b title
+.include 'cycle_a.cir'
+.end

@@ -8,8 +8,10 @@
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MosfetKind {
+    /// N-channel MOSFET (electrons are majority carriers in the channel).
     #[cfg_attr(feature = "serde", serde(rename = "nmos"))]
     Nmos,
+    /// P-channel MOSFET (holes are majority carriers in the channel).
     #[cfg_attr(feature = "serde", serde(rename = "pmos"))]
     Pmos,
 }
@@ -18,12 +20,16 @@ pub enum MosfetKind {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MosfetRegion {
+    /// Below threshold — channel off, negligible drain current.
     Cutoff,
+    /// Triode (linear) region — `Vds` below saturation, device acts as a voltage-controlled resistor.
     Triode,
+    /// Saturation region — channel pinched off, drain current set by `Vgs`.
     Saturation,
 }
 
 impl MosfetRegion {
+    /// Lowercase string label for the region (`"cutoff"`, `"triode"`, `"saturation"`).
     pub fn as_str(&self) -> &'static str {
         match self {
             MosfetRegion::Cutoff => "cutoff",

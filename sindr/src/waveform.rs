@@ -15,10 +15,14 @@ pub enum Waveform {
     /// Sinusoidal: amplitude * sin(2*pi*frequency*t + phase) + offset
     #[cfg_attr(feature = "serde", serde(rename = "sine"))]
     Sine {
+        /// Peak amplitude (V or A).
         amplitude: f64,
+        /// Frequency (Hz).
         frequency: f64,
+        /// DC offset added to the sine (V or A). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         offset: f64,
+        /// Phase offset (radians). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         phase: f64, // radians
     },
@@ -26,23 +30,34 @@ pub enum Waveform {
     /// SPICE-compatible pulse waveform.
     #[cfg_attr(feature = "serde", serde(rename = "pulse"))]
     Pulse {
+        /// Initial (low) value (V or A).
         v1: f64, // initial value
+        /// Pulsed (high) value (V or A).
         v2: f64, // pulsed value
+        /// Delay before the first pulse (s). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         delay: f64, // delay before first pulse (s)
+        /// Rise time from `v1` to `v2` (s).
         rise_time: f64, // rise time (s)
+        /// Fall time from `v2` back to `v1` (s).
         fall_time: f64, // fall time (s)
+        /// Width of the high portion of the pulse (s).
         pulse_width: f64, // pulse width (s)
+        /// Repetition period (s).
         period: f64, // period (s)
     },
 
     /// Square wave with configurable duty cycle.
     #[cfg_attr(feature = "serde", serde(rename = "square"))]
     Square {
+        /// Peak amplitude about the offset (V or A).
         amplitude: f64,
+        /// Frequency (Hz).
         frequency: f64,
+        /// DC offset added to the wave (V or A). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         offset: f64,
+        /// Duty cycle (fraction high), 0.0 to 1.0. Default 0.5.
         #[cfg_attr(feature = "serde", serde(default = "default_duty"))]
         duty: f64, // 0.0 to 1.0, default 0.5
     },
@@ -50,8 +65,11 @@ pub enum Waveform {
     /// Triangle wave.
     #[cfg_attr(feature = "serde", serde(rename = "triangle"))]
     Triangle {
+        /// Peak amplitude about the offset (V or A).
         amplitude: f64,
+        /// Frequency (Hz).
         frequency: f64,
+        /// DC offset added to the wave (V or A). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         offset: f64,
     },
@@ -59,11 +77,26 @@ pub enum Waveform {
     /// PWM (pulse width modulation) — square wave with variable duty.
     #[cfg_attr(feature = "serde", serde(rename = "pwm"))]
     Pwm {
+        /// High-level amplitude above the offset (V or A).
         amplitude: f64,
+        /// Frequency (Hz).
         frequency: f64,
+        /// Duty cycle (fraction high), 0.0 to 1.0.
         duty: f64, // 0.0 to 1.0
+        /// DC offset (low level) (V or A). Default 0.
         #[cfg_attr(feature = "serde", serde(default))]
         offset: f64,
+    },
+
+    /// Piecewise-linear waveform. `points` is a list of `(t, value)`
+    /// breakpoints sorted by `t`. Values are linearly interpolated between
+    /// adjacent points; for `t < points[0].0` the first value is held, and
+    /// for `t > points.last().0` the last value is held. An empty list
+    /// evaluates to `0.0` everywhere.
+    #[cfg_attr(feature = "serde", serde(rename = "pwl"))]
+    Pwl {
+        /// Breakpoints as `(time_s, value)` pairs sorted by time.
+        points: Vec<(f64, f64)>,
     },
 }
 
@@ -162,6 +195,35 @@ impl Waveform {
                     *offset
                 }
             }
+
+            Waveform::Pwl { points } => {
+                if points.is_empty() {
+                    return 0.0;
+                }
+                // Edge clamps: hold first value before first t, last value after last t.
+                if t <= points[0].0 {
+                    return points[0].1;
+                }
+                let last = points.len() - 1;
+                if t >= points[last].0 {
+                    return points[last].1;
+                }
+                // Binary search for the bracketing pair (t_i, t_{i+1}) with t_i <= t < t_{i+1}.
+                let idx = match points.binary_search_by(|(ti, _)| {
+                    ti.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal)
+                }) {
+                    Ok(i) => return points[i].1,
+                    Err(i) => i, // first index where points[i].0 > t
+                };
+                let (t0, v0) = points[idx - 1];
+                let (t1, v1) = points[idx];
+                let dt = t1 - t0;
+                if dt == 0.0 {
+                    v0
+                } else {
+                    v0 + (v1 - v0) * ((t - t0) / dt)
+                }
+            }
         }
     }
 
@@ -185,6 +247,8 @@ impl Waveform {
                     None
                 }
             }
+            // PWL has no inherent period.
+            Waveform::Pwl { .. } => None,
         }
     }
 }
@@ -302,6 +366,55 @@ mod tests {
         assert_relative_eq!(w.evaluate(0.1e-3), 3.3, epsilon = 1e-10);
         // Remaining 75%: low (0V)
         assert_relative_eq!(w.evaluate(0.5e-3), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn pwl_interpolates_between_breakpoints() {
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1e-3, 5.0)],
+        };
+        // Midpoint should linearly interpolate to 2.5
+        assert_relative_eq!(w.evaluate(0.5e-3), 2.5, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn pwl_clamps_at_edges() {
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1e-3, 5.0)],
+        };
+        // Before first breakpoint: hold first value
+        assert_relative_eq!(w.evaluate(-1.0), 0.0, epsilon = 1e-12);
+        // After last breakpoint: hold last value
+        assert_relative_eq!(w.evaluate(1.0), 5.0, epsilon = 1e-12);
+        // Exactly at a breakpoint
+        assert_relative_eq!(w.evaluate(0.0), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(w.evaluate(1e-3), 5.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn pwl_empty_returns_zero() {
+        let w = Waveform::Pwl { points: vec![] };
+        assert_relative_eq!(w.evaluate(0.0), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(w.evaluate(42.0), 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn pwl_multi_segment() {
+        // 0->1 then 1->-1 then -1->0
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1.0, 1.0), (2.0, -1.0), (3.0, 0.0)],
+        };
+        assert_relative_eq!(w.evaluate(0.5), 0.5, epsilon = 1e-12);
+        assert_relative_eq!(w.evaluate(1.5), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(w.evaluate(2.5), -0.5, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn pwl_period_is_none() {
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1e-3, 5.0)],
+        };
+        assert!(w.period().is_none());
     }
 
     #[test]

@@ -26,15 +26,19 @@ sindr-rs/
 │   │   ├── node_map.rs         # node-name → matrix-index mapping
 │   │   ├── validation.rs       # circuit pre-flight checks
 │   │   ├── error.rs            # SimError variants
-│   │   └── examples.rs         # named example circuits, runnable from list_examples / run_example
-│   └── examples/               # cargo run --example targets
+│   │   ├── examples.rs         # named example circuits, runnable from list_examples / run_example
+│   │   └── spice/              # SPICE3 netlist parser (optional `spice` feature)
+│   │       └── {mod,parser,preprocess,flatten,build,ast,param_eval,si,
+│   │            analysis,error,source_map}.rs
+│   ├── examples/               # cargo run --example targets
+│   └── tests/                  # integration tests (+ spice fixtures/)
 ├── sindr-devices/      # device physics (no solver dep)
 │   └── src/{diode,bjt,mosfet,igbt,jfet,varactor,schottky,zener,led,
 │            photodiode,photoresistor,thermistor}.rs
 └── .planning/          # GSD workflow artefacts — IGNORE for normal code work
 ```
 
-`sindr` depends on `sindr-devices`. `sindr-devices` has no dependency on `sindr` and is independently testable.
+`sindr` depends on `sindr-devices`. `sindr-devices` has no dependency on `sindr` and is independently testable. SPICE netlist parsing lives in `sindr::spice` behind the optional, default-off `spice` feature, which pulls in `winnow` + `miette`.
 
 ## Commands
 
@@ -50,7 +54,7 @@ cargo clippy --workspace -- -D warnings  # lint (CI-equivalent)
 cargo fmt --all                          # format
 ```
 
-There is no integration-test directory; tests live inline in `#[cfg(test)] mod tests` blocks.
+Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integration tests live in `sindr/tests/` (the SPICE end-to-end suite is gated on the `spice` feature).
 
 ## Conventions
 
@@ -60,7 +64,7 @@ There is no integration-test directory; tests live inline in `#[cfg(test)] mod t
 - **Errors flow through `SimError`** (see `sindr/src/error.rs`). When adding a new failure mode, prefer extending the enum over `String` errors.
 - **`f64` everywhere.** No generic numeric backend, no `f32`.
 - **Serde is feature-gated** but on by default. Any new public type that is part of `Circuit` or `SimulationResult` must derive `Serialize`/`Deserialize` under `#[cfg(feature = "serde")]`. Component types use `snake_case` tags (see existing `#[serde(rename_all = "snake_case")]`).
-- **Public API stability**: the crate is `0.1.0-alpha.5` — breaking changes are allowed, but call them out in the commit message.
+- **Public API stability**: the crate is `0.1.0-alpha.6` — breaking changes are allowed, but call them out in the commit message.
 - **Comments**: lean. Don't restate what well-named code already says. Do explain *why* for non-obvious numerical choices (e.g. damping factors, why `k ≤ 0.999`, why `gmin` thresholds).
 - **No GSD planning-artefact references in source.** Strip `EX-NN`, `Pitfall N`, `RESEARCH.md` / `PLAN.md` mentions. They belong in `.planning/`, not in code or commits.
 
@@ -105,8 +109,8 @@ When in doubt, run `cargo run --example list_examples` and copy the closest exis
 ## Things NOT to do
 
 - **Don't add `unsafe`.**
-- **Don't add a new dependency without a clear need.** `nalgebra`, `serde`, `thiserror` are the load-bearing ones.
-- **Don't introduce a CLI, schematic parser, or GUI in `sindr` or `sindr-devices`** — those are explicit non-goals here. Propose a sibling crate instead.
+- **Don't add a new dependency without a clear need.** `nalgebra`, `serde`, `thiserror` are the load-bearing ones; `winnow` + `miette` back the SPICE parser and are pulled in only by the optional `spice` feature.
+- **Don't introduce a CLI or GUI in `sindr` or `sindr-devices`** — those are explicit non-goals; propose a sibling crate instead. Schematic capture and EDA-file import are likewise out of scope. Heavy *optional* capabilities (like SPICE netlist parsing) belong behind a default-off feature flag with their deps marked `optional`, following the `spice` precedent.
 - **Don't implement BSIM / Gummel-Poon / VBIC** speculatively. They are large undertakings; coordinate via an issue first.
 - **Don't bypass `SimError`** with `panic!` / `unwrap()` in solver code.
 - **Don't write to `.planning/`** unless you are explicitly running a GSD command. It is workflow state, not source.

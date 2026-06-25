@@ -30,7 +30,7 @@ use crate::error::SimError;
 /// 2 connections.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     // ------------------------------------------------------------------
-    // Check 1: Ground node exists (SIM-9)
+    // Check 1: Ground node exists
     // ------------------------------------------------------------------
     let has_ground = circuit
         .components
@@ -42,7 +42,7 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     }
 
     // ------------------------------------------------------------------
-    // Check 2: All nodes reachable from ground — BFS connectivity (SIM-7)
+    // Check 2: All nodes reachable from ground — BFS connectivity
     // ------------------------------------------------------------------
     let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
     for comp in &circuit.components {
@@ -80,7 +80,7 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     }
 
     // ------------------------------------------------------------------
-    // Check 3: Floating nodes — degree < 2 (SIM-8)
+    // Check 3: Floating nodes — degree < 2
     // ------------------------------------------------------------------
     // Count how many component terminals touch each non-ground node.
     let mut degree: HashMap<&str, usize> = HashMap::new();
