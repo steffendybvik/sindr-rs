@@ -13,6 +13,7 @@ use num_complex::Complex64;
 
 use sindr_devices::bjt::{self, BjtKind, BjtParams};
 use sindr_devices::diode::{self, DiodeParams};
+use sindr_devices::jfet;
 use sindr_devices::mosfet::{self, MosfetKind};
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -230,6 +231,78 @@ fn linearize_at_dc(
                     conductances: conds,
                 });
             }
+            CircuitElement::ZenerDiode {
+                nodes,
+                vz,
+                temperature,
+                ..
+            } => {
+                // Same parameters as the DC stamp, including the IS scaling.
+                let mut params = sindr_devices::zener::ZenerParams::new(*vz);
+                if (*temperature - 300.15).abs() > 1e-6 {
+                    params.is =
+                        diode::temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
+                }
+                let v_d = junction_voltage(nodes, node_map, dc_solution);
+                let (g_d, _) = sindr_devices::zener::zener_companion(v_d, &params);
+                models.push(two_terminal(nodes, node_map, g_d));
+            }
+            CircuitElement::SchottkyDiode {
+                nodes, temperature, ..
+            } => {
+                let schottky = sindr_devices::schottky::SchottkyParams::default();
+                let is = if (*temperature - 300.15).abs() > 1e-6 {
+                    diode::temperature_scale_is(schottky.is, *temperature, 300.15, 1.11, 2.0)
+                } else {
+                    schottky.is
+                };
+                let params = DiodeParams {
+                    is,
+                    n: schottky.n,
+                    rs: 0.0,
+                    temperature: *temperature,
+                };
+                let v_d = junction_voltage(nodes, node_map, dc_solution);
+                let (g_d, _) = diode::diode_companion(v_d, &params);
+                models.push(two_terminal(nodes, node_map, g_d));
+            }
+            CircuitElement::Photodiode {
+                nodes, irradiance, ..
+            } => {
+                // The photocurrent is a constant source: no AC part.
+                let params = sindr_devices::photodiode::PhotodiodeParams::default();
+                let v_d = junction_voltage(nodes, node_map, dc_solution);
+                let (g_d, _) =
+                    sindr_devices::photodiode::photodiode_companion(v_d, *irradiance, &params);
+                models.push(two_terminal(nodes, node_map, g_d));
+            }
+            CircuitElement::Jfet {
+                nodes,
+                kind,
+                idss,
+                vp,
+                ..
+            } => {
+                let g = node_map.index(&nodes[0]);
+                let d = node_map.index(&nodes[1]);
+                let s = node_map.index(&nodes[2]);
+                let v = |n: Option<usize>| n.map_or(0.0, |i| dc_solution[i]);
+                // gm and gds are the same in the physical frame for both
+                // channel types (see stamp_jfet_companion).
+                let c = jfet::jfet_companion(v(g) - v(s), v(d) - v(s), *kind, *idss, *vp);
+                models.push(SmallSignalModel {
+                    conductances: vec![
+                        (d, g, c.gm),
+                        (d, s, -c.gm),
+                        (s, g, -c.gm),
+                        (s, s, c.gm),
+                        (d, d, c.gds),
+                        (s, s, c.gds),
+                        (d, s, -c.gds),
+                        (s, d, -c.gds),
+                    ],
+                });
+            }
             CircuitElement::Mosfet {
                 nodes,
                 kind,
@@ -282,6 +355,22 @@ fn linearize_at_dc(
     }
 
     models
+}
+
+/// Voltage across a two-terminal element's `nodes[0]` → `nodes[1]` at the
+/// DC operating point.
+fn junction_voltage(nodes: &[String; 2], node_map: &NodeMap, dc_solution: &DVector<f64>) -> f64 {
+    let v = |n: &String| node_map.index(n).map_or(0.0, |i| dc_solution[i]);
+    v(&nodes[0]) - v(&nodes[1])
+}
+
+/// A conductance `g` between a two-terminal element's nodes.
+fn two_terminal(nodes: &[String; 2], node_map: &NodeMap, g: f64) -> SmallSignalModel {
+    let p = node_map.index(&nodes[0]);
+    let q = node_map.index(&nodes[1]);
+    SmallSignalModel {
+        conductances: vec![(p, p, g), (q, q, g), (p, q, -g), (q, p, -g)],
+    }
 }
 
 /// Reject sweep configs that would underflow, divide by zero, or feed
@@ -489,6 +578,18 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                     stamp_complex_conductance(&mut system, p, q, -y);
                     stamp_complex_conductance(&mut system, q, p, -y);
                 }
+                CircuitElement::Varactor { nodes, params, .. } => {
+                    // Small-signal capacitance at the DC bias.
+                    let v_d = junction_voltage(nodes, &node_map, &dc_solution);
+                    let c = sindr_devices::varactor::junction_capacitance(v_d, params);
+                    let y = j_omega * c;
+                    let p = node_map.index(&nodes[0]);
+                    let q = node_map.index(&nodes[1]);
+                    stamp_complex_conductance(&mut system, p, p, y);
+                    stamp_complex_conductance(&mut system, q, q, y);
+                    stamp_complex_conductance(&mut system, p, q, -y);
+                    stamp_complex_conductance(&mut system, q, p, -y);
+                }
                 CircuitElement::Inductor {
                     nodes, inductance, ..
                 } => {
@@ -620,12 +721,9 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                 | CircuitElement::ZenerDiode { .. }
                 | CircuitElement::SchottkyDiode { .. }
                 | CircuitElement::Photodiode { .. }
-                // Varactor: in AC analysis, use small-signal capacitance at bias (open circuit stub)
-                | CircuitElement::Varactor { .. }
-                // IGBT: nonlinear — open circuit stub in AC (small-signal model not implemented)
-                | CircuitElement::Igbt { .. }
-                // JFET: nonlinear — open circuit stub in AC (small-signal model not implemented)
-                | CircuitElement::Jfet { .. } => {}
+                | CircuitElement::Jfet { .. }
+                // IGBT: open circuit in AC; no small-signal model yet
+                | CircuitElement::Igbt { .. } => {}
                 // Transformer: coupled inductors — stamp admittances in AC (Y = 1/(j*omega*L))
                 // For simplicity, stamp both windings as independent inductors (ignores mutual coupling in AC)
                 // A full coupled-inductor AC stamp would require expanding the MNA with 2 branch vars here too.
@@ -1121,5 +1219,165 @@ mod tests {
     #[test]
     fn bjt_ac_gain_matches_dc_slope_at_raised_temperature() {
         assert_ac_gain_matches_dc_slope(BjtKind::Npn, 1.0, 350.0);
+    }
+
+    /// Low-frequency AC gain VIN → `node` must equal the slope of the DC
+    /// transfer curve at the bias `vin`, for any purely resistive circuit
+    /// `build(vin)` with a source `VIN`.
+    fn assert_ac_matches_dc_slope(
+        label: &str,
+        build: impl Fn(f64) -> Circuit,
+        vin: f64,
+        node: &str,
+    ) {
+        let v_dc = |v: f64| crate::solve_circuit(&build(v)).unwrap().node_voltages[node];
+        let h = 1e-3;
+        let slope = (v_dc(vin + h) - v_dc(vin - h)) / (2.0 * h);
+        let config = AcConfig {
+            f_start: 1.0,
+            f_stop: 1.0,
+            num_points: 1,
+            spacing: FrequencySpacing::Linear,
+            source_id: "VIN".into(),
+            ac_magnitude: 1.0,
+        };
+        let gain = solve_ac(&build(vin), &config).unwrap().points[0].node_voltages[node];
+        let tol = 1e-3 * slope.abs() + 1e-5;
+        assert!(
+            (gain.re - slope).abs() <= tol && gain.im.abs() < 1e-9,
+            "{label}: AC gain {gain} vs DC slope {slope}"
+        );
+    }
+
+    fn vsrc(id: &str, p: &str, v: f64) -> CircuitElement {
+        CircuitElement::VoltageSource {
+            id: id.into(),
+            nodes: [p.into(), "0".into()],
+            voltage: v,
+            waveform: None,
+        }
+    }
+
+    fn res(id: &str, a: &str, b: &str, r: f64) -> CircuitElement {
+        CircuitElement::Resistor {
+            id: id.into(),
+            nodes: [a.into(), b.into()],
+            resistance: r,
+        }
+    }
+
+    fn with(components: Vec<CircuitElement>) -> Circuit {
+        Circuit {
+            ground_node: "0".into(),
+            components,
+        }
+    }
+
+    #[test]
+    fn jfet_ac_gain_matches_dc_slope() {
+        use sindr_devices::jfet::JfetKind;
+        // Common-source stage driven at the gate; P-channel is the mirror.
+        for (kind, sign, vp) in [
+            (JfetKind::NChannel, 1.0, -2.0),
+            (JfetKind::PChannel, -1.0, 2.0),
+        ] {
+            let stage = |vin: f64| {
+                with(vec![
+                    vsrc("VDD", "vdd", sign * 12.0),
+                    vsrc("VIN", "g", vin),
+                    res("RD", "vdd", "d", 1_000.0),
+                    res("RS", "s", "0", 100.0),
+                    CircuitElement::Jfet {
+                        id: "J1".into(),
+                        nodes: ["g".into(), "d".into(), "s".into()],
+                        kind,
+                        idss: 10e-3,
+                        vp,
+                    },
+                ])
+            };
+            assert_ac_matches_dc_slope(&format!("{kind:?}"), stage, sign * -0.8, "d");
+        }
+    }
+
+    #[test]
+    fn diode_family_ac_matches_dc_slope() {
+        let behind = |element: CircuitElement, r: f64| {
+            move |vin: f64| {
+                with(vec![
+                    vsrc("VIN", "in", vin),
+                    res("R1", "in", "out", r),
+                    element.clone(),
+                ])
+            }
+        };
+        let zener = CircuitElement::ZenerDiode {
+            id: "D1".into(),
+            nodes: ["0".into(), "out".into()],
+            vz: 5.1,
+            temperature: 300.15,
+        };
+        assert_ac_matches_dc_slope("zener in breakdown", behind(zener, 1_000.0), 10.0, "out");
+
+        let schottky = CircuitElement::SchottkyDiode {
+            id: "D1".into(),
+            nodes: ["out".into(), "0".into()],
+            temperature: 300.15,
+        };
+        assert_ac_matches_dc_slope("schottky", behind(schottky, 1_000.0), 2.0, "out");
+
+        let lit = CircuitElement::Photodiode {
+            id: "D1".into(),
+            nodes: ["0".into(), "out".into()],
+            irradiance: 1e-4,
+            temperature: 300.15,
+        };
+        assert_ac_matches_dc_slope("photodiode, reverse", behind(lit, 10_000.0), 5.0, "out");
+
+        let forward = CircuitElement::Photodiode {
+            id: "D1".into(),
+            nodes: ["out".into(), "0".into()],
+            irradiance: 0.0,
+            temperature: 300.15,
+        };
+        assert_ac_matches_dc_slope("photodiode, forward", behind(forward, 1_000.0), 2.0, "out");
+    }
+
+    /// A reverse-biased varactor behind R is an RC low-pass with
+    /// C = C_j(V_bias): at ω = 1/(R·C_j) the gain is 1/√2 at −45°.
+    #[test]
+    fn varactor_is_its_bias_capacitance_in_ac() {
+        let params = sindr_devices::varactor::VaractorParams::default();
+        let r = 10_000.0;
+        let c_j = sindr_devices::varactor::junction_capacitance(-3.0, &params);
+        let f_c = 1.0 / (2.0 * std::f64::consts::PI * r * c_j);
+        let circuit = with(vec![
+            vsrc("VIN", "in", 3.0),
+            res("R1", "in", "out", r),
+            CircuitElement::Varactor {
+                id: "D1".into(),
+                nodes: ["0".into(), "out".into()],
+                params,
+            },
+        ]);
+        let config = AcConfig {
+            f_start: f_c,
+            f_stop: f_c,
+            num_points: 1,
+            spacing: FrequencySpacing::Linear,
+            source_id: "VIN".into(),
+            ac_magnitude: 1.0,
+        };
+        let v = solve_ac(&circuit, &config).unwrap().points[0].node_voltages["out"];
+        assert!(
+            (v.norm() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9,
+            "|H| = {}",
+            v.norm()
+        );
+        assert!(
+            (v.arg().to_degrees() + 45.0).abs() < 1e-7,
+            "phase = {}",
+            v.arg().to_degrees()
+        );
     }
 }
