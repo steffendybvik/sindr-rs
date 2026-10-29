@@ -63,7 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SingularMatrix`. Voltage limiting corrected one junction at a time, so the
   next junction's correction on the shared node pushed the first one volts
   forward. When that happens the solver now takes a damped Newton step that
-  keeps every junction within its limit.
+  keeps every junction within its limit. Only a junction that moved forward
+  triggers it, so a junction stepping back keeps its own limit (and a BJT
+  its ±10·nV_T step clamp).
 - AC analysis now linearises BJTs with the full terminal Jacobian of the DC
   model (gπ, gm, gμ and g_o), instead of a forward-active approximation that
   used the B–C junction conductance as the output conductance. Gains in
