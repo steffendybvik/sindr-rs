@@ -341,16 +341,13 @@ enum IncludeDirective {
 ///
 /// Returns `None` if the line is not one of these directives.
 fn parse_include_or_lib(folded: &str) -> Option<IncludeDirective> {
-    let rest = if let Some(r) = folded.strip_prefix(".include") {
-        r
-    } else if let Some(r) = folded.strip_prefix(".lib") {
+    if let Some(r) = folded.strip_prefix(".lib") {
         // Two-arg `.lib` is the include form; one-arg too. The card-form
         // `.lib name` (declaration) does not appear in the SPICE3 subset
         // we support, so any `.lib` is an include.
         return parse_lib_args(r);
-    } else {
-        return None;
-    };
+    }
+    let rest = folded.strip_prefix(".include")?;
 
     // `.include` requires exactly one quoted-or-bare path.
     let trimmed = rest.trim();
