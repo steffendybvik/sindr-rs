@@ -523,7 +523,7 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
     validate_config(config)?;
 
     // Step 1: DC operating point
-    let dc_result = crate::solve_circuit(circuit)?;
+    let dc_result = crate::solve_dc_operating_point(circuit)?;
 
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
@@ -1344,7 +1344,8 @@ mod tests {
     }
 
     /// A reverse-biased varactor behind R is an RC low-pass with
-    /// C = C_j(V_bias): at ω = 1/(R·C_j) the gain is 1/√2 at −45°.
+    /// C = C_j(V_bias): at ω = 1/(R·C_j) the gain is 1/√2 at −45°. (The
+    /// varactor's 1 TΩ DC leak moves the bias by ~30 nV, hence 1e-8.)
     #[test]
     fn varactor_is_its_bias_capacitance_in_ac() {
         let params = sindr_devices::varactor::VaractorParams::default();
@@ -1370,14 +1371,84 @@ mod tests {
         };
         let v = solve_ac(&circuit, &config).unwrap().points[0].node_voltages["out"];
         assert!(
-            (v.norm() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9,
+            (v.norm() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-8,
             "|H| = {}",
             v.norm()
         );
         assert!(
-            (v.arg().to_degrees() + 45.0).abs() < 1e-7,
+            (v.arg().to_degrees() + 45.0).abs() < 1e-6,
             "phase = {}",
             v.arg().to_degrees()
+        );
+    }
+
+    /// A BJT stage with an input coupling capacitor and a collector choke.
+    /// Its DC operating point must be the same stage with the capacitor
+    /// removed and the choke replaced by a wire.
+    #[test]
+    fn dc_operating_point_opens_capacitors_and_shorts_inductors() {
+        let stage = |reactive: bool| {
+            let mut c = vec![
+                vsrc("VCC", "vcc", 10.0),
+                vsrc("VIN", "in", 0.0),
+                res("RB", "vcc", "b", 470_000.0),
+                res("RC", if reactive { "x" } else { "vcc" }, "c", 1_000.0),
+                CircuitElement::Bjt {
+                    id: "Q1".into(),
+                    nodes: ["b".into(), "c".into(), "0".into()],
+                    kind: BjtKind::Npn,
+                    bf: 100.0,
+                    temperature: 300.15,
+                    parasitic_caps: None,
+                },
+            ];
+            if reactive {
+                c.push(CircuitElement::Capacitor {
+                    id: "CIN".into(),
+                    nodes: ["in".into(), "b".into()],
+                    capacitance: 10e-6,
+                });
+                c.push(CircuitElement::Inductor {
+                    id: "L1".into(),
+                    nodes: ["vcc".into(), "x".into()],
+                    inductance: 1e-3,
+                });
+            } else {
+                // Keep `in` connected so both circuits have the same nodes.
+                c.push(res("RIN", "in", "0", 1_000.0));
+            }
+            with(c)
+        };
+        let op = crate::solve_dc_operating_point(&stage(true)).unwrap();
+        let plain = crate::solve_circuit(&stage(false)).unwrap();
+        // Both are Newton solves stopped at RELTOL = 1e-3 (see SIN-14), so
+        // they agree to that precision, not to round-off.
+        for node in ["b", "c"] {
+            assert!(
+                (op.node_voltages[node] - plain.node_voltages[node]).abs()
+                    < 2e-4 * plain.node_voltages[node].abs(),
+                "V({node}): {} vs {}",
+                op.node_voltages[node],
+                plain.node_voltages[node]
+            );
+        }
+        // AC biases there too: the mid-band gain is −gm·RC at that Ic.
+        let ic = (10.0 - plain.node_voltages["c"]) / 1_000.0;
+        let gm = ic / sindr_devices::diode::V_T;
+        let config = AcConfig {
+            f_start: 10e3,
+            f_stop: 10e3,
+            num_points: 1,
+            spacing: FrequencySpacing::Linear,
+            source_id: "VIN".into(),
+            ac_magnitude: 1.0,
+        };
+        let gain = solve_ac(&stage(true), &config).unwrap().points[0].node_voltages["c"];
+        assert!(
+            (gain.norm() - gm * 1_000.0).abs() < 2e-2 * gm * 1_000.0,
+            "|gain| {} vs gm·RC {}",
+            gain.norm(),
+            gm * 1_000.0
         );
     }
 }
