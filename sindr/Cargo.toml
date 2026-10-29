@@ -35,6 +35,8 @@ spice = ["dep:winnow", "dep:miette"]
 
 [dev-dependencies]
 approx = "0.5"
+# Capped: proptest 1.12 needs Rust 1.88, above our MSRV (1.87).
+proptest = { version = ">=1.11, <1.12", default-features = false, features = ["std"] }
 serde_json = { workspace = true }
 # Fancy diagnostic rendering used by the SPICE end-to-end tests.
 miette = { version = "7", features = ["fancy"] }

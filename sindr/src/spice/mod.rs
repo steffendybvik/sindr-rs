@@ -263,3 +263,111 @@ pub fn parse_file_with_options(
     let flat = flatten::flatten(cards, opts.strict, &mut warnings)?;
     build::build_netlist(flat, title, opts.strict, &mut warnings)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixtures() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    }
+
+    fn component_ids(netlist: &ParsedNetlist) -> Vec<String> {
+        let mut ids: Vec<String> = netlist
+            .circuit
+            .components
+            .iter()
+            .map(|c| c.id().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn default_options_are_strict_with_no_search_path() {
+        let opts = ParseOptions::default();
+        assert!(opts.strict);
+        assert!(opts.include_search_path.is_none());
+    }
+
+    #[test]
+    fn title_is_the_first_line() {
+        let netlist = parse_str("my amplifier\nV1 a 0 1\nR1 a 0 1k\n.end\n").unwrap();
+        assert_eq!(netlist.title, "my amplifier");
+        assert!(netlist.warnings.is_empty());
+    }
+
+    #[test]
+    fn parse_str_and_parse_file_agree() {
+        let path = fixtures().join("rc.cir");
+        let from_file = parse_file(&path).unwrap();
+        let from_str = parse_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(component_ids(&from_file), component_ids(&from_str));
+        assert_eq!(from_file.analyses, from_str.analyses);
+        assert_eq!(from_file.title, from_str.title);
+    }
+
+    #[test]
+    fn parse_str_resolves_includes_from_the_search_path() {
+        let deck = "main\nR1 a b 1k\n.include 'include_sub.cir'\n.end\n";
+        let opts = ParseOptions {
+            include_search_path: Some(fixtures()),
+            ..ParseOptions::default()
+        };
+        let netlist = parse_str_with_options(deck, opts).unwrap();
+        assert_eq!(component_ids(&netlist), ["r1", "rincl"]);
+    }
+
+    #[test]
+    fn parse_file_search_path_overrides_the_file_directory() {
+        // Copy the main deck somewhere its include can't be found by default.
+        let dir = std::env::temp_dir().join(format!("sindr-spice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("include_main.cir");
+        std::fs::copy(fixtures().join("include_main.cir"), &main).unwrap();
+
+        assert!(
+            parse_file(&main).is_err(),
+            "include should not resolve next to the copy"
+        );
+
+        let opts = ParseOptions {
+            include_search_path: Some(fixtures()),
+            ..ParseOptions::default()
+        };
+        let netlist = parse_file_with_options(&main, opts).unwrap();
+        assert_eq!(component_ids(&netlist), ["r1", "rincl"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_file_is_an_io_error() {
+        let missing = fixtures().join("does_not_exist.cir");
+        for result in [
+            parse_file(&missing),
+            parse_file_with_options(
+                &missing,
+                ParseOptions {
+                    include_search_path: Some(fixtures()),
+                    ..ParseOptions::default()
+                },
+            ),
+        ] {
+            match result {
+                Err(SpiceParseError::IncludeIo { path, .. }) => assert_eq!(path, missing),
+                other => panic!("expected IncludeIo, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn include_cycle_is_an_error_not_a_hang() {
+        match parse_file(fixtures().join("cycle_a.cir")) {
+            Err(SpiceParseError::Syntax { message, .. }) => {
+                assert!(message.contains("include cycle"), "{message}")
+            }
+            other => panic!("expected an include-cycle error, got {other:?}"),
+        }
+    }
+}

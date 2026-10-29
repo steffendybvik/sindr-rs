@@ -51,3 +51,101 @@ pub enum AcSweep {
     /// `lin` — total points, linear spacing.
     Lin,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spice::parse_str;
+
+    fn analyses(directives: &str) -> Vec<AnalysisRequest> {
+        let deck = format!("* analyses\nV1 in 0 1\nR1 in 0 1k\n{directives}\n.end\n");
+        parse_str(&deck).unwrap().analyses
+    }
+
+    #[test]
+    fn op() {
+        assert_eq!(analyses(".op"), vec![AnalysisRequest::Op]);
+    }
+
+    #[test]
+    fn tran_with_and_without_tstart() {
+        assert_eq!(
+            analyses(".tran 1u 1m\n.tran 10n 2m 0.5m"),
+            vec![
+                AnalysisRequest::Tran {
+                    tstep: 1e-6,
+                    tstop: 1e-3,
+                    tstart: None
+                },
+                AnalysisRequest::Tran {
+                    tstep: 10e-9,
+                    tstop: 2e-3,
+                    tstart: Some(0.5e-3)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn dc_sweep_lowercases_the_source() {
+        assert_eq!(
+            analyses(".dc V1 0 5 0.5"),
+            vec![AnalysisRequest::Dc {
+                source: "v1".into(),
+                start: 0.0,
+                stop: 5.0,
+                step: 0.5
+            }]
+        );
+    }
+
+    #[test]
+    fn ac_sweep_kinds() {
+        let ac = |sweep, points| AnalysisRequest::Ac {
+            sweep,
+            points,
+            fstart: 1.0,
+            fstop: 1e6,
+        };
+        assert_eq!(
+            analyses(".ac dec 10 1 1meg\n.ac OCT 4 1 1meg\n.ac lin 101 1 1meg"),
+            vec![
+                ac(AcSweep::Dec, 10),
+                ac(AcSweep::Oct, 4),
+                ac(AcSweep::Lin, 101)
+            ]
+        );
+    }
+
+    #[test]
+    fn directives_keep_source_order() {
+        let kinds: Vec<&str> = analyses(".ac lin 2 1 2\n.op\n.tran 1u 1m\n.dc V1 0 1 1")
+            .iter()
+            .map(|a| match a {
+                AnalysisRequest::Op => "op",
+                AnalysisRequest::Tran { .. } => "tran",
+                AnalysisRequest::Dc { .. } => "dc",
+                AnalysisRequest::Ac { .. } => "ac",
+            })
+            .collect();
+        assert_eq!(kinds, ["ac", "op", "tran", "dc"]);
+    }
+
+    #[test]
+    fn directive_values_use_params() {
+        let got = analyses(".param tstop=2m\n.tran 1u {tstop}");
+        assert_eq!(
+            got,
+            vec![AnalysisRequest::Tran {
+                tstep: 1e-6,
+                tstop: 2e-3,
+                tstart: None
+            }]
+        );
+    }
+
+    #[test]
+    fn deck_without_directives_has_none() {
+        assert!(analyses("").is_empty());
+    }
+}
