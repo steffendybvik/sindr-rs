@@ -64,7 +64,7 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 - **Errors flow through `SimError`** (see `sindr/src/error.rs`). When adding a new failure mode, prefer extending the enum over `String` errors.
 - **`f64` everywhere.** No generic numeric backend, no `f32`.
 - **Serde is feature-gated** but on by default. Any new public type that is part of `Circuit` or `SimulationResult` must derive `Serialize`/`Deserialize` under `#[cfg(feature = "serde")]`. Component types use `snake_case` tags (see existing `#[serde(rename_all = "snake_case")]`).
-- **Public API stability**: the crate is `0.1.0-alpha.6` — breaking changes are allowed, but call them out in the commit message.
+- **Public API stability**: the crate is `0.1.0-alpha.7` — breaking changes are allowed, but call them out in the commit message.
 - **Comments**: lean. Don't restate what well-named code already says. Do explain *why* for non-obvious numerical choices (e.g. damping factors, why `k ≤ 0.999`, why `gmin` thresholds).
 - **No GSD planning-artefact references in source.** Strip `EX-NN`, `Pitfall N`, `RESEARCH.md` / `PLAN.md` mentions. They belong in `.planning/`, not in code or commits.
 

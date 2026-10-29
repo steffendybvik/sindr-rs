@@ -78,7 +78,7 @@ cargo run --example parse_netlist --features spice
 
 ## Status
 
-Pre-release alpha (`0.1.0-alpha.6`), [published on crates.io](https://crates.io/crates/sindr). API is liable to change.
+Pre-release alpha (`0.1.0-alpha.7`), [published on crates.io](https://crates.io/crates/sindr). API is liable to change.
 
 ## Scope & limitations
 
