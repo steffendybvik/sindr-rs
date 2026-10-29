@@ -480,9 +480,12 @@ pub(crate) fn apply_voltage_limiting(
     let junction = |info: &DiodeLimitInfo, v: &DVector<f64>| {
         info.anode_idx.map_or(0.0, |i| v[i]) - info.cathode_idx.map_or(0.0, |i| v[i])
     };
+    // Only a junction that moved forward can overshoot: for a long step back
+    // from forward bias `limit_voltage` returns `v_crit`, below where the
+    // junction already is.
     let overshoots = diode_info.iter().any(|info| {
         let (old, fin) = (junction(info, v_prev), junction(info, &v_limited));
-        fin > diode::limit_voltage(fin, old, info.v_crit, info.n) + 1e-9
+        fin > old && fin > diode::limit_voltage(fin, old, info.v_crit, info.n) + 1e-9
     });
     if overshoots {
         let mut alpha: f64 = 1.0;
@@ -1109,6 +1112,44 @@ mod tests {
             nodes: [a.into(), k.into()],
             temperature: 300.15,
         }
+    }
+
+    /// A BJT junction stepping back from forward bias is not an overshoot:
+    /// the series-junction fallback must not run and discard the BJT step
+    /// clamp. Base on node 0 (emitter grounded), collector on node 1; the raw
+    /// step pulls Vbe from 0.65 V to 0.17 V and throws the collector to 2 GV.
+    #[test]
+    fn backward_bjt_step_keeps_its_step_clamp() {
+        let n = 1.0;
+        let v_crit = diode::critical_voltage(1.5e-6, n);
+        let info = [
+            DiodeLimitInfo {
+                anode_idx: Some(0),
+                cathode_idx: None,
+                v_crit,
+                n,
+                correction_node: None,
+                is_bjt: true,
+                zener_vz: None,
+            },
+            DiodeLimitInfo {
+                anode_idx: Some(0),
+                cathode_idx: Some(1),
+                v_crit,
+                n,
+                correction_node: Some(CorrectionTarget::Cathode),
+                is_bjt: true,
+                zener_vz: None,
+            },
+        ];
+        let v_prev = DVector::from_vec(vec![0.65, 5.0]);
+        let v_new = DVector::from_vec(vec![0.1688, 2.1e9]);
+        let v = apply_voltage_limiting(&v_new, &v_prev, &info);
+
+        let max_step = 10.0 * n * diode::V_T;
+        let (vbe, vbc) = (v[0], v[0] - v[1]);
+        assert!((vbe - (0.65 - max_step)).abs() < 1e-12, "Vbe {vbe}");
+        assert!((vbc - (0.65 - 5.0 - max_step)).abs() < 1e-9, "Vbc {vbc}");
     }
 
     #[test]
