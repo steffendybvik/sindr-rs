@@ -38,7 +38,7 @@ use std::collections::{HashMap, HashSet};
 use miette::NamedSource;
 
 use crate::spice::ast::{
-    ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawModel, RawSubckt,
+    ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawModel, RawSubckt, Span,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::param_eval::{eval_error_to_parse_error, eval_param_list, ParamScope};
@@ -52,7 +52,7 @@ pub(crate) struct Flattened {
     pub elements: Vec<FlatElement>,
     pub models: HashMap<String, RawModel>,
     pub source_map: SourceMap,
-    pub analyses: Vec<RawAnalysis>,
+    pub analyses: Vec<(RawAnalysis, Span)>,
     /// Snapshot of the outer-most parameter scope after top-level `.param`
     /// evaluation. Analysis directive arguments are evaluated against this.
     pub top_params: HashMap<String, f64>,
@@ -81,8 +81,8 @@ pub(crate) fn flatten(
     // ---- Pass 1: collect definitions ----
     let mut subckts: HashMap<String, RawSubckt> = HashMap::new();
     let mut models: HashMap<String, RawModel> = HashMap::new();
-    let mut top_param_lists: Vec<Vec<(String, ParamExpr)>> = Vec::new();
-    let mut top_analyses: Vec<RawAnalysis> = Vec::new();
+    let mut top_param_lists: Vec<(Vec<(String, ParamExpr)>, Span)> = Vec::new();
+    let mut top_analyses: Vec<(RawAnalysis, Span)> = Vec::new();
     let mut top_elements: Vec<RawElement> = Vec::new();
 
     for card in cards {
@@ -93,8 +93,8 @@ pub(crate) fn flatten(
             RawCard::Model(m) => {
                 models.insert(m.name.clone(), m);
             }
-            RawCard::Param(list) => top_param_lists.push(list),
-            RawCard::Analysis(a) => top_analyses.push(a),
+            RawCard::Param(list, span) => top_param_lists.push((list, span)),
+            RawCard::Analysis(a, span) => top_analyses.push((a, span)),
             RawCard::Element(e) => top_elements.push(e),
             RawCard::Include(_) | RawCard::Lib { .. } => {
                 // The preprocessor resolves these; if one survives this far
@@ -120,9 +120,9 @@ pub(crate) fn flatten(
 
     // ---- Pass 2: evaluate top-level params ----
     let mut scope = ParamScope::new();
-    for list in &top_param_lists {
+    for (list, span) in &top_param_lists {
         if let Err(e) = eval_param_list(list, &mut scope) {
-            return Err(eval_error_to_parse_error(e, "<param>"));
+            return Err(eval_error_to_parse_error(e, "<param>").locate(span));
         }
     }
 
@@ -224,12 +224,12 @@ fn expand_instance(
     if let Err(e) = eval_param_list(&def.defaults, scope) {
         scope.pop_scope();
         active_stack.remove(&subckt_name);
-        return Err(eval_error_to_parse_error(e, "<param>"));
+        return Err(eval_error_to_parse_error(e, "<param>").locate(&inst.span));
     }
     if let Err(e) = eval_param_list(&instance_overrides, scope) {
         scope.pop_scope();
         active_stack.remove(&subckt_name);
-        return Err(eval_error_to_parse_error(e, "<param>"));
+        return Err(eval_error_to_parse_error(e, "<param>").locate(&inst.span));
     }
 
     // Build the instance path for renaming.
@@ -290,11 +290,11 @@ fn expand_instance(
                     });
                 }
             }
-            RawCard::Param(list) => {
+            RawCard::Param(list, span) => {
                 if let Err(e) = eval_param_list(list, scope) {
                     scope.pop_scope();
                     active_stack.remove(&subckt_name);
-                    return Err(eval_error_to_parse_error(e, "<param>"));
+                    return Err(eval_error_to_parse_error(e, "<param>").locate(span));
                 }
             }
             RawCard::Subckt(_) | RawCard::Model(_) => {
@@ -305,7 +305,10 @@ fn expand_instance(
                 // definitions even if we cannot use them.
                 // No-op for now.
             }
-            RawCard::Analysis(_) | RawCard::Include(_) | RawCard::Lib { .. } | RawCard::Ends(_) => {
+            RawCard::Analysis(..)
+            | RawCard::Include(_)
+            | RawCard::Lib { .. }
+            | RawCard::Ends(_) => {
                 // Ignore inside subckt bodies.
             }
         }
@@ -390,13 +393,14 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::spice::ast::{ParamExpr, RawElement, RawElementBody, RawSubckt, Span};
+    use crate::spice::ast::{ParamExpr, RawElement, RawElementBody, RawSubckt};
 
     fn span() -> Span {
         Span {
             start: 0,
             end: 0,
             file: Arc::from("test.cir"),
+            src: Arc::default(),
         }
     }
 
@@ -580,7 +584,10 @@ mod tests {
     fn outer_param_visible_inside_subckt_body() {
         // .param vcc=5; subckt uses {vcc} for R value.
         let cards = vec![
-            RawCard::Param(vec![("vcc".to_string(), ParamExpr::Number(5.0))]),
+            RawCard::Param(
+                vec![("vcc".to_string(), ParamExpr::Number(5.0))],
+                Span::detached(),
+            ),
             RawCard::Subckt(subckt(
                 "rc",
                 &["in", "out"],

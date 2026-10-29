@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- SPICE errors raised after parsing now point at the offending line:
+  undefined models and parameters, parameter cycles, and bad analysis
+  directive values. Before, they carried no source text and a span at the
+  start of the file. Lines inside `.include`d files point into those files.
 - `solve_ac` validates its `AcConfig` and returns
   `SimError::InvalidComponent` for 0 points, non-finite values,
   `f_start > f_stop`, `f_start <= 0` with logarithmic spacing, and

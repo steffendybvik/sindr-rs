@@ -18,6 +18,22 @@ pub(crate) struct Span {
     pub start: usize,
     pub end: usize,
     pub file: Arc<str>,
+    /// Text of `file`, so errors raised after parsing can still render the
+    /// offending line. Empty for spans not tied to source yet.
+    pub src: Arc<String>,
+}
+
+impl Span {
+    /// A placeholder span with no source attached; the parser driver
+    /// replaces it with the card's source line.
+    pub(crate) fn detached() -> Self {
+        Span {
+            start: 0,
+            end: 0,
+            file: Arc::from(""),
+            src: Arc::default(),
+        }
+    }
 }
 
 /// One top-level entry in a netlist (after the title line).
@@ -28,13 +44,15 @@ pub(crate) enum RawCard {
     Element(RawElement),
     Model(RawModel),
     Subckt(RawSubckt),
-    Param(Vec<(String, ParamExpr)>),
+    /// `.param` bindings and the card's source line.
+    Param(Vec<(String, ParamExpr)>, Span),
     Include(PathBuf),
     Lib {
         file: PathBuf,
         section: Option<String>,
     },
-    Analysis(RawAnalysis),
+    /// An analysis directive and its source line.
+    Analysis(RawAnalysis, Span),
     /// `.ends [name]` marker; only meaningful inside a subckt body.
     Ends(Option<String>),
 }
