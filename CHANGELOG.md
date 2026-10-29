@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AC analysis now biases at the DC operating point (capacitors open,
+  inductors shorted). Before, any circuit with a capacitor, inductor or
+  waveform source was linearised at the transient's 5τ state, ~0.7 % short of
+  the bias for a coupling capacitor.
+- AC analysis now has small-signal models for JFETs (N and P), Zener,
+  Schottky and photodiodes, and varactors (their capacitance at the bias).
+  Before, these were open circuits in AC, so e.g. a JFET amplifier had no
+  gain.
 - SPICE errors raised after parsing now point at the offending line:
   undefined models and parameters, parameter cycles, and bad analysis
   directive values. Before, they carried no source text and a span at the
