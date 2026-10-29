@@ -10,19 +10,19 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 
 ```toml
 [dependencies]
-sindr = { path = "../sindr" }
+sindr = "0.1.0-alpha.7"
 ```
 
 Serde support is on by default. To disable:
 
 ```toml
-sindr = { path = "../sindr", default-features = false }
+sindr = { version = "0.1.0-alpha.7", default-features = false }
 ```
 
 To parse SPICE netlists, enable the optional `spice` feature (off by default):
 
 ```toml
-sindr = { path = "../sindr", features = ["spice"] }
+sindr = { version = "0.1.0-alpha.7", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -156,9 +156,18 @@ CircuitElement::Igbt {
     nodes: [String; 3],
     params: IgbtParams, // { vth, k, vce_sat }
 }
+
+// JFET — nodes: [gate, drain, source]
+CircuitElement::Jfet {
+    id,
+    nodes: [String; 3],
+    kind: JfetKind, // JfetKind::NChannel or JfetKind::PChannel
+    idss: f64,      // drain saturation current at Vgs = 0 (A)
+    vp: f64,        // pinch-off voltage (V), negative for N-channel
+}
 ```
 
-`BjtKind`, `MosfetKind`, `BjtParasiticCaps`, `MosfetParasiticCaps`, `IgbtParams` are re-exported from `sindr` directly.
+`BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps` and `MosfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
 When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as Backward Euler capacitor companions each transient timestep, with per-junction voltage state tracked internally. This automatically triggers transient analysis.
 
@@ -252,6 +261,8 @@ CircuitElement::Relay {
     pickup_voltage: f64,
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
 }
+CircuitElement::Fuse             { id, nodes: [String; 2], rating: f64, blown: bool } // 1 mΩ intact, 1 GΩ blown; rating is display-only
+CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64 }   // ideal source from output to gnd
 ```
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as a Backward Euler inductor companion). This triggers transient automatically.
@@ -282,12 +293,12 @@ pub struct ComponentResult {
 pub struct BjtResult {
     pub id: String, pub vbe: f64, pub vce: f64,
     pub ib: f64, pub ic: f64, pub ie: f64,
-    pub power: f64, pub region: String, // "active" | "saturation" | "cutoff" | "reverse_active"
+    pub power: f64, pub region: String, // "active" | "saturation" | "cutoff"
 }
 
 pub struct MosfetResult {
     pub id: String, pub vgs: f64, pub vds: f64,
-    pub id_current: f64, pub power: f64, pub region: String, // "off" | "linear" | "saturation"
+    pub id_current: f64, pub power: f64, pub region: String, // "cutoff" | "triode" | "saturation"
 }
 ```
 
@@ -306,6 +317,29 @@ pub struct TimestepSnapshot {
     pub component_results: Vec<ComponentResult>,
 }
 ```
+
+## AC analysis
+
+Small-signal frequency response around the DC operating point. Nonlinear devices are linearised at the operating point, then each frequency is a complex MNA solve.
+
+```rust
+use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+
+let config = AcConfig {
+    f_start: 1.0,
+    f_stop: 100_000.0,
+    num_points: 51,
+    spacing: FrequencySpacing::Logarithmic, // or Linear
+    source_id: "V1".into(),                 // voltage source that carries the AC stimulus
+    ac_magnitude: 1.0,
+};
+let result = solve_ac(&circuit, &config)?;
+
+let gain = result.gain_curve("n_out");   // (Hz, dB)
+let phase = result.phase_curve("n_out"); // (Hz, degrees)
+```
+
+`num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidComponent`.
 
 ## DC sweep
 
@@ -350,14 +384,14 @@ pub struct TempSweepPoint {
 }
 ```
 
-`num_steps` must be ≥ 2.
+`num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
 
 ## Error handling
 
 ```rust
 pub enum SimError {
     NoGround,
-    DisconnectedNodes(String),
+    DisconnectedNodes(Vec<String>),
     FloatingNode(String),
     SingularMatrix,
     InvalidSolution,

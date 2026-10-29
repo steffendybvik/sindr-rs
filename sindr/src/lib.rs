@@ -10,7 +10,8 @@
 //! - **Transient** — backward-Euler timestepping when capacitors, inductors,
 //!   or time-varying sources are present.
 //! - **AC small-signal** — sinusoidal-steady-state via [`ac_analysis::solve_ac`].
-//! - **DC sweep** — parameter sweep over a component value via [`fn@dc_sweep`].
+//! - **DC sweep** — operating point at each value of a swept voltage source,
+//!   via [`fn@dc_sweep`].
 //! - **Temperature sweep** — operating-point sweep over junction temperature
 //!   via [`temperature_sweep`].
 //!
@@ -68,16 +69,60 @@
 //! # Cargo features
 //!
 //! - `serde` *(default)* — `Serialize`/`Deserialize` impls on the public
-//!   types. Disable for embedded / no-allocator targets.
-//! - `examples` — exposes the `examples` module with built-in named
-//!   circuits (voltage divider, BJT amp, RC transient, etc.).
+//!   types.
+//! - `examples` *(default, implies `serde`)* — exposes [`get_examples`] and
+//!   the built-in named circuits (voltage divider, BJT amp, RC transient,
+//!   etc.).
+//! - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = "0.1"
+//! sindr = "0.1.0-alpha.7"
 //!
-//! # No serde:
-//! sindr = { version = "0.1", default-features = false }
+//! # No serde, no built-in examples:
+//! sindr = { version = "0.1.0-alpha.7", default-features = false }
+//! ```
+//!
+//! # Transient results
+//!
+//! A circuit with capacitors, inductors or waveform sources takes the
+//! transient path, and [`SimulationResult::transient`] holds the time series.
+//! The duration (5 τ) and time step come from the circuit's time constants:
+//!
+//! ```
+//! use sindr::{Circuit, CircuitElement, solve_circuit};
+//!
+//! // 5 V step into R = 1 kΩ, C = 1 µF: τ = 1 ms.
+//! let circuit = Circuit {
+//!     ground_node: "0".into(),
+//!     components: vec![
+//!         CircuitElement::VoltageSource {
+//!             id: "V1".into(),
+//!             nodes: ["in".into(), "0".into()],
+//!             voltage: 5.0,
+//!             waveform: None,
+//!         },
+//!         CircuitElement::Resistor {
+//!             id: "R1".into(),
+//!             nodes: ["in".into(), "out".into()],
+//!             resistance: 1_000.0,
+//!         },
+//!         CircuitElement::Capacitor {
+//!             id: "C1".into(),
+//!             nodes: ["out".into(), "0".into()],
+//!             capacitance: 1e-6,
+//!         },
+//!     ],
+//! };
+//!
+//! let result = solve_circuit(&circuit).unwrap();
+//! let tran = result.transient.expect("reactive circuit takes the transient path");
+//!
+//! // The capacitor charges from 0 V towards 5 V.
+//! let first = &tran.timesteps[0];
+//! let last = tran.timesteps.last().unwrap();
+//! assert!(first.node_voltages["out"] < 1.0);
+//! assert!((last.node_voltages["out"] - 5.0).abs() < 0.1);
 //! ```
 //!
 //! # SPICE netlist input
@@ -88,7 +133,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = { version = "0.1", features = ["spice"] }
+//! sindr = { version = "0.1.0-alpha.7", features = ["spice"] }
 //! ```
 //!
 //! ```ignore
@@ -96,7 +141,8 @@
 //! let result = sindr::solve_circuit(&netlist.circuit)?;
 //! ```
 //!
-//! See the [`spice`] module for the supported subset and strictness options.
+//! See the [`spice`] module for a runnable example, the supported subset and
+//! strictness options.
 //!
 //! # Where to look next
 //!
