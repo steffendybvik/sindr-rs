@@ -592,7 +592,7 @@ fn extract_timestep_results(
                     MosfetKind::Nmos => (vg - vs, vd - vs, -vs),
                     MosfetKind::Pmos => (vs - vg, vs - vd, vs),
                 };
-                let comp = mosfet::mosfet_companion(vgs, vds, vbs, params);
+                let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(*kind));
                 let id_current = match kind {
                     MosfetKind::Nmos => comp.id,
                     MosfetKind::Pmos => -comp.id,
@@ -1257,7 +1257,7 @@ fn extract_mosfet_results_from_snapshot(
                 MosfetKind::Pmos => (vs - vg, vs - vd, vs),
             };
 
-            let comp = mosfet::mosfet_companion(vgs, vds, vbs, params);
+            let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(*kind));
             let id_current = match kind {
                 MosfetKind::Nmos => comp.id,
                 MosfetKind::Pmos => -comp.id,

@@ -45,7 +45,9 @@ impl MosfetRegion {
 pub struct MosfetParams {
     /// Transconductance parameter (A/V^2). SPICE KP parameter.
     pub kp: f64,
-    /// Zero-bias threshold voltage (V). SPICE VTO parameter.
+    /// Zero-bias threshold voltage (V). SPICE VTO parameter, signed as in
+    /// SPICE: positive for an enhancement NMOS, negative for an enhancement
+    /// PMOS (see [`MosfetParams::in_nmos_frame`]).
     pub vto: f64,
     /// Channel-length modulation (1/V). SPICE LAMBDA parameter.
     pub lambda: f64,
@@ -75,6 +77,23 @@ impl MosfetParams {
             lambda: 0.02,
             gamma: 0.4,
             phi: 0.6,
+        }
+    }
+}
+
+impl MosfetParams {
+    /// These parameters in the N-channel frame that [`mosfet_companion`]
+    /// works in. Callers mirror a PMOS's voltages (`vsg`, `vsd`, …) before
+    /// calling it; this mirrors the threshold to match, so a SPICE-signed
+    /// VTO (−0.7 V for [`MosfetParams::default_pmos`]) becomes the +0.7 V
+    /// the N-channel equations expect.
+    pub fn in_nmos_frame(&self, kind: MosfetKind) -> MosfetParams {
+        match kind {
+            MosfetKind::Nmos => self.clone(),
+            MosfetKind::Pmos => MosfetParams {
+                vto: -self.vto,
+                ..self.clone()
+            },
         }
     }
 }

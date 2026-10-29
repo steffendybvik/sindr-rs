@@ -146,7 +146,7 @@ CircuitElement::Mosfet {
     id,
     nodes: [String; 3],
     kind: MosfetKind,                          // MosfetKind::Nmos or MosfetKind::Pmos
-    params: MosfetParams,                      // threshold voltage, mobility, etc.
+    params: MosfetParams,                      // KP, VTO, LAMBDA, GAMMA, PHI; VTO SPICE-signed (negative for PMOS)
     parasitic_caps: Option<MosfetParasiticCaps>, // { cgs, cgd } in Farads; None = disabled
 }
 

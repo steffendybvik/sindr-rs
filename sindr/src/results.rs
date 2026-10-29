@@ -431,7 +431,7 @@ pub fn extract_results(
                     MosfetKind::Pmos => (vs - vg, vs - vd, vs),
                 };
 
-                let comp = mosfet::mosfet_companion(vgs, vds, vbs, params);
+                let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(*kind));
                 let id_current = match kind {
                     MosfetKind::Nmos => comp.id,
                     MosfetKind::Pmos => -comp.id,
