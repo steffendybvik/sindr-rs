@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-alpha.7] - Unreleased
 
+### Added
+
+- `sindr_devices::bjt::{bjt_terminal_currents, bjt_terminal_jacobian, BjtJacobian}`:
+  the BJT's large-signal terminal currents (Early effect included) and their
+  exact, uncapped Jacobian, valid in every operating region.
+
 ### Fixed
 
 - `solve_ac` validates its `AcConfig` and returns
@@ -18,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frequencies. A 1-point sweep now solves `f_start` alone, as SPICE does.
 - `dc_sweep` rejects non-finite endpoints, and `temperature_sweep` rejects
   non-finite temperatures and temperatures at or below 0 K.
+- AC analysis now linearises BJTs with the full terminal Jacobian of the DC
+  model (gπ, gm, gμ and g_o), instead of a forward-active approximation that
+  used the B–C junction conductance as the output conductance. Gains in
+  saturation and reverse-active were wrong, in saturation even in sign.
+- AC analysis now applies the BJT's junction temperature (IS scaling) as the
+  DC solve does.
 
 ## [0.1.0-alpha.6] - 2026-06-03
 

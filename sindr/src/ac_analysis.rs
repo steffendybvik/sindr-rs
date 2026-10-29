@@ -184,7 +184,11 @@ fn linearize_at_dc(
                 });
             }
             CircuitElement::Bjt {
-                nodes, kind, bf, ..
+                nodes,
+                kind,
+                bf,
+                temperature,
+                ..
             } => {
                 let b = node_map.index(&nodes[0]);
                 let c = node_map.index(&nodes[1]);
@@ -201,35 +205,26 @@ fn linearize_at_dc(
                 let vbe_eff = sign * (vb - ve);
                 let vbc_eff = sign * (vb - vc);
 
-                let params = BjtParams::new(*bf);
-                let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
+                // Same params as the DC solve (stamp.rs), so the linearisation
+                // is taken of the model the operating point was solved with.
+                let mut params = BjtParams::new(*bf);
+                if (*temperature - 300.15).abs() > 1e-6 {
+                    params.is =
+                        diode::temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
+                }
 
-                // Small-signal: gm = dIc/dVbe, gpi = gm/beta, go = output conductance
-                let gm = comp.g_be;
-                let gpi = comp.g_be / params.bf;
-                let go = comp.g_bc; // simplified; small in active mode
-
-                // Stamp as linearized 3-terminal model:
-                // Ib ~ gpi * vbe
-                // Ic ~ gm * vbe + go * vce
-                let conds = vec![
-                    // gpi between base and emitter
-                    (b, b, gpi),
-                    (e, e, gpi),
-                    (b, e, -gpi),
-                    (e, b, -gpi),
-                    // gm: Ic = gm * Vbe => dIc/dVb = gm, dIc/dVe = -gm
-                    (c, b, gm),
-                    (c, e, -gm),
-                    // KCL: emitter absorbs
-                    (e, b, -gm),
-                    (e, e, gm),
-                    // go between collector and emitter
-                    (c, c, go),
-                    (e, e, go),
-                    (c, e, -go),
-                    (e, c, -go),
-                ];
+                // Full terminal Jacobian ∂(Ib, Ic, Ie)/∂(Vb, Vc, Ve): carries
+                // gπ, gm, gμ and g_o in every region. The entries are the
+                // same for NPN and PNP (the polarity sign cancels).
+                let jac = bjt::bjt_terminal_jacobian(vbe_eff, vbc_eff, &params);
+                let m = jac.terminal_matrix();
+                let terminals = [b, c, e];
+                let mut conds = Vec::with_capacity(9);
+                for (r, &row) in terminals.iter().enumerate() {
+                    for (k, &col) in terminals.iter().enumerate() {
+                        conds.push((row, col, m[r][k]));
+                    }
+                }
 
                 models.push(SmallSignalModel {
                     conductances: conds,
@@ -1011,5 +1006,120 @@ mod tests {
         assert_abs_diff_eq!(freqs[1], 200.0, epsilon = 1e-10);
         assert_abs_diff_eq!(freqs[2], 300.0, epsilon = 1e-10);
         assert_abs_diff_eq!(freqs[3], 400.0, epsilon = 1e-10);
+    }
+
+    /// One-transistor stage with base, collector and emitter resistors, so
+    /// gπ, gμ, gm and g_o all show in the gain. NPN: emitter side at ground,
+    /// collector to VCC. PNP: emitter side at VCC, collector to ground.
+    fn bjt_stage(kind: BjtKind, vin: f64, temperature: f64) -> Circuit {
+        let (vcc, rc_to, re_to) = match kind {
+            BjtKind::Npn => (5.0, "vcc", "0"),
+            BjtKind::Pnp => (5.0, "0", "vcc"),
+        };
+        Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                CircuitElement::VoltageSource {
+                    id: "VIN".into(),
+                    nodes: ["in".into(), "0".into()],
+                    voltage: vin,
+                    waveform: None,
+                },
+                CircuitElement::VoltageSource {
+                    id: "VCC".into(),
+                    nodes: ["vcc".into(), "0".into()],
+                    voltage: vcc,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "RB".into(),
+                    nodes: ["in".into(), "b".into()],
+                    resistance: 10_000.0,
+                },
+                CircuitElement::Resistor {
+                    id: "RC".into(),
+                    nodes: ["c".into(), rc_to.into()],
+                    resistance: 1_000.0,
+                },
+                CircuitElement::Resistor {
+                    id: "RE".into(),
+                    nodes: ["e".into(), re_to.into()],
+                    resistance: 100.0,
+                },
+                CircuitElement::Bjt {
+                    id: "Q1".into(),
+                    nodes: ["b".into(), "c".into(), "e".into()],
+                    kind,
+                    bf: 100.0,
+                    temperature,
+                    parasitic_caps: None,
+                },
+            ],
+        }
+    }
+
+    /// The AC gain vin → vc at low frequency must equal the slope of the DC
+    /// transfer curve at the operating point: AC linearises the same model
+    /// the DC solve uses.
+    fn assert_ac_gain_matches_dc_slope(kind: BjtKind, vin: f64, temperature: f64) {
+        let vc_dc = |v: f64| {
+            let r = crate::solve_circuit(&bjt_stage(kind, v, temperature)).unwrap();
+            r.node_voltages["c"]
+        };
+        let h = 1e-3;
+        let slope = (vc_dc(vin + h) - vc_dc(vin - h)) / (2.0 * h);
+
+        let config = AcConfig {
+            f_start: 1.0,
+            f_stop: 1.0,
+            num_points: 1,
+            spacing: FrequencySpacing::Linear,
+            source_id: "VIN".into(),
+            ac_magnitude: 1.0,
+        };
+        let result = solve_ac(&bjt_stage(kind, vin, temperature), &config).unwrap();
+        let gain = result.points[0].node_voltages["c"];
+
+        assert!(
+            gain.im.abs() < 1e-9,
+            "no reactive parts, gain should be real: {gain}"
+        );
+        let tol = 1e-3 * slope.abs() + 1e-5;
+        assert!(
+            (gain.re - slope).abs() <= tol,
+            "{kind:?} vin={vin} T={temperature}: AC gain {} vs DC slope {slope}",
+            gain.re
+        );
+    }
+
+    #[test]
+    fn bjt_ac_gain_matches_dc_slope_npn_forward_active() {
+        assert_ac_gain_matches_dc_slope(BjtKind::Npn, 1.0, 300.15);
+    }
+
+    #[test]
+    fn bjt_ac_gain_matches_dc_slope_npn_saturation() {
+        assert_ac_gain_matches_dc_slope(BjtKind::Npn, 5.0, 300.15);
+    }
+
+    #[test]
+    fn bjt_ac_gain_matches_dc_slope_pnp_forward_active() {
+        assert_ac_gain_matches_dc_slope(BjtKind::Pnp, 4.0, 300.15);
+    }
+
+    /// The DC solve leaves a ~1.5% KCL residual for this stage (its nodes
+    /// sit near VCC, and convergence is judged on node-voltage RELTOL only),
+    /// so its slope is not a tight enough reference yet.
+    #[test]
+    #[ignore = "DC operating point converges too loosely near VCC (SIN-14)"]
+    fn bjt_ac_gain_matches_dc_slope_pnp_saturation() {
+        assert_ac_gain_matches_dc_slope(BjtKind::Pnp, 0.0, 300.15);
+    }
+
+    /// Off nominal temperature the DC solve scales IS; AC must linearise
+    /// with the same IS or the gain drifts from the DC slope.
+    #[test]
+    fn bjt_ac_gain_matches_dc_slope_at_raised_temperature() {
+        assert_ac_gain_matches_dc_slope(BjtKind::Npn, 1.0, 350.0);
     }
 }
