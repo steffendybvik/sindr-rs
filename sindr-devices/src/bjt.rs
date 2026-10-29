@@ -114,37 +114,21 @@ const V_MAX_EXP: f64 = 40.0 * V_T; // ~1.034V
 /// (V, sign-adjusted for PNP by the caller), returning the linearised
 /// [`BjtCompanion`] for MNA stamping.
 pub fn bjt_companion(vbe: f64, vbc: f64, params: &BjtParams) -> BjtCompanion {
-    let nf_vt = params.nf * V_T;
-    let nr_vt = params.nr * V_T;
-
-    // Clamp exponentials: beyond V_MAX_EXP, linearize to prevent overflow
-    let (exp_be, vbe_eval) = if vbe > V_MAX_EXP {
-        let e = (V_MAX_EXP / nf_vt).exp();
-        // Linear extrapolation: exp(v/nVt) ≈ exp(vmax/nVt) * (1 + (v-vmax)/nVt)
-        (e * (1.0 + (vbe - V_MAX_EXP) / nf_vt), vbe)
-    } else {
-        ((vbe / nf_vt).exp(), vbe)
-    };
-    let (exp_bc, vbc_eval) = if vbc > V_MAX_EXP {
-        let e = (V_MAX_EXP / nr_vt).exp();
-        (e * (1.0 + (vbc - V_MAX_EXP) / nr_vt), vbc)
-    } else {
-        ((vbc / nr_vt).exp(), vbc)
-    };
-    let _ = (vbe_eval, vbc_eval); // used for clarity, actual vbe/vbc used below
+    // Above V_MAX_EXP the exponentials are extrapolated linearly; the
+    // conductances are the slopes of exactly those curves, so the companion
+    // stays the Newton linearisation of its own currents at any bias.
+    let (exp_be, dexp_be) = junction_exp(vbe, params.nf * V_T);
+    let (exp_bc, dexp_bc) = junction_exp(vbc, params.nr * V_T);
 
     // Junction currents
     let i_f = params.is * (exp_be - 1.0);
     let i_r = params.is * (exp_bc - 1.0);
 
-    // Junction conductances (derivatives).
-    // Cap conductances at a maximum to prevent the NR Jacobian from becoming
-    // ill-conditioned near saturation where both junctions are forward-biased.
-    // G_MAX of 10.0 S (0.1 ohm) is large enough for accurate modeling while
-    // preventing the 1e5+ S values that cause NR oscillation.
-    const G_MAX: f64 = 10.0;
-    let g_be = ((params.is / nf_vt) * exp_be).min(G_MAX);
-    let g_bc = ((params.is / nr_vt) * exp_bc).min(G_MAX);
+    // Junction conductances (derivatives). Overshoot is handled by junction
+    // voltage limiting in the solver, not by capping these: a capped slope
+    // no longer matches the current and turns Newton into a crawl.
+    let g_be = params.is * dexp_be;
+    let g_bc = params.is * dexp_bc;
 
     // Terminal currents (transport model)
     let alpha_r = params.br / (params.br + 1.0);
@@ -212,10 +196,9 @@ pub fn bjt_terminal_currents(vbe: f64, vbc: f64, params: &BjtParams) -> (f64, f6
 /// Exact small-signal Jacobian of the BJT terminal currents with respect to
 /// the junction voltages, at one operating point.
 ///
-/// Unlike [`BjtCompanion`], whose junction conductances are capped for
-/// Newton–Raphson stability, these are the true derivatives of
-/// [`bjt_terminal_currents`], valid in every region (cutoff, forward-active,
-/// saturation, reverse-active).
+/// These are the true derivatives of [`bjt_terminal_currents`], Early effect
+/// included, valid in every region (cutoff, forward-active, saturation,
+/// reverse-active). The DC stamp and AC analysis both use them.
 ///
 /// In terms of the node voltages, with `vbe = vb − ve` and `vbc = vb − vc`:
 /// `∂I/∂vb = ∂I/∂vbe + ∂I/∂vbc`, `∂I/∂vc = −∂I/∂vbc`, `∂I/∂ve = −∂I/∂vbe`.
