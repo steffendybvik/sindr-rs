@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sindr_devices::bjt::{bjt_terminal_currents, bjt_terminal_jacobian, BjtJacobian}`:
   the BJT's large-signal terminal currents (Early effect included) and their
   exact, uncapped Jacobian, valid in every operating region.
+- `MosfetParams::in_nmos_frame`: a device's parameters in the N-channel frame
+  that `mosfet_companion` works in.
+
+### Changed
+
+- **Breaking:** a PMOS's `MosfetParams::vto` is now SPICE-signed: negative
+  for an enhancement PMOS, as `MosfetParams::default_pmos()` already was.
+  Before, the solver expected a positive magnitude, so `default_pmos()` gave a
+  normally-on device that conducted at V_SG = 0. If you set a positive `vto`
+  on a PMOS, negate it.
 
 ### Fixed
 

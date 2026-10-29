@@ -809,7 +809,7 @@ pub(crate) fn stamp_mosfet_companion(
         MosfetKind::Pmos => (vs - vg, vs - vd, vs),
     };
 
-    let comp = mosfet::mosfet_companion(vgs, vds, vbs, params);
+    let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(kind));
 
     // Helper closure
     let stamp_g = |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {

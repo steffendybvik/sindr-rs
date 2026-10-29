@@ -249,7 +249,7 @@ fn linearize_at_dc(
                     MosfetKind::Pmos => (vs - vg, vs - vd, vs),
                 };
 
-                let comp = mosfet::mosfet_companion(vgs, vds, vbs, params);
+                let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(*kind));
 
                 let mut conds = vec![
                     // gm: Id depends on Vgs => dId/dVg = gm, dId/dVs += -gm
