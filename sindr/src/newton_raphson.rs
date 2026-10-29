@@ -187,6 +187,7 @@ fn nr_inner(
     }
 
     let diode_info = collect_diode_info(circuit, node_map);
+    let igbt_info = collect_igbt_info(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
     let mut last_step = f64::INFINITY;
     for _iteration in 0..MAX_NR_ITERATIONS {
@@ -203,7 +204,8 @@ fn nr_inner(
 
         let v_new = system.solve()?;
 
-        let v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
+        let mut v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
+        apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
 
         if debug_nr && _iteration < 30 {
             eprintln!(
@@ -468,6 +470,59 @@ pub(crate) fn apply_voltage_limiting(
     }
 
     v_limited
+}
+
+/// Collector and emitter indices of an IGBT, for [`apply_igbt_limiting`].
+pub(crate) struct IgbtLimitInfo {
+    collector_idx: Option<usize>,
+    emitter_idx: Option<usize>,
+}
+
+/// Collect the IGBTs' collector/emitter node indices for VCE limiting.
+pub(crate) fn collect_igbt_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<IgbtLimitInfo> {
+    circuit
+        .components
+        .iter()
+        .filter_map(|component| match component {
+            CircuitElement::Igbt { nodes, .. } => Some(IgbtLimitInfo {
+                collector_idx: node_map.index(&nodes[1]),
+                emitter_idx: node_map.index(&nodes[2]),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Keep a forward-biased IGBT from stepping into reverse blocking in one
+/// Newton step.
+///
+/// The IGBT carries no current and has zero conductance for `vce <= 0`, and
+/// zero output conductance in saturation, so an unlimited Newton step can
+/// bounce between the two without converging. As SPICE's `limvds` does for
+/// MOSFETs, a step that would take `vce` from positive to `<= 0` lands at
+/// `vce_old / 2` instead, which walks it down into the triode region where
+/// Newton converges. The correction goes to the collector (the emitter if
+/// the collector is ground).
+pub(crate) fn apply_igbt_limiting(
+    v_limited: &mut DVector<f64>,
+    v_prev: &DVector<f64>,
+    igbt_info: &[IgbtLimitInfo],
+) {
+    for info in igbt_info {
+        let vce = |v: &DVector<f64>| {
+            info.collector_idx.map_or(0.0, |i| v[i]) - info.emitter_idx.map_or(0.0, |i| v[i])
+        };
+        let (vce_old, vce_new) = (vce(v_prev), vce(v_limited));
+        if vce_old <= 0.0 || vce_new > 0.0 {
+            continue;
+        }
+        let delta = vce_old / 2.0 - vce_new;
+        match (info.collector_idx, info.emitter_idx) {
+            (Some(ci), _) => v_limited[ci] += delta,
+            (None, Some(ei)) => v_limited[ei] -= delta,
+            (None, None) => {}
+        }
+    }
 }
 
 /// Add Gmin conductance shunts to every node diagonal.
@@ -856,5 +911,50 @@ mod tests {
         let result = crate::solve_circuit(&circuit).unwrap();
         let want = shockley_drop(5.0, 1_000.0, 1e-14, 1.0);
         assert!((result.node_voltages["out"] - want).abs() < 1e-5);
+    }
+
+    /// IGBT switched on into a resistive load sits in triode with a few mV
+    /// across it. Its VCE solves (VCC − v)/R = K·(vov − v/2)·v, the smaller
+    /// root of K/2·v² − (K·vov + 1/R)·v + VCC/R = 0.
+    #[test]
+    fn igbt_switch_matches_closed_form() {
+        let params = sindr_devices::igbt::IgbtParams::default(); // vth=5, k=5
+        let (vcc, r, vge) = (12.0, 100.0, 10.0);
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                CircuitElement::VoltageSource {
+                    id: "Vg".into(),
+                    nodes: ["g".into(), "0".into()],
+                    voltage: vge,
+                    waveform: None,
+                },
+                CircuitElement::VoltageSource {
+                    id: "Vcc".into(),
+                    nodes: ["vcc".into(), "0".into()],
+                    voltage: vcc,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R".into(),
+                    nodes: ["vcc".into(), "c".into()],
+                    resistance: r,
+                },
+                CircuitElement::Igbt {
+                    id: "Q1".into(),
+                    nodes: ["g".into(), "c".into(), "0".into()],
+                    params: params.clone(),
+                },
+            ],
+        };
+        let vov = vge - params.vth;
+        let b = params.k * vov + 1.0 / r;
+        let expected = (b - (b * b - 2.0 * params.k * vcc / r).sqrt()) / params.k;
+
+        let vce = crate::solve_circuit(&circuit).unwrap().node_voltages["c"];
+        assert!(
+            (vce - expected).abs() <= 1e-3 * expected,
+            "VCE {vce} vs closed form {expected}"
+        );
     }
 }

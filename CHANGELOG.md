@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   depending on Vbs there. Before, a clamp made `gmb` about 200× `gm`. Every
   PMOS with its source above ground hit this, because its body sits at
   ground, and Newton got a source-column Jacobian entry ~200× too large.
+- IGBT operating points were wrong whenever `Vge ≠ Vce`. The stamp put `gm`
+  in as a collector–emitter conductance while `i_eq` linearised it around
+  `Vge`, so Newton settled on a point that isn't a solution: a switch driven
+  at 10 V into 100 Ω from 12 V read `Vce = 7.5 V` instead of 4.8 mV. `gm` is
+  now stamped as a gate-controlled source, and `IgbtCompanion::g_ce` is the
+  real `∂Ids/∂Vce` (zero in saturation) instead of `ids / vce_sat`. A
+  forward-biased IGBT's `Vce` is now limited per Newton step so it can't jump
+  into reverse blocking. `IgbtParams::vce_sat` is no longer used.
 
 ## [0.1.0-alpha.6] - 2026-06-03
 
