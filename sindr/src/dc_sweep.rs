@@ -76,8 +76,9 @@ impl DcSweepResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_points < 2` or `source_id`
-///   doesn't match any voltage source in the circuit
+/// - [`SimError::InvalidComponent`] if `num_points < 2`, `start` or `stop`
+///   is not finite, or `source_id` doesn't match any voltage source in the
+///   circuit
 /// - Any [`SimError`] returned by [`solve_circuit`](crate::solve_circuit)
 ///   at one of the sweep points (propagated immediately)
 ///
@@ -122,6 +123,11 @@ pub fn dc_sweep(
         return Err(SimError::InvalidComponent(
             "DC sweep requires at least 2 points".to_string(),
         ));
+    }
+    if !start.is_finite() || !stop.is_finite() {
+        return Err(SimError::InvalidComponent(format!(
+            "DC sweep endpoints must be finite (got {start} to {stop})"
+        )));
     }
 
     // Verify source exists

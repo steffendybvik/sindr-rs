@@ -35,7 +35,8 @@ pub struct AcConfig {
     pub f_start: f64,
     /// Stop frequency (Hz).
     pub f_stop: f64,
-    /// Number of frequency points.
+    /// Number of frequency points, including both endpoints. With 1, only
+    /// `f_start` is solved.
     pub num_points: usize,
     /// Frequency spacing.
     pub spacing: FrequencySpacing,
@@ -288,8 +289,52 @@ fn linearize_at_dc(
     models
 }
 
+/// Reject sweep configs that would underflow, divide by zero, or feed
+/// `log10` a non-positive value.
+fn validate_config(config: &AcConfig) -> Result<(), SimError> {
+    let invalid = |msg: String| Err(SimError::InvalidComponent(format!("AC sweep: {msg}")));
+
+    if config.num_points == 0 {
+        return invalid("num_points must be at least 1".into());
+    }
+    for (name, value) in [
+        ("f_start", config.f_start),
+        ("f_stop", config.f_stop),
+        ("ac_magnitude", config.ac_magnitude),
+    ] {
+        if !value.is_finite() {
+            return invalid(format!("{name} must be finite (got {value})"));
+        }
+    }
+    match config.spacing {
+        FrequencySpacing::Logarithmic if config.f_start <= 0.0 => {
+            return invalid(format!(
+                "f_start must be > 0 Hz for logarithmic spacing (got {})",
+                config.f_start
+            ));
+        }
+        FrequencySpacing::Linear if config.f_start < 0.0 => {
+            return invalid(format!("f_start must be >= 0 Hz (got {})", config.f_start));
+        }
+        _ => {}
+    }
+    if config.f_start > config.f_stop {
+        return invalid(format!(
+            "f_start ({}) must not exceed f_stop ({})",
+            config.f_start, config.f_stop
+        ));
+    }
+    Ok(())
+}
+
 /// Generate frequency points with the specified spacing.
+///
+/// Expects a config that passed [`validate_config`]. A single point sweeps
+/// only `f_start`, as SPICE does for `.ac lin 1`.
 fn generate_frequencies(config: &AcConfig) -> Vec<f64> {
+    if config.num_points == 1 {
+        return vec![config.f_start];
+    }
     let mut freqs = Vec::with_capacity(config.num_points);
     match config.spacing {
         FrequencySpacing::Logarithmic => {
@@ -338,6 +383,9 @@ fn stamp_complex_conductance(
 ///
 /// # Errors
 ///
+/// - [`SimError::InvalidComponent`] if `config` is invalid: zero points,
+///   non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic
+///   spacing, or `f_start < 0` with linear spacing
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised AC system is singular
 ///   at any frequency
@@ -388,6 +436,8 @@ fn stamp_complex_conductance(
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
+    validate_config(config)?;
+
     // Step 1: DC operating point
     let dc_result = crate::solve_circuit(circuit)?;
 

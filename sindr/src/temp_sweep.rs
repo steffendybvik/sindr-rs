@@ -68,7 +68,8 @@ fn scale_is(is_t0: f64, t: f64, xti: f64) -> f64 {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_steps < 2`
+/// - [`SimError::InvalidComponent`] if `num_steps < 2`, or either endpoint
+///   is not finite or not above 0 K
 /// - Any [`SimError`] from solving at one of the temperatures (propagated
 ///   immediately)
 ///
@@ -108,6 +109,13 @@ pub fn temperature_sweep(
         return Err(SimError::InvalidComponent(
             "temperature_sweep: num_steps must be >= 2".into(),
         ));
+    }
+    for t in [temp_start, temp_end] {
+        if !t.is_finite() || t <= 0.0 {
+            return Err(SimError::InvalidComponent(format!(
+                "temperature_sweep: temperatures must be finite and > 0 K (got {t})"
+            )));
+        }
     }
 
     let step_size = (temp_end - temp_start) / (num_steps as f64 - 1.0);

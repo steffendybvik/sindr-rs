@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-alpha.7] - Unreleased
 
+### Fixed
+
+- `solve_ac` validates its `AcConfig` and returns
+  `SimError::InvalidComponent` for 0 points, non-finite values,
+  `f_start > f_stop`, `f_start <= 0` with logarithmic spacing, and
+  `f_start < 0` with linear spacing. Before, these panicked or produced NaN
+  frequencies. A 1-point sweep now solves `f_start` alone, as SPICE does.
+- `dc_sweep` rejects non-finite endpoints, and `temperature_sweep` rejects
+  non-finite temperatures and temperatures at or below 0 K.
+
 ## [0.1.0-alpha.6] - 2026-06-03
 
 ### Added
