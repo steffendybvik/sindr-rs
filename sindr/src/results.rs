@@ -722,7 +722,14 @@ pub fn extract_results(
                 let vds = vd - vs;
                 // Compute drain current from companion model at final solution point
                 let c = jfet::jfet_companion(vgs, vds, *kind, *idss, *vp);
-                let id_current = c.gm * vgs + c.gds * vds + c.i_eq;
+                // P-channel companions come back in the mirrored N-channel
+                // frame: same gm and gds, Norton term negated (see
+                // stamp_jfet_companion).
+                let i_eq = match kind {
+                    jfet::JfetKind::NChannel => c.i_eq,
+                    jfet::JfetKind::PChannel => -c.i_eq,
+                };
+                let id_current = c.gm * vgs + c.gds * vds + i_eq;
                 let power = (id_current * vds).abs();
                 component_results.push(ComponentResult {
                     id: id.clone(),

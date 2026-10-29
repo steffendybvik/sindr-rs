@@ -270,6 +270,73 @@ fn potentiometer_unloaded_wiper_is_rejected_as_floating() {
     }
 }
 
+/// Self-biased JFET stage. The P-channel version is the N-channel one with
+/// every voltage mirrored about the rail, so its node voltages must mirror
+/// too and its drain current must flip sign.
+fn jfet_self_bias(kind: sindr::JfetKind) -> Circuit {
+    let (vp, rail) = match kind {
+        sindr::JfetKind::NChannel => (-2.0, 12.0),
+        sindr::JfetKind::PChannel => (2.0, -12.0),
+    };
+    Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            vsrc("V1", "rail", "0", rail),
+            resistor("RD", "rail", "d", 1_000.0),
+            resistor("RS", "s", "0", 220.0),
+            resistor("RG", "g", "0", 1e6),
+            CircuitElement::Jfet {
+                id: "J1".into(),
+                nodes: ["g".into(), "d".into(), "s".into()],
+                kind,
+                idss: 10e-3,
+                vp,
+            },
+        ],
+    }
+}
+
+#[test]
+fn p_channel_jfet_mirrors_n_channel() {
+    let n = solve_circuit(&jfet_self_bias(sindr::JfetKind::NChannel)).unwrap();
+    let p = solve_circuit(&jfet_self_bias(sindr::JfetKind::PChannel)).unwrap();
+    for name in ["d", "s", "g"] {
+        assert_relative_eq!(node(&p, name), -node(&n, name), epsilon = 1e-9);
+    }
+    assert_relative_eq!(
+        comp_current(&p, "J1"),
+        -comp_current(&n, "J1"),
+        epsilon = 1e-12
+    );
+    // N-channel matches ngspice (tests/golden/op_jfet): Vs = 0.79656 V.
+    assert_relative_eq!(node(&n, "s"), 0.79656, epsilon = 1e-4);
+}
+
+#[test]
+fn p_channel_jfet_mirrors_n_channel_in_transient() {
+    let with_cap = |kind| {
+        let mut c = jfet_self_bias(kind);
+        c.components.push(CircuitElement::Capacitor {
+            id: "CS".into(),
+            nodes: ["s".into(), "0".into()],
+            capacitance: 1e-6,
+        });
+        solve_circuit(&c).unwrap().transient.unwrap()
+    };
+    let n = with_cap(sindr::JfetKind::NChannel);
+    let p = with_cap(sindr::JfetKind::PChannel);
+    assert_eq!(n.timesteps.len(), p.timesteps.len());
+    for (sn, sp) in n.timesteps.iter().zip(&p.timesteps) {
+        for name in ["d", "s"] {
+            assert_relative_eq!(
+                sp.node_voltages[name],
+                -sn.node_voltages[name],
+                epsilon = 1e-9
+            );
+        }
+    }
+}
+
 fn mosfet(kind: sindr::MosfetKind, params: sindr_devices::mosfet::MosfetParams) -> CircuitElement {
     CircuitElement::Mosfet {
         id: "M1".into(),
