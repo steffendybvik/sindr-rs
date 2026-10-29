@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   depending on Vbs there. Before, a clamp made `gmb` about 200× `gm`. Every
   PMOS with its source above ground hit this, because its body sits at
   ground, and Newton got a source-column Jacobian entry ~200× too large.
+- Newton–Raphson (DC and transient) now also requires every diode, LED and
+  BJT junction voltage to settle within `V_ABSTOL + RELTOL·n·V_T` before
+  declaring convergence. The node-voltage tolerance alone scales with a
+  node's absolute voltage, so junctions far from ground could stop several
+  mV short: a diode near a 10 V rail was off by 1.2% in current, a
+  saturated PNP near 5 V by 1.5%. Costs about 9% more iterations.
 
 ## [0.1.0-alpha.6] - 2026-06-03
 

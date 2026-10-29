@@ -215,7 +215,7 @@ fn nr_inner(
             );
         }
 
-        if converged(&v_prev, &v_limited, num_nodes) {
+        if converged(&v_prev, &v_limited, num_nodes, &diode_info) {
             let result = results::extract_results(circuit, node_map, &v_limited, num_nodes);
             return Ok((result, v_limited));
         }
@@ -482,9 +482,20 @@ pub(crate) fn add_gmin_shunts(system: &mut MnaSystem, num_nodes: usize) {
 
 /// Check if Newton-Raphson has converged.
 ///
-/// Uses SPICE-style convergence criterion: for each node voltage,
-/// |v_new - v_prev| <= V_ABSTOL + RELTOL * max(|v_new|, |v_prev|)
-pub(crate) fn converged(v_prev: &DVector<f64>, v_new: &DVector<f64>, num_nodes: usize) -> bool {
+/// Two criteria, both required:
+/// - SPICE-style node voltages: |v_new - v_prev| <= V_ABSTOL + RELTOL * max(|v_new|, |v_prev|)
+/// - Junction voltages: |Δv_j| <= V_ABSTOL + RELTOL * n * V_T for every
+///   diode/LED/BJT junction. A junction's current changes by about
+///   Δv_j / (n·V_T) relative, so this bounds the device current error at
+///   RELTOL, as SPICE's device current check does. The node criterion alone
+///   lets a junction between nodes near a 5 V rail move by ~5 mV, a ~20%
+///   current error.
+pub(crate) fn converged(
+    v_prev: &DVector<f64>,
+    v_new: &DVector<f64>,
+    num_nodes: usize,
+    diode_info: &[DiodeLimitInfo],
+) -> bool {
     for i in 0..num_nodes {
         let diff = (v_new[i] - v_prev[i]).abs();
         let tol = V_ABSTOL + RELTOL * v_new[i].abs().max(v_prev[i].abs());
@@ -492,7 +503,12 @@ pub(crate) fn converged(v_prev: &DVector<f64>, v_new: &DVector<f64>, num_nodes: 
             return false;
         }
     }
-    true
+    let node = |v: &DVector<f64>, idx: Option<usize>| idx.map_or(0.0, |i| v[i]);
+    diode_info.iter().all(|info| {
+        let vj_prev = node(v_prev, info.anode_idx) - node(v_prev, info.cathode_idx);
+        let vj_new = node(v_new, info.anode_idx) - node(v_new, info.cathode_idx);
+        (vj_new - vj_prev).abs() <= V_ABSTOL + RELTOL * info.n * diode::V_T
+    })
 }
 
 /// Largest per-node voltage step `max_i |v_new[i] − v_prev[i]|` (V).
@@ -856,5 +872,106 @@ mod tests {
         let result = crate::solve_circuit(&circuit).unwrap();
         let want = shockley_drop(5.0, 1_000.0, 1e-14, 1.0);
         assert!((result.node_voltages["out"] - want).abs() < 1e-5);
+    }
+
+    fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
+        CircuitElement::Resistor {
+            id: id.into(),
+            nodes: [a.into(), b.into()],
+            resistance,
+        }
+    }
+
+    fn vsource(id: &str, node: &str, voltage: f64) -> CircuitElement {
+        CircuitElement::VoltageSource {
+            id: id.into(),
+            nodes: [node.into(), "0".into()],
+            voltage,
+            waveform: None,
+        }
+    }
+
+    fn assert_rel(actual: f64, expected: f64, what: &str) {
+        assert!(
+            (actual - expected).abs() <= 1e-3 * expected.abs(),
+            "{what}: {actual:e} vs {expected:e}"
+        );
+    }
+
+    /// A diode whose terminals both sit near a 10 V rail: the node-voltage
+    /// criterion alone allows ~10 mV of slack there, a large current error.
+    /// The converged point must satisfy KCL against the diode equation.
+    #[test]
+    fn diode_far_from_ground_satisfies_kcl() {
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                vsource("V1", "vcc", 10.0),
+                resistor("R1", "vcc", "a", 1_000.0),
+                CircuitElement::Diode {
+                    id: "D1".into(),
+                    nodes: ["a".into(), "k".into()],
+                    temperature: 300.15,
+                },
+                resistor("R2", "k", "0", 1_000.0),
+            ],
+        };
+        let r = crate::solve_circuit(&circuit).unwrap();
+        let (va, vk) = (r.node_voltages["a"], r.node_voltages["k"]);
+        let p = DiodeParams::silicon();
+        let i_diode = p.is * (((va - vk) / (p.n * diode::V_T)).exp() - 1.0);
+        assert_rel(i_diode, (10.0 - va) / 1_000.0, "diode vs R1 current");
+        assert_rel(i_diode, vk / 1_000.0, "diode vs R2 current");
+    }
+
+    /// Saturated BJT stage. NPN: emitter side at ground. PNP: its mirror,
+    /// emitter side at VCC, with every node near the rail.
+    fn saturated_stage(kind: BjtKind) -> Circuit {
+        let (vin, rc_to, re_to) = match kind {
+            BjtKind::Npn => (5.0, "vcc", "0"),
+            BjtKind::Pnp => (0.0, "0", "vcc"),
+        };
+        Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                vsource("VIN", "in", vin),
+                vsource("VCC", "vcc", 5.0),
+                resistor("RB", "in", "b", 10_000.0),
+                resistor("RC", "c", rc_to, 1_000.0),
+                resistor("RE", "e", re_to, 100.0),
+                CircuitElement::Bjt {
+                    id: "Q1".into(),
+                    nodes: ["b".into(), "c".into(), "e".into()],
+                    kind,
+                    bf: 100.0,
+                    temperature: 300.15,
+                    parasitic_caps: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn mirrored_bjt_stages_satisfy_kcl_and_agree() {
+        let npn = crate::solve_circuit(&saturated_stage(BjtKind::Npn)).unwrap();
+        let pnp = crate::solve_circuit(&saturated_stage(BjtKind::Pnp)).unwrap();
+
+        for (r, rail_in, rail_c) in [(&npn, 5.0, 5.0), (&pnp, 0.0, 0.0)] {
+            let v = &r.node_voltages;
+            let q = &r.bjt_results[0];
+            // Current the resistors feed into each terminal (negative for PNP).
+            assert_rel((rail_in - v["b"]) / 10_000.0, q.ib, "base KCL");
+            assert_rel((rail_c - v["c"]) / 1_000.0, q.ic, "collector KCL");
+        }
+
+        // The PNP circuit is the NPN one mirrored about 2.5 V.
+        for node in ["b", "c", "e"] {
+            let (vn, vp) = (npn.node_voltages[node], pnp.node_voltages[node]);
+            assert!(
+                (vn - (5.0 - vp)).abs() < 1e-4,
+                "{node}: NPN {vn} vs mirrored PNP {}",
+                5.0 - vp
+            );
+        }
     }
 }

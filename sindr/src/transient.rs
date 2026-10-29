@@ -1723,7 +1723,7 @@ fn nr_at_timestep_with_parasitic(
         let v_limited = newton_raphson::apply_voltage_limiting(&v_new, &v_prev, diode_info);
 
         // Check convergence
-        if newton_raphson::converged(&v_prev, &v_limited, num_nodes) {
+        if newton_raphson::converged(&v_prev, &v_limited, num_nodes, diode_info) {
             // Extract updated reactive state from converged solution
             let mut new_cap_v = Vec::new();
             let mut new_ind_i = Vec::new();

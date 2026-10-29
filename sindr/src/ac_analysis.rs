@@ -1107,11 +1107,7 @@ mod tests {
         assert_ac_gain_matches_dc_slope(BjtKind::Pnp, 4.0, 300.15);
     }
 
-    /// The DC solve leaves a ~1.5% KCL residual for this stage (its nodes
-    /// sit near VCC, and convergence is judged on node-voltage RELTOL only),
-    /// so its slope is not a tight enough reference yet.
     #[test]
-    #[ignore = "DC operating point converges too loosely near VCC (SIN-14)"]
     fn bjt_ac_gain_matches_dc_slope_pnp_saturation() {
         assert_ac_gain_matches_dc_slope(BjtKind::Pnp, 0.0, 300.15);
     }
