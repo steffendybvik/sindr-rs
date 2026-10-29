@@ -56,7 +56,7 @@ assert!(is_at_125c > 1e-14);
 ```rust
 use sindr_devices::bjt::{bjt_companion, BjtParams};
 
-let params = BjtParams::new(100.0); // BF=100, IS=1e-15, no Early effect
+let params = BjtParams::new(100.0); // BF=100, IS=1e-14, no Early effect
 let c = bjt_companion(0.65, -5.0, &params); // Vbe, Vbc
 // c.g_be, c.g_bc, c.g_ce (Early output conductance, 0 when vaf = 0), c.ic, c.ib
 assert!(c.ic > 0.0);
@@ -121,7 +121,7 @@ use sindr_devices::thermistor::{thermistor_resistance, ThermistorParams};
 use sindr_devices::zener::{zener_companion, ZenerParams};
 
 let red = led_params(LedColor::Red); // DiodeParams for use with diode_companion
-let (g, i) = schottky_companion(0.3, &SchottkyParams::default()); // IS=1e-8, N=1.05
+let (g, i) = schottky_companion(0.3, &SchottkyParams::default()); // IS=1e-8, N=1.0
 let (g, i) = zener_companion(-5.5, &ZenerParams::new(5.1)); // Vz = 5.1 V
 let (g, i) = photodiode_companion(-1.0, 0.1, &PhotodiodeParams::default()); // 0.1 W irradiance
 
