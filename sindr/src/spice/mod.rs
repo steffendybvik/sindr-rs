@@ -9,12 +9,29 @@
 //! instance path for any flattened node.
 //!
 //! Enable the optional `spice` feature to pull this module in
-//! (`sindr = { version = "0.1", features = ["spice"] }`); it is off by
+//! (`sindr = { version = "0.1.0-alpha.7", features = ["spice"] }`); it is off by
 //! default so the parser dependencies stay out of the baseline build.
 //!
 //! # Quick start
 //!
-//! Parse a deck, hand the flattened [`Circuit`](crate::Circuit) to the
+//! Parse a deck from a string and solve its operating point:
+//!
+//! ```
+//! let deck = "\
+//! * 10 V across a 1k / 2k divider
+//! V1 in 0 10
+//! R1 in out 1k
+//! R2 out 0 2k
+//! .op
+//! .end
+//! ";
+//! let netlist = sindr::spice::parse_str(deck)?;
+//! let result = sindr::solve_circuit(&netlist.circuit)?;
+//! assert!((result.node_voltages["out"] - 20.0 / 3.0).abs() < 1e-9);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! For a deck on disk, parse it, hand the flattened [`Circuit`](crate::Circuit) to the
 //! solver, then dispatch each parsed analysis directive to the matching
 //! `sindr` routine:
 //!
@@ -62,7 +79,7 @@
 //! [`ParsedNetlist::warnings`], so a deck containing an unsupported element
 //! still parses:
 //!
-//! ```no_run
+//! ```
 //! use sindr::spice::{parse_str_with_options, ParseOptions};
 //! # let deck = "* deck\nV1 n1 0 1\nR1 n1 0 1k\n.end\n";
 //!
@@ -88,7 +105,8 @@
 //! }
 //! ```
 //!
-//! See the crate `README` for the exact supported subset and known limits.
+//! Known gaps against full SPICE3 are listed in the repository's
+//! [`LIMITATIONS.md`](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
 
 // SpiceParseError variants embed `NamedSource<String>` so callers using
 // miette's fancy reporter get pretty diagnostics for free. The trade-off is

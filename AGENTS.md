@@ -35,7 +35,7 @@ sindr-rs/
 ├── sindr-devices/      # device physics (no solver dep)
 │   └── src/{diode,bjt,mosfet,igbt,jfet,varactor,schottky,zener,led,
 │            photodiode,photoresistor,thermistor}.rs
-└── .planning/          # GSD workflow artefacts — IGNORE for normal code work
+└── .planning/          # local GSD workflow artefacts (gitignored) — IGNORE for normal code work
 ```
 
 `sindr` depends on `sindr-devices`. `sindr-devices` has no dependency on `sindr` and is independently testable. SPICE netlist parsing lives in `sindr::spice` behind the optional, default-off `spice` feature, which pulls in `winnow` + `miette`.
@@ -43,22 +43,25 @@ sindr-rs/
 ## Commands
 
 ```bash
-cargo build                              # workspace build
-cargo test                               # all unit + doctests
-cargo test -p sindr                      # solver crate only
-cargo test -p sindr-devices              # device-physics crate only
-cargo run --example voltage_divider      # run a named example
-cargo run --example list_examples        # list every bundled example circuit
-cargo doc --no-deps --open               # generate and open API docs
-cargo clippy --workspace -- -D warnings  # lint (CI-equivalent)
-cargo fmt --all                          # format
+cargo build                                   # workspace build
+cargo test --workspace --all-features         # all unit, integration + doctests (CI)
+cargo test --workspace --no-default-features  # serde/examples off (CI)
+cargo test -p sindr                           # solver crate only
+cargo test -p sindr-devices                   # device-physics crate only (includes README doctests)
+cargo run --example voltage_divider           # run a named example
+cargo run --example list_examples             # list every bundled example circuit
+cargo doc --workspace --no-deps --all-features --open  # API docs (CI uses RUSTDOCFLAGS=-D warnings)
+cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint (CI)
+cargo fmt --all                               # format
 ```
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the version-bump and CHANGELOG rule CI enforces on PRs.
 
 Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integration tests live in `sindr/tests/` (the SPICE end-to-end suite is gated on the `spice` feature).
 
 ## Conventions
 
-- **Edition 2021. MSRV not pinned** — keep code compatible with current stable Rust.
+- **Edition 2021, MSRV 1.87** (`rust-version` in both manifests; CI tests on 1.87 and stable). Don't use std/language features newer than 1.87.
 - **No `unsafe`.** This is a numerical library; we have no reason for it.
 - **No `unwrap()` / `expect()` in non-test code paths.** Return `SimError` instead.
 - **Errors flow through `SimError`** (see `sindr/src/error.rs`). When adding a new failure mode, prefer extending the enum over `String` errors.
@@ -123,7 +126,7 @@ When in doubt, run `cargo run --example list_examples` and copy the closest exis
 - One commit per logical change. Squash GSD's atomic per-task commits at end of phase.
 - Commit message: imperative, lowercase first word, no trailing period in subject.
 - Co-author trailer is fine; do not add hype-marketing footers.
-- Run `cargo fmt --all` and `cargo clippy --workspace -- -D warnings` before committing.
+- Run `cargo fmt --all` and `cargo clippy --workspace --all-targets --all-features -- -D warnings` before committing.
 
 ## Where to look first for common questions
 

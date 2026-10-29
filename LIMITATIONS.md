@@ -2,14 +2,14 @@
 
 sindr is an **analog circuit simulator**: a SPICE-style MNA solver with semiconductor companion models, written in pure Rust. This document is the honest counterpart to the READMEs — it lists capabilities sindr does **not** have today, so you can decide whether it fits your use case before investing.
 
-Status: pre-release alpha (`0.1.0-alpha.5`). Anything below may change.
+Status: pre-release alpha (`0.1.0-alpha.7`). Anything below may change.
 
 ## What sindr is
 
 - DC, nonlinear DC (Newton-Raphson), transient (Backward Euler), AC, DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
-- Thermistor, photoresistor, potentiometer, relay
+- Thermistor, photoresistor, potentiometer, relay, fuse, ideal fixed-output voltage regulator
 - Programmatic Rust API + serde JSON for circuits and results
 
 If your problem is "given an analog topology built in Rust, what are the node voltages and branch currents (possibly over time, frequency, or temperature)?", sindr is in scope.
@@ -65,7 +65,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 ### Device models
 
 - **No op-amp macromodel beyond ideal-with-rails.** No GBW, slew rate, input bias current, offset, output impedance, current limiting, or supply current. Real op-amp models from vendors cannot be loaded.
-- **No regulator / reference / DC-DC controller models.**
+- **No real regulator / reference / DC-DC controller models.** `VoltageRegulator` is an ideal voltage source on the output: no dropout, line/load regulation, quiescent current or current limit.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation, body effect, gate leakage are absent.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
 - **No JFET parasitic capacitances.** (BJT and MOSFET have optional Cbe/Cbc and Cgs/Cgd; JFET doesn't.)
