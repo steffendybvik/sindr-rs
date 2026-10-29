@@ -30,12 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current and Newton slowed to a crawl. The stamp now uses
   `bjt_terminal_jacobian`, the same model as AC analysis, Early effect
   included; `bjt_companion` conductances are exact slopes.
+- DC operating points with a forward-biased Schottky diode or photodiode, or
+  any diode next to a BJT, MOSFET or Zener, failed with `ConvergenceFailed`.
+  The initial guess left the whole supply across the junction; junctions now
+  start at their critical voltage, as in SPICE.
 - AC analysis now linearises BJTs with the full terminal Jacobian of the DC
   model (gπ, gm, gμ and g_o), instead of a forward-active approximation that
   used the B–C junction conductance as the output conductance. Gains in
   saturation and reverse-active were wrong, in saturation even in sign.
 - AC analysis now applies the BJT's junction temperature (IS scaling) as the
   DC solve does.
+- MOSFET body-effect transconductance `gmb` is now zero once the body is
+  forward-biased past PHI, matching `threshold_voltage`, which stops
+  depending on Vbs there. Before, a clamp made `gmb` about 200× `gm`. Every
+  PMOS with its source above ground hit this, because its body sits at
+  ground, and Newton got a source-column Jacobian entry ~200× too large.
 
 ## [0.1.0-alpha.6] - 2026-06-03
 

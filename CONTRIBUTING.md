@@ -37,6 +37,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
   `sindr/tests/fixtures/`, and those tests need `--features spice`.
 - Prefer checks against closed-form answers (a divider, an RC corner
   frequency, `1 − e^(−t/τ)`) over values copied from the current output.
+- `sindr/tests/golden.rs` checks results against ngspice. To add a case or
+  regenerate the references, see `sindr/tests/golden/README.md`. ngspice is
+  needed only for regenerating, never to run the tests.
 - Parsers and evaluators get `proptest` properties (see `spice/si.rs` and
   `spice/param_eval.rs`). If one fails, proptest writes the shrunk case to
   `sindr/proptest-regressions/`; commit that file with the fix.

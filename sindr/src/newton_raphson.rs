@@ -243,6 +243,8 @@ pub(crate) struct DiodeLimitInfo {
     correction_node: Option<CorrectionTarget>,
     /// Whether this is a BJT junction (enables bilateral step limiting).
     is_bjt: bool,
+    /// Breakdown voltage for a Zener, which is also driven in reverse.
+    zener_vz: Option<f64>,
 }
 
 /// Which node to apply voltage limiting corrections to.
@@ -273,6 +275,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     n: params.n,
                     correction_node: None,
                     is_bjt: false,
+                    zener_vz: None,
                 });
             }
             CircuitElement::Led {
@@ -292,9 +295,10 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     n: params.n,
                     correction_node: None,
                     is_bjt: false,
+                    zener_vz: None,
                 });
             }
-            CircuitElement::ZenerDiode { nodes, .. } => {
+            CircuitElement::ZenerDiode { nodes, vz, .. } => {
                 // Forward region uses silicon Shockley model (n=1, IS=1e-14)
                 let params = DiodeParams::silicon();
                 info.push(DiodeLimitInfo {
@@ -304,6 +308,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     n: params.n,
                     correction_node: None,
                     is_bjt: false,
+                    zener_vz: Some(*vz),
                 });
             }
             CircuitElement::SchottkyDiode { nodes, .. } => {
@@ -315,6 +320,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     n: schottky_params.n,
                     correction_node: None,
                     is_bjt: false,
+                    zener_vz: None,
                 });
             }
             CircuitElement::Photodiode { nodes, .. } => {
@@ -326,6 +332,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     n: photo_params.n,
                     correction_node: None,
                     is_bjt: false,
+                    zener_vz: None,
                 });
             }
             CircuitElement::Bjt {
@@ -354,6 +361,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     n: params.nf,
                     correction_node: None,
                     is_bjt: true,
+                    zener_vz: None,
                 });
 
                 // B-C junction: correction goes ONLY to the collector node.
@@ -374,6 +382,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     n: params.nr,
                     correction_node: Some(bc_correction),
                     is_bjt: true,
+                    zener_vz: None,
                 });
             }
             _ => {}
@@ -593,39 +602,33 @@ fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector
         }
     }
 
-    // Step 3: Clamp ZenerDiode initial operating point to within realistic range.
+    // Step 3: Clamp each diode-family junction's starting point.
     //
-    // The linear solve treats zeners as open circuits, so the anode/cathode voltage
-    // from the linear solve can be far outside the zener's operating range (e.g. 5V
-    // forward when the actual forward drop is ~0.65V). This causes the companion model
-    // to produce pathological currents and the NR solver to take tiny steps.
-    //
-    // Fix: set v_d_init = clamp(v_d_linear, -(vz + 0.1), +0.4) so the NR iteration
-    // starts within a factor of ~2 of the actual solution. The voltage limiter handles
-    // the rest.
-    for component in &circuit.components {
-        if let CircuitElement::ZenerDiode { nodes, vz, .. } = component {
-            let anode_idx = node_map.index(&nodes[0]);
-            let cathode_idx = node_map.index(&nodes[1]);
+    // The linear solve treats diodes as open circuits, so a junction can start
+    // with the whole supply across it (e.g. 5 V forward when the real drop is
+    // ~0.3 V). From there Newton on the exponential only moves down by about
+    // n·V_T per iteration, and runs out of iterations long before it arrives.
+    // Start forward-biased junctions at their critical voltage instead, as
+    // SPICE does; the voltage limiter takes it from there. A Zener's reverse
+    // side is held just past breakdown for the same reason.
+    for info in collect_diode_info(circuit, node_map)
+        .iter()
+        .filter(|info| !info.is_bjt)
+    {
+        let v_anode = info.anode_idx.map_or(0.0, |i| v_prev[i]);
+        let v_cathode = info.cathode_idx.map_or(0.0, |i| v_prev[i]);
+        let v_d = v_anode - v_cathode;
 
-            let v_anode = anode_idx.map_or(0.0, |i| v_prev[i]);
-            let v_cathode = cathode_idx.map_or(0.0, |i| v_prev[i]);
-            let v_d = v_anode - v_cathode;
+        let v_min = info.zener_vz.map_or(f64::NEG_INFINITY, |vz| -(vz + 0.1));
+        let v_d_clamped = v_d.clamp(v_min, info.v_crit);
 
-            // v_crit for silicon is approx 0.65V; use 0.4V as a safe initial point
-            const V_INIT_FORWARD: f64 = 0.4;
-            let v_crit_zener = vz + 0.1; // Allow slight overshoot past breakdown
-
-            let v_d_clamped = v_d.clamp(-v_crit_zener, V_INIT_FORWARD);
-
-            if (v_d_clamped - v_d).abs() > 1e-9 {
-                // Adjust the anode node voltage; keep cathode fixed
-                if let Some(ai) = anode_idx {
-                    v_prev[ai] = v_cathode + v_d_clamped;
-                } else if let Some(ci) = cathode_idx {
-                    // Anode is ground; adjust cathode instead (opposite sign)
-                    v_prev[ci] = -v_d_clamped;
-                }
+        if (v_d_clamped - v_d).abs() > 1e-9 {
+            // Move the anode and keep the cathode fixed; if the anode is
+            // ground, move the cathode instead.
+            if let Some(ai) = info.anode_idx {
+                v_prev[ai] = v_cathode + v_d_clamped;
+            } else if let Some(ci) = info.cathode_idx {
+                v_prev[ci] = -v_d_clamped;
             }
         }
     }
@@ -763,5 +766,95 @@ mod tests {
             (0.0..=0.35).contains(&v_n2),
             "low-bias diode should sit below knee, got V(n2) = {v_n2}"
         );
+    }
+
+    /// Forward drop of a junction (`IS`, `n`) fed from `vs` through `r`,
+    /// solved directly from `V = n·V_T·ln((vs − V)/(r·IS) + 1)`.
+    fn shockley_drop(vs: f64, r: f64, is: f64, n: f64) -> f64 {
+        let nvt = n * sindr_devices::diode::V_T;
+        let mut v = 0.5;
+        for _ in 0..200 {
+            v = nvt * ((vs - v) / (r * is) + 1.0).ln();
+        }
+        v
+    }
+
+    fn junction_behind(element: CircuitElement) -> Circuit {
+        Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["in".into(), "0".into()],
+                    voltage: 5.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["in".into(), "out".into()],
+                    resistance: 1_000.0,
+                },
+                element,
+            ],
+        }
+    }
+
+    #[test]
+    fn forward_schottky_behind_5v_converges() {
+        let circuit = junction_behind(CircuitElement::SchottkyDiode {
+            id: "D1".into(),
+            nodes: ["out".into(), "0".into()],
+            temperature: 300.15,
+        });
+        let result = crate::solve_circuit(&circuit).unwrap();
+        let want = shockley_drop(5.0, 1_000.0, 1e-8, 1.0);
+        assert!((result.node_voltages["out"] - want).abs() < 1e-5);
+    }
+
+    #[test]
+    fn forward_photodiode_behind_5v_converges() {
+        let circuit = junction_behind(CircuitElement::Photodiode {
+            id: "D1".into(),
+            nodes: ["out".into(), "0".into()],
+            irradiance: 0.0,
+            temperature: 300.15,
+        });
+        let result = crate::solve_circuit(&circuit).unwrap();
+        let want = shockley_drop(5.0, 1_000.0, 1e-12, 1.0);
+        assert!((result.node_voltages["out"] - want).abs() < 1e-5);
+    }
+
+    #[test]
+    fn silicon_diode_next_to_a_bjt_converges() {
+        // The BJT sends the solver through the linear pre-solve, which used
+        // to leave the diode with the full 5 V across it.
+        let mut circuit = junction_behind(CircuitElement::Diode {
+            id: "D1".into(),
+            nodes: ["out".into(), "0".into()],
+            temperature: 300.15,
+        });
+        circuit.components.extend([
+            CircuitElement::Resistor {
+                id: "RB".into(),
+                nodes: ["in".into(), "b".into()],
+                resistance: 470_000.0,
+            },
+            CircuitElement::Resistor {
+                id: "RC".into(),
+                nodes: ["in".into(), "c".into()],
+                resistance: 1_000.0,
+            },
+            CircuitElement::Bjt {
+                id: "Q1".into(),
+                nodes: ["b".into(), "c".into(), "0".into()],
+                kind: BjtKind::Npn,
+                bf: 100.0,
+                temperature: 300.15,
+                parasitic_caps: None,
+            },
+        ]);
+        let result = crate::solve_circuit(&circuit).unwrap();
+        let want = shockley_drop(5.0, 1_000.0, 1e-14, 1.0);
+        assert!((result.node_voltages["out"] - want).abs() < 1e-5);
     }
 }

@@ -1,0 +1,8 @@
+op: NPN common-emitter bias
+VCC vcc 0 10
+RC vcc c 1k
+RB vcc b 470k
+Q1 c b 0 qn
+* sindr's Ebers-Moll defaults with BF=100
+.model qn NPN(IS=1e-14 BF=100 BR=1)
+.end
