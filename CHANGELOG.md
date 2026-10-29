@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- SPICE errors raised after parsing now point at the offending line:
+  undefined models and parameters, parameter cycles, and bad analysis
+  directive values. Before, they carried no source text and a span at the
+  start of the file. Lines inside `.include`d files point into those files.
 - `solve_ac` validates its `AcConfig` and returns
   `SimError::InvalidComponent` for 0 points, non-finite values,
   `f_start > f_stop`, `f_start <= 0` with logarithmic spacing, and
@@ -24,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frequencies. A 1-point sweep now solves `f_start` alone, as SPICE does.
 - `dc_sweep` rejects non-finite endpoints, and `temperature_sweep` rejects
   non-finite temperatures and temperatures at or below 0 K.
+- P-channel JFETs were stamped and reported with the Norton current of the
+  mirrored N-channel frame, so DC, transient and the reported drain current
+  were wrong. A P-channel stage is now the exact mirror of its N-channel twin.
 - DC operating points with a forward-biased Schottky diode or photodiode, or
   any diode next to a BJT, MOSFET or Zener, failed with `ConvergenceFailed`.
   The initial guess left the whole supply across the junction; junctions now
@@ -44,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   depending on Vbs there. Before, a clamp made `gmb` about 200× `gm`. Every
   PMOS with its source above ground hit this, because its body sits at
   ground, and Newton got a source-column Jacobian entry ~200× too large.
+- IGBT operating points were wrong whenever `Vge ≠ Vce`. The stamp put `gm`
+  in as a collector–emitter conductance while `i_eq` linearised it around
+  `Vge`, so Newton settled on a point that isn't a solution: a switch driven
+  at 10 V into 100 Ω from 12 V read `Vce = 7.5 V` instead of 4.8 mV. `gm` is
+  now stamped as a gate-controlled source, and `IgbtCompanion::g_ce` is the
+  real `∂Ids/∂Vce` (zero in saturation) instead of `ids / vce_sat`. A
+  forward-biased IGBT's `Vce` is now limited per Newton step so it can't jump
+  into reverse blocking. `IgbtParams::vce_sat` is no longer used.
 
 ## [0.1.0-alpha.6] - 2026-06-03
 
