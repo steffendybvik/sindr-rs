@@ -14,9 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sindr_devices::bjt::{bjt_terminal_currents, bjt_terminal_jacobian, BjtJacobian}`:
   the BJT's large-signal terminal currents (Early effect included) and their
   exact, uncapped Jacobian, valid in every operating region.
+- `MosfetParams::in_nmos_frame`: a device's parameters in the N-channel frame
+  that `mosfet_companion` works in.
+
+### Changed
+
+- **Breaking:** a PMOS's `MosfetParams::vto` is now SPICE-signed: negative
+  for an enhancement PMOS, as `MosfetParams::default_pmos()` already was.
+  Before, the solver expected a positive magnitude, so `default_pmos()` gave a
+  normally-on device that conducted at V_SG = 0. If you set a positive `vto`
+  on a PMOS, negate it.
 
 ### Fixed
 
+- AC analysis now biases at the DC operating point (capacitors open,
+  inductors shorted). Before, any circuit with a capacitor, inductor or
+  waveform source was linearised at the transient's 5τ state, ~0.7 % short of
+  the bias for a coupling capacitor.
+- AC analysis now has small-signal models for JFETs (N and P), Zener,
+  Schottky and photodiodes, and varactors (their capacitance at the bias).
+  Before, these were open circuits in AC, so e.g. a JFET amplifier had no
+  gain.
+- SPICE errors raised after parsing now point at the offending line:
+  undefined models and parameters, parameter cycles, and bad analysis
+  directive values. Before, they carried no source text and a span at the
+  start of the file. Lines inside `.include`d files point into those files.
 - `solve_ac` validates its `AcConfig` and returns
   `SimError::InvalidComponent` for 0 points, non-finite values,
   `f_start > f_stop`, `f_start <= 0` with logarithmic spacing, and
@@ -24,10 +46,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frequencies. A 1-point sweep now solves `f_start` alone, as SPICE does.
 - `dc_sweep` rejects non-finite endpoints, and `temperature_sweep` rejects
   non-finite temperatures and temperatures at or below 0 K.
+- The BJT DC stamp is now the exact Newton linearisation of its currents.
+  Junction conductances were capped at 10 S and kept growing past the
+  exponential clamp, so above ~0.8 V of Vbe the Jacobian no longer matched the
+  current and Newton slowed to a crawl. The stamp now uses
+  `bjt_terminal_jacobian`, the same model as AC analysis, Early effect
+  included; `bjt_companion` conductances are exact slopes.
+- P-channel JFETs were stamped and reported with the Norton current of the
+  mirrored N-channel frame, so DC, transient and the reported drain current
+  were wrong. A P-channel stage is now the exact mirror of its N-channel twin.
 - DC operating points with a forward-biased Schottky diode or photodiode, or
   any diode next to a BJT, MOSFET or Zener, failed with `ConvergenceFailed`.
   The initial guess left the whole supply across the junction; junctions now
   start at their critical voltage, as in SPICE.
+- Diodes in series (two or more junctions sharing a node) failed DC with
+  `SingularMatrix`. Voltage limiting corrected one junction at a time, so the
+  next junction's correction on the shared node pushed the first one volts
+  forward. When that happens the solver now takes a damped Newton step that
+  keeps every junction within its limit.
 - AC analysis now linearises BJTs with the full terminal Jacobian of the DC
   model (gπ, gm, gμ and g_o), instead of a forward-active approximation that
   used the B–C junction conductance as the output conductance. Gains in
@@ -39,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   depending on Vbs there. Before, a clamp made `gmb` about 200× `gm`. Every
   PMOS with its source above ground hit this, because its body sits at
   ground, and Newton got a source-column Jacobian entry ~200× too large.
+- IGBT operating points were wrong whenever `Vge ≠ Vce`. The stamp put `gm`
+  in as a collector–emitter conductance while `i_eq` linearised it around
+  `Vge`, so Newton settled on a point that isn't a solution: a switch driven
+  at 10 V into 100 Ω from 12 V read `Vce = 7.5 V` instead of 4.8 mV. `gm` is
+  now stamped as a gate-controlled source, and `IgbtCompanion::g_ce` is the
+  real `∂Ids/∂Vce` (zero in saturation) instead of `ids / vce_sat`. A
+  forward-biased IGBT's `Vce` is now limited per Newton step so it can't jump
+  into reverse blocking. `IgbtParams::vce_sat` is no longer used.
 - Newton–Raphson (DC and transient) now also requires every diode, LED and
   BJT junction voltage to settle within `V_ABSTOL + RELTOL·n·V_T` before
   declaring convergence. The node-voltage tolerance alone scales with a

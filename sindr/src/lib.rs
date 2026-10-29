@@ -278,6 +278,54 @@ pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     }
 }
 
+/// DC operating point of `circuit` with capacitors open and inductors
+/// shorted, whatever else it contains. [`solve_circuit`] sends any reactive
+/// circuit down the transient path, whose end state (5 τ) is only close to
+/// the bias point; small-signal analysis needs the bias point itself.
+pub(crate) fn solve_dc_operating_point(circuit: &Circuit) -> Result<SimulationResult, SimError> {
+    validation::validate_circuit(circuit)?;
+    let dc = Circuit {
+        ground_node: circuit.ground_node.clone(),
+        components: circuit
+            .components
+            .iter()
+            .map(|c| match c {
+                // A 1 TΩ leak rather than nothing, so a node between two
+                // capacitors isn't singular (as the varactor's DC stamp).
+                CircuitElement::Capacitor { id, nodes, .. } => CircuitElement::Resistor {
+                    id: id.clone(),
+                    nodes: nodes.clone(),
+                    resistance: 1e12,
+                },
+                // An exact short: a 0 V source. A tiny resistor would put a
+                // ~1e9 S entry beside milli-siemens ones and cost the LU
+                // about twelve digits.
+                CircuitElement::Inductor { id, nodes, .. } => CircuitElement::VoltageSource {
+                    id: id.clone(),
+                    nodes: nodes.clone(),
+                    voltage: 0.0,
+                    waveform: None,
+                },
+                other => other.clone(),
+            })
+            .collect(),
+    };
+
+    let node_map = NM::from_circuit(&dc);
+    let num_nodes = node_map.num_nodes();
+    let num_vsources = dc.count_voltage_sources();
+    if dc.has_nonlinear_elements() {
+        newton_raphson::solve_nonlinear(&dc, &node_map, num_nodes, num_vsources)
+    } else {
+        let mut system = MnaSystem::new(num_nodes, num_vsources);
+        stamp::stamp_circuit(&dc, &mut system, &node_map, None)?;
+        let solution = system.solve()?;
+        Ok(results::extract_results(
+            &dc, &node_map, &solution, num_nodes,
+        ))
+    }
+}
+
 /// Like [`solve_circuit`] but seeds the Newton–Raphson initial guess with
 /// the supplied per-node voltages (V), keyed by node name. Equivalent to
 /// SPICE's `.NODESET` directive — useful when a circuit has multiple

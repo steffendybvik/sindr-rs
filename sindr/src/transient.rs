@@ -592,7 +592,7 @@ fn extract_timestep_results(
                     MosfetKind::Nmos => (vg - vs, vd - vs, -vs),
                     MosfetKind::Pmos => (vs - vg, vs - vd, vs),
                 };
-                let comp = mosfet::mosfet_companion(vgs, vds, vbs, params);
+                let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(*kind));
                 let id_current = match kind {
                     MosfetKind::Nmos => comp.id,
                     MosfetKind::Pmos => -comp.id,
@@ -1257,7 +1257,7 @@ fn extract_mosfet_results_from_snapshot(
                 MosfetKind::Pmos => (vs - vg, vs - vd, vs),
             };
 
-            let comp = mosfet::mosfet_companion(vgs, vds, vbs, params);
+            let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(*kind));
             let id_current = match kind {
                 MosfetKind::Nmos => comp.id,
                 MosfetKind::Pmos => -comp.id,
@@ -1301,6 +1301,7 @@ fn nr_at_timestep_with_parasitic(
     let size = num_nodes + num_vsources;
     let mut v_prev = DVector::zeros(size);
     let mut last_step = f64::INFINITY;
+    let igbt_info = newton_raphson::collect_igbt_info(circuit, node_map);
 
     for _iteration in 0..MAX_NR_ITERATIONS {
         // Build fresh MNA system each iteration
@@ -1720,7 +1721,8 @@ fn nr_at_timestep_with_parasitic(
         let v_new = system.solve()?;
 
         // Apply voltage limiting
-        let v_limited = newton_raphson::apply_voltage_limiting(&v_new, &v_prev, diode_info);
+        let mut v_limited = newton_raphson::apply_voltage_limiting(&v_new, &v_prev, diode_info);
+        newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
 
         // Check convergence
         if newton_raphson::converged(&v_prev, &v_limited, num_nodes, diode_info) {

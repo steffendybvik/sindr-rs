@@ -1,0 +1,7 @@
+op: two silicon diodes in series behind a resistor
+V1 in 0 5
+R1 in out 1k
+D1 out m dsi
+D2 m 0 dsi
+.model dsi D(IS=1e-14 N=1)
+.end

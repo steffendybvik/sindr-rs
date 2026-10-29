@@ -187,6 +187,7 @@ fn nr_inner(
     }
 
     let diode_info = collect_diode_info(circuit, node_map);
+    let igbt_info = collect_igbt_info(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
     let mut last_step = f64::INFINITY;
     for _iteration in 0..MAX_NR_ITERATIONS {
@@ -203,7 +204,8 @@ fn nr_inner(
 
         let v_new = system.solve()?;
 
-        let v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
+        let mut v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
+        apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
 
         if debug_nr && _iteration < 30 {
             eprintln!(
@@ -467,7 +469,85 @@ pub(crate) fn apply_voltage_limiting(
         }
     }
 
+    // Limiting one junction at a time can undo another. Two diodes in series
+    // share a node: the second one's correction moves it after the first was
+    // limited, and the first can end the step volts forward (the next stamp
+    // then overflows). When that happens, fall back to a damped Newton step:
+    // keep the raw step's direction and shorten it until every junction is
+    // within what its limiter allows. Junction voltages are linear in the
+    // node voltages, so one factor satisfies them all.
+    let junction = |info: &DiodeLimitInfo, v: &DVector<f64>| {
+        info.anode_idx.map_or(0.0, |i| v[i]) - info.cathode_idx.map_or(0.0, |i| v[i])
+    };
+    let overshoots = diode_info.iter().any(|info| {
+        let (old, fin) = (junction(info, v_prev), junction(info, &v_limited));
+        fin > diode::limit_voltage(fin, old, info.v_crit, info.n) + 1e-9
+    });
+    if overshoots {
+        let mut alpha: f64 = 1.0;
+        for info in diode_info {
+            let (old, raw) = (junction(info, v_prev), junction(info, v_new));
+            let allowed = diode::limit_voltage(raw, old, info.v_crit, info.n);
+            if raw > allowed && allowed > old {
+                alpha = alpha.min((allowed - old) / (raw - old));
+            }
+        }
+        v_limited = v_prev + (v_new - v_prev) * alpha;
+    }
     v_limited
+}
+
+/// Collector and emitter indices of an IGBT, for [`apply_igbt_limiting`].
+pub(crate) struct IgbtLimitInfo {
+    collector_idx: Option<usize>,
+    emitter_idx: Option<usize>,
+}
+
+/// Collect the IGBTs' collector/emitter node indices for VCE limiting.
+pub(crate) fn collect_igbt_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<IgbtLimitInfo> {
+    circuit
+        .components
+        .iter()
+        .filter_map(|component| match component {
+            CircuitElement::Igbt { nodes, .. } => Some(IgbtLimitInfo {
+                collector_idx: node_map.index(&nodes[1]),
+                emitter_idx: node_map.index(&nodes[2]),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Keep a forward-biased IGBT from stepping into reverse blocking in one
+/// Newton step.
+///
+/// The IGBT carries no current and has zero conductance for `vce <= 0`, and
+/// zero output conductance in saturation, so an unlimited Newton step can
+/// bounce between the two without converging. As SPICE's `limvds` does for
+/// MOSFETs, a step that would take `vce` from positive to `<= 0` lands at
+/// `vce_old / 2` instead, which walks it down into the triode region where
+/// Newton converges. The correction goes to the collector (the emitter if
+/// the collector is ground).
+pub(crate) fn apply_igbt_limiting(
+    v_limited: &mut DVector<f64>,
+    v_prev: &DVector<f64>,
+    igbt_info: &[IgbtLimitInfo],
+) {
+    for info in igbt_info {
+        let vce = |v: &DVector<f64>| {
+            info.collector_idx.map_or(0.0, |i| v[i]) - info.emitter_idx.map_or(0.0, |i| v[i])
+        };
+        let (vce_old, vce_new) = (vce(v_prev), vce(v_limited));
+        if vce_old <= 0.0 || vce_new > 0.0 {
+            continue;
+        }
+        let delta = vce_old / 2.0 - vce_new;
+        match (info.collector_idx, info.emitter_idx) {
+            (Some(ci), _) => v_limited[ci] += delta,
+            (None, Some(ei)) => v_limited[ei] -= delta,
+            (None, None) => {}
+        }
+    }
 }
 
 /// Add Gmin conductance shunts to every node diagonal.
@@ -973,5 +1053,143 @@ mod tests {
                 5.0 - vp
             );
         }
+    }
+
+    /// Current through `junctions` (IS, n) in series with `r` from `vs`,
+    /// from `vs = I·r + Σ n·V_T·ln(I/IS + 1)` by bisection.
+    fn series_current(vs: f64, r: f64, junctions: &[(f64, f64)]) -> f64 {
+        let vt = sindr_devices::diode::V_T;
+        let residual = |i: f64| {
+            i * r
+                + junctions
+                    .iter()
+                    .map(|&(is, n)| n * vt * (i / is + 1.0).ln())
+                    .sum::<f64>()
+                - vs
+        };
+        let (mut lo, mut hi) = (0.0, vs / r);
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if residual(mid) > 0.0 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
+    /// `in` → R1 → chain of diodes to ground; node `out` after the resistor,
+    /// then `m1`, `m2`, … between diodes.
+    fn diode_chain(diodes: Vec<CircuitElement>) -> Circuit {
+        let mut components = vec![
+            CircuitElement::VoltageSource {
+                id: "V1".into(),
+                nodes: ["in".into(), "0".into()],
+                voltage: 5.0,
+                waveform: None,
+            },
+            CircuitElement::Resistor {
+                id: "R1".into(),
+                nodes: ["in".into(), "out".into()],
+                resistance: 1_000.0,
+            },
+        ];
+        components.extend(diodes);
+        Circuit {
+            ground_node: "0".into(),
+            components,
+        }
+    }
+
+    fn silicon(id: &str, a: &str, k: &str) -> CircuitElement {
+        CircuitElement::Diode {
+            id: id.into(),
+            nodes: [a.into(), k.into()],
+            temperature: 300.15,
+        }
+    }
+
+    #[test]
+    fn two_silicon_diodes_in_series_converge() {
+        let circuit = diode_chain(vec![silicon("D1", "out", "m1"), silicon("D2", "m1", "0")]);
+        let result = crate::solve_circuit(&circuit).unwrap();
+        let i = series_current(5.0, 1_000.0, &[(1e-14, 1.0), (1e-14, 1.0)]);
+        assert!((result.node_voltages["out"] - (5.0 - 1_000.0 * i)).abs() < 1e-5);
+        assert!((result.node_voltages["m1"] - (5.0 - 1_000.0 * i) / 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn three_diodes_in_series_converge() {
+        let circuit = diode_chain(vec![
+            silicon("D1", "out", "m1"),
+            silicon("D2", "m1", "m2"),
+            silicon("D3", "m2", "0"),
+        ]);
+        let result = crate::solve_circuit(&circuit).unwrap();
+        let i = series_current(5.0, 1_000.0, &[(1e-14, 1.0); 3]);
+        assert!((result.node_voltages["out"] - (5.0 - 1_000.0 * i)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn schottky_over_silicon_in_series_converges() {
+        let circuit = diode_chain(vec![
+            CircuitElement::SchottkyDiode {
+                id: "D1".into(),
+                nodes: ["out".into(), "m1".into()],
+                temperature: 300.15,
+            },
+            silicon("D2", "m1", "0"),
+        ]);
+        let result = crate::solve_circuit(&circuit).unwrap();
+        let i = series_current(5.0, 1_000.0, &[(1e-8, 1.0), (1e-14, 1.0)]);
+        let vt = sindr_devices::diode::V_T;
+        assert!((result.node_voltages["m1"] - vt * (i / 1e-14 + 1.0).ln()).abs() < 1e-5);
+        assert!((result.node_voltages["out"] - (5.0 - 1_000.0 * i)).abs() < 1e-5);
+    }
+
+    /// IGBT switched on into a resistive load sits in triode with a few mV
+    /// across it. Its VCE solves (VCC − v)/R = K·(vov − v/2)·v, the smaller
+    /// root of K/2·v² − (K·vov + 1/R)·v + VCC/R = 0.
+    #[test]
+    fn igbt_switch_matches_closed_form() {
+        let params = sindr_devices::igbt::IgbtParams::default(); // vth=5, k=5
+        let (vcc, r, vge) = (12.0, 100.0, 10.0);
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                CircuitElement::VoltageSource {
+                    id: "Vg".into(),
+                    nodes: ["g".into(), "0".into()],
+                    voltage: vge,
+                    waveform: None,
+                },
+                CircuitElement::VoltageSource {
+                    id: "Vcc".into(),
+                    nodes: ["vcc".into(), "0".into()],
+                    voltage: vcc,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R".into(),
+                    nodes: ["vcc".into(), "c".into()],
+                    resistance: r,
+                },
+                CircuitElement::Igbt {
+                    id: "Q1".into(),
+                    nodes: ["g".into(), "c".into(), "0".into()],
+                    params: params.clone(),
+                },
+            ],
+        };
+        let vov = vge - params.vth;
+        let b = params.k * vov + 1.0 / r;
+        let expected = (b - (b * b - 2.0 * params.k * vcc / r).sqrt()) / params.k;
+
+        let vce = crate::solve_circuit(&circuit).unwrap().node_voltages["c"];
+        assert!(
+            (vce - expected).abs() <= 1e-3 * expected,
+            "VCE {vce} vs closed form {expected}"
+        );
     }
 }

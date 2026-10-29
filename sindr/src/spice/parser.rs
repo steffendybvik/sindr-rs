@@ -52,12 +52,39 @@ fn ws(input: &mut Input<'_>) -> ModalResult<()> {
     space0.void().parse_next(input)
 }
 
+/// The span of a whole logical line in its source file.
+fn line_span(line: &LogicalLine) -> Span {
+    Span {
+        start: line.byte_range.start,
+        end: line.byte_range.end,
+        file: line.file.clone(),
+        src: line.src.clone(),
+    }
+}
+
+/// Replace a card's line-local span with its source line, so errors raised
+/// after parsing (undefined model, undefined parameter) can point at it.
+/// The logical text is comment-stripped and continuation-joined, so local
+/// offsets don't map onto the file; the whole line does.
+fn anchor_to_line(card: RawCard, line: &LogicalLine) -> RawCard {
+    match card {
+        RawCard::Element(mut e) => {
+            e.span = line_span(line);
+            RawCard::Element(e)
+        }
+        RawCard::Param(bindings, _) => RawCard::Param(bindings, line_span(line)),
+        RawCard::Analysis(analysis, _) => RawCard::Analysis(analysis, line_span(line)),
+        other => other,
+    }
+}
+
 /// Convert a `Range<usize>` produced by `with_span` into a [`Span`] tied to `file`.
 fn span_from(range: Range<usize>, file: &Arc<str>) -> Span {
     Span {
         start: range.start,
         end: range.end,
         file: file.clone(),
+        src: Arc::default(),
     }
 }
 
@@ -263,6 +290,7 @@ fn parse_passive(input: &mut Input<'_>) -> ModalResult<RawElement> {
             start: id_span.start,
             end: val_span.end,
             file: Arc::from(""),
+            src: Arc::default(),
         },
     })
 }
@@ -351,6 +379,7 @@ fn parse_source(input: &mut Input<'_>, kind: SourceKind) -> ModalResult<RawEleme
             start: id_span.start,
             end: id_span.end,
             file: Arc::from(""),
+            src: Arc::default(),
         },
     })
 }
@@ -377,6 +406,7 @@ fn parse_diode(input: &mut Input<'_>) -> ModalResult<RawElement> {
             start: id_span.start,
             end: id_span.end,
             file: Arc::from(""),
+            src: Arc::default(),
         },
     })
 }
@@ -423,6 +453,7 @@ fn parse_bjt(input: &mut Input<'_>) -> ModalResult<RawElement> {
             start: id_span.start,
             end: id_span.end,
             file: Arc::from(""),
+            src: Arc::default(),
         },
     })
 }
@@ -470,6 +501,7 @@ fn parse_subckt_instance(input: &mut Input<'_>) -> ModalResult<RawElement> {
             start: id_span.start,
             end: id_span.end,
             file: Arc::from(""),
+            src: Arc::default(),
         },
     })
 }
@@ -518,6 +550,7 @@ fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
             start: name_span.start,
             end: name_span.end,
             file: Arc::from(""),
+            src: Arc::default(),
         },
     }))
 }
@@ -570,6 +603,7 @@ fn parse_card_model(input: &mut Input<'_>) -> ModalResult<RawCard> {
             start: name_span.start,
             end: name_span.end,
             file: Arc::from(""),
+            src: Arc::default(),
         },
     }))
 }
@@ -590,7 +624,7 @@ fn parse_card_param(input: &mut Input<'_>) -> ModalResult<RawCard> {
     if bindings.is_empty() {
         return Err(ErrMode::from_input(input));
     }
-    Ok(RawCard::Param(bindings))
+    Ok(RawCard::Param(bindings, Span::detached()))
 }
 
 /// Parse `.tran tstep tstop [tstart]`.
@@ -609,7 +643,10 @@ fn parse_card_tran(input: &mut Input<'_>) -> ModalResult<RawCard> {
     if args.len() < 2 || args.len() > 3 {
         return Err(ErrMode::from_input(input));
     }
-    Ok(RawCard::Analysis(RawAnalysis::Tran { args }))
+    Ok(RawCard::Analysis(
+        RawAnalysis::Tran { args },
+        Span::detached(),
+    ))
 }
 
 /// Parse `.dc source start stop step`.
@@ -630,7 +667,10 @@ fn parse_card_dc(input: &mut Input<'_>) -> ModalResult<RawCard> {
     if args.len() != 3 {
         return Err(ErrMode::from_input(input));
     }
-    Ok(RawCard::Analysis(RawAnalysis::Dc { source, args }))
+    Ok(RawCard::Analysis(
+        RawAnalysis::Dc { source, args },
+        Span::detached(),
+    ))
 }
 
 /// Parse `.ac dec|oct|lin points fstart fstop`.
@@ -650,18 +690,21 @@ fn parse_card_ac(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
     let (fstop, _) = value_expr(input)?;
     ws(input)?;
-    Ok(RawCard::Analysis(RawAnalysis::Ac {
-        sweep,
-        points,
-        fstart,
-        fstop,
-    }))
+    Ok(RawCard::Analysis(
+        RawAnalysis::Ac {
+            sweep,
+            points,
+            fstart,
+            fstop,
+        },
+        Span::detached(),
+    ))
 }
 
 /// Parse `.op` (no args).
 fn parse_card_op(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
-    Ok(RawCard::Analysis(RawAnalysis::Op))
+    Ok(RawCard::Analysis(RawAnalysis::Op, Span::detached()))
 }
 
 // ---------------------------------------------------------------------------
@@ -872,7 +915,7 @@ pub(crate) fn parse_with_options(
 
     for line in &pre.lines {
         let card = match parse_one_card_local(&line.text) {
-            Ok(c) => c,
+            Ok(c) => anchor_to_line(c, line),
             Err(LocalError::Empty) => continue,
             Err(e) => {
                 if !strict && is_recoverable(&e) {
@@ -1273,7 +1316,7 @@ mod tests {
     fn cards_tran() {
         let card = parse_one_card_local(".tran 1u 1m").unwrap();
         match card {
-            RawCard::Analysis(RawAnalysis::Tran { args }) => {
+            RawCard::Analysis(RawAnalysis::Tran { args }, _) => {
                 assert_eq!(args.len(), 2);
                 assert!((must_num(&args[0]) - 1e-6).abs() < 1e-15);
                 assert!((must_num(&args[1]) - 1e-3).abs() < 1e-12);
@@ -1286,12 +1329,15 @@ mod tests {
     fn cards_ac_dec() {
         let card = parse_one_card_local(".ac dec 50 10 100k").unwrap();
         match card {
-            RawCard::Analysis(RawAnalysis::Ac {
-                sweep,
-                points,
-                fstart,
-                fstop,
-            }) => {
+            RawCard::Analysis(
+                RawAnalysis::Ac {
+                    sweep,
+                    points,
+                    fstart,
+                    fstop,
+                },
+                _,
+            ) => {
                 assert_eq!(sweep, AcSweepKind::Dec);
                 assert!((must_num(&points) - 50.0).abs() < 1e-9);
                 assert!((must_num(&fstart) - 10.0).abs() < 1e-9);
@@ -1304,14 +1350,14 @@ mod tests {
     #[test]
     fn cards_op() {
         let card = parse_one_card_local(".op").unwrap();
-        assert!(matches!(card, RawCard::Analysis(RawAnalysis::Op)));
+        assert!(matches!(card, RawCard::Analysis(RawAnalysis::Op, _)));
     }
 
     #[test]
     fn cards_dc_sweep() {
         let card = parse_one_card_local(".dc vin 0 5 0.1").unwrap();
         match card {
-            RawCard::Analysis(RawAnalysis::Dc { source, args }) => {
+            RawCard::Analysis(RawAnalysis::Dc { source, args }, _) => {
                 assert_eq!(source, "vin");
                 assert_eq!(args.len(), 3);
             }
@@ -1365,7 +1411,7 @@ mod tests {
     fn cards_param_list() {
         let card = parse_one_card_local(".param a=1k b={2*3}").unwrap();
         match card {
-            RawCard::Param(bindings) => {
+            RawCard::Param(bindings, _) => {
                 assert_eq!(bindings.len(), 2);
                 assert_eq!(bindings[0].0, "a");
                 assert!((must_num(&bindings[0].1) - 1000.0).abs() < 1e-9);
