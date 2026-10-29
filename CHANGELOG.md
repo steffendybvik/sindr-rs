@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saturation and reverse-active were wrong, in saturation even in sign.
 - AC analysis now applies the BJT's junction temperature (IS scaling) as the
   DC solve does.
+- MOSFET body-effect transconductance `gmb` is now zero once the body is
+  forward-biased past PHI, matching `threshold_voltage`, which stops
+  depending on Vbs there. Before, a clamp made `gmb` about 200× `gm`. Every
+  PMOS with its source above ground hit this, because its body sits at
+  ground, and Newton got a source-column Jacobian entry ~200× too large.
 
 ## [0.1.0-alpha.6] - 2026-06-03
 
