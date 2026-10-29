@@ -904,7 +904,8 @@ pub(crate) fn stamp_varactor_transient(
 
 /// Stamp an IGBT companion model (nonlinear, called each NR iteration).
 ///
-/// Linearizes IGBT (MOSFET gate + BJT output) at operating point v_prev.
+/// Linearizes IGBT (MOSFET gate + BJT output) at operating point v_prev:
+/// gm as a gate-controlled current source, g_ce as a C–E conductance.
 /// nodes: [gate, collector, emitter]
 pub(crate) fn stamp_igbt_companion(
     system: &mut MnaSystem,
@@ -925,19 +926,21 @@ pub(crate) fn stamp_igbt_companion(
 
     let comp = sindr_devices::igbt::igbt_companion(vge, vce, params);
 
-    let g_total = comp.gm + comp.g_ce;
+    let stamp_g = |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {
+        if let (Some(r), Some(c)) = (row, col) {
+            system.a[(r, c)] += val;
+        }
+    };
 
-    // Stamp gm + g_ce between collector and emitter (output conductance)
-    if let Some(ci) = c {
-        system.a[(ci, ci)] += g_total;
-    }
-    if let Some(ei) = e {
-        system.a[(ei, ei)] += g_total;
-    }
-    if let (Some(ci), Some(ei)) = (c, e) {
-        system.a[(ci, ei)] -= g_total;
-        system.a[(ei, ci)] -= g_total;
-    }
+    // Ic = gm·vge + g_ce·vce + i_eq, entering the collector, leaving the emitter.
+    // Collector row: dIc/dVg = gm, dIc/dVc = g_ce, dIc/dVe = −(gm + g_ce)
+    stamp_g(system, c, g, comp.gm);
+    stamp_g(system, c, c, comp.g_ce);
+    stamp_g(system, c, e, -(comp.gm + comp.g_ce));
+    // Emitter row (Ie = −Ic)
+    stamp_g(system, e, g, -comp.gm);
+    stamp_g(system, e, c, -comp.g_ce);
+    stamp_g(system, e, e, comp.gm + comp.g_ce);
 
     // Stamp companion current source: I_eq from emitter to collector
     // i_eq = ids - gm*vge - g_ce*vce (companion source value)
@@ -2286,6 +2289,67 @@ mod tests {
                     assert!(
                         (stamped - fd[row]).abs() <= tol,
                         "{kind:?} at {bias:?}: dI[{row}]/dV[{col}] stamped {stamped:e}, finite difference {:e}",
+                        fd[row]
+                    );
+                }
+            }
+        }
+    }
+
+    /// Stamping at `v` and evaluating at `v` gives the IGBT's terminal
+    /// currents, so the stamped Jacobian columns (gate included) must match
+    /// a finite difference of those currents.
+    #[test]
+    fn igbt_stamp_is_newton_consistent() {
+        use sindr_devices::igbt::IgbtParams;
+
+        let nodes: [String; 3] = ["g".into(), "c".into(), "e".into()];
+        let params = IgbtParams::default();
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![CircuitElement::Igbt {
+                id: "Q1".into(),
+                nodes: nodes.clone(),
+                params: params.clone(),
+            }],
+        };
+        let node_map = NodeMap::from_circuit(&circuit);
+        let n = node_map.num_nodes();
+        let idx: Vec<usize> = nodes.iter().map(|x| node_map.index(x).unwrap()).collect();
+        // [vg, vc, ve]: saturation, triode, emitter off ground, cutoff.
+        for bias in [
+            [8.0, 10.0, 0.0],
+            [10.0, 2.0, 0.0],
+            [12.0, 4.0, 1.0],
+            [3.0, 10.0, 0.0],
+        ] {
+            let mut v = DVector::zeros(n);
+            for (k, &i) in idx.iter().enumerate() {
+                v[i] = bias[k];
+            }
+            let stamp_at = |v: &DVector<f64>| {
+                let mut system = MnaSystem::new(n, 0);
+                stamp_igbt_companion(&mut system, &node_map, &nodes, v, &params);
+                system
+            };
+            let currents = |v: &DVector<f64>| {
+                let system = stamp_at(v);
+                &system.a * v - &system.b
+            };
+            let system = stamp_at(&v);
+            let h = 1e-6;
+            for &col in &idx {
+                let mut vp = v.clone();
+                let mut vm = v.clone();
+                vp[col] += h;
+                vm[col] -= h;
+                let fd = (currents(&vp) - currents(&vm)) / (2.0 * h);
+                for &row in &idx {
+                    let stamped = system.a[(row, col)];
+                    let tol = 1e-5 * stamped.abs().max(fd[row].abs()) + 1e-9;
+                    assert!(
+                        (stamped - fd[row]).abs() <= tol,
+                        "at {bias:?}: dI[{row}]/dV[{col}] stamped {stamped:e}, finite difference {:e}",
                         fd[row]
                     );
                 }
