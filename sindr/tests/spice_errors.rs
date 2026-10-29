@@ -73,17 +73,10 @@ fn undefined_model_is_reported() {
 }
 
 #[test]
-#[ignore = "SIN-29: build-stage errors lose their source location"]
 fn undefined_model_points_at_the_element() {
     let deck = "* t\nV1 a 0 1\nR1 a 0 1k\nD1 a 0 nomodel\n.end\n";
     let err = parse_str(deck).unwrap_err();
-    let labels = labelled(&err, deck);
-    assert!(
-        labels
-            .iter()
-            .any(|l| l.contains("nomodel") || l.contains("D1")),
-        "labels {labels:?}"
-    );
+    assert_eq!(labelled(&err, deck), ["D1 a 0 nomodel"]);
 }
 
 #[test]
@@ -96,15 +89,10 @@ fn undefined_param_is_reported() {
 }
 
 #[test]
-#[ignore = "SIN-29: build-stage errors lose their source location"]
 fn undefined_param_points_at_the_reference() {
     let deck = "* t\nV1 a 0 1\nR1 a 0 {missing*2}\n.end\n";
     let err = parse_str(deck).unwrap_err();
-    let labels = labelled(&err, deck);
-    assert!(
-        labels.iter().any(|l| l.contains("missing")),
-        "labels {labels:?}"
-    );
+    assert_eq!(labelled(&err, deck), ["R1 a 0 {missing*2}"]);
 }
 
 #[test]
@@ -122,7 +110,59 @@ fn circular_params_name_the_cycle() {
 }
 
 #[test]
-fn invalid_ac_point_count_is_rejected() {
+fn invalid_ac_point_count_points_at_the_directive() {
     let deck = "* t\nV1 a 0 1\nR1 a 0 1k\n.ac dec 0 1 1k\n.end\n";
-    assert!(parse_str(deck).is_err());
+    let err = parse_str(deck).unwrap_err();
+    assert_eq!(labelled(&err, deck), [".ac dec 0 1 1k"]);
+}
+
+#[test]
+fn undefined_param_in_a_directive_points_at_it() {
+    let deck = "* t\nV1 a 0 1\nR1 a 0 1k\n.tran 1u {tstop}\n.end\n";
+    let err = parse_str(deck).unwrap_err();
+    assert!(matches!(err, SpiceParseError::UndefinedParam { .. }));
+    assert_eq!(labelled(&err, deck), [".tran 1u {tstop}"]);
+}
+
+#[test]
+fn circular_params_point_at_the_param_card() {
+    let deck = "* t\n.param a={b+1} b={a*2}\nV1 x 0 1\nR1 x 0 {a}\n.end\n";
+    let err = parse_str(deck).unwrap_err();
+    assert_eq!(labelled(&err, deck), [".param a={b+1} b={a*2}"]);
+}
+
+#[test]
+fn undefined_model_inside_a_subckt_points_at_its_body_line() {
+    let deck =
+        "* t\nV1 in 0 1\nX1 in 0 cell\n.subckt cell p q\nR1 p q 1k\nD1 p q ghost\n.ends\n.end\n";
+    let err = parse_str(deck).unwrap_err();
+    assert!(matches!(err, SpiceParseError::UndefinedModel { .. }));
+    assert_eq!(labelled(&err, deck), ["D1 p q ghost"]);
+}
+
+#[test]
+fn error_in_an_included_file_points_into_that_file() {
+    let dir = std::env::temp_dir().join(format!("sindr-errors-inc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("parts.inc"), "* models\nD9 a 0 nomodel\n").unwrap();
+    std::fs::write(
+        dir.join("main.cir"),
+        "* t\nV1 a 0 1\nR1 a 0 1k\n.include 'parts.inc'\n.end\n",
+    )
+    .unwrap();
+
+    let err = parse_file(dir.join("main.cir")).unwrap_err();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let source = err.source_code().expect("error carries its source");
+    let label = err.labels().into_iter().flatten().next().expect("a label");
+    let contents = source.read_span(label.inner(), 0, 0).unwrap();
+    assert_eq!(
+        std::str::from_utf8(contents.data()).unwrap(),
+        "D9 a 0 nomodel"
+    );
+    assert!(
+        contents.name().is_some_and(|n| n.ends_with("parts.inc")),
+        "{:?}",
+        contents.name()
+    );
 }

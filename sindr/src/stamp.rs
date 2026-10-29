@@ -854,7 +854,8 @@ pub(crate) fn stamp_varactor_transient(
 
 /// Stamp an IGBT companion model (nonlinear, called each NR iteration).
 ///
-/// Linearizes IGBT (MOSFET gate + BJT output) at operating point v_prev.
+/// Linearizes IGBT (MOSFET gate + BJT output) at operating point v_prev:
+/// gm as a gate-controlled current source, g_ce as a C–E conductance.
 /// nodes: [gate, collector, emitter]
 pub(crate) fn stamp_igbt_companion(
     system: &mut MnaSystem,
@@ -875,19 +876,21 @@ pub(crate) fn stamp_igbt_companion(
 
     let comp = sindr_devices::igbt::igbt_companion(vge, vce, params);
 
-    let g_total = comp.gm + comp.g_ce;
+    let stamp_g = |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {
+        if let (Some(r), Some(c)) = (row, col) {
+            system.a[(r, c)] += val;
+        }
+    };
 
-    // Stamp gm + g_ce between collector and emitter (output conductance)
-    if let Some(ci) = c {
-        system.a[(ci, ci)] += g_total;
-    }
-    if let Some(ei) = e {
-        system.a[(ei, ei)] += g_total;
-    }
-    if let (Some(ci), Some(ei)) = (c, e) {
-        system.a[(ci, ei)] -= g_total;
-        system.a[(ei, ci)] -= g_total;
-    }
+    // Ic = gm·vge + g_ce·vce + i_eq, entering the collector, leaving the emitter.
+    // Collector row: dIc/dVg = gm, dIc/dVc = g_ce, dIc/dVe = −(gm + g_ce)
+    stamp_g(system, c, g, comp.gm);
+    stamp_g(system, c, c, comp.g_ce);
+    stamp_g(system, c, e, -(comp.gm + comp.g_ce));
+    // Emitter row (Ie = −Ic)
+    stamp_g(system, e, g, -comp.gm);
+    stamp_g(system, e, c, -comp.g_ce);
+    stamp_g(system, e, e, comp.gm + comp.g_ce);
 
     // Stamp companion current source: I_eq from emitter to collector
     // i_eq = ids - gm*vge - g_ce*vce (companion source value)
@@ -925,6 +928,14 @@ pub(crate) fn stamp_jfet_companion(
     let vds = vd - vs;
 
     let c = sindr_devices::jfet::jfet_companion(vgs, vds, kind, idss, vp);
+    // For P-channel, jfet_companion works in the mirrored N-channel frame
+    // (vgs' = −vgs, vds' = −vds) and the physical drain current is −Id'.
+    // Mirroring both the voltages and the current leaves gm and gds as they
+    // are but flips the sign of the Norton term.
+    let i_eq = match kind {
+        JfetKind::NChannel => c.i_eq,
+        JfetKind::PChannel => -c.i_eq,
+    };
 
     // Stamp drain-source conductance gds
     if let Some(di) = d {
@@ -956,10 +967,10 @@ pub(crate) fn stamp_jfet_companion(
     // Stamp equivalent current source i_eq (flows from source to drain in MNA)
     // Id = gm*Vgs + gds*Vds + i_eq
     if let Some(di) = d {
-        system.b[di] -= c.i_eq;
+        system.b[di] -= i_eq;
     }
     if let Some(si) = s {
-        system.b[si] += c.i_eq;
+        system.b[si] += i_eq;
     }
 }
 
@@ -2175,6 +2186,93 @@ mod tests {
         }
     }
 
+    /// Physical drain current (into the drain) of the JFET model. A P-channel
+    /// device is the N-channel square law mirrored: Id = −I_N(vs−vg, vs−vd).
+    fn jfet_drain_current(kind: JfetKind, vg: f64, vd: f64, vs: f64) -> f64 {
+        let n_current = |vgs: f64, vds: f64| {
+            let c = sindr_devices::jfet::jfet_companion(vgs, vds, JfetKind::NChannel, 10e-3, -2.0);
+            c.gm * vgs + c.gds * vds + c.i_eq
+        };
+        match kind {
+            JfetKind::NChannel => n_current(vg - vs, vd - vs),
+            JfetKind::PChannel => -n_current(vs - vg, vs - vd),
+        }
+    }
+
+    /// The stamped drain row must be the Newton linearisation of the drain
+    /// current: its value at the operating point and its partial derivatives.
+    #[test]
+    fn jfet_stamp_is_newton_consistent() {
+        let nodes = ["g".to_string(), "d".to_string(), "s".to_string()];
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![CircuitElement::Jfet {
+                id: "J1".into(),
+                nodes: nodes.clone(),
+                kind: JfetKind::NChannel,
+                idss: 10e-3,
+                vp: -2.0,
+            }],
+        };
+        let node_map = NodeMap::from_circuit(&circuit);
+        let idx = |n: &str| node_map.index(n).unwrap();
+
+        // (kind, vg, vd, vs): saturation and triode for each channel type.
+        let cases = [
+            (JfetKind::NChannel, 4.0, 8.0, 5.0),
+            (JfetKind::NChannel, 4.0, 5.5, 5.0),
+            (JfetKind::PChannel, 6.0, 2.0, 5.0),
+            (JfetKind::PChannel, 6.0, 4.5, 5.0),
+        ];
+        for (kind, vg, vd, vs) in cases {
+            let vp = match kind {
+                JfetKind::NChannel => -2.0,
+                JfetKind::PChannel => 2.0,
+            };
+            let mut v = nalgebra::DVector::zeros(node_map.num_nodes());
+            v[idx("g")] = vg;
+            v[idx("d")] = vd;
+            v[idx("s")] = vs;
+            let mut system = MnaSystem::new(node_map.num_nodes(), 0);
+            stamp_jfet_companion(&mut system, &node_map, &nodes, kind, 10e-3, vp, &v);
+
+            let row = idx("d");
+            let linear_id = system.a.row(row).dot(&v.transpose()) - system.b[row];
+            let id = jfet_drain_current(kind, vg, vd, vs);
+            let label = format!("{kind:?} at vg={vg} vd={vd} vs={vs}");
+            assert_relative_eq!(linear_id, id, max_relative = 1e-9, epsilon = 1e-12);
+
+            let h = 1e-6;
+            let partials = [
+                (
+                    "g",
+                    (jfet_drain_current(kind, vg + h, vd, vs)
+                        - jfet_drain_current(kind, vg - h, vd, vs))
+                        / (2.0 * h),
+                ),
+                (
+                    "d",
+                    (jfet_drain_current(kind, vg, vd + h, vs)
+                        - jfet_drain_current(kind, vg, vd - h, vs))
+                        / (2.0 * h),
+                ),
+                (
+                    "s",
+                    (jfet_drain_current(kind, vg, vd, vs + h)
+                        - jfet_drain_current(kind, vg, vd, vs - h))
+                        / (2.0 * h),
+                ),
+            ];
+            for (node, fd) in partials {
+                let stamped = system.a[(row, idx(node))];
+                assert!(
+                    (stamped - fd).abs() <= 1e-6 * fd.abs().max(1e-6),
+                    "{label}: dId/dV{node} stamped {stamped:e}, finite difference {fd:e}"
+                );
+            }
+        }
+    }
+
     /// Stamping at `v` and evaluating at `v` gives the device's terminal
     /// currents, so the stamped Jacobian columns must match a finite
     /// difference of those currents. Covers PMOS with its source at the
@@ -2259,6 +2357,67 @@ mod tests {
             let dvbc = (ic(vbe, vbc + h) - ic(vbe, vbc - h)) / (2.0 * h);
             assert_relative_eq!(c.g_be, dvbe, max_relative = 1e-5);
             assert_relative_eq!(-c.g_bc / alpha_r, dvbc, max_relative = 1e-5);
+        }
+    }
+
+    /// Stamping at `v` and evaluating at `v` gives the IGBT's terminal
+    /// currents, so the stamped Jacobian columns (gate included) must match
+    /// a finite difference of those currents.
+    #[test]
+    fn igbt_stamp_is_newton_consistent() {
+        use sindr_devices::igbt::IgbtParams;
+
+        let nodes: [String; 3] = ["g".into(), "c".into(), "e".into()];
+        let params = IgbtParams::default();
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![CircuitElement::Igbt {
+                id: "Q1".into(),
+                nodes: nodes.clone(),
+                params: params.clone(),
+            }],
+        };
+        let node_map = NodeMap::from_circuit(&circuit);
+        let n = node_map.num_nodes();
+        let idx: Vec<usize> = nodes.iter().map(|x| node_map.index(x).unwrap()).collect();
+        // [vg, vc, ve]: saturation, triode, emitter off ground, cutoff.
+        for bias in [
+            [8.0, 10.0, 0.0],
+            [10.0, 2.0, 0.0],
+            [12.0, 4.0, 1.0],
+            [3.0, 10.0, 0.0],
+        ] {
+            let mut v = DVector::zeros(n);
+            for (k, &i) in idx.iter().enumerate() {
+                v[i] = bias[k];
+            }
+            let stamp_at = |v: &DVector<f64>| {
+                let mut system = MnaSystem::new(n, 0);
+                stamp_igbt_companion(&mut system, &node_map, &nodes, v, &params);
+                system
+            };
+            let currents = |v: &DVector<f64>| {
+                let system = stamp_at(v);
+                &system.a * v - &system.b
+            };
+            let system = stamp_at(&v);
+            let h = 1e-6;
+            for &col in &idx {
+                let mut vp = v.clone();
+                let mut vm = v.clone();
+                vp[col] += h;
+                vm[col] -= h;
+                let fd = (currents(&vp) - currents(&vm)) / (2.0 * h);
+                for &row in &idx {
+                    let stamped = system.a[(row, col)];
+                    let tol = 1e-5 * stamped.abs().max(fd[row].abs()) + 1e-9;
+                    assert!(
+                        (stamped - fd[row]).abs() <= tol,
+                        "at {bias:?}: dI[{row}]/dV[{col}] stamped {stamped:e}, finite difference {:e}",
+                        fd[row]
+                    );
+                }
+            }
         }
     }
 }

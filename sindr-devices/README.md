@@ -12,7 +12,7 @@ Pure electronics device physics companion models for MNA circuit simulation.
 | `bjt` | BJT (NPN/PNP) | Ebers-Moll companion with Early voltage |
 | `mosfet` | MOSFET (NMOS/PMOS) | Level-1 companion with body effect |
 | `jfet` | JFET (N/P-channel) | Shichman-Hodges |
-| `igbt` | IGBT | MOSFET gate control with BJT output conductance |
+| `igbt` | IGBT | MOSFET square-law collector current, blocks reverse V_CE |
 | `led` | LED | Diode with colour-dependent forward voltage |
 | `zener` | Zener diode | Shockley plus reverse-breakdown branch |
 | `schottky` | Schottky diode | Shockley with Schottky IS/N (~0.3 V forward) |
@@ -91,9 +91,9 @@ assert!(c.gm > 0.0);
 ```rust
 use sindr_devices::igbt::{igbt_companion, IgbtParams};
 
-let params = IgbtParams::default(); // vth=5.0, k=5.0, vce_sat=2.0
+let params = IgbtParams::default(); // vth=5.0, k=5.0
 let c = igbt_companion(10.0, 5.0, &params); // Vge, Vce
-// c.gm, c.g_ce, c.ids, c.i_eq
+// c.gm = ∂Ids/∂Vge, c.g_ce = ∂Ids/∂Vce, c.ids, c.i_eq
 assert!(c.ids > 0.0);
 ```
 
