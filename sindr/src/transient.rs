@@ -1725,7 +1725,7 @@ fn nr_at_timestep_with_parasitic(
         newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
 
         // Check convergence
-        if newton_raphson::converged(&v_prev, &v_limited, num_nodes) {
+        if newton_raphson::converged(&v_prev, &v_limited, num_nodes, diode_info) {
             // Extract updated reactive state from converged solution
             let mut new_cap_v = Vec::new();
             let mut new_ind_i = Vec::new();

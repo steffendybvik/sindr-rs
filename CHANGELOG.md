@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   real `∂Ids/∂Vce` (zero in saturation) instead of `ids / vce_sat`. A
   forward-biased IGBT's `Vce` is now limited per Newton step so it can't jump
   into reverse blocking. `IgbtParams::vce_sat` is no longer used.
+- Newton–Raphson (DC and transient) now also requires every diode, LED and
+  BJT junction voltage to settle within `V_ABSTOL + RELTOL·n·V_T` before
+  declaring convergence. The node-voltage tolerance alone scales with a
+  node's absolute voltage, so junctions far from ground could stop several
+  mV short: a diode near a 10 V rail was off by 1.2% in current, a
+  saturated PNP near 5 V by 1.5%. Costs about 9% more iterations.
 
 ## [0.1.0-alpha.6] - 2026-06-03
 
