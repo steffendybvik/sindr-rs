@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frequencies. A 1-point sweep now solves `f_start` alone, as SPICE does.
 - `dc_sweep` rejects non-finite endpoints, and `temperature_sweep` rejects
   non-finite temperatures and temperatures at or below 0 K.
+- P-channel JFETs were stamped and reported with the Norton current of the
+  mirrored N-channel frame, so DC, transient and the reported drain current
+  were wrong. A P-channel stage is now the exact mirror of its N-channel twin.
 - AC analysis now linearises BJTs with the full terminal Jacobian of the DC
   model (gπ, gm, gμ and g_o), instead of a forward-active approximation that
   used the B–C junction conductance as the output conductance. Gains in
