@@ -223,6 +223,11 @@ fn op_bjt_ce() {
 }
 
 #[test]
+fn op_diode_series() {
+    check_op("op_diode_series", &parse("op_diode_series"), JUNCTION);
+}
+
+#[test]
 fn op_subckt_param() {
     check_op("op_subckt_param", &parse("op_subckt_param"), (OP_V, OP_I));
 }
@@ -314,7 +319,6 @@ fn op_led() {
 }
 
 #[test]
-#[ignore = "SIN-16: Newton doesn't converge from the initial guess"]
 fn op_schottky() {
     check_op(
         "op_schottky",
