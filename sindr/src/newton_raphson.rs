@@ -7,10 +7,11 @@
 
 use nalgebra::DVector;
 
-use sindr_devices::bjt::{BjtKind, BjtParams};
-use sindr_devices::diode::{self, temperature_scale_is, DiodeParams, GMIN};
+use sindr_devices::bjt::BjtKind;
+use sindr_devices::diode::{self, GMIN};
 
 use crate::circuit::{Circuit, CircuitElement};
+use crate::device_params;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
@@ -266,10 +267,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
             CircuitElement::Diode {
                 nodes, temperature, ..
             } => {
-                let mut params = DiodeParams::silicon();
-                if (*temperature - 300.15).abs() > 1e-6 {
-                    params.is = temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
-                }
+                let params = device_params::diode(*temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
@@ -286,10 +284,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 temperature,
                 ..
             } => {
-                let mut params = DiodeParams::for_led_color(color);
-                if (*temperature - 300.15).abs() > 1e-6 {
-                    params.is = temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
-                }
+                let params = device_params::led(color, *temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
@@ -300,33 +295,42 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     zener_vz: None,
                 });
             }
-            CircuitElement::ZenerDiode { nodes, vz, .. } => {
-                // Forward region uses silicon Shockley model (n=1, IS=1e-14)
-                let params = DiodeParams::silicon();
+            CircuitElement::ZenerDiode {
+                nodes,
+                vz,
+                temperature,
+                ..
+            } => {
+                // Forward region is a Shockley diode with N = 1
+                let params = device_params::zener(*vz, *temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
-                    v_crit: diode::critical_voltage(params.is, params.n),
-                    n: params.n,
+                    v_crit: diode::critical_voltage(params.is, 1.0),
+                    n: 1.0,
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: Some(*vz),
                 });
             }
-            CircuitElement::SchottkyDiode { nodes, .. } => {
-                let schottky_params = sindr_devices::schottky::SchottkyParams::default();
+            CircuitElement::SchottkyDiode {
+                nodes, temperature, ..
+            } => {
+                let params = device_params::schottky(*temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
-                    v_crit: diode::critical_voltage(schottky_params.is, schottky_params.n),
-                    n: schottky_params.n,
+                    v_crit: diode::critical_voltage(params.is, params.n),
+                    n: params.n,
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
                 });
             }
-            CircuitElement::Photodiode { nodes, .. } => {
-                let photo_params = sindr_devices::photodiode::PhotodiodeParams::default();
+            CircuitElement::Photodiode {
+                nodes, temperature, ..
+            } => {
+                let photo_params = device_params::photodiode(*temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
@@ -344,10 +348,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 temperature,
                 ..
             } => {
-                let mut params = BjtParams::new(*bf);
-                if (*temperature - 300.15).abs() > 1e-6 {
-                    params.is = temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
-                }
+                let params = device_params::bjt(*bf, *temperature);
 
                 // B-E junction: standard diode limiting (splits between anode/cathode
                 // or full delta to non-ground node). This allows the B-E limiter
@@ -1001,7 +1002,7 @@ mod tests {
         };
         let r = crate::solve_circuit(&circuit).unwrap();
         let (va, vk) = (r.node_voltages["a"], r.node_voltages["k"]);
-        let p = DiodeParams::silicon();
+        let p = sindr_devices::diode::DiodeParams::silicon();
         let i_diode = p.is * (((va - vk) / (p.n * diode::V_T)).exp() - 1.0);
         assert_rel(i_diode, (10.0 - va) / 1_000.0, "diode vs R1 current");
         assert_rel(i_diode, vk / 1_000.0, "diode vs R2 current");
