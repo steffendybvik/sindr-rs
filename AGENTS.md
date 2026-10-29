@@ -119,6 +119,7 @@ When in doubt, run `cargo run --example list_examples` and copy the closest exis
 
 ## Commit & PR conventions
 
+- Each release is staged on a `v<version>` branch (e.g. `v0.1.0-alpha.7`) that already carries the version bump. Branch off it and open PRs against it, not `main`; the staging branch merges into `main` when the release ships.
 - One commit per logical change. Squash GSD's atomic per-task commits at end of phase.
 - Commit message: imperative, lowercase first word, no trailing period in subject.
 - Co-author trailer is fine; do not add hype-marketing footers.
