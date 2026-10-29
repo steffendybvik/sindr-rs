@@ -37,6 +37,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
   `sindr/tests/fixtures/`, and those tests need `--features spice`.
 - Prefer checks against closed-form answers (a divider, an RC corner
   frequency, `1 − e^(−t/τ)`) over values copied from the current output.
+- Parsers and evaluators get `proptest` properties (see `spice/si.rs` and
+  `spice/param_eval.rs`). If one fails, proptest writes the shrunk case to
+  `sindr/proptest-regressions/`; commit that file with the fix.
+- The `coverage` CI job reports per-file line coverage in the job summary. It
+  only reports and never fails a build. Locally:
+  `cargo llvm-cov --workspace --all-features --summary-only`.
 
 ## Versions and the CHANGELOG
 
