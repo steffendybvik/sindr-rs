@@ -14,14 +14,14 @@
 use nalgebra::DVector;
 
 use sindr_devices::bjt::{self, BjtKind, BjtParams};
-use sindr_devices::diode::{self, temperature_scale_is, DiodeParams};
+use sindr_devices::diode::{self, DiodeParams};
 use sindr_devices::jfet::JfetKind;
-use sindr_devices::led::led_params_from_str;
 use sindr_devices::mosfet::{self, MosfetKind, MosfetParams};
 use sindr_devices::photoresistor::{ldr_resistance as rs_ldr_resistance, PhotoresistorParams};
 use sindr_devices::zener::{zener_companion as rs_zener_companion, ZenerParams};
 
 use crate::circuit::{Circuit, CircuitElement};
+use crate::device_params;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
@@ -89,11 +89,7 @@ pub fn stamp_circuit(
                 nodes, temperature, ..
             } => {
                 if let Some(vp) = v_prev {
-                    let mut params = DiodeParams::silicon();
-                    if (*temperature - 300.15).abs() > 1e-6 {
-                        params.is =
-                            temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
-                    }
+                    let params = device_params::diode(*temperature);
                     stamp_diode_companion(system, node_map, nodes, vp, &params);
                 }
             }
@@ -104,11 +100,7 @@ pub fn stamp_circuit(
                 ..
             } => {
                 if let Some(vp) = v_prev {
-                    let mut params = led_params_from_str(color);
-                    if (*temperature - 300.15).abs() > 1e-6 {
-                        params.is =
-                            temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
-                    }
+                    let params = device_params::led(color, *temperature);
                     stamp_diode_companion(system, node_map, nodes, vp, &params);
                 }
             }
@@ -120,12 +112,7 @@ pub fn stamp_circuit(
                 ..
             } => {
                 if let Some(vp) = v_prev {
-                    let mut params = BjtParams::new(*bf);
-                    if (*temperature - 300.15).abs() > 1e-6 {
-                        // Scale IS for temperature: xti=3 for BJT (SPICE standard)
-                        params.is =
-                            temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
-                    }
+                    let params = device_params::bjt(*bf, *temperature);
                     stamp_bjt_companion(system, node_map, nodes, vp, &params, *kind);
                 }
             }
@@ -252,11 +239,7 @@ pub fn stamp_circuit(
                 ..
             } => {
                 if let Some(vp) = v_prev {
-                    let mut zparams = ZenerParams::new(*vz);
-                    if (*temperature - 300.15).abs() > 1e-6 {
-                        zparams.is =
-                            temperature_scale_is(zparams.is, *temperature, 300.15, 1.11, 2.0);
-                    }
+                    let zparams = device_params::zener(*vz, *temperature);
                     stamp_zener_companion(system, node_map, nodes, vp, &zparams);
                 }
             }
@@ -281,24 +264,8 @@ pub fn stamp_circuit(
                 nodes, temperature, ..
             } => {
                 if let Some(vp) = v_prev {
-                    let schottky = sindr_devices::schottky::SchottkyParams::default();
-                    let is_scaled = if (*temperature - 300.15).abs() > 1e-6 {
-                        temperature_scale_is(schottky.is, *temperature, 300.15, 1.11, 2.0)
-                    } else {
-                        schottky.is
-                    };
-                    stamp_diode_companion(
-                        system,
-                        node_map,
-                        nodes,
-                        vp,
-                        &DiodeParams {
-                            is: is_scaled,
-                            n: schottky.n,
-                            rs: 0.0,
-                            temperature: *temperature,
-                        },
-                    );
+                    let params = device_params::schottky(*temperature);
+                    stamp_diode_companion(system, node_map, nodes, vp, &params);
                 }
             }
             // Thermistor — passive resistor, resistance computed from temperature param
@@ -363,8 +330,7 @@ pub fn stamp_circuit(
                 ..
             } => {
                 if let Some(vp) = v_prev {
-                    let _ = temperature; // temperature scaling for photodiode IS reserved for temp_sweep
-                    let params = sindr_devices::photodiode::PhotodiodeParams::default();
+                    let params = device_params::photodiode(*temperature);
                     let v_a = node_map.index(&nodes[0]).map_or(0.0, |i| vp[i]);
                     let v_c = node_map.index(&nodes[1]).map_or(0.0, |i| vp[i]);
                     let v_d = v_a - v_c;

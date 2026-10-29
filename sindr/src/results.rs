@@ -10,13 +10,13 @@ use std::collections::HashMap;
 
 use nalgebra::DVector;
 
-use sindr_devices::bjt::{self, BjtKind, BjtParams};
-use sindr_devices::diode::{self, DiodeParams};
+use sindr_devices::bjt::{self, BjtKind};
+use sindr_devices::diode;
 use sindr_devices::jfet;
-use sindr_devices::led::led_params_from_str;
 use sindr_devices::mosfet::{self, MosfetKind};
 
 use crate::circuit::{Circuit, CircuitElement};
+use crate::device_params;
 use crate::node_map::NodeMap;
 use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
@@ -318,11 +318,15 @@ pub fn extract_results(
                     power,
                 });
             }
-            CircuitElement::Diode { id, nodes, .. } => {
+            CircuitElement::Diode {
+                id,
+                nodes,
+                temperature,
+            } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let params = DiodeParams::silicon();
+                let params = device_params::diode(*temperature);
                 let i_through = diode::diode_current(v_across, &params);
                 let power = v_across * i_through;
                 component_results.push(ComponentResult {
@@ -333,12 +337,16 @@ pub fn extract_results(
                 });
             }
             CircuitElement::Led {
-                id, nodes, color, ..
+                id,
+                nodes,
+                color,
+                temperature,
+                ..
             } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let params = led_params_from_str(color);
+                let params = device_params::led(color, *temperature);
                 let i_through = diode::diode_current(v_across, &params);
                 let power = v_across * i_through;
                 component_results.push(ComponentResult {
@@ -376,11 +384,7 @@ pub fn extract_results(
                 let vbe_eff = sign * (vb - ve);
                 let vbc_eff = sign * (vb - vc);
 
-                let mut params = BjtParams::new(*bf);
-                if (*temperature - 300.15).abs() > 1e-6 {
-                    params.is =
-                        diode::temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
-                }
+                let params = device_params::bjt(*bf, *temperature);
                 let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
                 let region = bjt::detect_region(vbe_eff, vbc_eff);
 
@@ -581,11 +585,17 @@ pub fn extract_results(
                     contact_closed,
                 });
             }
-            CircuitElement::ZenerDiode { id, nodes, vz, .. } => {
+            CircuitElement::ZenerDiode {
+                id,
+                nodes,
+                vz,
+                temperature,
+                ..
+            } => {
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
-                let params = sindr_devices::zener::ZenerParams::new(*vz);
+                let params = device_params::zener(*vz, *temperature);
                 let (g_eq, i_eq) = sindr_devices::zener::zener_companion(v_across, &params);
                 let i_through = g_eq * v_across + i_eq;
                 component_results.push(ComponentResult {
@@ -595,20 +605,17 @@ pub fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::SchottkyDiode { id, nodes, .. } => {
+            CircuitElement::SchottkyDiode {
+                id,
+                nodes,
+                temperature,
+                ..
+            } => {
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
-                let schottky_params = sindr_devices::schottky::SchottkyParams::default();
-                let i_through = diode::diode_current(
-                    v_across,
-                    &DiodeParams {
-                        is: schottky_params.is,
-                        n: schottky_params.n,
-                        rs: 0.0,
-                        temperature: 300.15,
-                    },
-                );
+                let i_through =
+                    diode::diode_current(v_across, &device_params::schottky(*temperature));
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_across,
@@ -639,22 +646,15 @@ pub fn extract_results(
                 id,
                 nodes,
                 irradiance,
-                ..
+                temperature,
             } => {
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
-                let photo_params = sindr_devices::photodiode::PhotodiodeParams::default();
+                let photo_params = device_params::photodiode(*temperature);
                 // Total current = dark diode current - photocurrent
-                let i_dark = diode::diode_current(
-                    v_across,
-                    &DiodeParams {
-                        is: photo_params.is,
-                        n: photo_params.n,
-                        rs: 0.0,
-                        temperature: 300.15,
-                    },
-                );
+                let i_dark =
+                    diode::diode_current(v_across, &device_params::photodiode_dark(*temperature));
                 let i_photo = photo_params.responsivity * irradiance.max(0.0);
                 let i_through = i_dark - i_photo;
                 component_results.push(ComponentResult {

@@ -7,10 +7,11 @@ use std::collections::HashMap;
 
 use nalgebra::DVector;
 
-use sindr_devices::bjt::{self, BjtKind, BjtParams};
+use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::mosfet::{self, MosfetKind};
 
 use crate::circuit::{Circuit, CircuitElement};
+use crate::device_params;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::newton_raphson::{self, MAX_NR_ITERATIONS};
@@ -523,11 +524,15 @@ fn extract_timestep_results(
                 });
                 ind_index += 1;
             }
-            CircuitElement::Diode { id, nodes, .. } => {
+            CircuitElement::Diode {
+                id,
+                nodes,
+                temperature,
+            } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let params = sindr_devices::diode::DiodeParams::silicon();
+                let params = device_params::diode(*temperature);
                 let i_through = sindr_devices::diode::diode_current(v_across, &params);
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -537,12 +542,16 @@ fn extract_timestep_results(
                 });
             }
             CircuitElement::Led {
-                id, nodes, color, ..
+                id,
+                nodes,
+                color,
+                temperature,
+                ..
             } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let params = sindr_devices::diode::DiodeParams::for_led_color(color);
+                let params = device_params::led(color, *temperature);
                 let i_through = sindr_devices::diode::diode_current(v_across, &params);
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -556,6 +565,7 @@ fn extract_timestep_results(
                 nodes,
                 kind,
                 bf,
+                temperature,
                 ..
             } => {
                 let vb = node_voltage(&nodes[0], node_map, solution);
@@ -567,7 +577,7 @@ fn extract_timestep_results(
                 };
                 let vbe_eff = sign * (vb - ve);
                 let vbc_eff = sign * (vb - vc);
-                let params = BjtParams::new(*bf);
+                let params = device_params::bjt(*bf, *temperature);
                 let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
                 let ic = sign * comp.ic;
                 let vce = vc - ve;
@@ -739,13 +749,19 @@ fn extract_timestep_results(
                 // contact result as separate push for accounting
                 let _ = contact_i;
             }
-            CircuitElement::ZenerDiode { id, nodes, vz, .. } => {
+            CircuitElement::ZenerDiode {
+                id,
+                nodes,
+                vz,
+                temperature,
+                ..
+            } => {
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
                 let (g_eq, i_eq) = sindr_devices::zener::zener_companion(
                     v_across,
-                    &sindr_devices::zener::ZenerParams::new(*vz),
+                    &device_params::zener(*vz, *temperature),
                 );
                 let i_through = g_eq * v_across + i_eq;
                 component_results.push(ComponentResult {
@@ -767,19 +783,18 @@ fn extract_timestep_results(
                 });
                 vsource_index += 1;
             }
-            CircuitElement::SchottkyDiode { id, nodes, .. } => {
+            CircuitElement::SchottkyDiode {
+                id,
+                nodes,
+                temperature,
+                ..
+            } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let schottky_params = sindr_devices::schottky::SchottkyParams::default();
                 let i_through = sindr_devices::diode::diode_current(
                     v_across,
-                    &sindr_devices::diode::DiodeParams {
-                        is: schottky_params.is,
-                        n: schottky_params.n,
-                        rs: 0.0,
-                        temperature: 300.15,
-                    },
+                    &device_params::schottky(*temperature),
                 );
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -811,20 +826,15 @@ fn extract_timestep_results(
                 id,
                 nodes,
                 irradiance,
-                ..
+                temperature,
             } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let photo_params = sindr_devices::photodiode::PhotodiodeParams::default();
+                let photo_params = device_params::photodiode(*temperature);
                 let i_dark = sindr_devices::diode::diode_current(
                     v_across,
-                    &sindr_devices::diode::DiodeParams {
-                        is: photo_params.is,
-                        n: photo_params.n,
-                        rs: 0.0,
-                        temperature: 300.15,
-                    },
+                    &device_params::photodiode_dark(*temperature),
                 );
                 let i_photo = photo_params.responsivity * irradiance.max(0.0);
                 let i_through = i_dark - i_photo;
@@ -1166,6 +1176,7 @@ fn extract_bjt_results_from_snapshot(
             nodes,
             kind,
             bf,
+            temperature,
             ..
         } = component
         {
@@ -1192,7 +1203,7 @@ fn extract_bjt_results_from_snapshot(
             let vbe_eff = sign * (vb - ve);
             let vbc_eff = sign * (vb - vc);
 
-            let params = BjtParams::new(*bf);
+            let params = device_params::bjt(*bf, *temperature);
             let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
             let region = bjt::detect_region(vbe_eff, vbc_eff);
 
@@ -1387,16 +1398,7 @@ fn nr_at_timestep_with_parasitic(
                 CircuitElement::Diode {
                     nodes, temperature, ..
                 } => {
-                    let mut params = sindr_devices::diode::DiodeParams::silicon();
-                    if (*temperature - 300.15).abs() > 1e-6 {
-                        params.is = sindr_devices::diode::temperature_scale_is(
-                            params.is,
-                            *temperature,
-                            300.15,
-                            1.11,
-                            2.0,
-                        );
-                    }
+                    let params = device_params::diode(*temperature);
                     stamp_diode_companion(&mut system, node_map, nodes, &v_prev, &params);
                 }
                 CircuitElement::Led {
@@ -1405,16 +1407,7 @@ fn nr_at_timestep_with_parasitic(
                     temperature,
                     ..
                 } => {
-                    let mut params = sindr_devices::diode::DiodeParams::for_led_color(color);
-                    if (*temperature - 300.15).abs() > 1e-6 {
-                        params.is = sindr_devices::diode::temperature_scale_is(
-                            params.is,
-                            *temperature,
-                            300.15,
-                            1.11,
-                            2.0,
-                        );
-                    }
+                    let params = device_params::led(color, *temperature);
                     stamp_diode_companion(&mut system, node_map, nodes, &v_prev, &params);
                 }
                 CircuitElement::Bjt {
@@ -1425,16 +1418,7 @@ fn nr_at_timestep_with_parasitic(
                     temperature,
                     parasitic_caps,
                 } => {
-                    let mut params = BjtParams::new(*bf);
-                    if (*temperature - 300.15).abs() > 1e-6 {
-                        params.is = sindr_devices::diode::temperature_scale_is(
-                            params.is,
-                            *temperature,
-                            300.15,
-                            1.11,
-                            3.0,
-                        );
-                    }
+                    let params = device_params::bjt(*bf, *temperature);
                     stamp_bjt_companion(&mut system, node_map, nodes, &v_prev, &params, *kind);
                     // Parasitic capacitances: stamp using HashMap-keyed previous voltages
                     if let Some(caps) = parasitic_caps {
@@ -1594,23 +1578,24 @@ fn nr_at_timestep_with_parasitic(
                     let contact_nodes: [String; 2] = [nodes[2].clone(), nodes[3].clone()];
                     stamp_resistor(&mut system, node_map, &contact_nodes, contact_r);
                 }
-                CircuitElement::ZenerDiode { nodes, vz, .. } => {
+                CircuitElement::ZenerDiode {
+                    nodes,
+                    vz,
+                    temperature,
+                    ..
+                } => {
                     crate::stamp::stamp_zener_companion(
                         &mut system,
                         node_map,
                         nodes,
                         &v_prev,
-                        &sindr_devices::zener::ZenerParams::new(*vz),
+                        &device_params::zener(*vz, *temperature),
                     );
                 }
-                CircuitElement::SchottkyDiode { nodes, .. } => {
-                    let schottky_params = sindr_devices::schottky::SchottkyParams::default();
-                    let diode_params = sindr_devices::diode::DiodeParams {
-                        is: schottky_params.is,
-                        n: schottky_params.n,
-                        rs: 0.0,
-                        temperature: 300.15,
-                    };
+                CircuitElement::SchottkyDiode {
+                    nodes, temperature, ..
+                } => {
+                    let diode_params = device_params::schottky(*temperature);
                     stamp_diode_companion(&mut system, node_map, nodes, &v_prev, &diode_params);
                 }
                 CircuitElement::Thermistor {
@@ -1624,9 +1609,12 @@ fn nr_at_timestep_with_parasitic(
                     stamp_resistor(&mut system, node_map, nodes, r);
                 }
                 CircuitElement::Photodiode {
-                    nodes, irradiance, ..
+                    nodes,
+                    irradiance,
+                    temperature,
+                    ..
                 } => {
-                    let photo_params = sindr_devices::photodiode::PhotodiodeParams::default();
+                    let photo_params = device_params::photodiode(*temperature);
                     let v_a = node_map.index(&nodes[0]).map_or(0.0, |i| v_prev[i]);
                     let v_c = node_map.index(&nodes[1]).map_or(0.0, |i| v_prev[i]);
                     let v_d = v_a - v_c;

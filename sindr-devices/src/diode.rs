@@ -91,39 +91,69 @@ pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64) -> f
 ///
 /// These stamp into MNA exactly like a resistor (g_d) and current source (i_eq).
 ///
-/// When `params.rs > 0`, a single-step Newton correction accounts for the
-/// voltage drop across the series resistance (v_j = v_d - i_d_prev * rs).
+/// When `params.rs > 0`, `v_d` is the terminal voltage across junction and
+/// series resistance together. The junction voltage is solved from
+/// `I = IS * (exp((v_d - I*RS) / (N*V_T)) - 1)` and the terminal conductance
+/// `g_j / (1 + RS*g_j)` is returned, so `g_d * v_d + i_eq` is the terminal
+/// current at `v_d`.
 pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) {
     let nv_t = params.n * V_T;
-
-    // Series resistance correction: v_j = v_d - i_d_prev * rs
-    // Use v_d as initial estimate for i_d_prev (single linearization step).
-    let i_d_prev = params.is * ((v_d / nv_t).exp() - 1.0);
-    let v_j = if params.rs > 0.0 {
-        // Clamp to prevent extreme negative junction voltages
-        (v_d - i_d_prev * params.rs).max(-5.0 * nv_t)
-    } else {
-        v_d
-    };
-
+    let v_j = junction_voltage(v_d, params);
     let exp_vj = (v_j / nv_t).exp();
 
     // Diode current at junction voltage: I_d = IS * (exp(V_j / (N*V_T)) - 1)
     let i_d = params.is * (exp_vj - 1.0);
 
-    // Companion conductance: g_d = (IS / (N*V_T)) * exp(V_j / (N*V_T))
-    let g_d = (params.is / nv_t) * exp_vj;
+    // Junction conductance g_j = (IS / (N*V_T)) * exp(V_j / (N*V_T)), seen
+    // through RS at the terminals: g_d = g_j / (1 + RS*g_j)
+    let g_j = (params.is / nv_t) * exp_vj;
+    let g_d = g_j / (1.0 + params.rs * g_j);
 
-    // Companion current source: I_eq = I_d - g_d * V_d (use terminal voltage v_d)
+    // Companion current source: I_eq = I_d - g_d * V_d
     let i_eq = i_d - g_d * v_d;
 
     (g_d.max(GMIN), i_eq)
 }
 
-/// Compute the Shockley diode current at voltage `v_d`.
+/// Compute the diode current at terminal voltage `v_d`, including the drop
+/// across `params.rs`.
 pub fn diode_current(v_d: f64, params: &DiodeParams) -> f64 {
     let nv_t = params.n * V_T;
-    params.is * ((v_d / nv_t).exp() - 1.0)
+    params.is * ((junction_voltage(v_d, params) / nv_t).exp() - 1.0)
+}
+
+/// Junction voltage `v_j` for terminal voltage `v_d`: the root of
+/// `f(v_j) = v_j + RS * IS * (exp(v_j / (N*V_T)) - 1) - v_d`.
+///
+/// `f` is increasing and convex, so Newton started above the root converges
+/// monotonically down to it without overshooting. The start is an upper bound:
+/// for `v_d >= 0` the current is at most `v_d / RS`, which bounds `v_j` by
+/// `N*V_T * ln(1 + v_d / (RS*IS))` (and by `v_d`); for `v_d < 0` the current is
+/// above `-IS`, so `v_j < v_d + RS*IS`.
+fn junction_voltage(v_d: f64, params: &DiodeParams) -> f64 {
+    let rs = params.rs;
+    if rs <= 0.0 {
+        return v_d;
+    }
+    let is = params.is;
+    let nv_t = params.n * V_T;
+
+    let mut v_j = if v_d >= 0.0 {
+        v_d.min(nv_t * (v_d / (rs * is)).ln_1p())
+    } else {
+        v_d + rs * is
+    };
+    for _ in 0..100 {
+        let exp_vj = (v_j / nv_t).exp();
+        let f = v_j + rs * is * (exp_vj - 1.0) - v_d;
+        let df = 1.0 + rs * is / nv_t * exp_vj;
+        let step = f / df;
+        v_j -= step;
+        if step.abs() <= 1e-15 * (1.0 + v_j.abs()) {
+            break;
+        }
+    }
+    v_j
 }
 
 /// Critical voltage for voltage limiting.
@@ -317,22 +347,90 @@ mod tests {
         assert_relative_eq!(i_eq, expected_i_eq, epsilon = 1e-15);
     }
 
-    /// rs > 0 should reduce effective junction voltage and thus reduce g_d vs rs=0.
+    /// Terminal current of a diode with series resistance, by bisection on
+    /// `I = IS * (exp((v - I*RS) / (N*V_T)) - 1)`: independent of the Newton
+    /// solve in `junction_voltage`.
+    fn rs_current_by_bisection(v: f64, params: &DiodeParams) -> f64 {
+        let nv_t = params.n * V_T;
+        let residual = |i: f64| params.is * (((v - i * params.rs) / nv_t).exp() - 1.0) - i;
+        // The current lies between -IS and max(v, 0) / RS; the residual falls as I rises.
+        let (mut lo, mut hi) = (-params.is, v.max(0.0) / params.rs + params.is);
+        for _ in 0..400 {
+            let mid = 0.5 * (lo + hi);
+            if residual(mid) > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    }
+
+    const RS_BIASES: [f64; 9] = [-5.0, -0.5, -0.01, 0.0, 0.3, 0.65, 0.8, 2.0, 10.0];
+
+    /// With rs > 0, the companion reproduces the implicit-solve current at the
+    /// linearisation point: g_d * v + i_eq == I(v).
     #[test]
-    fn diode_companion_rs_nonzero_reduces_current() {
-        let v_d = 0.65;
-        let params_no_rs = DiodeParams::silicon();
-        let mut params_with_rs = DiodeParams::silicon();
-        params_with_rs.rs = 10.0;
+    fn diode_companion_rs_matches_implicit_current() {
+        for rs in [0.01, 1.0, 10.0, 1e3] {
+            let mut params = DiodeParams::silicon();
+            params.rs = rs;
+            for v in RS_BIASES {
+                let expected = rs_current_by_bisection(v, &params);
+                let (g_d, i_eq) = diode_companion(v, &params);
+                let tol = 1e-9 * expected.abs() + 1e-20;
+                assert!(
+                    (g_d * v + i_eq - expected).abs() <= tol + GMIN * v.abs(),
+                    "rs={rs} v={v}: companion current {} vs implicit {expected}",
+                    g_d * v + i_eq
+                );
+                let i = diode_current(v, &params);
+                assert!(
+                    (i - expected).abs() <= tol,
+                    "rs={rs} v={v}: diode_current {i} vs implicit {expected}"
+                );
+            }
+        }
+    }
 
-        let (g_d_no_rs, _) = diode_companion(v_d, &params_no_rs);
-        let (g_d_with_rs, _) = diode_companion(v_d, &params_with_rs);
+    /// With rs > 0, the companion conductance is the terminal dI/dV, which
+    /// equals g_j / (1 + RS*g_j); checked against a central finite difference
+    /// of the implicit-solve current.
+    #[test]
+    fn diode_companion_rs_conductance_matches_finite_difference() {
+        for rs in [0.01, 1.0, 10.0, 1e3] {
+            let mut params = DiodeParams::silicon();
+            params.rs = rs;
+            for v in RS_BIASES {
+                let h = 1e-6;
+                let fd = (rs_current_by_bisection(v + h, &params)
+                    - rs_current_by_bisection(v - h, &params))
+                    / (2.0 * h);
+                let (g_d, _) = diode_companion(v, &params);
+                assert!(
+                    (g_d - fd.max(GMIN)).abs() <= 1e-5 * fd.abs() + GMIN,
+                    "rs={rs} v={v}: g_d {g_d} vs finite difference {fd}"
+                );
+                assert!(g_d <= 1.0 / rs, "rs={rs} v={v}: g_d {g_d} above 1/RS");
+            }
+        }
+    }
 
+    /// Forward bias with rs > 0 conducts: at 0.8 V through 10 Ω the diode is
+    /// well on, with a terminal conductance close to (but below) 1/RS.
+    #[test]
+    fn diode_companion_rs_forward_bias_conducts() {
+        let mut params = DiodeParams::silicon();
+        params.rs = 10.0;
+        let (g_d, _) = diode_companion(0.8, &params);
+        let i = diode_current(0.8, &params);
         assert!(
-            g_d_with_rs < g_d_no_rs,
-            "Rs>0 should reduce g_d: g_d_no_rs={} g_d_with_rs={}",
-            g_d_no_rs,
-            g_d_with_rs
+            i > 1e-3,
+            "diode should conduct at 0.8 V through 10 Ω, got {i} A"
+        );
+        assert!(
+            g_d > 0.05 && g_d < 0.1,
+            "g_d {g_d} should approach 1/RS = 0.1 S"
         );
     }
 }

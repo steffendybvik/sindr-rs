@@ -11,12 +11,13 @@ use std::collections::HashMap;
 use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 
-use sindr_devices::bjt::{self, BjtKind, BjtParams};
-use sindr_devices::diode::{self, DiodeParams};
+use sindr_devices::bjt::{self, BjtKind};
+use sindr_devices::diode;
 use sindr_devices::jfet;
 use sindr_devices::mosfet::{self, MosfetKind};
 
 use crate::circuit::{Circuit, CircuitElement};
+use crate::device_params;
 use crate::error::SimError;
 use crate::node_map::NodeMap;
 
@@ -156,28 +157,35 @@ fn linearize_at_dc(
 
     for component in &circuit.components {
         match component {
-            CircuitElement::Diode { nodes, .. } => {
+            CircuitElement::Diode {
+                nodes, temperature, ..
+            } => {
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
                 let vp = p.map_or(0.0, |i| dc_solution[i]);
                 let vq = q.map_or(0.0, |i| dc_solution[i]);
                 let v_d = vp - vq;
 
-                let params = DiodeParams::silicon();
+                let params = device_params::diode(*temperature);
                 let (g_d, _) = diode::diode_companion(v_d, &params);
 
                 models.push(SmallSignalModel {
                     conductances: vec![(p, p, g_d), (q, q, g_d), (p, q, -g_d), (q, p, -g_d)],
                 });
             }
-            CircuitElement::Led { nodes, color, .. } => {
+            CircuitElement::Led {
+                nodes,
+                color,
+                temperature,
+                ..
+            } => {
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
                 let vp = p.map_or(0.0, |i| dc_solution[i]);
                 let vq = q.map_or(0.0, |i| dc_solution[i]);
                 let v_d = vp - vq;
 
-                let params = DiodeParams::for_led_color(color);
+                let params = device_params::led(color, *temperature);
                 let (g_d, _) = diode::diode_companion(v_d, &params);
 
                 models.push(SmallSignalModel {
@@ -208,11 +216,7 @@ fn linearize_at_dc(
 
                 // Same params as the DC solve (stamp.rs), so the linearisation
                 // is taken of the model the operating point was solved with.
-                let mut params = BjtParams::new(*bf);
-                if (*temperature - 300.15).abs() > 1e-6 {
-                    params.is =
-                        diode::temperature_scale_is(params.is, *temperature, 300.15, 1.11, 3.0);
-                }
+                let params = device_params::bjt(*bf, *temperature);
 
                 // Full terminal Jacobian ∂(Ib, Ic, Ie)/∂(Vb, Vc, Ve): carries
                 // gπ, gm, gμ and g_o in every region. The entries are the
@@ -238,11 +242,7 @@ fn linearize_at_dc(
                 ..
             } => {
                 // Same parameters as the DC stamp, including the IS scaling.
-                let mut params = sindr_devices::zener::ZenerParams::new(*vz);
-                if (*temperature - 300.15).abs() > 1e-6 {
-                    params.is =
-                        diode::temperature_scale_is(params.is, *temperature, 300.15, 1.11, 2.0);
-                }
+                let params = device_params::zener(*vz, *temperature);
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
                 let (g_d, _) = sindr_devices::zener::zener_companion(v_d, &params);
                 models.push(two_terminal(nodes, node_map, g_d));
@@ -250,27 +250,19 @@ fn linearize_at_dc(
             CircuitElement::SchottkyDiode {
                 nodes, temperature, ..
             } => {
-                let schottky = sindr_devices::schottky::SchottkyParams::default();
-                let is = if (*temperature - 300.15).abs() > 1e-6 {
-                    diode::temperature_scale_is(schottky.is, *temperature, 300.15, 1.11, 2.0)
-                } else {
-                    schottky.is
-                };
-                let params = DiodeParams {
-                    is,
-                    n: schottky.n,
-                    rs: 0.0,
-                    temperature: *temperature,
-                };
+                let params = device_params::schottky(*temperature);
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
                 let (g_d, _) = diode::diode_companion(v_d, &params);
                 models.push(two_terminal(nodes, node_map, g_d));
             }
             CircuitElement::Photodiode {
-                nodes, irradiance, ..
+                nodes,
+                irradiance,
+                temperature,
+                ..
             } => {
                 // The photocurrent is a constant source: no AC part.
-                let params = sindr_devices::photodiode::PhotodiodeParams::default();
+                let params = device_params::photodiode(*temperature);
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
                 let (g_d, _) =
                     sindr_devices::photodiode::photodiode_companion(v_d, *irradiance, &params);

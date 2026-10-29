@@ -27,6 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `sindr_devices::diode::diode_companion` and `diode_current` with series
+  resistance (`DiodeParams.rs > 0`): the junction voltage is now solved from
+  the implicit diode equation, and the companion returns the terminal
+  conductance `g_j / (1 + Rs·g_j)`. Before, a forward-biased diode with Rs was
+  treated as off.
+- Diodes, LEDs, Zener and Schottky diodes, photodiodes and BJTs away from
+  300.15 K are now evaluated with the same temperature-scaled `IS` everywhere:
+  AC linearisation, NR voltage limiting, transient stamping, and the reported
+  DC and transient component currents. Before, several of these used the
+  nominal-temperature model, so (for example) a diode's `current_through`
+  didn't match the operating point that was solved. Photodiode dark current
+  now scales with `temperature` too, as `temperature_sweep` documents.
 - AC analysis now biases at the DC operating point (capacitors open,
   inductors shorted). Before, any circuit with a capacitor, inductor or
   waveform source was linearised at the transient's 5τ state, ~0.7 % short of

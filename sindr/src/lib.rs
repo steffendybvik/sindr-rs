@@ -161,6 +161,7 @@ pub use examples::{get_examples, ExampleCircuit};
 pub mod ac_analysis;
 pub mod circuit;
 pub mod dc_sweep;
+mod device_params;
 pub mod error;
 pub mod mna;
 pub mod newton_raphson;
