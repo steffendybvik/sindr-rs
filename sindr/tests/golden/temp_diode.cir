@@ -1,0 +1,6 @@
+temp: diode forward voltage vs junction temperature
+V1 in 0 5
+R1 in out 1k
+D1 out 0 dsi
+.model dsi D(IS=1e-14 N=1)
+.end
