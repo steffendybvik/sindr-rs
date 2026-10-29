@@ -227,7 +227,6 @@ fn pnp_stamp_is_newton_consistent() {
 }
 
 #[test]
-#[ignore = "known bug: g_be/g_bc are capped at 10 S while ic/ib are not"]
 fn bjt_stamp_past_conductance_cap_is_newton_consistent() {
     let high_current: &[(&str, f64)] = &[("b", 1.8), ("c", 6.0), ("e", 1.0)];
     assert_consistent(bjt(BjtKind::Npn), &[high_current]);
@@ -273,7 +272,6 @@ fn nmos_stamp_is_newton_consistent() {
 }
 
 #[test]
-#[ignore = "known bug: PMOS body-effect term has the wrong sign"]
 fn pmos_stamp_is_newton_consistent() {
     assert_consistent(
         mosfet(MosfetKind::Pmos, MosfetParams::default_pmos()),
@@ -317,13 +315,11 @@ fn n_jfet_stamp_is_newton_consistent() {
 }
 
 #[test]
-#[ignore = "known bug: P-channel JFET companion is stamped in the N-channel frame"]
 fn p_jfet_stamp_is_newton_consistent() {
     assert_consistent(jfet(JfetKind::PChannel), &as_slices(&jfet_biases(-1.0)));
 }
 
 #[test]
-#[ignore = "known bug: IGBT stamps gm as a C-E conductance and g_ce isn't dIds/dVce"]
 fn igbt_stamp_is_newton_consistent() {
     let circuit = circuit_of(CircuitElement::Igbt {
         id: "Z1".into(),
