@@ -141,9 +141,11 @@ pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> 
         };
     }
 
-    // Body effect transconductance factor: dVth/dVbs
-    let phi_minus_vbs = (params.phi - vbs).max(1e-6);
-    let dvth_dvbs = if params.gamma > 0.0 {
+    // Body effect transconductance factor: dVth/dVbs. Zero once the body is
+    // forward-biased past PHI, where `threshold_voltage` clamps the sqrt term
+    // and Vth stops depending on Vbs.
+    let phi_minus_vbs = params.phi - vbs;
+    let dvth_dvbs = if params.gamma > 0.0 && phi_minus_vbs > 0.0 {
         -params.gamma / (2.0 * phi_minus_vbs.sqrt())
     } else {
         0.0
@@ -308,5 +310,37 @@ mod tests {
 
         // Triode
         assert_eq!(detect_region(3.0, 0.5, vth), MosfetRegion::Triode);
+    }
+
+    /// gm, gds and gmb must be the derivatives of the drain current the
+    /// companion returns, including with the body forward-biased past PHI
+    /// (a PMOS with its body at ground and source at VDD sits there).
+    #[test]
+    fn companion_conductances_match_finite_difference() {
+        let params = MosfetParams {
+            vto: 0.7,
+            ..MosfetParams::default_nmos()
+        };
+        let id = |vgs: f64, vds: f64, vbs: f64| mosfet_companion(vgs, vds, vbs, &params).id;
+        let h = 1e-6;
+        for vbs in [-3.0, -0.5, 0.0, 0.3, 2.0, 5.0] {
+            for (vgs, vds) in [(0.3, 2.0), (3.0, 0.5), (3.0, 5.0), (1.5, 0.2), (2.0, 4.0)] {
+                let c = mosfet_companion(vgs, vds, vbs, &params);
+                let fd_gm = (id(vgs + h, vds, vbs) - id(vgs - h, vds, vbs)) / (2.0 * h);
+                let fd_gds = (id(vgs, vds + h, vbs) - id(vgs, vds - h, vbs)) / (2.0 * h);
+                let fd_gmb = (id(vgs, vds, vbs + h) - id(vgs, vds, vbs - h)) / (2.0 * h);
+                for (name, analytic, fd) in [
+                    ("gm", c.gm, fd_gm),
+                    ("gds", c.gds, fd_gds),
+                    ("gmb", c.gmb, fd_gmb),
+                ] {
+                    let tol = 1e-5 * analytic.abs().max(fd.abs()) + 1e-12;
+                    assert!(
+                        (analytic - fd).abs() <= tol,
+                        "{name} at vgs={vgs}, vds={vds}, vbs={vbs}: analytic={analytic:e}, finite difference={fd:e}"
+                    );
+                }
+            }
+        }
     }
 }

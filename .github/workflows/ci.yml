@@ -58,6 +58,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --all-features
 
+  examples:
+    # Runs every example binary so they can't rot.
+    name: examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          set -euo pipefail
+          for path in sindr/examples/*.rs; do
+            name=$(basename "$path" .rs)
+            arg=""
+            [ "$name" = run_example ] && arg=voltage-divider
+            echo "::group::$name"
+            cargo run -q -p sindr --all-features --example "$name" -- $arg
+            echo "::endgroup::"
+          done
+
   coverage:
     # Report only, no threshold: the per-file table lands in the job summary.
     name: coverage

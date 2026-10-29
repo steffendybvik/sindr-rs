@@ -1,0 +1,11 @@
+op: resistive bridge with a current source
+V1 a 0 12
+V2 d 0 3
+I1 0 c 2m
+R1 a b 1k
+R2 b 0 2.2k
+R3 a c 4.7k
+R4 c 0 3.3k
+R5 b c 10k
+R6 c d 680
+.end

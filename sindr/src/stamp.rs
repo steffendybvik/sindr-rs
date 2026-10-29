@@ -2223,4 +2223,73 @@ mod tests {
             }
         }
     }
+
+    /// Stamping at `v` and evaluating at `v` gives the device's terminal
+    /// currents, so the stamped Jacobian columns must match a finite
+    /// difference of those currents. Covers PMOS with its source at the
+    /// supply (body at ground, so forward-biased past PHI) and NMOS.
+    #[test]
+    fn mosfet_stamp_is_newton_consistent() {
+        use sindr_devices::mosfet::{MosfetKind, MosfetParams};
+
+        let nodes: [String; 3] = ["g".into(), "d".into(), "s".into()];
+        let params = MosfetParams {
+            vto: 0.7,
+            ..MosfetParams::default_nmos()
+        };
+        // (kind, [vg, vd, vs]) across saturation and triode.
+        let cases = [
+            (MosfetKind::Pmos, [2.0, 1.0, 5.0]),
+            (MosfetKind::Pmos, [0.0, 4.5, 5.0]),
+            (MosfetKind::Pmos, [1.0, 0.0, 3.0]),
+            (MosfetKind::Nmos, [3.0, 5.0, 0.5]),
+            (MosfetKind::Nmos, [2.0, 0.2, -1.0]),
+        ];
+        for (kind, bias) in cases {
+            let circuit = Circuit {
+                ground_node: "0".into(),
+                components: vec![CircuitElement::Mosfet {
+                    id: "M1".into(),
+                    nodes: nodes.clone(),
+                    kind,
+                    params: params.clone(),
+                    parasitic_caps: None,
+                }],
+            };
+            let node_map = NodeMap::from_circuit(&circuit);
+            let n = node_map.num_nodes();
+            let idx: Vec<usize> = nodes.iter().map(|x| node_map.index(x).unwrap()).collect();
+            let mut v = DVector::zeros(n);
+            for (k, &i) in idx.iter().enumerate() {
+                v[i] = bias[k];
+            }
+            let stamp_at = |v: &DVector<f64>| {
+                let mut system = MnaSystem::new(n, 0);
+                stamp_mosfet_companion(&mut system, &node_map, &nodes, v, &params, kind);
+                system
+            };
+            let currents = |v: &DVector<f64>| {
+                let system = stamp_at(v);
+                &system.a * v - &system.b
+            };
+            let system = stamp_at(&v);
+            let h = 1e-6;
+            for &col in &idx {
+                let mut vp = v.clone();
+                let mut vm = v.clone();
+                vp[col] += h;
+                vm[col] -= h;
+                let fd = (currents(&vp) - currents(&vm)) / (2.0 * h);
+                for &row in &idx {
+                    let stamped = system.a[(row, col)];
+                    let tol = 1e-5 * stamped.abs().max(fd[row].abs()) + 1e-12;
+                    assert!(
+                        (stamped - fd[row]).abs() <= tol,
+                        "{kind:?} at {bias:?}: dI[{row}]/dV[{col}] stamped {stamped:e}, finite difference {:e}",
+                        fd[row]
+                    );
+                }
+            }
+        }
+    }
 }
