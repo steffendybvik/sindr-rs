@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frequencies. A 1-point sweep now solves `f_start` alone, as SPICE does.
 - `dc_sweep` rejects non-finite endpoints, and `temperature_sweep` rejects
   non-finite temperatures and temperatures at or below 0 K.
+- The BJT DC stamp is now the exact Newton linearisation of its currents.
+  Junction conductances were capped at 10 S and kept growing past the
+  exponential clamp, so above ~0.8 V of Vbe the Jacobian no longer matched the
+  current and Newton slowed to a crawl. The stamp now uses
+  `bjt_terminal_jacobian`, the same model as AC analysis, Early effect
+  included; `bjt_companion` conductances are exact slopes.
 - AC analysis now linearises BJTs with the full terminal Jacobian of the DC
   model (gπ, gm, gμ and g_o), instead of a forward-active approximation that
   used the B–C junction conductance as the output conductance. Gains in

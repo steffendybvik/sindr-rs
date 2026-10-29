@@ -702,80 +702,30 @@ pub(crate) fn stamp_bjt_companion(
     let vbe_eff = sign * (vb - ve);
     let vbc_eff = sign * (vb - vc);
 
-    // Evaluate companion model
-    let comp = bjt::bjt_companion(vbe_eff, vbc_eff, params);
-
-    let g_be = comp.g_be;
-    let g_bc = comp.g_bc;
-    let alpha_f = params.bf / (params.bf + 1.0);
-    let alpha_r = params.br / (params.br + 1.0);
-
-    // Helper closure: stamp a value into G matrix (skip ground nodes)
-    let stamp_g = |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {
-        if let (Some(r), Some(c)) = (row, col) {
-            system.a[(r, c)] += val;
+    // Exact Newton linearisation: the currents and their Jacobian come
+    // from the same large-signal model (Early effect included), so the
+    // stamp is consistent at any bias. The terminal matrix is the same for
+    // NPN and PNP; the polarity only flips the currents.
+    let (ib, ic) = bjt::bjt_terminal_currents(vbe_eff, vbc_eff, params);
+    let jac = bjt::bjt_terminal_jacobian(vbe_eff, vbc_eff, params);
+    let matrix = jac.terminal_matrix();
+    let terminals = [b, c, e];
+    for (row, &r) in terminals.iter().enumerate() {
+        for (col, &k) in terminals.iter().enumerate() {
+            if let (Some(r), Some(k)) = (r, k) {
+                system.a[(r, k)] += matrix[row][col];
+            }
         }
-    };
+    }
 
-    // --- G matrix stamp (9 entries) ---
-    // These entries are IDENTICAL for NPN and PNP because the sign cancels
-    // in the chain rule: dIc_actual/dVb = sign * dIc_internal/dVbe_eff * sign = dIc_internal/dVbe_eff.
-
-    // Row B (base KCL -- dIb/dV):
-    stamp_g(system, b, b, g_be / params.bf + g_bc / params.br);
-    stamp_g(system, b, c, -g_bc / params.br);
-    stamp_g(system, b, e, -g_be / params.bf);
-
-    // Row C (collector KCL -- dIc/dV):
-    // Ic = IF - IR/alpha_R, so dIc/dVbc = -g_bc/alpha_R (NEGATIVE)
-    stamp_g(system, c, b, g_be - g_bc / alpha_r); // dIc/dVbe * 1 + dIc/dVbc * 1
-    stamp_g(system, c, c, g_bc / alpha_r); // dIc/dVbc * (-1)
-    stamp_g(system, c, e, -g_be); // dIc/dVbe * (-1) -- unchanged
-
-    // Row E (emitter KCL -- Ie = -IF/alpha_F + IR):
-    // dIe/dVbe = -g_be/alpha_F, dIe/dVbc = g_bc
-    stamp_g(system, e, b, -g_be / alpha_f + g_bc); // dIe/dVbe * 1 + dIe/dVbc * 1
-    stamp_g(system, e, c, -g_bc); // dIe/dVbc * (-1)
-    stamp_g(system, e, e, g_be / alpha_f); // dIe/dVbe * (-1) -- unchanged
-
-    // --- RHS stamp (3 entries) ---
-    // Companion current sources (linearization residuals):
-    let ib_eq = comp.ib - (g_be / params.bf) * vbe_eff - (g_bc / params.br) * vbc_eff;
-    let ic_eq = comp.ic - g_be * vbe_eff + (g_bc / alpha_r) * vbc_eff;
+    // Norton terms: I(v0) − J·v0 per terminal, in the effective frame,
+    // then back to physical currents.
+    let ib_eq = ib - jac.dib_dvbe * vbe_eff - jac.dib_dvbc * vbc_eff;
+    let ic_eq = ic - jac.dic_dvbe * vbe_eff - jac.dic_dvbc * vbc_eff;
     let ie_eq = -(ib_eq + ic_eq);
-
-    // For PNP, multiply equivalent currents by sign
-    let ib_rhs = sign * ib_eq;
-    let ic_rhs = sign * ic_eq;
-    let ie_rhs = sign * ie_eq;
-
-    // Stamp into RHS (MNA convention: current entering node is positive)
-    if let Some(bi) = b {
-        system.b[bi] -= ib_rhs;
-    }
-    if let Some(ci) = c {
-        system.b[ci] -= ic_rhs;
-    }
-    if let Some(ei) = e {
-        system.b[ei] -= ie_rhs;
-    }
-
-    // --- Early voltage output conductance: g_ce between collector and emitter ---
-    // comp.g_ce = 0.0 when params.vaf = 0.0 (no Early effect); non-zero otherwise.
-    let g_ce = comp.g_ce;
-    if g_ce > 0.0 {
-        // Re-resolve c and e since they were consumed by stamp_g closure above
-        let c_idx = node_map.index(&nodes[1]); // collector
-        let e_idx = node_map.index(&nodes[2]); // emitter
-        if let Some(ci) = c_idx {
-            system.a[(ci, ci)] += g_ce;
-        }
-        if let Some(ei) = e_idx {
-            system.a[(ei, ei)] += g_ce;
-        }
-        if let (Some(ci), Some(ei)) = (c_idx, e_idx) {
-            system.a[(ci, ei)] -= g_ce;
-            system.a[(ei, ci)] -= g_ce;
+    for (node, i_eq) in [(b, ib_eq), (c, ic_eq), (e, ie_eq)] {
+        if let Some(n) = node {
+            system.b[n] -= sign * i_eq;
         }
     }
 }
@@ -2127,5 +2077,119 @@ mod tests {
             "IGBT should have non-zero collector current, got {}",
             t1.current_through
         );
+    }
+
+    /// Physical terminal currents (into base, collector, emitter) of the BJT
+    /// model at node voltages `v = [vb, vc, ve]`.
+    fn bjt_currents(kind: BjtKind, params: &BjtParams, v: [f64; 3]) -> [f64; 3] {
+        let sign = match kind {
+            BjtKind::Npn => 1.0,
+            BjtKind::Pnp => -1.0,
+        };
+        let (ib, ic) = sindr_devices::bjt::bjt_terminal_currents(
+            sign * (v[0] - v[2]),
+            sign * (v[0] - v[1]),
+            params,
+        );
+        [sign * ib, sign * ic, -sign * (ib + ic)]
+    }
+
+    /// Every stamped row must be the Newton linearisation of its terminal
+    /// current, including past the old 10 S conductance cap and past the
+    /// exponential clamp at 40·V_T.
+    #[test]
+    fn bjt_stamp_is_newton_consistent() {
+        let nodes = ["b".to_string(), "c".to_string(), "e".to_string()];
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![CircuitElement::Bjt {
+                id: "Q1".into(),
+                nodes: nodes.clone(),
+                kind: BjtKind::Npn,
+                bf: 100.0,
+                temperature: 300.15,
+                parasitic_caps: None,
+            }],
+        };
+        let node_map = NodeMap::from_circuit(&circuit);
+        let idx: Vec<usize> = nodes.iter().map(|n| node_map.index(n).unwrap()).collect();
+
+        let plain = BjtParams::new(100.0);
+        let early = BjtParams {
+            vaf: 50.0,
+            ..BjtParams::new(100.0)
+        };
+        // Junction voltages (vbe, vbc) in the device's own polarity.
+        let biases = [
+            (0.65, -4.0), // forward-active
+            (0.80, -4.0), // dIc/dVbe ≈ 10.6 S, past the old cap
+            (1.20, -4.0), // past the exp clamp
+            (0.75, 0.60), // saturation
+            (1.10, 1.05), // both junctions past the clamp
+        ];
+        for kind in [BjtKind::Npn, BjtKind::Pnp] {
+            let sign = if kind == BjtKind::Npn { 1.0 } else { -1.0 };
+            for params in [&plain, &early] {
+                for (vbe, vbc) in biases {
+                    // Put the emitter at 1 V so no terminal is ground.
+                    let ve = 1.0;
+                    let v = [ve + sign * vbe, ve + sign * (vbe - vbc), ve];
+                    let mut x = nalgebra::DVector::zeros(node_map.num_nodes());
+                    for (i, &k) in idx.iter().enumerate() {
+                        x[k] = v[i];
+                    }
+                    let mut system = MnaSystem::new(node_map.num_nodes(), 0);
+                    stamp_bjt_companion(&mut system, &node_map, &nodes, &x, params, kind);
+
+                    let currents = bjt_currents(kind, params, v);
+                    for (row, &r) in idx.iter().enumerate() {
+                        let label = format!(
+                            "{kind:?} vaf={} vbe={vbe} vbc={vbc} row {}",
+                            params.vaf, nodes[row]
+                        );
+                        let linear = system.a.row(r).dot(&x.transpose()) - system.b[r];
+                        assert_relative_eq!(
+                            linear,
+                            currents[row],
+                            max_relative = 1e-9,
+                            epsilon = 1e-15
+                        );
+                        for (col, &k) in idx.iter().enumerate() {
+                            let h = 1e-6;
+                            let (mut up, mut down) = (v, v);
+                            up[col] += h;
+                            down[col] -= h;
+                            let fd = (bjt_currents(kind, params, up)[row]
+                                - bjt_currents(kind, params, down)[row])
+                                / (2.0 * h);
+                            let stamped = system.a[(r, k)];
+                            assert!(
+                                (stamped - fd).abs() <= 1e-5 * fd.abs().max(1e-9),
+                                "{label}: d/dV{} stamped {stamped:e}, finite difference {fd:e}",
+                                nodes[col]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bjt_companion_conductances_are_slopes_of_its_currents() {
+        let params = BjtParams::new(100.0);
+        let alpha_r = params.br / (params.br + 1.0);
+        for (vbe, vbc) in [(0.65, -2.0), (0.85, -2.0), (1.3, -2.0), (0.7, 1.2)] {
+            let c = sindr_devices::bjt::bjt_companion(vbe, vbc, &params);
+            // Large enough that round-off on kiloamp clamped currents stays
+            // well below the slope; truncation is ~h²/(6·V_T²).
+            let h = 1e-5;
+            let ic = |vbe, vbc| sindr_devices::bjt::bjt_companion(vbe, vbc, &params).ic;
+            // ic = i_f − i_r/α_R, so ∂ic/∂vbe = g_be and ∂ic/∂vbc = −g_bc/α_R.
+            let dvbe = (ic(vbe + h, vbc) - ic(vbe - h, vbc)) / (2.0 * h);
+            let dvbc = (ic(vbe, vbc + h) - ic(vbe, vbc - h)) / (2.0 * h);
+            assert_relative_eq!(c.g_be, dvbe, max_relative = 1e-5);
+            assert_relative_eq!(-c.g_bc / alpha_r, dvbc, max_relative = 1e-5);
+        }
     }
 }
