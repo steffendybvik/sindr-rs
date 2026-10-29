@@ -46,7 +46,7 @@ element, and the `.cir` is read only by ngspice.
 - **Junction devices:** 1e-3 relative on voltages and 2e-2 on currents. sindr's
   thermal voltage is a rounded constant for 300.00 K, while devices and the
   goldens sit at 300.15 K. Re-running ngspice at sindr's V_T brings these
-  cases under 2e-6. Tighten once SIN-27 lands.
+  cases under 2e-6. Tighten once SIN-15 lands.
 - **Transient:** 1 % of full scale. sindr integrates with fixed-step backward
   Euler (dt = τ/50 over 5τ). ngspice can't reproduce a fixed step, so the
   golden is an accurate solution (`reltol=1e-6`, 1 µs max step) resampled
@@ -63,8 +63,8 @@ element, and the `.cir` is read only by ngspice.
 | Transient | `tran_rc_step`, `tran_rl_step` |
 | Temperature | `temp_diode` |
 
-Ignored until their bugs are fixed: `op_schottky` (SIN-28, no convergence)
-and `temp_diode` (SIN-27, temperature maths).
+Ignored until their bugs are fixed: `op_schottky` (SIN-16, no convergence)
+and `temp_diode` (SIN-15, temperature maths).
 
 Not covered, and why:
 

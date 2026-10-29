@@ -96,7 +96,7 @@ const OP_I: Tol = Tol {
 /// temperature to sindr's V_T brings these cases under 2e-6. In the
 /// exponential region a current's relative error is the voltage one times
 /// V/(n·V_T) ≈ 26, hence the wider current tolerance. Tighten both to
-/// `OP_V`/`OP_I` once SIN-27 makes V_T follow temperature.
+/// `OP_V`/`OP_I` once SIN-15 makes V_T follow temperature.
 const JUNCTION: (Tol, Tol) = (
     Tol {
         rel: 1e-3,
@@ -314,7 +314,7 @@ fn op_led() {
 }
 
 #[test]
-#[ignore = "SIN-28: Newton doesn't converge from the initial guess"]
+#[ignore = "SIN-16: Newton doesn't converge from the initial guess"]
 fn op_schottky() {
     check_op(
         "op_schottky",
@@ -536,7 +536,7 @@ fn tran_rl_step() {
 // ---------------------------------------------------------------- temperature
 
 #[test]
-#[ignore = "SIN-27: IS temperature scaling and V_T(T) are wrong"]
+#[ignore = "SIN-15: IS temperature scaling and V_T(T) are wrong"]
 fn temp_diode() {
     let golden = Golden::load("temp_diode");
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
