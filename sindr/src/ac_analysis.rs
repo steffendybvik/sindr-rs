@@ -295,6 +295,26 @@ fn linearize_at_dc(
                     ],
                 });
             }
+            CircuitElement::Igbt { nodes, params, .. } => {
+                let g = node_map.index(&nodes[0]);
+                let c = node_map.index(&nodes[1]);
+                let e = node_map.index(&nodes[2]);
+                let v = |n: Option<usize>| n.map_or(0.0, |i| dc_solution[i]);
+                // The same companion as the DC stamp (stamp_igbt_companion).
+                let comp = sindr_devices::igbt::igbt_companion(v(g) - v(e), v(c) - v(e), params);
+                models.push(SmallSignalModel {
+                    conductances: vec![
+                        (c, g, comp.gm),
+                        (c, e, -comp.gm),
+                        (e, g, -comp.gm),
+                        (e, e, comp.gm),
+                        (c, c, comp.g_ce),
+                        (e, e, comp.g_ce),
+                        (c, e, -comp.g_ce),
+                        (e, c, -comp.g_ce),
+                    ],
+                });
+            }
             CircuitElement::Mosfet {
                 nodes,
                 kind,
@@ -647,7 +667,9 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                     stamp_complex_conductance(&mut system, p, q, -g);
                     stamp_complex_conductance(&mut system, q, p, -g);
                 }
-                CircuitElement::Photoresistor { nodes, light_level, .. } => {
+                CircuitElement::Photoresistor {
+                    nodes, light_level, ..
+                } => {
                     use crate::stamp::ldr_resistance;
                     let r = ldr_resistance(*light_level);
                     let g = Complex64::new(1.0 / r, 0.0);
@@ -658,7 +680,12 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                     stamp_complex_conductance(&mut system, p, q, -g);
                     stamp_complex_conductance(&mut system, q, p, -g);
                 }
-                CircuitElement::Potentiometer { nodes, resistance, position, .. } => {
+                CircuitElement::Potentiometer {
+                    nodes,
+                    resistance,
+                    position,
+                    ..
+                } => {
                     let pos = position.clamp(0.001, 0.999);
                     let r_top = resistance * pos;
                     let r_bot = resistance * (1.0 - pos);
@@ -676,7 +703,11 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                     stamp_complex_conductance(&mut system, w, q, -g_bot);
                     stamp_complex_conductance(&mut system, q, w, -g_bot);
                 }
-                CircuitElement::Relay { nodes, coil_resistance, .. } => {
+                CircuitElement::Relay {
+                    nodes,
+                    coil_resistance,
+                    ..
+                } => {
                     let g = Complex64::new(1.0 / coil_resistance, 0.0);
                     let p = node_map.index(&nodes[0]);
                     let q = node_map.index(&nodes[1]);
@@ -694,7 +725,9 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                     stamp_complex_conductance(&mut system, c2, c1, -g_open);
                 }
                 // Thermistor: passive resistor with temperature-dependent resistance
-                CircuitElement::Thermistor { nodes, temperature, .. } => {
+                CircuitElement::Thermistor {
+                    nodes, temperature, ..
+                } => {
                     let params = sindr_devices::thermistor::ThermistorParams::default();
                     let r = sindr_devices::thermistor::thermistor_resistance(*temperature, &params);
                     let g = Complex64::new(1.0 / r, 0.0);
@@ -714,7 +747,6 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                 | CircuitElement::SchottkyDiode { .. }
                 | CircuitElement::Photodiode { .. }
                 | CircuitElement::Jfet { .. }
-                // IGBT: open circuit in AC; no small-signal model yet
                 | CircuitElement::Igbt { .. } => {}
                 // Transformer: coupled inductors — stamp admittances in AC (Y = 1/(j*omega*L))
                 // For simplicity, stamp both windings as independent inductors (ignores mutual coupling in AC)
@@ -745,8 +777,7 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                     stamp_complex_conductance(&mut system, q2, p2, -y2);
                 }
                 // OpAmp/Comparator: high-gain VCVS (gain=1e5) — linear, stamp properly in AC
-                CircuitElement::OpAmp { nodes, .. }
-                | CircuitElement::Comparator { nodes, .. } => {
+                CircuitElement::OpAmp { nodes, .. } | CircuitElement::Comparator { nodes, .. } => {
                     let branch = num_nodes + vsource_index;
                     let p = node_map.index(&nodes[2]); // out
                     let gnd = node_map.index(&circuit.ground_node);
@@ -778,7 +809,10 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
 
                 // Dependent sources in AC
                 CircuitElement::Vcvs {
-                    nodes, control_nodes, gain, ..
+                    nodes,
+                    control_nodes,
+                    gain,
+                    ..
                 } => {
                     let branch = num_nodes + vsource_index;
                     let p = node_map.index(&nodes[0]);
@@ -788,16 +822,31 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                     let one = Complex64::new(1.0, 0.0);
                     let g = Complex64::new(*gain, 0.0);
 
-                    if let Some(pi) = p { system.a[(pi, branch)] += one; }
-                    if let Some(qi) = q { system.a[(qi, branch)] -= one; }
-                    if let Some(pi) = p { system.a[(branch, pi)] += one; }
-                    if let Some(qi) = q { system.a[(branch, qi)] -= one; }
-                    if let Some(cpi) = cp { system.a[(branch, cpi)] -= g; }
-                    if let Some(cqi) = cq { system.a[(branch, cqi)] += g; }
+                    if let Some(pi) = p {
+                        system.a[(pi, branch)] += one;
+                    }
+                    if let Some(qi) = q {
+                        system.a[(qi, branch)] -= one;
+                    }
+                    if let Some(pi) = p {
+                        system.a[(branch, pi)] += one;
+                    }
+                    if let Some(qi) = q {
+                        system.a[(branch, qi)] -= one;
+                    }
+                    if let Some(cpi) = cp {
+                        system.a[(branch, cpi)] -= g;
+                    }
+                    if let Some(cqi) = cq {
+                        system.a[(branch, cqi)] += g;
+                    }
                     vsource_index += 1;
                 }
                 CircuitElement::Vccs {
-                    nodes, control_nodes, gm, ..
+                    nodes,
+                    control_nodes,
+                    gm,
+                    ..
                 } => {
                     let from = node_map.index(&nodes[0]);
                     let to = node_map.index(&nodes[1]);
@@ -805,13 +854,24 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                     let cq = node_map.index(&control_nodes[1]);
                     let g = Complex64::new(*gm, 0.0);
 
-                    if let (Some(ti), Some(cpi)) = (to, cp) { system.a[(ti, cpi)] += g; }
-                    if let (Some(ti), Some(cqi)) = (to, cq) { system.a[(ti, cqi)] -= g; }
-                    if let (Some(fi), Some(cpi)) = (from, cp) { system.a[(fi, cpi)] -= g; }
-                    if let (Some(fi), Some(cqi)) = (from, cq) { system.a[(fi, cqi)] += g; }
+                    if let (Some(ti), Some(cpi)) = (to, cp) {
+                        system.a[(ti, cpi)] += g;
+                    }
+                    if let (Some(ti), Some(cqi)) = (to, cq) {
+                        system.a[(ti, cqi)] -= g;
+                    }
+                    if let (Some(fi), Some(cpi)) = (from, cp) {
+                        system.a[(fi, cpi)] -= g;
+                    }
+                    if let (Some(fi), Some(cqi)) = (from, cq) {
+                        system.a[(fi, cqi)] += g;
+                    }
                 }
                 CircuitElement::Ccvs {
-                    nodes, control_source, rm, ..
+                    nodes,
+                    control_source,
+                    rm,
+                    ..
                 } => {
                     let branch = num_nodes + vsource_index;
                     let p = node_map.index(&nodes[0]);
@@ -819,25 +879,40 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
                     let one = Complex64::new(1.0, 0.0);
                     let r = Complex64::new(*rm, 0.0);
 
-                    if let Some(pi) = p { system.a[(pi, branch)] += one; }
-                    if let Some(qi) = q { system.a[(qi, branch)] -= one; }
-                    if let Some(pi) = p { system.a[(branch, pi)] += one; }
-                    if let Some(qi) = q { system.a[(branch, qi)] -= one; }
+                    if let Some(pi) = p {
+                        system.a[(pi, branch)] += one;
+                    }
+                    if let Some(qi) = q {
+                        system.a[(qi, branch)] -= one;
+                    }
+                    if let Some(pi) = p {
+                        system.a[(branch, pi)] += one;
+                    }
+                    if let Some(qi) = q {
+                        system.a[(branch, qi)] -= one;
+                    }
                     if let Some(cb) = circuit.vsource_branch_index(control_source) {
                         system.a[(branch, num_nodes + cb)] -= r;
                     }
                     vsource_index += 1;
                 }
                 CircuitElement::Cccs {
-                    nodes, control_source, alpha, ..
+                    nodes,
+                    control_source,
+                    alpha,
+                    ..
                 } => {
                     let from = node_map.index(&nodes[0]);
                     let to = node_map.index(&nodes[1]);
                     let a = Complex64::new(*alpha, 0.0);
 
                     if let Some(cb) = circuit.vsource_branch_index(control_source) {
-                        if let Some(ti) = to { system.a[(ti, num_nodes + cb)] += a; }
-                        if let Some(fi) = from { system.a[(fi, num_nodes + cb)] -= a; }
+                        if let Some(ti) = to {
+                            system.a[(ti, num_nodes + cb)] += a;
+                        }
+                        if let Some(fi) = from {
+                            system.a[(fi, num_nodes + cb)] -= a;
+                        }
                     }
                 }
                 // Fuse: stamp as resistor (intact=0.001 Ohm, blown=1e9 Ohm) in AC

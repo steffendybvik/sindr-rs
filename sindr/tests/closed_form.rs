@@ -1,0 +1,487 @@
+//! Circuits with exact solutions: DC sweeps against superposition and the
+//! Shockley root, AC transfer functions against the analytic `H(jω)`, and
+//! transient responses against both the exact solution and the
+//! backward-Euler recurrence of the circuit's state equations.
+//!
+//! The expected values here come from the circuit equations alone, never from
+//! sindr's stamps, so a wrong stamp or companion can't agree with them by
+//! construction.
+
+use std::f64::consts::PI;
+
+use nalgebra::{DMatrix, DVector};
+use num_complex::Complex64;
+use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::{dc_sweep, solve_circuit, Circuit, CircuitElement, TransientData};
+
+fn circuit(components: Vec<CircuitElement>) -> Circuit {
+    Circuit {
+        ground_node: "0".into(),
+        components,
+    }
+}
+
+fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
+    CircuitElement::VoltageSource {
+        id: id.into(),
+        nodes: [p.into(), n.into()],
+        voltage,
+        waveform: None,
+    }
+}
+
+fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
+    CircuitElement::Resistor {
+        id: id.into(),
+        nodes: [a.into(), b.into()],
+        resistance,
+    }
+}
+
+fn capacitor(id: &str, a: &str, b: &str, capacitance: f64) -> CircuitElement {
+    CircuitElement::Capacitor {
+        id: id.into(),
+        nodes: [a.into(), b.into()],
+        capacitance,
+    }
+}
+
+fn inductor(id: &str, a: &str, b: &str, inductance: f64) -> CircuitElement {
+    CircuitElement::Inductor {
+        id: id.into(),
+        nodes: [a.into(), b.into()],
+        inductance,
+    }
+}
+
+// ----------------------------------------------------------------- DC sweep
+
+/// Two sources into one node through R1 and R2, loaded by R3. By
+/// superposition, v_out = (V1/R1 + V2/R2) / (1/R1 + 1/R2 + 1/R3) at every
+/// value of the swept V1.
+#[test]
+fn dc_sweep_follows_superposition() {
+    let (r1, r2, r3, v2) = (1e3, 2.2e3, 4.7e3, 3.0);
+    let network = circuit(vec![
+        vsource("V1", "a", "0", 0.0),
+        vsource("V2", "b", "0", v2),
+        resistor("R1", "a", "out", r1),
+        resistor("R2", "b", "out", r2),
+        resistor("R3", "out", "0", r3),
+    ]);
+    let sweep = dc_sweep(&network, "V1", -10.0, 10.0, 21).unwrap();
+    assert_eq!(sweep.points.len(), 21);
+    for p in &sweep.points {
+        let v1 = p.sweep_value;
+        let want = (v1 / r1 + v2 / r2) / (1.0 / r1 + 1.0 / r2 + 1.0 / r3);
+        let got = p.result.node_voltages["out"];
+        assert!(
+            (got - want).abs() < 1e-12 * want.abs().max(1.0),
+            "V1 = {v1}: {got} vs {want}"
+        );
+    }
+}
+
+/// Diode behind 1 kΩ, swept from reverse to well forward. Forward, the exact
+/// drop is the root of `IS·(exp(V/V_T) − 1) = (Vs − V)/R` in `[0, Vs]`,
+/// found here by bisection: the left side rises and the right falls.
+#[test]
+fn dc_sweep_diode_matches_shockley_root() {
+    const V_T: f64 = 8.617_333_262e-5 * 300.15; // kT/q at 27 °C
+    const IS: f64 = 1e-14;
+    let r = 1e3;
+    let network = circuit(vec![
+        vsource("V1", "in", "0", 0.0),
+        resistor("R1", "in", "out", r),
+        CircuitElement::Diode {
+            id: "D1".into(),
+            nodes: ["out".into(), "0".into()],
+            temperature: 300.15,
+        },
+    ]);
+    let sweep = dc_sweep(&network, "V1", -2.0, 10.0, 25).unwrap();
+    for p in &sweep.points {
+        let vs = p.sweep_value;
+        let got = p.result.node_voltages["out"];
+        if vs <= 0.0 {
+            // Reverse: the diode carries −IS, plus what sindr's 1e-12 S GMIN
+            // shunts conduct, a few pA at these voltages.
+            let i = (vs - got) / r;
+            assert!(
+                i <= 0.0 && i.abs() < IS + 3e-12 * vs.abs(),
+                "Vs = {vs}: I = {i}"
+            );
+            continue;
+        }
+        let (mut lo, mut hi) = (0.0, vs);
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if IS * ((mid / V_T).exp() - 1.0) > (vs - mid) / r {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        let v = 0.5 * (lo + hi);
+        // Newton stops once a step is below RELTOL·V_T; the error left by
+        // its quadratic tail is a few nV.
+        assert!((got - v).abs() < 1e-7, "Vs = {vs}: sindr {got}, exact {v}");
+    }
+}
+
+// ----------------------------------------------------------------------- AC
+
+/// Log sweep of `circuit` from source `V1`, 10 points per decade.
+fn ac_sweep(circuit: &Circuit, f_start: f64, f_stop: f64) -> sindr::ac_analysis::AcResult {
+    let decades = (f_stop / f_start).log10().round() as usize;
+    let config = AcConfig {
+        f_start,
+        f_stop,
+        num_points: decades * 10 + 1,
+        spacing: FrequencySpacing::Logarithmic,
+        source_id: "V1".into(),
+        ac_magnitude: 1.0,
+    };
+    solve_ac(circuit, &config).unwrap()
+}
+
+/// Every point of `node`'s response equals `h(ω)` to `rel` relative error,
+/// compared as complex numbers (magnitude and phase together).
+fn assert_transfer(
+    circuit: &Circuit,
+    node: &str,
+    (f_start, f_stop): (f64, f64),
+    h: impl Fn(f64) -> Complex64,
+) {
+    let result = ac_sweep(circuit, f_start, f_stop);
+    for p in &result.points {
+        let got = p.node_voltages[node];
+        let want = h(2.0 * PI * p.frequency);
+        assert!(
+            (got - want).norm() <= 1e-9 * want.norm(),
+            "f = {} Hz: sindr {got}, exact {want}",
+            p.frequency
+        );
+    }
+}
+
+const J: Complex64 = Complex64::new(0.0, 1.0);
+
+/// RC low-pass, 1 kΩ / 1 µF: H = 1 / (1 + jωRC).
+#[test]
+fn ac_rc_lowpass_matches_transfer_function() {
+    let (r, c) = (1e3, 1e-6);
+    let lowpass = circuit(vec![
+        vsource("V1", "in", "0", 0.0),
+        resistor("R1", "in", "out", r),
+        capacitor("C1", "out", "0", c),
+    ]);
+    assert_transfer(&lowpass, "out", (1.0, 1e5), |w| 1.0 / (1.0 + J * w * r * c));
+
+    // The corner: f_c = 1/(2πRC) = 159.155 Hz, −3.0103 dB, −45°.
+    let f_c = 1.0 / (2.0 * PI * r * c);
+    assert!((f_c - 159.155).abs() < 1e-3);
+    let config = AcConfig {
+        f_start: f_c,
+        f_stop: f_c,
+        num_points: 1,
+        spacing: FrequencySpacing::Linear,
+        source_id: "V1".into(),
+        ac_magnitude: 1.0,
+    };
+    let at_corner = &solve_ac(&lowpass, &config).unwrap().points[0];
+    assert!((at_corner.gain_db("out", 1.0).unwrap() + 3.010_299_957).abs() < 1e-8);
+    assert!((at_corner.phase_deg("out").unwrap() + 45.0).abs() < 1e-8);
+}
+
+/// RC high-pass: H = jωRC / (1 + jωRC).
+#[test]
+fn ac_rc_highpass_matches_transfer_function() {
+    let (r, c) = (2.2e3, 47e-9);
+    let highpass = circuit(vec![
+        vsource("V1", "in", "0", 0.0),
+        capacitor("C1", "in", "out", c),
+        resistor("R1", "out", "0", r),
+    ]);
+    assert_transfer(&highpass, "out", (10.0, 1e6), |w| {
+        J * w * r * c / (1.0 + J * w * r * c)
+    });
+}
+
+/// RL low-pass (series L, shunt R): H = R / (R + jωL).
+#[test]
+fn ac_rl_lowpass_matches_transfer_function() {
+    let (r, l) = (100.0, 10e-3);
+    let lowpass = circuit(vec![
+        vsource("V1", "in", "0", 0.0),
+        inductor("L1", "in", "out", l),
+        resistor("R1", "out", "0", r),
+    ]);
+    assert_transfer(&lowpass, "out", (10.0, 1e6), |w| r / (r + J * w * l));
+}
+
+/// RL high-pass (series R, shunt L): H = jωL / (R + jωL).
+#[test]
+fn ac_rl_highpass_matches_transfer_function() {
+    let (r, l) = (100.0, 10e-3);
+    let highpass = circuit(vec![
+        vsource("V1", "in", "0", 0.0),
+        resistor("R1", "in", "out", r),
+        inductor("L1", "out", "0", l),
+    ]);
+    assert_transfer(&highpass, "out", (10.0, 1e6), |w| {
+        J * w * l / (r + J * w * l)
+    });
+}
+
+/// Series RLC, output across R: H = R / (R + jωL + 1/(jωC)). At resonance,
+/// f₀ = 1/(2π√(LC)), the reactances cancel: |H| = 1, phase 0.
+#[test]
+fn ac_series_rlc_resonance() {
+    let (r, l, c) = (10.0, 1e-3, 1e-6);
+    let series = circuit(vec![
+        vsource("V1", "in", "0", 0.0),
+        inductor("L1", "in", "a", l),
+        capacitor("C1", "a", "out", c),
+        resistor("R1", "out", "0", r),
+    ]);
+    let h = |w: f64| r / (r + J * w * l + 1.0 / (J * w * c));
+    assert_transfer(&series, "out", (100.0, 1e6), h);
+
+    let f0 = 1.0 / (2.0 * PI * (l * c).sqrt());
+    let config = AcConfig {
+        f_start: f0,
+        f_stop: f0,
+        num_points: 1,
+        spacing: FrequencySpacing::Linear,
+        source_id: "V1".into(),
+        ac_magnitude: 1.0,
+    };
+    let at_f0 = solve_ac(&series, &config).unwrap().points[0].node_voltages["out"];
+    assert!((at_f0 - Complex64::new(1.0, 0.0)).norm() < 1e-9, "{at_f0}");
+}
+
+/// Parallel RLC tank fed through R_s: H = Z / (R_s + Z), with
+/// 1/Z = 1/R + jωC + 1/(jωL). At f₀ the tank is purely resistive.
+#[test]
+fn ac_parallel_rlc_tank() {
+    let (rs, r, l, c) = (1e3, 10e3, 100e-6, 10e-9);
+    let tank = circuit(vec![
+        vsource("V1", "in", "0", 0.0),
+        resistor("RS", "in", "out", rs),
+        resistor("RP", "out", "0", r),
+        inductor("L1", "out", "0", l),
+        capacitor("C1", "out", "0", c),
+    ]);
+    let h = |w: f64| {
+        let z = 1.0 / (1.0 / r + J * w * c + 1.0 / (J * w * l));
+        z / (rs + z)
+    };
+    assert_transfer(&tank, "out", (1e3, 1e7), h);
+}
+
+/// Unity-gain Sallen-Key low-pass with an ideal buffer (a VCVS of gain 1):
+/// H = 1 / (1 + jω·C2·(R1 + R2) − ω²·R1·R2·C1·C2), with C1 the feedback
+/// capacitor and C2 the one to ground.
+#[test]
+fn ac_sallen_key_lowpass_matches_transfer_function() {
+    let (r1, r2, c1, c2) = (10e3, 10e3, 22e-9, 10e-9);
+    let sallen_key = circuit(vec![
+        vsource("V1", "in", "0", 0.0),
+        resistor("R1", "in", "a", r1),
+        resistor("R2", "a", "b", r2),
+        capacitor("C1", "a", "out", c1),
+        capacitor("C2", "b", "0", c2),
+        CircuitElement::Vcvs {
+            id: "E1".into(),
+            nodes: ["out".into(), "0".into()],
+            control_nodes: ["b".into(), "0".into()],
+            gain: 1.0,
+        },
+    ]);
+    let h = |w: f64| 1.0 / (1.0 + J * w * c2 * (r1 + r2) - w * w * r1 * r2 * c1 * c2);
+    assert_transfer(&sallen_key, "out", (10.0, 1e6), h);
+}
+
+// ---------------------------------------------------------------- transient
+
+/// Transient of `circuit`, which must have reactive parts.
+fn transient(circuit: &Circuit) -> TransientData {
+    solve_circuit(circuit)
+        .unwrap()
+        .transient
+        .expect("transient result")
+}
+
+/// Backward Euler on `x' = A·x + b` from `x = 0`, for `steps` steps:
+/// `x_n = (I − dt·A)⁻¹ (x_{n−1} + dt·b)`. This is the recurrence sindr's
+/// companion models should reproduce exactly, written from the state
+/// equations.
+fn backward_euler(a: &DMatrix<f64>, b: &DVector<f64>, dt: f64, steps: usize) -> Vec<DVector<f64>> {
+    let n = b.len();
+    let lu = (DMatrix::identity(n, n) - a * dt).lu();
+    let mut x = DVector::zeros(n);
+    (0..steps)
+        .map(|_| {
+            x = lu.solve(&(&x + b * dt)).unwrap();
+            x.clone()
+        })
+        .collect()
+}
+
+/// The current through component `id` at snapshot `s`.
+fn current(s: &sindr::TimestepSnapshot, id: &str) -> f64 {
+    s.component_results
+        .iter()
+        .find(|c| c.id == id)
+        .unwrap()
+        .current_through
+}
+
+/// RC charging from 1 V: `v' = (V − v)/τ`. sindr's backward-Euler steps match
+/// the recurrence to round-off, snapshot `i` being at `t = (i + 1)·dt`.
+#[test]
+fn transient_rc_step_is_backward_euler_exactly() {
+    let (r, c, v) = (1e3, 1e-6, 1.0);
+    let tran = transient(&circuit(vec![
+        vsource("V1", "in", "0", v),
+        resistor("R1", "in", "out", r),
+        capacitor("C1", "out", "0", c),
+    ]));
+    let tau = r * c;
+    let dt = tran.time_step;
+    assert!((dt - tau / 50.0).abs() < 1e-15);
+
+    let a = DMatrix::from_element(1, 1, -1.0 / tau);
+    let b = DVector::from_element(1, v / tau);
+    let want = backward_euler(&a, &b, dt, tran.timesteps.len());
+    for (i, (s, x)) in tran.timesteps.iter().zip(&want).enumerate() {
+        assert!((s.time - (i + 1) as f64 * dt).abs() < 1e-12 * dt.max(s.time));
+        let got = s.node_voltages["out"];
+        assert!(
+            (got - x[0]).abs() < 1e-12,
+            "t = {}: sindr {got}, BE {}",
+            s.time,
+            x[0]
+        );
+        // And within BE's truncation error of the exact 1 − e^(−t/τ): the
+        // global error peaks near dt/(2τ)·e⁻¹ of the step.
+        let exact = v * (1.0 - (-s.time / tau).exp());
+        assert!((got - exact).abs() < 0.01 * v, "t = {}", s.time);
+    }
+}
+
+/// Series RLC step: `L·i' = V − R·i − v_C`, `C·v_C' = i`, underdamped
+/// (ζ ≈ 0.016). Both the inductor current and the capacitor voltage follow
+/// the backward-Euler recurrence, numerical damping included.
+#[test]
+fn transient_rlc_step_is_backward_euler_exactly() {
+    let (r, l, c, v) = (1.0, 1e-3, 1e-6, 1.0);
+    let tran = transient(&circuit(vec![
+        vsource("V1", "in", "0", v),
+        resistor("R1", "in", "a", r),
+        inductor("L1", "a", "out", l),
+        capacitor("C1", "out", "0", c),
+    ]));
+    let dt = tran.time_step;
+    // x = [i_L, v_C]
+    let a = DMatrix::from_row_slice(2, 2, &[-r / l, -1.0 / l, 1.0 / c, 0.0]);
+    let b = DVector::from_row_slice(&[v / l, 0.0]);
+    let want = backward_euler(&a, &b, dt, tran.timesteps.len());
+    let i_scale = v * (c / l).sqrt();
+    for (s, x) in tran.timesteps.iter().zip(&want) {
+        let (i_l, v_c) = (current(s, "L1"), s.node_voltages["out"]);
+        assert!(
+            (i_l - x[0]).abs() < 1e-9 * i_scale,
+            "t = {}: i_L sindr {i_l}, BE {}",
+            s.time,
+            x[0]
+        );
+        assert!(
+            (v_c - x[1]).abs() < 1e-9 * v,
+            "t = {}: v_C sindr {v_c}, BE {}",
+            s.time,
+            x[1]
+        );
+    }
+}
+
+/// Least-squares slope of `ln(err)` against `ln(dt)`.
+fn log_log_slope(points: &[(f64, f64)]) -> f64 {
+    let xs: Vec<f64> = points.iter().map(|p| p.0.ln()).collect();
+    let ys: Vec<f64> = points.iter().map(|p| p.1.ln()).collect();
+    let n = xs.len() as f64;
+    let (mx, my) = (xs.iter().sum::<f64>() / n, ys.iter().sum::<f64>() / n);
+    let sxy: f64 = xs.iter().zip(&ys).map(|(x, y)| (x - mx) * (y - my)).sum();
+    let sxx: f64 = xs.iter().map(|x| (x - mx) * (x - mx)).sum();
+    sxy / sxx
+}
+
+/// Snapshot at time `t`, which must lie on the step grid.
+fn at_time(tran: &TransientData, t: f64) -> &sindr::TimestepSnapshot {
+    tran.timesteps
+        .iter()
+        .find(|s| (s.time - t).abs() < 1e-6 * tran.time_step)
+        .unwrap_or_else(|| panic!("no snapshot at t = {t}"))
+}
+
+// sindr picks dt itself (τ_max/50, from every R·C and L/R pair), and there is
+// no way yet to ask for one (SIN-20). The convergence tests below scale dt by
+// adding a resistor straight across the ideal source: it changes no node
+// voltage or branch current of the circuit under test, but sets τ_max = k·τ
+// and so dt = k·τ/50. Each run asserts the dt it got.
+
+/// Backward Euler is first order: on an RC step the error at t = τ falls in
+/// proportion to dt.
+#[test]
+fn transient_rc_error_is_first_order_in_dt() {
+    let (r, c, v) = (1e3, 1e-6, 1.0);
+    let tau = r * c;
+    let errors: Vec<(f64, f64)> = [1.0, 2.0, 5.0, 10.0]
+        .iter()
+        .map(|&k| {
+            let tran = transient(&circuit(vec![
+                vsource("V1", "in", "0", v),
+                resistor("R1", "in", "out", r),
+                capacitor("C1", "out", "0", c),
+                resistor("RAUX", "in", "0", k * r),
+            ]));
+            let dt = tran.time_step;
+            assert!((dt - k * tau / 50.0).abs() < 1e-12 * dt, "k = {k}: dt {dt}");
+            let got = at_time(&tran, tau).node_voltages["out"];
+            (dt, (got - v * (1.0 - (-1.0_f64).exp())).abs())
+        })
+        .collect();
+    let slope = log_log_slope(&errors);
+    assert!(
+        (slope - 1.0).abs() < 0.1,
+        "order {slope}, errors {errors:?}"
+    );
+}
+
+/// The same for an RL step: the inductor current at t = τ = L/R.
+#[test]
+fn transient_rl_error_is_first_order_in_dt() {
+    let (r, l, v) = (100.0, 10e-3, 1.0);
+    let tau = l / r;
+    let errors: Vec<(f64, f64)> = [1.0, 2.0, 5.0, 10.0]
+        .iter()
+        .map(|&k| {
+            let tran = transient(&circuit(vec![
+                vsource("V1", "in", "0", v),
+                resistor("R1", "in", "a", r),
+                inductor("L1", "a", "0", l),
+                resistor("RAUX", "in", "0", r / k),
+            ]));
+            let dt = tran.time_step;
+            assert!((dt - k * tau / 50.0).abs() < 1e-12 * dt, "k = {k}: dt {dt}");
+            let got = current(at_time(&tran, tau), "L1");
+            (dt, (got - v / r * (1.0 - (-1.0_f64).exp())).abs())
+        })
+        .collect();
+    let slope = log_log_slope(&errors);
+    assert!(
+        (slope - 1.0).abs() < 0.1,
+        "order {slope}, errors {errors:?}"
+    );
+}
