@@ -373,4 +373,130 @@ mod tests {
         eval_param_list(&bindings, &mut s).unwrap();
         assert_eq!(s.get("v_half"), Some(6.0));
     }
+
+    mod props {
+        use crate::spice::parse_str;
+        use crate::CircuitElement;
+        use proptest::prelude::*;
+
+        #[derive(Debug, Clone)]
+        enum Expr {
+            Num(f64),
+            Neg(Box<Expr>),
+            Bin(Box<Expr>, char, Box<Expr>),
+        }
+
+        impl Expr {
+            fn value(&self) -> f64 {
+                match self {
+                    Expr::Num(x) => *x,
+                    Expr::Neg(e) => -e.value(),
+                    Expr::Bin(a, op, b) => {
+                        let (a, b) = (a.value(), b.value());
+                        match op {
+                            '+' => a + b,
+                            '-' => a - b,
+                            '*' => a * b,
+                            _ => a / b,
+                        }
+                    }
+                }
+            }
+
+            fn level(&self) -> u8 {
+                match self {
+                    Expr::Bin(_, '+' | '-', _) => 1,
+                    Expr::Bin(..) => 2,
+                    _ => 3,
+                }
+            }
+
+            fn full_parens(&self) -> String {
+                match self {
+                    Expr::Num(x) => x.to_string(),
+                    Expr::Neg(e) => format!("-({})", e.full_parens()),
+                    Expr::Bin(a, op, b) => {
+                        format!("({} {op} {})", a.full_parens(), b.full_parens())
+                    }
+                }
+            }
+
+            /// Only the parentheses precedence and left-associativity need.
+            /// A right operand at the same level keeps its parentheses:
+            /// floating-point `+` and `*` aren't associative either.
+            fn minimal(&self) -> String {
+                match self {
+                    Expr::Num(x) => x.to_string(),
+                    Expr::Neg(e) if e.level() == 3 => format!("-{}", e.minimal()),
+                    Expr::Neg(e) => format!("-({})", e.minimal()),
+                    Expr::Bin(a, op, b) => {
+                        let wrap = |e: &Expr, needs: bool| {
+                            if needs {
+                                format!("({})", e.minimal())
+                            } else {
+                                e.minimal()
+                            }
+                        };
+                        let lvl = self.level();
+                        format!(
+                            "{} {op} {}",
+                            wrap(a, a.level() < lvl),
+                            wrap(b, b.level() <= lvl)
+                        )
+                    }
+                }
+            }
+        }
+
+        fn expr() -> impl Strategy<Value = Expr> {
+            let leaf = (1u32..10_000).prop_map(|n| Expr::Num(f64::from(n) / 100.0));
+            leaf.prop_recursive(5, 32, 2, |inner| {
+                prop_oneof![
+                    inner.clone().prop_map(|e| Expr::Neg(Box::new(e))),
+                    (
+                        inner.clone(),
+                        prop::sample::select(vec!['+', '-', '*', '/']),
+                        inner
+                    )
+                        .prop_map(|(a, op, b)| Expr::Bin(
+                            Box::new(a),
+                            op,
+                            Box::new(b)
+                        )),
+                ]
+            })
+        }
+
+        /// Evaluates `text` through `.param` and reads it back off a source.
+        fn eval_via_deck(text: &str) -> f64 {
+            let deck = format!("* p\n.param p = {{{text}}}\nV1 a 0 {{p}}\nR1 a 0 1k\n.end\n");
+            let netlist = parse_str(&deck).unwrap_or_else(|e| panic!("{text}: {e}"));
+            match &netlist.circuit.components[0] {
+                CircuitElement::VoltageSource { voltage, .. } => *voltage,
+                other => panic!("expected V1, got {other:?}"),
+            }
+        }
+
+        fn close(got: f64, want: f64) -> bool {
+            (got - want).abs() <= 1e-12 * want.abs().max(1.0)
+        }
+
+        proptest! {
+            #[test]
+            fn fully_parenthesised_matches_f64(e in expr()) {
+                let want = e.value();
+                prop_assume!(want.is_finite() && want.abs() < 1e12);
+                let got = eval_via_deck(&e.full_parens());
+                prop_assert!(close(got, want), "{} = {got}, want {want}", e.full_parens());
+            }
+
+            #[test]
+            fn precedence_and_associativity_match_f64(e in expr()) {
+                let want = e.value();
+                prop_assume!(want.is_finite() && want.abs() < 1e12);
+                let got = eval_via_deck(&e.minimal());
+                prop_assert!(close(got, want), "{} = {got}, want {want}", e.minimal());
+            }
+        }
+    }
 }

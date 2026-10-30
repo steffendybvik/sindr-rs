@@ -56,6 +56,8 @@
 //!   directly.
 
 #![deny(missing_docs)]
+#![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
+#![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
 pub mod bjt;
 pub mod diode;
@@ -69,3 +71,8 @@ pub mod schottky;
 pub mod thermistor;
 pub mod varactor;
 pub mod zener;
+
+// Compiles and runs the README's code blocks as doctests so they stay current.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

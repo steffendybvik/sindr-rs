@@ -7,7 +7,7 @@
 //! Both NPN and PNP are supported via [`BjtKind`]; the PNP case mirrors NPN
 //! through sign conventions on `vbe` and `vbc`.
 
-use crate::diode::V_T;
+use crate::diode::{thermal_voltage, V_T};
 
 /// BJT polarity.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -67,6 +67,11 @@ pub struct BjtParams {
 }
 
 impl BjtParams {
+    /// Thermal voltage kT/q (V) at the junction temperature.
+    pub fn vt(&self) -> f64 {
+        thermal_voltage(self.temperature)
+    }
+
     /// Construct default Ebers–Moll parameters for the given forward gain `bf`.
     pub fn new(bf: f64) -> Self {
         Self {
@@ -114,37 +119,21 @@ const V_MAX_EXP: f64 = 40.0 * V_T; // ~1.034V
 /// (V, sign-adjusted for PNP by the caller), returning the linearised
 /// [`BjtCompanion`] for MNA stamping.
 pub fn bjt_companion(vbe: f64, vbc: f64, params: &BjtParams) -> BjtCompanion {
-    let nf_vt = params.nf * V_T;
-    let nr_vt = params.nr * V_T;
-
-    // Clamp exponentials: beyond V_MAX_EXP, linearize to prevent overflow
-    let (exp_be, vbe_eval) = if vbe > V_MAX_EXP {
-        let e = (V_MAX_EXP / nf_vt).exp();
-        // Linear extrapolation: exp(v/nVt) ≈ exp(vmax/nVt) * (1 + (v-vmax)/nVt)
-        (e * (1.0 + (vbe - V_MAX_EXP) / nf_vt), vbe)
-    } else {
-        ((vbe / nf_vt).exp(), vbe)
-    };
-    let (exp_bc, vbc_eval) = if vbc > V_MAX_EXP {
-        let e = (V_MAX_EXP / nr_vt).exp();
-        (e * (1.0 + (vbc - V_MAX_EXP) / nr_vt), vbc)
-    } else {
-        ((vbc / nr_vt).exp(), vbc)
-    };
-    let _ = (vbe_eval, vbc_eval); // used for clarity, actual vbe/vbc used below
+    // Above V_MAX_EXP the exponentials are extrapolated linearly; the
+    // conductances are the slopes of exactly those curves, so the companion
+    // stays the Newton linearisation of its own currents at any bias.
+    let (exp_be, dexp_be) = junction_exp(vbe, params.nf * params.vt());
+    let (exp_bc, dexp_bc) = junction_exp(vbc, params.nr * params.vt());
 
     // Junction currents
     let i_f = params.is * (exp_be - 1.0);
     let i_r = params.is * (exp_bc - 1.0);
 
-    // Junction conductances (derivatives).
-    // Cap conductances at a maximum to prevent the NR Jacobian from becoming
-    // ill-conditioned near saturation where both junctions are forward-biased.
-    // G_MAX of 10.0 S (0.1 ohm) is large enough for accurate modeling while
-    // preventing the 1e5+ S values that cause NR oscillation.
-    const G_MAX: f64 = 10.0;
-    let g_be = ((params.is / nf_vt) * exp_be).min(G_MAX);
-    let g_bc = ((params.is / nr_vt) * exp_bc).min(G_MAX);
+    // Junction conductances (derivatives). Overshoot is handled by junction
+    // voltage limiting in the solver, not by capping these: a capped slope
+    // no longer matches the current and turns Newton into a crawl.
+    let g_be = params.is * dexp_be;
+    let g_bc = params.is * dexp_bc;
 
     // Terminal currents (transport model)
     let alpha_r = params.br / (params.br + 1.0);
@@ -167,6 +156,115 @@ pub fn bjt_companion(vbe: f64, vbc: f64, params: &BjtParams) -> BjtCompanion {
         ib,
         vbe,
         vbc,
+    }
+}
+
+/// Exponential term of a junction, `exp(v/n_vt)`, and its derivative with
+/// respect to `v`, linearly extrapolated above [`V_MAX_EXP`] exactly as in
+/// [`bjt_companion`].
+fn junction_exp(v: f64, n_vt: f64) -> (f64, f64) {
+    if v > V_MAX_EXP {
+        let e = (V_MAX_EXP / n_vt).exp();
+        (e * (1.0 + (v - V_MAX_EXP) / n_vt), e / n_vt)
+    } else {
+        let e = (v / n_vt).exp();
+        (e, e / n_vt)
+    }
+}
+
+fn early_enabled(params: &BjtParams) -> bool {
+    params.vaf > 0.0 && params.vaf.is_finite()
+}
+
+/// Base and collector currents `(ib, ic)` (A) at junction voltages
+/// `vbe`/`vbc` (V, sign-adjusted for PNP), including the Early effect the DC
+/// solve applies: `ic = i_tr + |i_tr|/VAF · vce` with `vce = vbe − vbc`.
+///
+/// This is the large-signal model that [`bjt_terminal_jacobian`]
+/// differentiates. The emitter current is `−(ib + ic)`.
+pub fn bjt_terminal_currents(vbe: f64, vbc: f64, params: &BjtParams) -> (f64, f64) {
+    let (exp_be, _) = junction_exp(vbe, params.nf * params.vt());
+    let (exp_bc, _) = junction_exp(vbc, params.nr * params.vt());
+    let i_f = params.is * (exp_be - 1.0);
+    let i_r = params.is * (exp_bc - 1.0);
+    let alpha_r = params.br / (params.br + 1.0);
+    let i_tr = i_f - i_r / alpha_r;
+    let ib = i_f / params.bf + i_r / params.br;
+    let ic = if early_enabled(params) {
+        i_tr + i_tr.abs() / params.vaf * (vbe - vbc)
+    } else {
+        i_tr
+    };
+    (ib, ic)
+}
+
+/// Exact small-signal Jacobian of the BJT terminal currents with respect to
+/// the junction voltages, at one operating point.
+///
+/// These are the true derivatives of [`bjt_terminal_currents`], Early effect
+/// included, valid in every region (cutoff, forward-active, saturation,
+/// reverse-active). The DC stamp and AC analysis both use them.
+///
+/// In terms of the node voltages, with `vbe = vb − ve` and `vbc = vb − vc`:
+/// `∂I/∂vb = ∂I/∂vbe + ∂I/∂vbc`, `∂I/∂vc = −∂I/∂vbc`, `∂I/∂ve = −∂I/∂vbe`.
+/// These entries are the same for NPN and PNP: the polarity sign cancels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BjtJacobian {
+    /// ∂Ib/∂Vbe (S).
+    pub dib_dvbe: f64,
+    /// ∂Ib/∂Vbc (S).
+    pub dib_dvbc: f64,
+    /// ∂Ic/∂Vbe (S).
+    pub dic_dvbe: f64,
+    /// ∂Ic/∂Vbc (S).
+    pub dic_dvbc: f64,
+}
+
+impl BjtJacobian {
+    /// The 3×3 terminal conductance matrix `∂(Ib, Ic, Ie)/∂(Vb, Vc, Ve)`,
+    /// rows and columns ordered [base, collector, emitter]. Rows and columns
+    /// each sum to zero (KCL and invariance to a common-mode shift).
+    pub fn terminal_matrix(&self) -> [[f64; 3]; 3] {
+        let row = |d_vbe: f64, d_vbc: f64| [d_vbe + d_vbc, -d_vbc, -d_vbe];
+        let rb = row(self.dib_dvbe, self.dib_dvbc);
+        let rc = row(self.dic_dvbe, self.dic_dvbc);
+        let re = [-(rb[0] + rc[0]), -(rb[1] + rc[1]), -(rb[2] + rc[2])];
+        [rb, rc, re]
+    }
+}
+
+/// Evaluate the exact terminal Jacobian of [`bjt_terminal_currents`] at
+/// junction voltages `vbe`/`vbc` (V, sign-adjusted for PNP).
+pub fn bjt_terminal_jacobian(vbe: f64, vbc: f64, params: &BjtParams) -> BjtJacobian {
+    let (exp_be, dexp_be) = junction_exp(vbe, params.nf * params.vt());
+    let (exp_bc, dexp_bc) = junction_exp(vbc, params.nr * params.vt());
+    let g_f = params.is * dexp_be;
+    let g_r = params.is * dexp_bc;
+    let alpha_r = params.br / (params.br + 1.0);
+
+    let dib_dvbe = g_f / params.bf;
+    let dib_dvbc = g_r / params.br;
+
+    // Transport current and its derivatives, before the Early factor.
+    let i_tr = params.is * (exp_be - 1.0) - params.is * (exp_bc - 1.0) / alpha_r;
+    let ditr_dvbe = g_f;
+    let ditr_dvbc = -g_r / alpha_r;
+
+    let (dic_dvbe, dic_dvbc) = if early_enabled(params) {
+        // ic = i_tr + |i_tr|·vce/VAF, vce = vbe − vbc
+        let vce = vbe - vbc;
+        let early = 1.0 + i_tr.signum() * vce / params.vaf;
+        let g_o = i_tr.abs() / params.vaf;
+        (ditr_dvbe * early + g_o, ditr_dvbc * early - g_o)
+    } else {
+        (ditr_dvbe, ditr_dvbc)
+    };
+
+    BjtJacobian {
+        dib_dvbe,
+        dib_dvbc,
+        dic_dvbe,
+        dic_dvbc,
     }
 }
 
@@ -321,5 +419,103 @@ mod tests {
         assert_relative_eq!(npn.ib, pnp.ib, epsilon = 1e-15);
         assert_relative_eq!(npn.g_be, pnp.g_be, epsilon = 1e-15);
         assert_relative_eq!(npn.g_bc, pnp.g_bc, epsilon = 1e-15);
+    }
+
+    /// Bias points covering cutoff, forward-active, saturation,
+    /// reverse-active, and both junctions past the exponential clamp.
+    const BIAS_POINTS: [(f64, f64); 7] = [
+        (-0.5, -5.0), // cutoff
+        (0.0, 0.0),   // zero bias
+        (0.65, -5.0), // forward-active
+        (0.75, -0.2), // forward-active, near saturation
+        (0.75, 0.6),  // saturation
+        (-5.0, 0.65), // reverse-active
+        (1.2, 1.1),   // both beyond V_MAX_EXP
+    ];
+
+    fn params_with_vaf(vaf: f64) -> BjtParams {
+        let mut p = BjtParams::new(100.0);
+        p.br = 2.0;
+        p.nr = 1.2;
+        p.vaf = vaf;
+        p
+    }
+
+    /// Relative comparison with an absolute floor for near-zero conductances.
+    fn assert_close(analytic: f64, fd: f64, what: &str, vbe: f64, vbc: f64) {
+        let tol = 1e-5 * analytic.abs().max(fd.abs()) + 1e-15;
+        assert!(
+            (analytic - fd).abs() <= tol,
+            "{what} at vbe={vbe}, vbc={vbc}: analytic={analytic:e}, finite difference={fd:e}"
+        );
+    }
+
+    #[test]
+    fn terminal_jacobian_matches_central_finite_difference() {
+        for vaf in [0.0, 50.0] {
+            let params = params_with_vaf(vaf);
+            for (vbe, vbc) in BIAS_POINTS {
+                let j = bjt_terminal_jacobian(vbe, vbc, &params);
+                let h = 1e-7;
+                let (ib_p, ic_p) = bjt_terminal_currents(vbe + h, vbc, &params);
+                let (ib_m, ic_m) = bjt_terminal_currents(vbe - h, vbc, &params);
+                assert_close(j.dib_dvbe, (ib_p - ib_m) / (2.0 * h), "dIb/dVbe", vbe, vbc);
+                assert_close(j.dic_dvbe, (ic_p - ic_m) / (2.0 * h), "dIc/dVbe", vbe, vbc);
+                let (ib_p, ic_p) = bjt_terminal_currents(vbe, vbc + h, &params);
+                let (ib_m, ic_m) = bjt_terminal_currents(vbe, vbc - h, &params);
+                assert_close(j.dib_dvbc, (ib_p - ib_m) / (2.0 * h), "dIb/dVbc", vbe, vbc);
+                assert_close(j.dic_dvbc, (ic_p - ic_m) / (2.0 * h), "dIc/dVbc", vbe, vbc);
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_matrix_rows_and_columns_sum_to_zero() {
+        let params = params_with_vaf(50.0);
+        for (vbe, vbc) in BIAS_POINTS {
+            let m = bjt_terminal_jacobian(vbe, vbc, &params).terminal_matrix();
+            let scale = m.iter().flatten().fold(0.0_f64, |a, x| a.max(x.abs()));
+            for (i, r) in m.iter().enumerate() {
+                let row: f64 = r.iter().sum();
+                let col: f64 = m.iter().map(|r| r[i]).sum();
+                assert!(row.abs() <= 1e-12 * scale, "row {i} sums to {row:e}");
+                assert!(col.abs() <= 1e-12 * scale, "column {i} sums to {col:e}");
+            }
+        }
+    }
+
+    /// The currents the Jacobian differentiates are the ones the DC solve
+    /// converges to: the companion's transport currents plus `g_ce · vce`.
+    #[test]
+    fn terminal_currents_match_dc_companion_model() {
+        for vaf in [0.0, 50.0] {
+            let params = params_with_vaf(vaf);
+            for (vbe, vbc) in BIAS_POINTS {
+                let comp = bjt_companion(vbe, vbc, &params);
+                let (ib, ic) = bjt_terminal_currents(vbe, vbc, &params);
+                assert_relative_eq!(ib, comp.ib, max_relative = 1e-12);
+                assert_relative_eq!(ic, comp.ic + comp.g_ce * (vbe - vbc), max_relative = 1e-12);
+            }
+        }
+    }
+
+    /// Forward-active hybrid-π values: gm ≈ Ic/Vt, gπ ≈ gm/β, g_o ≈ Ic/VAF,
+    /// and g_μ (∂Ib/∂Vbc) negligible.
+    #[test]
+    fn terminal_jacobian_forward_active_hybrid_pi() {
+        let mut params = BjtParams::new(100.0);
+        params.vaf = 100.0;
+        let (vbe, vbc) = (0.65, -5.0);
+        let j = bjt_terminal_jacobian(vbe, vbc, &params);
+        let (_, ic) = bjt_terminal_currents(vbe, vbc, &params);
+        let i_tr = bjt_companion(vbe, vbc, &params).ic;
+
+        // ∂Ic/∂Vce at fixed Vbe: vce enters only through vbc = vbe − vce.
+        let g_o = -j.dic_dvbc;
+        assert_relative_eq!(g_o, i_tr / 100.0, max_relative = 1e-6);
+        let gm = j.dic_dvbe + j.dic_dvbc;
+        assert_relative_eq!(gm, ic / V_T, max_relative = 1e-6);
+        assert_relative_eq!(j.dib_dvbe, i_tr / (100.0 * V_T), max_relative = 1e-6);
+        assert!(j.dib_dvbc.abs() < 1e-20);
     }
 }

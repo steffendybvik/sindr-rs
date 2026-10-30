@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (backward Euler), AC analysis, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, transfer function (`.tf`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -10,19 +10,19 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 
 ```toml
 [dependencies]
-sindr = { path = "../sindr" }
+sindr = "0.1.0-alpha.7"
 ```
 
 Serde support is on by default. To disable:
 
 ```toml
-sindr = { path = "../sindr", default-features = false }
+sindr = { version = "0.1.0-alpha.7", default-features = false }
 ```
 
 To parse SPICE netlists, enable the optional `spice` feature (off by default):
 
 ```toml
-sindr = { path = "../sindr", features = ["spice"] }
+sindr = { version = "0.1.0-alpha.7", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -30,7 +30,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -114,7 +114,7 @@ CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K) which scales IS using the SPICE temperature formula.
+All diodes use Newton-Raphson automatically when present. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 ### Varactor diode
 
@@ -141,12 +141,12 @@ CircuitElement::Bjt {
     parasitic_caps: Option<BjtParasiticCaps>, // { cbe, cbc } in Farads; None = disabled
 }
 
-// MOSFET — nodes: [gate, drain, source]
+// MOSFET — nodes: [gate, drain, source]; body tied to source
 CircuitElement::Mosfet {
     id,
     nodes: [String; 3],
     kind: MosfetKind,                          // MosfetKind::Nmos or MosfetKind::Pmos
-    params: MosfetParams,                      // threshold voltage, mobility, etc.
+    params: MosfetParams,                      // KP, VTO, LAMBDA, GAMMA, PHI; VTO SPICE-signed (negative for PMOS)
     parasitic_caps: Option<MosfetParasiticCaps>, // { cgs, cgd } in Farads; None = disabled
 }
 
@@ -156,11 +156,20 @@ CircuitElement::Igbt {
     nodes: [String; 3],
     params: IgbtParams, // { vth, k, vce_sat }
 }
+
+// JFET — nodes: [gate, drain, source]
+CircuitElement::Jfet {
+    id,
+    nodes: [String; 3],
+    kind: JfetKind, // JfetKind::NChannel or JfetKind::PChannel
+    idss: f64,      // drain saturation current at Vgs = 0 (A)
+    vp: f64,        // pinch-off voltage (V), negative for N-channel
+}
 ```
 
-`BjtKind`, `MosfetKind`, `BjtParasiticCaps`, `MosfetParasiticCaps`, `IgbtParams` are re-exported from `sindr` directly.
+`BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps` and `MosfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
-When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as Backward Euler capacitor companions each transient timestep, with per-junction voltage state tracked internally. This automatically triggers transient analysis.
+When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally. This automatically triggers transient analysis.
 
 **NPN common-emitter example:**
 
@@ -252,9 +261,11 @@ CircuitElement::Relay {
     pickup_voltage: f64,
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
 }
+CircuitElement::Fuse             { id, nodes: [String; 2], rating: f64, blown: bool } // 1 mΩ intact, 1 GΩ blown; rating is display-only
+CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64 }   // ideal source from output to gnd
 ```
 
-When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as a Backward Euler inductor companion). This triggers transient automatically.
+When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
 
 ## Reading results
 
@@ -282,16 +293,28 @@ pub struct ComponentResult {
 pub struct BjtResult {
     pub id: String, pub vbe: f64, pub vce: f64,
     pub ib: f64, pub ic: f64, pub ie: f64,
-    pub power: f64, pub region: String, // "active" | "saturation" | "cutoff" | "reverse_active"
+    pub power: f64, pub region: String, // "active" | "saturation" | "cutoff"
 }
 
 pub struct MosfetResult {
     pub id: String, pub vgs: f64, pub vds: f64,
-    pub id_current: f64, pub power: f64, pub region: String, // "off" | "linear" | "saturation"
+    pub id_current: f64, pub power: f64, pub region: String, // "cutoff" | "triode" | "saturation"
 }
 ```
 
-For transient circuits, `result.transient` contains a time series:
+For transient circuits, `result.transient` contains a time series. `solve_circuit` picks the duration (5 τ) and step (τ/50) from the circuit's time constants; to set them yourself, as SPICE's `.tran tstep tstop` does, use `solve_transient`:
+
+```rust,ignore
+use sindr::{solve_transient, TransientConfig};
+
+// 10 ms in 1 µs steps; optionally cap the step with .with_tmax(…)
+let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 1e-6))?;
+```
+
+Each snapshot is the end of one step, with sources evaluated at that time; the last is at `tstop`. The default integrator is Gear-2 (second order, no ringing); `.with_method(IntegrationMethod::Trapezoidal)` keeps an LC tank's amplitude exactly, and `IntegrationMethod::BackwardEuler` matches sindr before 0.1.0-alpha.7. Every method takes its first step as backward Euler.
+
+Steps are at most `tstep` long and every multiple of `tstep` gets a snapshot. In between, the stepper shortens steps where the local truncation error would exceed SPICE's default tolerances, and lands exactly on each corner of a source waveform (pulse edges, PWL points, square-wave flips), so a 1 ns edge in a 1 ms run is resolved without 1 ns steps everywhere. `result.transient.stats` counts accepted and rejected steps; `.with_fixed_step()` turns the error control off.
+
 
 ```rust
 pub struct TransientData {
@@ -306,6 +329,46 @@ pub struct TimestepSnapshot {
     pub component_results: Vec<ComponentResult>,
 }
 ```
+
+## AC analysis
+
+Small-signal frequency response around the DC operating point. Nonlinear devices are linearised at the operating point, then each frequency is a complex MNA solve.
+
+```rust
+use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+
+let config = AcConfig {
+    f_start: 1.0,
+    f_stop: 100_000.0,
+    num_points: 51,
+    spacing: FrequencySpacing::Logarithmic, // or Linear
+    source_id: "V1".into(),                 // voltage source that carries the AC stimulus
+    ac_magnitude: 1.0,
+};
+let result = solve_ac(&circuit, &config)?;
+
+let gain = result.gain_curve("n_out");   // (Hz, dB)
+let phase = result.phase_curve("n_out"); // (Hz, degrees)
+```
+
+`num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidComponent`.
+
+## Transfer function
+
+SPICE's `.tf`: the small-signal DC gain from an input source to an output, the resistance the input source sees, and the output resistance, all at the DC operating point (capacitors open, inductors shorted, nonlinear devices linearised).
+
+```rust
+use sindr::{solve_tf, TfConfig, TfOutput};
+
+let config = TfConfig {
+    output: TfOutput::Voltage { node: "out".into(), reference: None }, // or TfOutput::Current { source_id }
+    input_source: "V1".into(),                                         // a voltage or current source
+};
+let tf = solve_tf(&circuit, &config)?;
+println!("{} V/V, Rin {} Ω, Rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
+```
+
+The input resistance is infinite when the input source draws no small-signal current. Every other independent source is zeroed for the output resistance. A current output (`I(Vx)`) runs from the source's `nodes[0]` through it to `nodes[1]`, as SPICE's.
 
 ## DC sweep
 
@@ -350,14 +413,31 @@ pub struct TempSweepPoint {
 }
 ```
 
-`num_steps` must be ≥ 2.
+`num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
+
+## Examples
+
+One small program per capability in [`examples/`](./examples), run with `cargo run -p sindr --example <name>`:
+
+| Example | Shows |
+|---|---|
+| `voltage_divider` | Linear DC operating point |
+| `bjt_amplifier` | Nonlinear DC with a BJT |
+| `transient_rc` | Transient step response |
+| `bode_plot` | AC analysis |
+| `transfer_function` | Transfer function (`.tf`) |
+| `dc_sweep_diode` | DC sweep (diode I–V curve) |
+| `temperature_sweep` | Temperature sweep |
+| `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
+| `parse_netlist` | SPICE input (`--features spice`) |
+| `list_examples`, `run_example` | The built-in named circuits |
 
 ## Error handling
 
 ```rust
 pub enum SimError {
     NoGround,
-    DisconnectedNodes(String),
+    DisconnectedNodes(Vec<String>),
     FloatingNode(String),
     SingularMatrix,
     InvalidSolution,
@@ -377,7 +457,7 @@ pub enum SimError {
 |---|---|
 | Only linear elements | Direct MNA (LU factorisation) |
 | Nonlinear elements (diodes, BJTs, MOSFETs, IGBTs…) | Newton-Raphson iteration |
-| Reactive elements (C, L, Varactor, Transformer) or waveform sources | Backward Euler transient |
+| Reactive elements (C, L, Varactor, Transformer) or waveform sources | Transient (Gear-2 by default) |
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
 The transient solver uses adaptive timestepping: dt halves on Newton-Raphson convergence failure, and doubles after 5 consecutive successful timesteps (clamped to 10× the initial dt).

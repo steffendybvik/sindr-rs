@@ -1,0 +1,6 @@
+ac: series RLC, output across R, f0 = 1.59 kHz
+V1 in 0 0
+L1 in a 10m
+C1 a out 1u
+R1 out 0 50
+.end

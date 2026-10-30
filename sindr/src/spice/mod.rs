@@ -8,15 +8,37 @@
 //! a [`SourceMap`] is returned so callers can recover the original
 //! instance path for any flattened node.
 //!
+//! `.ic` and `.nodeset` cards land in [`ParsedNetlist::initial_conditions`]
+//! and [`ParsedNetlist::nodesets`]; pass them to
+//! [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages)
+//! and [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages).
+//!
 //! Enable the optional `spice` feature to pull this module in
-//! (`sindr = { version = "0.1", features = ["spice"] }`); it is off by
+//! (`sindr = { version = "0.1.0-alpha.7", features = ["spice"] }`); it is off by
 //! default so the parser dependencies stay out of the baseline build.
 //!
 //! # Quick start
 //!
-//! Parse a deck, hand the flattened [`Circuit`](crate::Circuit) to the
+//! Parse a deck from a string and solve its operating point:
+//!
+//! ```
+//! let deck = "\
+//! * 10 V across a 1k / 2k divider
+//! V1 in 0 10
+//! R1 in out 1k
+//! R2 out 0 2k
+//! .op
+//! .end
+//! ";
+//! let netlist = sindr::spice::parse_str(deck)?;
+//! let result = sindr::solve_circuit(&netlist.circuit)?;
+//! assert!((result.node_voltages["out"] - 20.0 / 3.0).abs() < 1e-9);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! For a deck on disk, parse it, hand the flattened [`Circuit`](crate::Circuit) to the
 //! solver, then dispatch each parsed analysis directive to the matching
-//! `sindr` routine:
+//! `sindr` routine (`no_run`: `amp.cir` doesn't exist where doctests run):
 //!
 //! ```no_run
 //! use sindr::spice::{parse_file, AnalysisRequest};
@@ -24,7 +46,7 @@
 //! let netlist = parse_file("amp.cir")?;
 //! println!("parsed `{}` ({} components)", netlist.title, netlist.circuit.components.len());
 //!
-//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac`
+//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf`
 //! // directives, in source order. The parser does not run them — you do.
 //! for analysis in &netlist.analyses {
 //!     match analysis {
@@ -38,14 +60,17 @@
 //!             println!("dc sweep of {source}: {} points", sweep.points.len());
 //!         }
 //!         AnalysisRequest::Tran { tstop, .. } => {
-//!             // Reactive elements / waveform sources make `solve_circuit`
-//!             // take the transient path automatically.
-//!             let _ = sindr::solve_circuit(&netlist.circuit)?;
+//!             let config = analysis.transient_config().unwrap();
+//!             let _ = sindr::solve_transient(&netlist.circuit, &config)?;
 //!             println!("transient to {tstop} s");
 //!         }
 //!         AnalysisRequest::Ac { fstart, fstop, .. } => {
 //!             // Build an `AcConfig` and call `sindr::ac_analysis::solve_ac`.
 //!             println!("ac sweep {fstart}..{fstop} Hz");
+//!         }
+//!         AnalysisRequest::Tf { .. } => {
+//!             let tf = sindr::solve_tf(&netlist.circuit, &analysis.tf_config().unwrap())?;
+//!             println!("tf: gain {}, rin {} Ω, rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
 //!         }
 //!     }
 //! }
@@ -62,7 +87,7 @@
 //! [`ParsedNetlist::warnings`], so a deck containing an unsupported element
 //! still parses:
 //!
-//! ```no_run
+//! ```
 //! use sindr::spice::{parse_str_with_options, ParseOptions};
 //! # let deck = "* deck\nV1 n1 0 1\nR1 n1 0 1k\n.end\n";
 //!
@@ -79,16 +104,18 @@
 //! [`SpiceParseError`] implements [`miette::Diagnostic`] and embeds the
 //! source text with labelled spans. Add `miette` with its `fancy` feature
 //! and render the error through a [`miette::Report`] for annotated,
-//! underlined output pointing at the offending line:
+//! underlined output pointing at the offending line (`no_run`: `bad.cir`
+//! doesn't exist where doctests run):
 //!
-//! ```ignore
+//! ```no_run
 //! match sindr::spice::parse_file("bad.cir") {
 //!     Ok(netlist) => { /* ... */ }
 //!     Err(e) => eprintln!("{:?}", miette::Report::new(e)),
 //! }
 //! ```
 //!
-//! See the crate `README` for the exact supported subset and known limits.
+//! Known gaps against full SPICE3 are listed in the repository's
+//! [`LIMITATIONS.md`](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
 
 // SpiceParseError variants embed `NamedSource<String>` so callers using
 // miette's fancy reporter get pretty diagnostics for free. The trade-off is
@@ -111,6 +138,7 @@ pub use analysis::{AcSweep, AnalysisRequest};
 pub use error::{ParseWarning, SpiceParseError};
 pub use source_map::{HierarchyPath, SourceMap};
 
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Successful result of parsing a SPICE netlist.
@@ -126,6 +154,17 @@ pub struct ParsedNetlist {
     ///
     /// Order matches declaration order in the source.
     pub analyses: Vec<AnalysisRequest>,
+    /// `.ic` node voltages (V), keyed by node name: the state a transient
+    /// starts from. Pass them to
+    /// [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
+    /// Only top-level cards are read.
+    pub initial_conditions: HashMap<String, f64>,
+    /// `.nodeset` node voltages (V), keyed by node name: a starting guess for
+    /// the DC operating point. Pass them to
+    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages)
+    /// or [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages).
+    /// Only top-level cards are read.
+    pub nodesets: HashMap<String, f64>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
     /// [`ParseOptions::strict`] is `true`.
     pub warnings: Vec<ParseWarning>,
@@ -244,4 +283,112 @@ pub fn parse_file_with_options(
     let cards = parser::parse_with_options(&pre, opts.strict, &mut warnings)?;
     let flat = flatten::flatten(cards, opts.strict, &mut warnings)?;
     build::build_netlist(flat, title, opts.strict, &mut warnings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixtures() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    }
+
+    fn component_ids(netlist: &ParsedNetlist) -> Vec<String> {
+        let mut ids: Vec<String> = netlist
+            .circuit
+            .components
+            .iter()
+            .map(|c| c.id().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn default_options_are_strict_with_no_search_path() {
+        let opts = ParseOptions::default();
+        assert!(opts.strict);
+        assert!(opts.include_search_path.is_none());
+    }
+
+    #[test]
+    fn title_is_the_first_line() {
+        let netlist = parse_str("my amplifier\nV1 a 0 1\nR1 a 0 1k\n.end\n").unwrap();
+        assert_eq!(netlist.title, "my amplifier");
+        assert!(netlist.warnings.is_empty());
+    }
+
+    #[test]
+    fn parse_str_and_parse_file_agree() {
+        let path = fixtures().join("rc.cir");
+        let from_file = parse_file(&path).unwrap();
+        let from_str = parse_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(component_ids(&from_file), component_ids(&from_str));
+        assert_eq!(from_file.analyses, from_str.analyses);
+        assert_eq!(from_file.title, from_str.title);
+    }
+
+    #[test]
+    fn parse_str_resolves_includes_from_the_search_path() {
+        let deck = "main\nR1 a b 1k\n.include 'include_sub.cir'\n.end\n";
+        let opts = ParseOptions {
+            include_search_path: Some(fixtures()),
+            ..ParseOptions::default()
+        };
+        let netlist = parse_str_with_options(deck, opts).unwrap();
+        assert_eq!(component_ids(&netlist), ["r1", "rincl"]);
+    }
+
+    #[test]
+    fn parse_file_search_path_overrides_the_file_directory() {
+        // Copy the main deck somewhere its include can't be found by default.
+        let dir = std::env::temp_dir().join(format!("sindr-spice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("include_main.cir");
+        std::fs::copy(fixtures().join("include_main.cir"), &main).unwrap();
+
+        assert!(
+            parse_file(&main).is_err(),
+            "include should not resolve next to the copy"
+        );
+
+        let opts = ParseOptions {
+            include_search_path: Some(fixtures()),
+            ..ParseOptions::default()
+        };
+        let netlist = parse_file_with_options(&main, opts).unwrap();
+        assert_eq!(component_ids(&netlist), ["r1", "rincl"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_file_is_an_io_error() {
+        let missing = fixtures().join("does_not_exist.cir");
+        for result in [
+            parse_file(&missing),
+            parse_file_with_options(
+                &missing,
+                ParseOptions {
+                    include_search_path: Some(fixtures()),
+                    ..ParseOptions::default()
+                },
+            ),
+        ] {
+            match result {
+                Err(SpiceParseError::IncludeIo { path, .. }) => assert_eq!(path, missing),
+                other => panic!("expected IncludeIo, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn include_cycle_is_an_error_not_a_hang() {
+        match parse_file(fixtures().join("cycle_a.cir")) {
+            Err(SpiceParseError::Syntax { message, .. }) => {
+                assert!(message.contains("include cycle"), "{message}")
+            }
+            other => panic!("expected an include-cycle error, got {other:?}"),
+        }
+    }
 }

@@ -1,12 +1,11 @@
 //! Temperature sweep analysis.
 //!
 //! Varies junction temperature across a range and solves the circuit at each
-//! temperature point. IS is re-scaled using the SPICE formula at each step.
+//! temperature point. IS is re-scaled using the SPICE formula at each step,
+//! and the thermal voltage follows the temperature.
 //!
 //! Mirrors the dc_sweep.rs pattern exactly: clones the circuit, mutates the
 //! temperature field on all IS-bearing components, and calls solve_circuit.
-
-use sindr_devices::diode::temperature_scale_is;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
@@ -37,25 +36,13 @@ pub struct TempSweepResult {
     pub points: Vec<TempSweepPoint>,
 }
 
-/// Reference temperature (K) — SPICE standard for IS at room temperature.
-const T0: f64 = 300.15;
-
-/// Scale the IS value for a given component temperature relative to T0.
-///
-/// - xti = 3.0 for BJTs (SPICE standard)
-/// - xti = 2.0 for diodes (SPICE standard)
-/// - eg  = 1.11 eV for silicon
-fn scale_is(is_t0: f64, t: f64, xti: f64) -> f64 {
-    temperature_scale_is(is_t0, t, T0, 1.11, xti)
-}
-
 /// Sweeps junction temperature across a range and solves the circuit at
 /// each step.
 ///
 /// At each temperature, the saturation current `IS` of every IS-bearing
 /// component (BJT, diode, LED, Zener, Schottky, photodiode) is rescaled
-/// using the SPICE temperature formula before solving. The base circuit is
-/// not modified.
+/// using the SPICE temperature formula, and its thermal voltage set to kT/q,
+/// before solving. The base circuit is not modified.
 ///
 /// `temperature` here is junction temperature — the thermistor's own
 /// temperature input is independent.
@@ -68,7 +55,8 @@ fn scale_is(is_t0: f64, t: f64, xti: f64) -> f64 {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_steps < 2`
+/// - [`SimError::InvalidComponent`] if `num_steps < 2`, or either endpoint
+///   is not finite or not above 0 K
 /// - Any [`SimError`] from solving at one of the temperatures (propagated
 ///   immediately)
 ///
@@ -108,6 +96,13 @@ pub fn temperature_sweep(
         return Err(SimError::InvalidComponent(
             "temperature_sweep: num_steps must be >= 2".into(),
         ));
+    }
+    for t in [temp_start, temp_end] {
+        if !t.is_finite() || t <= 0.0 {
+            return Err(SimError::InvalidComponent(format!(
+                "temperature_sweep: temperatures must be finite and > 0 K (got {t})"
+            )));
+        }
     }
 
     let step_size = (temp_end - temp_start) / (num_steps as f64 - 1.0);
@@ -154,13 +149,6 @@ pub fn temperature_sweep(
         temp_end,
         points,
     })
-}
-
-// Silence unused import warning: scale_is is reserved for future direct use
-// (currently the scaling is done inside stamp.rs via the component temperature field)
-#[allow(unused)]
-fn _dummy_scale_is_use() -> f64 {
-    scale_is(1e-14, 350.0, 3.0)
 }
 
 #[cfg(test)]
