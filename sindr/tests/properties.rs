@@ -187,7 +187,9 @@ proptest! {
     }
 
     /// Renaming every node and reversing the component order changes no
-    /// node voltage.
+    /// node voltage. The rename reverses the nodes' alphabetical order
+    /// (`n1..nN` becomes `mN..m1`), so the MNA unknowns really are permuted:
+    /// sindr numbers nodes in sorted order.
     #[test]
     fn solution_ignores_node_names_and_component_order(net in network(), volts in -20.0f64..20.0) {
         let top = node(net.nodes);
@@ -195,7 +197,10 @@ proptest! {
         elements.push(vsource("V1", &top, "0", volts));
         let original = solve_circuit(&circuit(elements.clone())).unwrap().node_voltages;
 
-        let rename = |n: &String| if n == "0" { n.clone() } else { format!("renamed_{n}") };
+        let rename = |n: &String| match n.strip_prefix('n') {
+            Some(i) => format!("m{}", net.nodes + 1 - i.parse::<usize>().unwrap()),
+            None => n.clone(),
+        };
         let renamed: Vec<CircuitElement> = elements.iter().rev().map(|e| {
             let mut e = e.clone();
             match &mut e {

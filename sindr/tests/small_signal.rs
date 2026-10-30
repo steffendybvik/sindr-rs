@@ -105,48 +105,58 @@ fn diode_ac_matches_dc() {
 
 #[test]
 fn led_ac_matches_dc() {
-    let circuit = two_terminal(CircuitElement::Led {
-        id: "D1".into(),
-        nodes: ["n2".into(), "0".into()],
-        color: "green".into(),
-        temperature: T_NOM,
-    });
-    assert_ac_matches_dc("LED", &circuit, &[1.0, 2.2, 5.0]);
+    for t in [T_NOM, 350.0] {
+        let circuit = two_terminal(CircuitElement::Led {
+            id: "D1".into(),
+            nodes: ["n2".into(), "0".into()],
+            color: "green".into(),
+            temperature: t,
+        });
+        assert_ac_matches_dc(&format!("LED at {t} K"), &circuit, &[1.0, 2.2, 5.0]);
+    }
 }
 
 #[test]
 fn schottky_ac_matches_dc() {
-    let circuit = two_terminal(CircuitElement::SchottkyDiode {
-        id: "D1".into(),
-        nodes: ["n2".into(), "0".into()],
-        temperature: T_NOM,
-    });
-    assert_ac_matches_dc("Schottky", &circuit, &[-2.0, 0.2, 5.0]);
+    for t in [T_NOM, 350.0] {
+        let circuit = two_terminal(CircuitElement::SchottkyDiode {
+            id: "D1".into(),
+            nodes: ["n2".into(), "0".into()],
+            temperature: t,
+        });
+        assert_ac_matches_dc(&format!("Schottky at {t} K"), &circuit, &[-2.0, 0.2, 5.0]);
+    }
 }
 
 /// Forward, below breakdown, and in breakdown (−8 V across a 5.1 V Zener).
 #[test]
 fn zener_ac_matches_dc() {
-    let circuit = two_terminal(CircuitElement::ZenerDiode {
-        id: "D1".into(),
-        nodes: ["n2".into(), "0".into()],
-        vz: 5.1,
-        temperature: T_NOM,
-    });
-    assert_ac_matches_dc("Zener", &circuit, &[-8.0, -3.0, 0.7, 5.0]);
+    for t in [T_NOM, 350.0] {
+        let circuit = two_terminal(CircuitElement::ZenerDiode {
+            id: "D1".into(),
+            nodes: ["n2".into(), "0".into()],
+            vz: 5.1,
+            temperature: t,
+        });
+        assert_ac_matches_dc(
+            &format!("Zener at {t} K"),
+            &circuit,
+            &[-8.0, -3.0, 0.7, 5.0],
+        );
+    }
 }
 
 #[test]
 fn photodiode_ac_matches_dc() {
-    for irradiance in [0.0, 1e-3] {
+    for (irradiance, t) in [(0.0, T_NOM), (1e-3, T_NOM), (0.0, 350.0), (1e-3, 350.0)] {
         let circuit = two_terminal(CircuitElement::Photodiode {
             id: "D1".into(),
             nodes: ["n2".into(), "0".into()],
             irradiance,
-            temperature: T_NOM,
+            temperature: t,
         });
         assert_ac_matches_dc(
-            &format!("photodiode at {irradiance} W"),
+            &format!("photodiode at {irradiance} W, {t} K"),
             &circuit,
             &[-2.0, 0.5, 5.0],
         );
@@ -194,11 +204,13 @@ fn npn_ac_matches_dc() {
 
 #[test]
 fn pnp_ac_matches_dc() {
-    assert_ac_matches_dc(
-        "PNP",
-        &bjt_stage(BjtKind::Pnp, T_NOM),
-        &[-0.3, -0.9, -1.5, -6.0],
-    );
+    for t in [T_NOM, 350.0] {
+        assert_ac_matches_dc(
+            &format!("PNP at {t} K"),
+            &bjt_stage(BjtKind::Pnp, t),
+            &[-0.3, -0.9, -1.5, -6.0],
+        );
+    }
 }
 
 /// Gate driven directly, drain load to the supply, source resistor to ground
@@ -257,18 +269,20 @@ fn jfet(kind: JfetKind) -> CircuitElement {
     }
 }
 
-/// From pinch-off up to V_GS near zero, where the drain load pushes the
-/// device into its ohmic region.
+/// Saturation near pinch-off (V_GS ≈ −1.7 V), then the ohmic region at
+/// V_GS ≈ −1.1 V and −0.08 V, where the drain load pulls V_DS down. No bias
+/// puts V_GS above zero: the model has no gate junction, so a forward-biased
+/// gate would only extrapolate the square law.
 #[test]
 fn n_jfet_ac_matches_dc() {
     let circuit = fet_stage(jfet(JfetKind::NChannel), 1.0, 12.0);
-    assert_ac_matches_dc("N-JFET", &circuit, &[-1.5, 0.0, 1.0, 3.0]);
+    assert_ac_matches_dc("N-JFET", &circuit, &[-1.5, 0.0, 1.0]);
 }
 
 #[test]
 fn p_jfet_ac_matches_dc() {
     let circuit = fet_stage(jfet(JfetKind::PChannel), -1.0, 12.0);
-    assert_ac_matches_dc("P-JFET", &circuit, &[1.5, 0.0, -1.0, -3.0]);
+    assert_ac_matches_dc("P-JFET", &circuit, &[1.5, 0.0, -1.0]);
 }
 
 #[test]
