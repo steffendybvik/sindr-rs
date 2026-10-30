@@ -176,26 +176,28 @@ fn photodiode_stamp_is_newton_consistent() {
 
 #[test]
 fn zener_stamp_is_newton_consistent() {
-    let circuit = circuit_of(CircuitElement::ZenerDiode {
-        id: "D1".into(),
-        nodes: ["a".into(), "k".into()],
-        vz: 5.1,
-        temperature: 300.15,
-    });
-    // Breakdown, reverse, zero, forward, and past the exponential clamp.
-    assert_consistent(
-        circuit,
-        &as_slices(&two_terminal(&[-6.0, -5.5, -3.0, 0.0, 0.6, 0.75, 1.2])),
-    );
+    for temperature in [250.0, 300.15, 400.0] {
+        let circuit = circuit_of(CircuitElement::ZenerDiode {
+            id: "D1".into(),
+            nodes: ["a".into(), "k".into()],
+            vz: 5.1,
+            temperature,
+        });
+        // Breakdown, reverse, zero, forward, and past the exponential clamp.
+        assert_consistent(
+            circuit,
+            &as_slices(&two_terminal(&[-6.0, -5.5, -3.0, 0.0, 0.6, 0.75, 1.2])),
+        );
+    }
 }
 
-fn bjt(kind: BjtKind) -> Circuit {
+fn bjt(kind: BjtKind, temperature: f64) -> Circuit {
     circuit_of(CircuitElement::Bjt {
         id: "Q1".into(),
         nodes: ["b".into(), "c".into(), "e".into()],
         kind,
         bf: 100.0,
-        temperature: 300.15,
+        temperature,
         parasitic_caps: None,
     })
 }
@@ -218,18 +220,25 @@ fn bjt_biases(sign: f64) -> Vec<Vec<(&'static str, f64)>> {
 
 #[test]
 fn npn_stamp_is_newton_consistent() {
-    assert_consistent(bjt(BjtKind::Npn), &as_slices(&bjt_biases(1.0)));
+    for temperature in [250.0, 300.15, 400.0] {
+        assert_consistent(bjt(BjtKind::Npn, temperature), &as_slices(&bjt_biases(1.0)));
+    }
 }
 
 #[test]
 fn pnp_stamp_is_newton_consistent() {
-    assert_consistent(bjt(BjtKind::Pnp), &as_slices(&bjt_biases(-1.0)));
+    for temperature in [250.0, 300.15, 400.0] {
+        assert_consistent(
+            bjt(BjtKind::Pnp, temperature),
+            &as_slices(&bjt_biases(-1.0)),
+        );
+    }
 }
 
 #[test]
 fn bjt_stamp_past_conductance_cap_is_newton_consistent() {
     let high_current: &[(&str, f64)] = &[("b", 1.8), ("c", 6.0), ("e", 1.0)];
-    assert_consistent(bjt(BjtKind::Npn), &[high_current]);
+    assert_consistent(bjt(BjtKind::Npn, 300.15), &[high_current]);
 }
 
 fn mosfet(kind: MosfetKind, params: MosfetParams) -> Circuit {

@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AC analysis linearises IGBTs at their operating point. Before, an IGBT was
+  an open circuit in AC, so a gate-driven IGBT stage showed no gain.
 - Junction temperature scaling. `temperature_scale_is` multiplied the bandgap
   exponent by XTI, so IS was far off away from 27 °C (a BJT's IS at 350 K was
   1.5e-6 A instead of 7e-12 A), and the thermal voltage stayed at its 300 K
