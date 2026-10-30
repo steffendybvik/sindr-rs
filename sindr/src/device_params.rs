@@ -6,26 +6,23 @@
 //! operating point that was solved.
 
 use sindr_devices::bjt::BjtParams;
-use sindr_devices::diode::{temperature_scale_is, DiodeParams};
+use sindr_devices::diode::{temperature_scale_is, DiodeParams, T_NOM};
 use sindr_devices::led::led_params_from_str;
 use sindr_devices::photodiode::PhotodiodeParams;
 use sindr_devices::schottky::SchottkyParams;
 use sindr_devices::zener::ZenerParams;
 
-/// Nominal temperature (K) the default parameters are given at.
-const T_NOM: f64 = 300.15;
-
 /// Silicon bandgap (eV).
 const EG_SI: f64 = 1.11;
 
-/// IS temperature exponent: SPICE's XTI for diodes and for BJTs.
-const XTI_DIODE: f64 = 2.0;
-const XTI_BJT: f64 = 3.0;
+/// IS temperature exponent: SPICE's default XTI, for diodes and BJTs alike.
+const XTI: f64 = 3.0;
 
-/// `is` at nominal temperature, scaled to `temperature`.
-fn scale_is(is: f64, temperature: f64, xti: f64) -> f64 {
+/// `is` of a junction with emission coefficient `n` (1 for a BJT), given at
+/// nominal temperature, scaled to `temperature`.
+fn scale_is(is: f64, temperature: f64, n: f64) -> f64 {
     if (temperature - T_NOM).abs() > 1e-6 {
-        temperature_scale_is(is, temperature, T_NOM, EG_SI, xti)
+        temperature_scale_is(is, temperature, T_NOM, EG_SI, XTI, n)
     } else {
         is
     }
@@ -58,7 +55,8 @@ pub(crate) fn schottky(temperature: f64) -> DiodeParams {
 /// Zener diode with breakdown voltage `vz` at `temperature` (K).
 pub(crate) fn zener(vz: f64, temperature: f64) -> ZenerParams {
     let mut params = ZenerParams::new(vz);
-    params.is = scale_is(params.is, temperature, XTI_DIODE);
+    params.is = scale_is(params.is, temperature, 1.0);
+    params.temperature = temperature;
     params
 }
 
@@ -66,7 +64,8 @@ pub(crate) fn zener(vz: f64, temperature: f64) -> ZenerParams {
 /// responsivity is taken as temperature-independent.
 pub(crate) fn photodiode(temperature: f64) -> PhotodiodeParams {
     let mut params = PhotodiodeParams::default();
-    params.is = scale_is(params.is, temperature, XTI_DIODE);
+    params.is = scale_is(params.is, temperature, params.n);
+    params.temperature = temperature;
     params
 }
 
@@ -84,13 +83,13 @@ pub(crate) fn photodiode_dark(temperature: f64) -> DiodeParams {
 /// BJT with forward gain `bf` at `temperature` (K).
 pub(crate) fn bjt(bf: f64, temperature: f64) -> BjtParams {
     let mut params = BjtParams::new(bf);
-    params.is = scale_is(params.is, temperature, XTI_BJT);
+    params.is = scale_is(params.is, temperature, 1.0);
     params.temperature = temperature;
     params
 }
 
 fn with_temperature(mut params: DiodeParams, temperature: f64) -> DiodeParams {
-    params.is = scale_is(params.is, temperature, XTI_DIODE);
+    params.is = scale_is(params.is, temperature, params.n);
     params.temperature = temperature;
     params
 }

@@ -114,7 +114,7 @@ CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K) which scales IS using the SPICE temperature formula.
+All diodes use Newton-Raphson automatically when present. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 ### Varactor diode
 

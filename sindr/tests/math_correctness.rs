@@ -179,7 +179,7 @@ fn diode_resistor_satisfies_kcl() {
 #[test]
 fn diode_op_obeys_shockley_equation() {
     // V_T and IS values match sindr_devices::diode::DiodeParams::silicon().
-    const V_T: f64 = 0.025851;
+    const V_T: f64 = 8.617_333_262e-5 * 300.15; // kT/q at 27 °C
     const N: f64 = 1.0;
     const IS: f64 = 1e-14;
 
@@ -532,7 +532,7 @@ fn reverse_biased_diode_carries_negligible_current() {
 /// the inter-diode node creates a Jacobian conditioning challenge).
 #[test]
 fn two_diodes_in_parallel_split_current_and_obey_shockley() {
-    const V_T: f64 = 0.025851;
+    const V_T: f64 = 8.617_333_262e-5 * 300.15; // kT/q at 27 °C
     const IS: f64 = 1e-14;
 
     let circuit = Circuit {

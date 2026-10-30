@@ -199,7 +199,8 @@ fn ac_diode_conductance_matches_dc_model_off_nominal_temperature() {
         let v_d = solve_circuit(&circuit).unwrap().node_voltages["n2"];
 
         let mut params = DiodeParams::silicon();
-        params.is = temperature_scale_is(params.is, t, 300.15, 1.11, 2.0);
+        params.is = temperature_scale_is(params.is, t, 300.15, 1.11, 3.0, params.n);
+        params.temperature = t;
         let h = 1e-6;
         let g_d = (diode_current(v_d + h, &params) - diode_current(v_d - h, &params)) / (2.0 * h);
         let expected = 1.0 / (1.0 + R * g_d);
@@ -222,8 +223,9 @@ fn ac_bjt_transconductance_matches_dc_model_off_nominal_temperature() {
     let rc = 1000.0;
     for t in [280.0, 320.0, 350.0] {
         let mut params = BjtParams::new(bf);
-        params.is = temperature_scale_is(params.is, t, 300.15, 1.11, 3.0);
-        let vbe = params.nf * sindr_devices::diode::V_T * (1e-3 / params.is).ln();
+        params.is = temperature_scale_is(params.is, t, 300.15, 1.11, 3.0, 1.0);
+        params.temperature = t;
+        let vbe = params.nf * params.vt() * (1e-3 / params.is).ln();
         assert!(vbe > 0.0 && vbe < 1.0, "T={t}: Vbe {vbe} out of range");
 
         let circuit = Circuit {

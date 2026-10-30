@@ -90,24 +90,6 @@ const OP_I: Tol = Tol {
     abs: 1e-12,
 };
 
-/// Junction devices. sindr's thermal voltage is a constant for 300.00 K
-/// (rounded), while the goldens run at the SPICE default 27 °C (300.15 K):
-/// that shifts every junction voltage by ~5e-4 relative. Matching ngspice's
-/// temperature to sindr's V_T brings these cases under 2e-6. In the
-/// exponential region a current's relative error is the voltage one times
-/// V/(n·V_T) ≈ 26, hence the wider current tolerance. Tighten both to
-/// `OP_V`/`OP_I` once SIN-15 makes V_T follow temperature.
-const JUNCTION: (Tol, Tol) = (
-    Tol {
-        rel: 1e-3,
-        abs: 1e-9,
-    },
-    Tol {
-        rel: 2e-2,
-        abs: 1e-9,
-    },
-);
-
 /// ngspice's JFET adds gate-junction diodes and GMIN shunts that sindr's
 /// Shichman-Hodges model omits.
 const JFET: (Tol, Tol) = (
@@ -214,17 +196,17 @@ fn op_resistive() {
 
 #[test]
 fn op_diode() {
-    check_op("op_diode", &parse("op_diode"), JUNCTION);
+    check_op("op_diode", &parse("op_diode"), (OP_V, OP_I));
 }
 
 #[test]
 fn op_bjt_ce() {
-    check_op("op_bjt_ce", &parse("op_bjt_ce"), JUNCTION);
+    check_op("op_bjt_ce", &parse("op_bjt_ce"), (OP_V, OP_I));
 }
 
 #[test]
 fn op_diode_series() {
-    check_op("op_diode_series", &parse("op_diode_series"), JUNCTION);
+    check_op("op_diode_series", &parse("op_diode_series"), (OP_V, OP_I));
 }
 
 #[test]
@@ -357,7 +339,7 @@ fn op_led() {
                 temperature: 300.15,
             },
         ]),
-        JUNCTION,
+        (OP_V, OP_I),
     );
 }
 
@@ -374,7 +356,7 @@ fn op_schottky() {
                 temperature: 300.15,
             },
         ]),
-        JUNCTION,
+        (OP_V, OP_I),
     );
 }
 
@@ -392,7 +374,7 @@ fn op_photodiode() {
                 temperature: 300.15,
             },
         ]),
-        JUNCTION,
+        (OP_V, OP_I),
     );
 }
 
@@ -416,8 +398,8 @@ fn dc_diode_iv() {
 
     let mut check = Check::new("dc_diode_iv");
     check.series("v-sweep", &scale, &sweep_values(&sweep), &scale, OP_V);
-    check.series("v(b)", &scale, &vb, &golden.column("v(b)"), JUNCTION.0);
-    check.series("i(v1)", &scale, &i, &golden.column("i(v1)"), JUNCTION.1);
+    check.series("v(b)", &scale, &vb, &golden.column("v(b)"), OP_V);
+    check.series("i(v1)", &scale, &i, &golden.column("i(v1)"), OP_I);
     check.finish();
 }
 
@@ -509,8 +491,7 @@ fn ac_rlc_bandpass() {
 
 #[test]
 fn ac_bjt_ce() {
-    // gm = Ic/V_T, so the gain carries the same V_T offset as JUNCTION.
-    check_ac("ac_bjt_ce", "vin", "c", 5, (10.0, 100e3), JUNCTION.0);
+    check_ac("ac_bjt_ce", "vin", "c", 5, (10.0, 100e3), OP_V);
 }
 
 // ---------------------------------------------------------------- .tran
@@ -583,7 +564,6 @@ fn tran_rl_step() {
 // ---------------------------------------------------------------- temperature
 
 #[test]
-#[ignore = "SIN-15: IS temperature scaling and V_T(T) are wrong"]
 fn temp_diode() {
     let golden = Golden::load("temp_diode");
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();

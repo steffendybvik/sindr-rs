@@ -7,7 +7,7 @@
 //! Both NPN and PNP are supported via [`BjtKind`]; the PNP case mirrors NPN
 //! through sign conventions on `vbe` and `vbc`.
 
-use crate::diode::V_T;
+use crate::diode::{thermal_voltage, V_T};
 
 /// BJT polarity.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -67,6 +67,11 @@ pub struct BjtParams {
 }
 
 impl BjtParams {
+    /// Thermal voltage kT/q (V) at the junction temperature.
+    pub fn vt(&self) -> f64 {
+        thermal_voltage(self.temperature)
+    }
+
     /// Construct default Ebers–Moll parameters for the given forward gain `bf`.
     pub fn new(bf: f64) -> Self {
         Self {
@@ -117,8 +122,8 @@ pub fn bjt_companion(vbe: f64, vbc: f64, params: &BjtParams) -> BjtCompanion {
     // Above V_MAX_EXP the exponentials are extrapolated linearly; the
     // conductances are the slopes of exactly those curves, so the companion
     // stays the Newton linearisation of its own currents at any bias.
-    let (exp_be, dexp_be) = junction_exp(vbe, params.nf * V_T);
-    let (exp_bc, dexp_bc) = junction_exp(vbc, params.nr * V_T);
+    let (exp_be, dexp_be) = junction_exp(vbe, params.nf * params.vt());
+    let (exp_bc, dexp_bc) = junction_exp(vbc, params.nr * params.vt());
 
     // Junction currents
     let i_f = params.is * (exp_be - 1.0);
@@ -178,8 +183,8 @@ fn early_enabled(params: &BjtParams) -> bool {
 /// This is the large-signal model that [`bjt_terminal_jacobian`]
 /// differentiates. The emitter current is `−(ib + ic)`.
 pub fn bjt_terminal_currents(vbe: f64, vbc: f64, params: &BjtParams) -> (f64, f64) {
-    let (exp_be, _) = junction_exp(vbe, params.nf * V_T);
-    let (exp_bc, _) = junction_exp(vbc, params.nr * V_T);
+    let (exp_be, _) = junction_exp(vbe, params.nf * params.vt());
+    let (exp_bc, _) = junction_exp(vbc, params.nr * params.vt());
     let i_f = params.is * (exp_be - 1.0);
     let i_r = params.is * (exp_bc - 1.0);
     let alpha_r = params.br / (params.br + 1.0);
@@ -231,8 +236,8 @@ impl BjtJacobian {
 /// Evaluate the exact terminal Jacobian of [`bjt_terminal_currents`] at
 /// junction voltages `vbe`/`vbc` (V, sign-adjusted for PNP).
 pub fn bjt_terminal_jacobian(vbe: f64, vbc: f64, params: &BjtParams) -> BjtJacobian {
-    let (exp_be, dexp_be) = junction_exp(vbe, params.nf * V_T);
-    let (exp_bc, dexp_bc) = junction_exp(vbc, params.nr * V_T);
+    let (exp_be, dexp_be) = junction_exp(vbe, params.nf * params.vt());
+    let (exp_bc, dexp_bc) = junction_exp(vbc, params.nr * params.vt());
     let g_f = params.is * dexp_be;
     let g_r = params.is * dexp_bc;
     let alpha_r = params.br / (params.br + 1.0);

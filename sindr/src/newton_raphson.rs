@@ -239,6 +239,8 @@ pub(crate) struct DiodeLimitInfo {
     cathode_idx: Option<usize>,
     v_crit: f64,
     n: f64,
+    /// Thermal voltage kT/q at the junction temperature (V).
+    vt: f64,
     /// For BJT junctions: the non-base node index that should absorb
     /// voltage limiting corrections. When set, only this node is adjusted
     /// (the base node is left untouched to prevent B-E and B-C limiters
@@ -271,8 +273,9 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
-                    v_crit: diode::critical_voltage(params.is, params.n),
+                    v_crit: diode::critical_voltage(params.is, params.n, params.vt()),
                     n: params.n,
+                    vt: params.vt(),
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
@@ -288,8 +291,9 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
-                    v_crit: diode::critical_voltage(params.is, params.n),
+                    v_crit: diode::critical_voltage(params.is, params.n, params.vt()),
                     n: params.n,
+                    vt: params.vt(),
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
@@ -306,8 +310,9 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
-                    v_crit: diode::critical_voltage(params.is, 1.0),
+                    v_crit: diode::critical_voltage(params.is, 1.0, params.vt()),
                     n: 1.0,
+                    vt: params.vt(),
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: Some(*vz),
@@ -320,8 +325,9 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
-                    v_crit: diode::critical_voltage(params.is, params.n),
+                    v_crit: diode::critical_voltage(params.is, params.n, params.vt()),
                     n: params.n,
+                    vt: params.vt(),
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
@@ -334,8 +340,13 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
-                    v_crit: diode::critical_voltage(photo_params.is, photo_params.n),
+                    v_crit: diode::critical_voltage(
+                        photo_params.is,
+                        photo_params.n,
+                        photo_params.vt(),
+                    ),
                     n: photo_params.n,
+                    vt: photo_params.vt(),
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
@@ -360,8 +371,9 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(be_anode),
                     cathode_idx: node_map.index(be_cathode),
-                    v_crit: diode::critical_voltage(params.is, params.nf),
+                    v_crit: diode::critical_voltage(params.is, params.nf, params.vt()),
                     n: params.nf,
+                    vt: params.vt(),
                     correction_node: None,
                     is_bjt: true,
                     zener_vz: None,
@@ -381,8 +393,9 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(bc_anode),
                     cathode_idx: node_map.index(bc_cathode),
-                    v_crit: diode::critical_voltage(params.is, params.nr),
+                    v_crit: diode::critical_voltage(params.is, params.nr, params.vt()),
                     n: params.nr,
+                    vt: params.vt(),
                     correction_node: Some(bc_correction),
                     is_bjt: true,
                     zener_vz: None,
@@ -421,7 +434,7 @@ pub(crate) fn apply_voltage_limiting(
         let v_cathode_old = info.cathode_idx.map_or(0.0, |i| v_prev[i]);
         let v_d_old = v_anode_old - v_cathode_old;
 
-        let mut v_d_limited = diode::limit_voltage(v_d_new, v_d_old, info.v_crit, info.n);
+        let mut v_d_limited = diode::limit_voltage(v_d_new, v_d_old, info.v_crit, info.n, info.vt);
 
         // For BJT junctions, also apply bilateral step limiting.
         // The standard SPICE limiter only clamps forward-bias overshoots.
@@ -429,7 +442,7 @@ pub(crate) fn apply_voltage_limiting(
         // (e.g., B-E goes from 0.7V to -0.3V), turning off the junction and
         // destabilizing the solver. Clamp the step to prevent this.
         if info.is_bjt {
-            let max_step = 10.0 * info.n * sindr_devices::diode::V_T; // ~0.26V
+            let max_step = 10.0 * info.n * info.vt; // ~0.26V
             let step = v_d_limited - v_d_old;
             if step.abs() > max_step {
                 v_d_limited = v_d_old + step.signum() * max_step;
@@ -485,13 +498,13 @@ pub(crate) fn apply_voltage_limiting(
     // junction already is.
     let overshoots = diode_info.iter().any(|info| {
         let (old, fin) = (junction(info, v_prev), junction(info, &v_limited));
-        fin > old && fin > diode::limit_voltage(fin, old, info.v_crit, info.n) + 1e-9
+        fin > old && fin > diode::limit_voltage(fin, old, info.v_crit, info.n, info.vt) + 1e-9
     });
     if overshoots {
         let mut alpha: f64 = 1.0;
         for info in diode_info {
             let (old, raw) = (junction(info, v_prev), junction(info, v_new));
-            let allowed = diode::limit_voltage(raw, old, info.v_crit, info.n);
+            let allowed = diode::limit_voltage(raw, old, info.v_crit, info.n, info.vt);
             if raw > allowed && allowed > old {
                 alpha = alpha.min((allowed - old) / (raw - old));
             }
@@ -591,7 +604,7 @@ pub(crate) fn converged(
     diode_info.iter().all(|info| {
         let vj_prev = node(v_prev, info.anode_idx) - node(v_prev, info.cathode_idx);
         let vj_new = node(v_new, info.anode_idx) - node(v_new, info.cathode_idx);
-        (vj_new - vj_prev).abs() <= V_ABSTOL + RELTOL * info.n * diode::V_T
+        (vj_new - vj_prev).abs() <= V_ABSTOL + RELTOL * info.n * info.vt
     })
 }
 
@@ -1121,13 +1134,14 @@ mod tests {
     #[test]
     fn backward_bjt_step_keeps_its_step_clamp() {
         let n = 1.0;
-        let v_crit = diode::critical_voltage(1.5e-6, n);
+        let v_crit = diode::critical_voltage(1.5e-6, n, diode::V_T);
         let info = [
             DiodeLimitInfo {
                 anode_idx: Some(0),
                 cathode_idx: None,
                 v_crit,
                 n,
+                vt: diode::V_T,
                 correction_node: None,
                 is_bjt: true,
                 zener_vz: None,
@@ -1137,6 +1151,7 @@ mod tests {
                 cathode_idx: Some(1),
                 v_crit,
                 n,
+                vt: diode::V_T,
                 correction_node: Some(CorrectionTarget::Cathode),
                 is_bjt: true,
                 zener_vz: None,

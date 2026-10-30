@@ -43,10 +43,10 @@ element, and the `.cir` is read only by ngspice.
 ## Tolerances
 
 - **Linear DC and AC:** 1e-6 relative.
-- **Junction devices:** 1e-3 relative on voltages and 2e-2 on currents. sindr's
-  thermal voltage is a rounded constant for 300.00 K, while devices and the
-  goldens sit at 300.15 K. Re-running ngspice at sindr's V_T brings these
-  cases under 2e-6. Tighten once SIN-15 lands.
+- **Operating points, DC sweeps and junction devices:** 1e-6 relative on
+  voltages and 1e-5 on currents. Cases with junctions run ngspice with
+  `reltol=1e-9`: at its default 1e-3, ngspice itself stops a few µV short of
+  the exact operating point.
 - **Transient:** 1 % of full scale. sindr integrates with fixed-step backward
   Euler (dt = τ/50 over 5τ). ngspice can't reproduce a fixed step, so the
   golden is an accurate solution (`reltol=1e-6`, 1 µs max step) resampled
