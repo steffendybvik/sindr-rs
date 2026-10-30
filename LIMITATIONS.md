@@ -6,7 +6,7 @@ Status: pre-release alpha (`0.1.0-alpha.7`). Anything below may change.
 
 ## What sindr is
 
-- DC, nonlinear DC (Newton-Raphson), transient (Backward Euler), AC, DC sweep, temperature sweep
+- DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
 - Thermistor, photoresistor, potentiometer, relay, fuse, ideal fixed-output voltage regulator
@@ -48,7 +48,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 |----------|-----------|-------|
 | `.op` (operating point) | ✅ | via `solve_circuit` |
 | `.dc` (DC sweep) | ✅ | one source at a time |
-| `.tran` (transient) | ✅ | Backward Euler at a fixed `tstep` (`solve_transient`), halved only when Newton fails. No truncation-error control, no breakpoints, `tstart` ignored |
+| `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler at a fixed `tstep` (`solve_transient`), halved only when Newton fails. No truncation-error control, no breakpoints, `tstart` ignored |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.temp` (temperature sweep) | ✅ | junction-device temp parameter |
 | `.noise` (noise analysis) | ❌ | no thermal/shot/flicker noise stamps |
@@ -82,7 +82,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 ### Solver & numerics
 
-- **Backward Euler is the only transient integrator.** No trapezoidal, no Gear-2, no variable-order. BE is L-stable but numerically dissipative — expect amplitude decay on lightly-damped LC tanks. This is not tunable.
+- **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
 - **Dense LU factorisation** (via `nalgebra`). No sparse solver. Practical circuit size is bounded by `O(N²)` memory and `O(N³)` factorisation; large boards (hundreds of nodes) will be slow.
 - **Convergence aids: gmin stepping + Newton damping only.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr automatically retries with a gmin-stepping homotopy (geometric ladder from `1e-2` down to the `1e-12` floor, warm-starting between steps). No source stepping, no pseudo-transient continuation, no general homotopy. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
 - **`.nodeset`-style seeding via `solve_circuit_with_initial_voltages`.** Pass a `HashMap<String, f64>` of node-name → voltage to pre-warm the Newton initial guess. No `.ic` (force-fixed initial conditions) directive yet.
@@ -114,7 +114,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - Transformer coupling `k = 1.0` is mathematically singular — clamp to `≤ 0.999`.
 - Switches are modelled as `0.01 Ω` / `1 GΩ` resistors — they are not ideal, and very high-impedance circuits may need explicit values.
 - The op-amp / comparator macromodel is a saturating VCVS with gain `1e5` — it has no frequency response, so AC and transient closed-loop bandwidth predictions are not realistic.
-- Backward Euler over-damps resonant tanks (ringing decays faster than it should); if you need accurate ringing amplitude, this is the wrong tool today.
+- For accurate ringing amplitude in a resonant circuit, use `IntegrationMethod::Trapezoidal` with a step well below the period: Gear-2 and especially backward Euler damp it.
 - Photodiode / photoresistor / thermistor "stimulus" parameters (irradiance, light level, temperature) are **constants per solve**, not time-varying inputs. There is no environmental waveform.
 
 ## Useful workarounds

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Trapezoidal and Gear-2 (BDF2) transient integration, chosen with
+  `TransientConfig::with_method(IntegrationMethod::…)`. Both are second
+  order; trapezoidal keeps an LC tank's amplitude, Gear-2 doesn't ring on
+  fast time constants.
 - `sindr::solve_transient(circuit, &TransientConfig)`: transient analysis
   over a chosen span and step (`TransientConfig::new(tstop, tstep)`,
   optionally `.with_tmax(…)`), as SPICE's `.tran`. `solve_circuit` keeps
@@ -34,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Transients integrate with **Gear-2 by default**, including through
+  `solve_circuit`, instead of backward Euler. Results are much closer to the
+  exact solution (0.03 % against ngspice where BE was 0.4 %) and change
+  accordingly. `IntegrationMethod::BackwardEuler` reproduces the old ones.
 - **Breaking:** `sindr::transient::solve_transient` now takes
   `(&Circuit, &TransientConfig)`, and `solve_transient_nonlinear` is gone:
   linear and nonlinear circuits share one stepper.
@@ -68,6 +76,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Varactors in transient: the companion injected its history current with
+  the wrong sign, so a varactor charged through a resistor settled about
+  1e-3 short of the source voltage.
 - A nonlinear transient with a `VoltageRegulator` listed before a
   `Transformer` read the transformer's winding currents from the wrong rows,
   so the result depended on component order.

@@ -7,8 +7,8 @@
 //!
 //! - **Linear DC** — direct solve of the MNA system.
 //! - **Nonlinear DC** — Newton–Raphson when diodes, BJTs, MOSFETs, etc. are present.
-//! - **Transient** — backward-Euler timestepping when capacitors, inductors,
-//!   or time-varying sources are present.
+//! - **Transient** — Gear-2 (or trapezoidal or backward-Euler) timestepping
+//!   when capacitors, inductors, or time-varying sources are present.
 //! - **AC small-signal** — sinusoidal-steady-state via [`ac_analysis::solve_ac`].
 //! - **DC sweep** — operating point at each value of a swept voltage source,
 //!   via [`fn@dc_sweep`].
@@ -64,14 +64,14 @@
 //! | Analysis | Entry point | Notes |
 //! |---|---|---|
 //! | Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
-//! | Transient | [`solve_transient`] | Backward Euler only, at a fixed step set by a [`TransientConfig`]. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
+//! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]) at a fixed step set by a [`TransientConfig`]. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`] | DC only; there's no `.ic` |
 //!
 //! Not available: noise, distortion, pole-zero, sensitivity, Monte Carlo,
-//! periodic steady state, S-parameters, trapezoidal or Gear integration,
+//! periodic steady state, S-parameters, variable-order integration,
 //! truncation-error timestep control.
 //!
 //! ## Device models
@@ -229,6 +229,7 @@ pub mod circuit;
 pub mod dc_sweep;
 mod device_params;
 pub mod error;
+mod integration;
 pub mod mna;
 pub mod newton_raphson;
 pub mod node_map;
@@ -252,7 +253,7 @@ pub use results::{
     SimulationResult, TimestepSnapshot, TransientData,
 };
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
-pub use transient::{solve_transient, TransientConfig};
+pub use transient::{solve_transient, IntegrationMethod, TransientConfig};
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
 
@@ -276,7 +277,7 @@ use node_map::NodeMap as NM;
 /// |---|---|
 /// | Only resistors + sources | Linear DC (single matrix solve) |
 /// | Diodes / BJTs / MOSFETs / etc. | Nonlinear DC (Newton–Raphson) |
-/// | Capacitors / inductors / waveforms | Transient (backward Euler) |
+/// | Capacitors / inductors / waveforms | Transient (Gear-2) |
 /// | Reactive **and** nonlinear | Transient nonlinear |
 ///
 /// For frequency-domain analysis, use [`ac_analysis::solve_ac`] directly.

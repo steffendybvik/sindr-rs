@@ -5,7 +5,8 @@
 use std::f64::consts::PI;
 
 use sindr::{
-    solve_circuit, solve_transient, Circuit, CircuitElement, SimError, TransientConfig, Waveform,
+    solve_circuit, solve_transient, Circuit, CircuitElement, IntegrationMethod, SimError,
+    TransientConfig, Waveform,
 };
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
@@ -69,15 +70,13 @@ fn invalid_configs_are_rejected() {
 }
 
 /// `.tran`-style 10 µs steps to 2 ms: 200 snapshots on the step grid, the
-/// last at exactly tstop, each the backward-Euler update
+/// last at exactly tstop, each (with backward Euler) the update
 /// `v_n = (v_{n−1} + (dt/τ)·V) / (1 + dt/τ)`.
 #[test]
 fn requested_span_and_step_are_honoured() {
     let (tstop, tstep, tau) = (2e-3, 10e-6, 1e-3);
-    let tran = solve_transient(&rc(), &TransientConfig::new(tstop, tstep))
-        .unwrap()
-        .transient
-        .unwrap();
+    let config = TransientConfig::new(tstop, tstep).with_method(IntegrationMethod::BackwardEuler);
+    let tran = solve_transient(&rc(), &config).unwrap().transient.unwrap();
     assert_eq!(tran.timesteps.len(), 200);
     assert_eq!(tran.time_step, tstep);
     assert_eq!(tran.duration, tstop);

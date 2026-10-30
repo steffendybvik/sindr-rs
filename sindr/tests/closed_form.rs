@@ -13,7 +13,7 @@ use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 use sindr::{
-    dc_sweep, solve_circuit, solve_transient, Circuit, CircuitElement, TransientConfig,
+    dc_sweep, solve_transient, Circuit, CircuitElement, IntegrationMethod, TransientConfig,
     TransientData,
 };
 
@@ -308,28 +308,57 @@ fn ac_sallen_key_lowpass_matches_transfer_function() {
 
 // ---------------------------------------------------------------- transient
 
-/// Transient of `circuit`, which must have reactive parts.
-fn transient(circuit: &Circuit) -> TransientData {
-    solve_circuit(circuit)
+const METHODS: [IntegrationMethod; 3] = [
+    IntegrationMethod::BackwardEuler,
+    IntegrationMethod::Trapezoidal,
+    IntegrationMethod::Gear2,
+];
+
+/// Transient of `circuit` with its automatic span and step, integrated by
+/// `method`.
+fn transient(circuit: &Circuit, method: IntegrationMethod) -> TransientData {
+    let config = TransientConfig::auto(circuit).with_method(method);
+    solve_transient(circuit, &config)
         .unwrap()
         .transient
         .expect("transient result")
 }
 
-/// Backward Euler on `x' = A·x + b` from `x = 0`, for `steps` steps:
-/// `x_n = (I − dt·A)⁻¹ (x_{n−1} + dt·b)`. This is the recurrence sindr's
-/// companion models should reproduce exactly, written from the state
-/// equations.
-fn backward_euler(a: &DMatrix<f64>, b: &DVector<f64>, dt: f64, steps: usize) -> Vec<DVector<f64>> {
+/// `method` on `x' = A·x + b` from `x = 0`, for `steps` steps of `dt`, in
+/// the textbook state-space forms (the first step is always backward Euler):
+///
+/// - backward Euler: `(I − dt·A)·x_n = x_{n−1} + dt·b`
+/// - trapezoidal: `(I − dt/2·A)·x_n = (I + dt/2·A)·x_{n−1} + dt·b`
+/// - BDF2: `(3/2·I − dt·A)·x_n = 2·x_{n−1} − 1/2·x_{n−2} + dt·b`
+///
+/// sindr builds its companions element by element; on a linear circuit they
+/// must reproduce these recurrences exactly.
+fn integrate(
+    method: IntegrationMethod,
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    dt: f64,
+    steps: usize,
+) -> Vec<DVector<f64>> {
     let n = b.len();
-    let lu = (DMatrix::identity(n, n) - a * dt).lu();
-    let mut x = DVector::zeros(n);
-    (0..steps)
-        .map(|_| {
-            x = lu.solve(&(&x + b * dt)).unwrap();
-            x.clone()
-        })
-        .collect()
+    let id = DMatrix::<f64>::identity(n, n);
+    let mut out: Vec<DVector<f64>> = Vec::with_capacity(steps);
+    let (mut x1, mut x2) = (DVector::zeros(n), DVector::zeros(n));
+    for step in 0..steps {
+        let (lhs, rhs) = match method {
+            _ if step == 0 => (&id - a * dt, &x1 + b * dt),
+            IntegrationMethod::BackwardEuler => (&id - a * dt, &x1 + b * dt),
+            IntegrationMethod::Trapezoidal => {
+                (&id - a * (dt / 2.0), (&id + a * (dt / 2.0)) * &x1 + b * dt)
+            }
+            IntegrationMethod::Gear2 => (&id * 1.5 - a * dt, &x1 * 2.0 - &x2 * 0.5 + b * dt),
+            _ => unreachable!(),
+        };
+        let x = lhs.lu().solve(&rhs).unwrap();
+        x2 = std::mem::replace(&mut x1, x.clone());
+        out.push(x);
+    }
+    out
 }
 
 /// The current through component `id` at snapshot `s`.
@@ -341,71 +370,75 @@ fn current(s: &sindr::TimestepSnapshot, id: &str) -> f64 {
         .current_through
 }
 
-/// RC charging from 1 V: `v' = (V − v)/τ`. sindr's backward-Euler steps match
-/// the recurrence to round-off, snapshot `i` being at `t = (i + 1)·dt`.
+/// RC charging from 1 V: `v' = (V − v)/τ`. For every method, sindr's steps
+/// match the method's recurrence to round-off, snapshot `i` being at
+/// `t = (i + 1)·dt`.
 #[test]
-fn transient_rc_step_is_backward_euler_exactly() {
+fn transient_rc_step_matches_each_methods_recurrence() {
     let (r, c, v) = (1e3, 1e-6, 1.0);
-    let tran = transient(&circuit(vec![
+    let rc = circuit(vec![
         vsource("V1", "in", "0", v),
         resistor("R1", "in", "out", r),
         capacitor("C1", "out", "0", c),
-    ]));
+    ]);
     let tau = r * c;
-    let dt = tran.time_step;
-    assert!((dt - tau / 50.0).abs() < 1e-15);
-
     let a = DMatrix::from_element(1, 1, -1.0 / tau);
     let b = DVector::from_element(1, v / tau);
-    let want = backward_euler(&a, &b, dt, tran.timesteps.len());
-    for (i, (s, x)) in tran.timesteps.iter().zip(&want).enumerate() {
-        assert!((s.time - (i + 1) as f64 * dt).abs() < 1e-12 * dt.max(s.time));
-        let got = s.node_voltages["out"];
-        assert!(
-            (got - x[0]).abs() < 1e-12,
-            "t = {}: sindr {got}, BE {}",
-            s.time,
-            x[0]
-        );
-        // And within BE's truncation error of the exact 1 − e^(−t/τ): the
-        // global error peaks near dt/(2τ)·e⁻¹ of the step.
-        let exact = v * (1.0 - (-s.time / tau).exp());
-        assert!((got - exact).abs() < 0.01 * v, "t = {}", s.time);
+    for method in METHODS {
+        let tran = transient(&rc, method);
+        let dt = tran.time_step;
+        assert!((dt - tau / 50.0).abs() < 1e-15);
+        let want = integrate(method, &a, &b, dt, tran.timesteps.len());
+        for (i, (s, x)) in tran.timesteps.iter().zip(&want).enumerate() {
+            assert!((s.time - (i + 1) as f64 * dt).abs() < 1e-12 * dt.max(s.time));
+            let got = s.node_voltages["out"];
+            assert!(
+                (got - x[0]).abs() < 1e-12,
+                "{method:?}, t = {}: sindr {got}, recurrence {}",
+                s.time,
+                x[0]
+            );
+            // And within truncation error of the exact 1 − e^(−t/τ).
+            let exact = v * (1.0 - (-s.time / tau).exp());
+            assert!((got - exact).abs() < 0.01 * v, "{method:?}, t = {}", s.time);
+        }
     }
 }
 
 /// Series RLC step: `L·i' = V − R·i − v_C`, `C·v_C' = i`, underdamped
-/// (ζ ≈ 0.016). Both the inductor current and the capacitor voltage follow
-/// the backward-Euler recurrence, numerical damping included.
+/// (ζ ≈ 0.016). The inductor current and the capacitor voltage follow each
+/// method's recurrence, numerical damping included.
 #[test]
-fn transient_rlc_step_is_backward_euler_exactly() {
+fn transient_rlc_step_matches_each_methods_recurrence() {
     let (r, l, c, v) = (1.0, 1e-3, 1e-6, 1.0);
-    let tran = transient(&circuit(vec![
+    let rlc = circuit(vec![
         vsource("V1", "in", "0", v),
         resistor("R1", "in", "a", r),
         inductor("L1", "a", "out", l),
         capacitor("C1", "out", "0", c),
-    ]));
-    let dt = tran.time_step;
+    ]);
     // x = [i_L, v_C]
     let a = DMatrix::from_row_slice(2, 2, &[-r / l, -1.0 / l, 1.0 / c, 0.0]);
     let b = DVector::from_row_slice(&[v / l, 0.0]);
-    let want = backward_euler(&a, &b, dt, tran.timesteps.len());
     let i_scale = v * (c / l).sqrt();
-    for (s, x) in tran.timesteps.iter().zip(&want) {
-        let (i_l, v_c) = (current(s, "L1"), s.node_voltages["out"]);
-        assert!(
-            (i_l - x[0]).abs() < 1e-9 * i_scale,
-            "t = {}: i_L sindr {i_l}, BE {}",
-            s.time,
-            x[0]
-        );
-        assert!(
-            (v_c - x[1]).abs() < 1e-9 * v,
-            "t = {}: v_C sindr {v_c}, BE {}",
-            s.time,
-            x[1]
-        );
+    for method in METHODS {
+        let tran = transient(&rlc, method);
+        let want = integrate(method, &a, &b, tran.time_step, tran.timesteps.len());
+        for (s, x) in tran.timesteps.iter().zip(&want) {
+            let (i_l, v_c) = (current(s, "L1"), s.node_voltages["out"]);
+            assert!(
+                (i_l - x[0]).abs() < 1e-9 * i_scale,
+                "{method:?}, t = {}: i_L sindr {i_l}, recurrence {}",
+                s.time,
+                x[0]
+            );
+            assert!(
+                (v_c - x[1]).abs() < 1e-9 * v,
+                "{method:?}, t = {}: v_C sindr {v_c}, recurrence {}",
+                s.time,
+                x[1]
+            );
+        }
     }
 }
 
@@ -421,9 +454,15 @@ fn log_log_slope(points: &[(f64, f64)]) -> f64 {
 }
 
 /// The final snapshot of a run of `circuit` from 0 to `tstop` in steps of
-/// `dt`.
-fn run_to(circuit: &Circuit, tstop: f64, dt: f64) -> sindr::TimestepSnapshot {
-    let tran = solve_transient(circuit, &TransientConfig::new(tstop, dt))
+/// `dt`, integrated by `method`.
+fn run_to(
+    circuit: &Circuit,
+    tstop: f64,
+    dt: f64,
+    method: IntegrationMethod,
+) -> sindr::TimestepSnapshot {
+    let config = TransientConfig::new(tstop, dt).with_method(method);
+    let tran = solve_transient(circuit, &config)
         .unwrap()
         .transient
         .unwrap();
@@ -435,10 +474,18 @@ fn run_to(circuit: &Circuit, tstop: f64, dt: f64) -> sindr::TimestepSnapshot {
 /// Steps per time constant for the convergence tests: dt from τ/25 to τ/400.
 const STEPS_PER_TAU: [f64; 5] = [25.0, 50.0, 100.0, 200.0, 400.0];
 
-/// Backward Euler is first order: on an RC step the error at t = τ falls in
-/// proportion to dt.
+/// The order each method's error falls with dt.
+fn order(method: IntegrationMethod) -> f64 {
+    match method {
+        IntegrationMethod::BackwardEuler => 1.0,
+        _ => 2.0,
+    }
+}
+
+/// On an RC step the error at t = τ falls as dt for backward Euler and as
+/// dt² for trapezoidal and Gear-2.
 #[test]
-fn transient_rc_error_is_first_order_in_dt() {
+fn transient_rc_error_falls_with_each_methods_order() {
     let (r, c, v) = (1e3, 1e-6, 1.0);
     let tau = r * c;
     let rc = circuit(vec![
@@ -446,24 +493,26 @@ fn transient_rc_error_is_first_order_in_dt() {
         resistor("R1", "in", "out", r),
         capacitor("C1", "out", "0", c),
     ]);
-    let errors: Vec<(f64, f64)> = STEPS_PER_TAU
-        .iter()
-        .map(|n| {
-            let dt = tau / n;
-            let got = run_to(&rc, tau, dt).node_voltages["out"];
-            (dt, (got - v * (1.0 - (-1.0_f64).exp())).abs())
-        })
-        .collect();
-    let slope = log_log_slope(&errors);
-    assert!(
-        (slope - 1.0).abs() < 0.05,
-        "order {slope}, errors {errors:?}"
-    );
+    for method in METHODS {
+        let errors: Vec<(f64, f64)> = STEPS_PER_TAU
+            .iter()
+            .map(|n| {
+                let dt = tau / n;
+                let got = run_to(&rc, tau, dt, method).node_voltages["out"];
+                (dt, (got - v * (1.0 - (-1.0_f64).exp())).abs())
+            })
+            .collect();
+        let slope = log_log_slope(&errors);
+        assert!(
+            (slope - order(method)).abs() < 0.05,
+            "{method:?}: order {slope}, errors {errors:?}"
+        );
+    }
 }
 
 /// The same for an RL step: the inductor current at t = τ = L/R.
 #[test]
-fn transient_rl_error_is_first_order_in_dt() {
+fn transient_rl_error_falls_with_each_methods_order() {
     let (r, l, v) = (100.0, 10e-3, 1.0);
     let tau = l / r;
     let rl = circuit(vec![
@@ -471,17 +520,54 @@ fn transient_rl_error_is_first_order_in_dt() {
         resistor("R1", "in", "a", r),
         inductor("L1", "a", "0", l),
     ]);
-    let errors: Vec<(f64, f64)> = STEPS_PER_TAU
-        .iter()
-        .map(|n| {
-            let dt = tau / n;
-            let got = current(&run_to(&rl, tau, dt), "L1");
-            (dt, (got - v / r * (1.0 - (-1.0_f64).exp())).abs())
-        })
-        .collect();
-    let slope = log_log_slope(&errors);
-    assert!(
-        (slope - 1.0).abs() < 0.05,
-        "order {slope}, errors {errors:?}"
-    );
+    for method in METHODS {
+        let errors: Vec<(f64, f64)> = STEPS_PER_TAU
+            .iter()
+            .map(|n| {
+                let dt = tau / n;
+                let got = current(&run_to(&rl, tau, dt, method), "L1");
+                (dt, (got - v / r * (1.0 - (-1.0_f64).exp())).abs())
+            })
+            .collect();
+        let slope = log_log_slope(&errors);
+        assert!(
+            (slope - order(method)).abs() < 0.05,
+            "{method:?}: order {slope}, errors {errors:?}"
+        );
+    }
+}
+
+/// Undamped LC tank stepped from 0 to 1 V: v_C = 1 − cos(ω₀t), swinging
+/// between 0 and 2 V forever. Over ten periods at 50 steps per period, the
+/// trapezoidal rule keeps the swing (it conserves the tank's energy), Gear-2
+/// loses a little, and backward Euler damps most of it away.
+#[test]
+fn lc_tank_amplitude_by_method() {
+    let (l, c): (f64, f64) = (1e-3, 1e-6);
+    let period = 2.0 * PI * (l * c).sqrt();
+    let tank = circuit(vec![
+        vsource("V1", "in", "0", 1.0),
+        inductor("L1", "in", "out", l),
+        capacitor("C1", "out", "0", c),
+    ]);
+    // Peak-to-peak swing of v_C over the tenth period.
+    let swing = |method| {
+        let config = TransientConfig::new(10.0 * period, period / 50.0).with_method(method);
+        let tran = solve_transient(&tank, &config).unwrap().transient.unwrap();
+        let last: Vec<f64> = tran
+            .timesteps
+            .iter()
+            .filter(|s| s.time > 9.0 * period)
+            .map(|s| s.node_voltages["out"])
+            .collect();
+        let max = last.iter().copied().fold(f64::MIN, f64::max);
+        let min = last.iter().copied().fold(f64::MAX, f64::min);
+        max - min
+    };
+    let trap = swing(IntegrationMethod::Trapezoidal);
+    let gear = swing(IntegrationMethod::Gear2);
+    let be = swing(IntegrationMethod::BackwardEuler);
+    assert!((trap - 2.0).abs() < 0.02, "trapezoidal swing {trap}");
+    assert!(gear < trap && gear > 1.5, "Gear-2 swing {gear}");
+    assert!(be < 0.5, "backward Euler swing {be}");
 }
