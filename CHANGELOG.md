@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact, uncapped Jacobian, valid in every operating region.
 - `MosfetParams::in_nmos_frame`: a device's parameters in the N-channel frame
   that `mosfet_companion` works in.
+- `sindr_devices::diode::{thermal_voltage, K_OVER_Q, T_NOM}` and a `vt()`
+  method on `DiodeParams`, `BjtParams`, `ZenerParams` and
+  `PhotodiodeParams`: the thermal voltage kT/q at the junction temperature.
 
 ### Changed
 
@@ -24,9 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, the solver expected a positive magnitude, so `default_pmos()` gave a
   normally-on device that conducted at V_SG = 0. If you set a positive `vto`
   on a PMOS, negate it.
+- **Breaking:** junction models now use the thermal voltage at their own
+  `temperature` field instead of a fixed constant. `temperature_scale_is`
+  takes the emission coefficient `N` as a sixth argument; `critical_voltage`
+  and `limit_voltage` take the thermal voltage as an extra last argument;
+  `ZenerParams` and `PhotodiodeParams` gain a `temperature` field.
+- `V_T` is now kT/q at 300.15 K (0.0258652 V), the temperature devices
+  default to. It was 0.025851 V, kT/q at 300 K rounded, which shifted every
+  junction voltage by about 5e-4 relative. Diode IS now scales with SPICE's
+  default XTI = 3 (was 2).
 
 ### Fixed
 
+- Junction temperature scaling. `temperature_scale_is` multiplied the bandgap
+  exponent by XTI, so IS was far off away from 27 °C (a BJT's IS at 350 K was
+  1.5e-6 A instead of 7e-12 A), and the thermal voltage stayed at its 300 K
+  value. A silicon diode's forward drop now falls by about 1.7 mV/K as it
+  warms, matching ngspice to 1e-6 from −23 °C to 127 °C.
 - `sindr_devices::diode::diode_companion` and `diode_current` with series
   resistance (`DiodeParams.rs > 0`): the junction voltage is now solved from
   the implicit diode equation, and the companion returns the terminal

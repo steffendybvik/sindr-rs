@@ -4,8 +4,19 @@
 //! of diodes and LEDs. Each NR iteration linearizes the diode at its
 //! current operating point into a companion conductance + current source.
 
-/// Thermal voltage at 300 K: kT/q
-pub const V_T: f64 = 0.025851;
+/// Boltzmann constant over the elementary charge, k/q (V/K).
+pub const K_OVER_Q: f64 = 8.617_333_262e-5;
+
+/// Nominal temperature (K) the device parameters are given at: 27 °C.
+pub const T_NOM: f64 = 300.15;
+
+/// Thermal voltage kT/q at the nominal temperature [`T_NOM`] (V).
+pub const V_T: f64 = K_OVER_Q * T_NOM;
+
+/// Thermal voltage kT/q (V) at temperature `t` (K).
+pub fn thermal_voltage(t: f64) -> f64 {
+    K_OVER_Q * t
+}
 
 /// Minimum conductance shunt to prevent singular Jacobian in reverse bias.
 pub const GMIN: f64 = 1e-12;
@@ -24,6 +35,11 @@ pub struct DiodeParams {
 }
 
 impl DiodeParams {
+    /// Thermal voltage kT/q (V) at the junction temperature.
+    pub fn vt(&self) -> f64 {
+        thermal_voltage(self.temperature)
+    }
+
     /// Standard silicon diode: IS = 1e-14 A, N = 1.0.
     pub fn silicon() -> Self {
         Self {
@@ -67,20 +83,20 @@ impl DiodeParams {
 
 /// Scale saturation current IS for junction temperature.
 ///
-/// IS(T) = IS(T0) * (T/T0)^XTI * exp(XTI * Eg / (k/q) * (1/T0 - 1/T))
+/// IS(T) = IS(T0) * (T/T0)^(XTI/N) * exp(Eg / (N * k/q) * (1/T0 - 1/T))
 ///
-/// This follows the SPICE formula (Sedra & Smith eq 4.11).
+/// This is the SPICE formula. For a BJT, SPICE scales IS with N = 1.
 ///
 /// Arguments:
-/// - `is_t0`: IS at reference temperature T0
+/// - `is_t0`: IS at reference temperature T0 (A)
 /// - `t`: Junction temperature (K)
-/// - `t0`: Reference temperature (K), typically 300.15
+/// - `t0`: Reference temperature (K), typically [`T_NOM`]
 /// - `eg`: Bandgap energy (eV): 1.11 for Si, 0.69 for Ge, 1.42 for GaAs
-/// - `xti`: Temperature exponent: 3.0 for BJT diodes, 2.0 for regular diodes
-pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64) -> f64 {
-    // k/q = V_T / 300.0 (approximately, since V_T = kT/q at 300K)
-    let k_over_q = V_T / 300.0;
-    (t / t0).powf(xti) * ((xti * eg / k_over_q) * (1.0 / t0 - 1.0 / t)).exp() * is_t0
+/// - `xti`: Temperature exponent: SPICE's default is 3.0 for diodes and BJTs
+/// - `n`: Emission coefficient (1.0 for a BJT)
+pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64, n: f64) -> f64 {
+    let exponent = xti / n * (t / t0).ln() + eg / (n * K_OVER_Q) * (1.0 / t0 - 1.0 / t);
+    is_t0 * exponent.exp()
 }
 
 /// Compute the companion model (linearised) at operating point `v_d`.
@@ -93,11 +109,11 @@ pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64) -> f
 ///
 /// When `params.rs > 0`, `v_d` is the terminal voltage across junction and
 /// series resistance together. The junction voltage is solved from
-/// `I = IS * (exp((v_d - I*RS) / (N*V_T)) - 1)` and the terminal conductance
-/// `g_j / (1 + RS*g_j)` is returned, so `g_d * v_d + i_eq` is the terminal
-/// current at `v_d`.
+/// `I = IS * (exp((v_d - I*RS) / (N*V_T)) - 1)`, with V_T at
+/// `params.temperature`, and the terminal conductance `g_j / (1 + RS*g_j)`
+/// is returned, so `g_d * v_d + i_eq` is the terminal current at `v_d`.
 pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) {
-    let nv_t = params.n * V_T;
+    let nv_t = params.n * params.vt();
     let v_j = junction_voltage(v_d, params);
     let exp_vj = (v_j / nv_t).exp();
 
@@ -118,7 +134,7 @@ pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) {
 /// Compute the diode current at terminal voltage `v_d`, including the drop
 /// across `params.rs`.
 pub fn diode_current(v_d: f64, params: &DiodeParams) -> f64 {
-    let nv_t = params.n * V_T;
+    let nv_t = params.n * params.vt();
     params.is * ((junction_voltage(v_d, params) / nv_t).exp() - 1.0)
 }
 
@@ -136,7 +152,7 @@ fn junction_voltage(v_d: f64, params: &DiodeParams) -> f64 {
         return v_d;
     }
     let is = params.is;
-    let nv_t = params.n * V_T;
+    let nv_t = params.n * params.vt();
 
     let mut v_j = if v_d >= 0.0 {
         v_d.min(nv_t * (v_d / (rs * is)).ln_1p())
@@ -158,18 +174,20 @@ fn junction_voltage(v_d: f64, params: &DiodeParams) -> f64 {
 
 /// Critical voltage for voltage limiting.
 ///
-/// V_crit = N * V_T * ln(N * V_T / (sqrt(2) * IS))
-pub fn critical_voltage(is: f64, n: f64) -> f64 {
-    n * V_T * (n * V_T / (std::f64::consts::SQRT_2 * is)).ln()
+/// V_crit = N * V_T * ln(N * V_T / (sqrt(2) * IS)), with `vt` the thermal
+/// voltage at the junction temperature.
+pub fn critical_voltage(is: f64, n: f64, vt: f64) -> f64 {
+    n * vt * (n * vt / (std::f64::consts::SQRT_2 * is)).ln()
 }
 
 /// SPICE-style voltage limiting to prevent NR overshoot.
 ///
 /// If the proposed new voltage `v_new` exceeds V_crit above `v_old`,
 /// the step is compressed logarithmically to keep the exponential
-/// in the Shockley equation from overflowing.
-pub fn limit_voltage(v_new: f64, v_old: f64, v_crit: f64, n: f64) -> f64 {
-    let nv_t = n * V_T;
+/// in the Shockley equation from overflowing. `vt` is the thermal voltage at
+/// the junction temperature.
+pub fn limit_voltage(v_new: f64, v_old: f64, v_crit: f64, n: f64, vt: f64) -> f64 {
+    let nv_t = n * vt;
 
     if v_new > v_crit && (v_new - v_old).abs() > 2.0 * nv_t {
         if v_old > 0.0 {
@@ -235,7 +253,7 @@ mod tests {
 
         // At V_d = 0: g_d_raw = IS/(N*VT) ≈ 3.87e-13, clamped to GMIN=1e-12
         // g_d should equal max(IS/(N*VT), GMIN)
-        let g_raw = params.is / (params.n * V_T);
+        let g_raw = params.is / (params.n * params.vt());
         let expected_g = g_raw.max(GMIN);
         assert_relative_eq!(g_d, expected_g, epsilon = 1e-20);
 
@@ -272,7 +290,7 @@ mod tests {
 
     #[test]
     fn critical_voltage_is_positive() {
-        let v_crit = critical_voltage(1e-14, 1.0);
+        let v_crit = critical_voltage(1e-14, 1.0, V_T);
         assert!(v_crit > 0.0);
         // For silicon diode, V_crit should be around 0.6-0.8V
         assert!(v_crit > 0.5);
@@ -281,26 +299,26 @@ mod tests {
 
     #[test]
     fn limit_voltage_passes_small_steps() {
-        let v_crit = critical_voltage(1e-14, 1.0);
+        let v_crit = critical_voltage(1e-14, 1.0, V_T);
         // Small step from 0.6 to 0.61: should pass through unchanged
-        let limited = limit_voltage(0.61, 0.6, v_crit, 1.0);
+        let limited = limit_voltage(0.61, 0.6, v_crit, 1.0, V_T);
         assert_relative_eq!(limited, 0.61, epsilon = 1e-15);
     }
 
     #[test]
     fn limit_voltage_clamps_large_steps() {
-        let v_crit = critical_voltage(1e-14, 1.0);
+        let v_crit = critical_voltage(1e-14, 1.0, V_T);
         // Large step from 0.6 to 5.0: should be clamped
-        let limited = limit_voltage(5.0, 0.6, v_crit, 1.0);
+        let limited = limit_voltage(5.0, 0.6, v_crit, 1.0, V_T);
         assert!(limited < 5.0);
         assert!(limited > 0.6);
     }
 
     #[test]
     fn limit_voltage_negative_unchanged() {
-        let v_crit = critical_voltage(1e-14, 1.0);
+        let v_crit = critical_voltage(1e-14, 1.0, V_T);
         // Negative voltages (reverse bias) should pass through
-        let limited = limit_voltage(-1.0, -0.5, v_crit, 1.0);
+        let limited = limit_voltage(-1.0, -0.5, v_crit, 1.0, V_T);
         assert_relative_eq!(limited, -1.0, epsilon = 1e-15);
     }
 
@@ -309,7 +327,7 @@ mod tests {
     fn temperature_scale_is_at_reference_temp() {
         let is_t0 = 1e-14;
         let t0 = 300.15;
-        let result = temperature_scale_is(is_t0, t0, t0, 1.11, 3.0);
+        let result = temperature_scale_is(is_t0, t0, t0, 1.11, 3.0, 1.0);
         // At T = T0, (T/T0)^xti = 1 and exp term = 0 → result = is_t0
         assert_relative_eq!(result, is_t0, max_relative = 1e-10);
     }
@@ -319,14 +337,35 @@ mod tests {
     fn temperature_scale_is_increases_with_temp() {
         let is_t0 = 1e-14;
         let t0 = 300.15;
-        let is_300 = temperature_scale_is(is_t0, 300.15, t0, 1.11, 3.0);
-        let is_350 = temperature_scale_is(is_t0, 350.0, t0, 1.11, 3.0);
+        let is_300 = temperature_scale_is(is_t0, 300.15, t0, 1.11, 3.0, 1.0);
+        let is_350 = temperature_scale_is(is_t0, 350.0, t0, 1.11, 3.0, 1.0);
         assert!(
             is_350 > is_300,
             "IS should increase with temperature: IS(350K)={} IS(300K)={}",
             is_350,
             is_300
         );
+    }
+
+    /// SPICE's IS(T) at 350 K from 1e-14 A at 300.15 K, XTI = 3, Eg = 1.11 eV:
+    /// `(T/T0)^(XTI/N) * exp(Eg/(N*k/q) * (1/T0 - 1/T))`, worked out by hand.
+    #[test]
+    fn temperature_scale_is_matches_spice_formula() {
+        let n1 = temperature_scale_is(1e-14, 350.0, 300.15, 1.11, 3.0, 1.0);
+        assert_relative_eq!(n1, 7.157_360_875e-12, max_relative = 1e-9);
+        let n2 = temperature_scale_is(1e-14, 350.0, 300.15, 1.11, 3.0, 2.0);
+        assert_relative_eq!(n2, 2.675_324_443e-13, max_relative = 1e-9);
+    }
+
+    /// The thermal voltage follows the junction temperature.
+    #[test]
+    fn thermal_voltage_scales_with_temperature() {
+        assert_relative_eq!(thermal_voltage(300.15), V_T, max_relative = 1e-15);
+        let hot = DiodeParams {
+            temperature: 400.0,
+            ..DiodeParams::silicon()
+        };
+        assert_relative_eq!(hot.vt(), 0.034_469_333, max_relative = 1e-8);
     }
 
     /// rs=0.0 should give the same result as the original companion model (backward compatible).
@@ -337,7 +376,7 @@ mod tests {
         let (g_d, i_eq) = diode_companion(v_d, &params);
 
         // Recompute expected values using the original formula (no Rs correction)
-        let nv_t = params.n * V_T;
+        let nv_t = params.n * params.vt();
         let exp_vd = (v_d / nv_t).exp();
         let expected_g_d = ((params.is / nv_t) * exp_vd).max(GMIN);
         let expected_i_d = params.is * (exp_vd - 1.0);
@@ -351,7 +390,7 @@ mod tests {
     /// `I = IS * (exp((v - I*RS) / (N*V_T)) - 1)`: independent of the Newton
     /// solve in `junction_voltage`.
     fn rs_current_by_bisection(v: f64, params: &DiodeParams) -> f64 {
-        let nv_t = params.n * V_T;
+        let nv_t = params.n * params.vt();
         let residual = |i: f64| params.is * (((v - i * params.rs) / nv_t).exp() - 1.0) - i;
         // The current lies between -IS and max(v, 0) / RS; the residual falls as I rises.
         let (mut lo, mut hi) = (-params.is, v.max(0.0) / params.rs + params.is);

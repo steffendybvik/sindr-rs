@@ -1,12 +1,11 @@
 //! Temperature sweep analysis.
 //!
 //! Varies junction temperature across a range and solves the circuit at each
-//! temperature point. IS is re-scaled using the SPICE formula at each step.
+//! temperature point. IS is re-scaled using the SPICE formula at each step,
+//! and the thermal voltage follows the temperature.
 //!
 //! Mirrors the dc_sweep.rs pattern exactly: clones the circuit, mutates the
 //! temperature field on all IS-bearing components, and calls solve_circuit.
-
-use sindr_devices::diode::temperature_scale_is;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
@@ -37,25 +36,13 @@ pub struct TempSweepResult {
     pub points: Vec<TempSweepPoint>,
 }
 
-/// Reference temperature (K) — SPICE standard for IS at room temperature.
-const T0: f64 = 300.15;
-
-/// Scale the IS value for a given component temperature relative to T0.
-///
-/// - xti = 3.0 for BJTs (SPICE standard)
-/// - xti = 2.0 for diodes (SPICE standard)
-/// - eg  = 1.11 eV for silicon
-fn scale_is(is_t0: f64, t: f64, xti: f64) -> f64 {
-    temperature_scale_is(is_t0, t, T0, 1.11, xti)
-}
-
 /// Sweeps junction temperature across a range and solves the circuit at
 /// each step.
 ///
 /// At each temperature, the saturation current `IS` of every IS-bearing
 /// component (BJT, diode, LED, Zener, Schottky, photodiode) is rescaled
-/// using the SPICE temperature formula before solving. The base circuit is
-/// not modified.
+/// using the SPICE temperature formula, and its thermal voltage set to kT/q,
+/// before solving. The base circuit is not modified.
 ///
 /// `temperature` here is junction temperature — the thermistor's own
 /// temperature input is independent.
@@ -162,13 +149,6 @@ pub fn temperature_sweep(
         temp_end,
         points,
     })
-}
-
-// Silence unused import warning: scale_is is reserved for future direct use
-// (currently the scaling is done inside stamp.rs via the component temperature field)
-#[allow(unused)]
-fn _dummy_scale_is_use() -> f64 {
-    scale_is(1e-14, 350.0, 3.0)
 }
 
 #[cfg(test)]

@@ -43,8 +43,8 @@ let params = DiodeParams::silicon(); // IS=1e-14, N=1.0, rs=0.0, 300.15 K
 let (g_eq, i_eq) = diode_companion(0.65, &params);
 assert!(g_eq > 0.0);
 
-// Temperature-scaled IS (SPICE formula): IS, T, Tnom, Eg, XTI
-let is_at_125c = temperature_scale_is(1e-14, 398.15, 300.15, 1.11, 3.0);
+// Temperature-scaled IS (SPICE formula): IS, T, Tnom, Eg, XTI, N
+let is_at_125c = temperature_scale_is(1e-14, 398.15, 300.15, 1.11, 3.0, 1.0);
 assert!(is_at_125c > 1e-14);
 ```
 
