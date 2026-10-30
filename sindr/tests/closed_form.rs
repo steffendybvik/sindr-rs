@@ -104,12 +104,13 @@ fn dc_sweep_diode_matches_shockley_root() {
         let vs = p.sweep_value;
         let got = p.result.node_voltages["out"];
         if vs <= 0.0 {
-            // Reverse: the diode carries −IS, plus what sindr's 1e-12 S GMIN
-            // shunts conduct, a few pA at these voltages.
+            // Reverse: R1 carries the diode's IS·(exp(V/V_T) − 1) plus what
+            // sindr's 1e-12 S GMIN shunt at `out` conducts, and nothing else.
             let i = (vs - got) / r;
+            let want = IS * ((got / V_T).exp() - 1.0) + 1e-12 * got;
             assert!(
-                i <= 0.0 && i.abs() < IS + 3e-12 * vs.abs(),
-                "Vs = {vs}: I = {i}"
+                (i - want).abs() <= 1e-3 * want.abs(),
+                "Vs = {vs}: I = {i}, want {want}"
             );
             continue;
         }

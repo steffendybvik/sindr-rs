@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Diode, LED and Schottky reverse leakage. The companion floored its
+  conductance at GMIN but built its current source from the unfloored one,
+  which added a GMIN conductance across every reverse-biased junction (twice
+  ngspice's leakage). The floor now only shapes the Newton steps.
 - AC analysis linearises IGBTs at their operating point. Before, an IGBT was
   an open circuit in AC, so a gate-driven IGBT stage showed no gain.
 - Junction temperature scaling. `temperature_scale_is` multiplied the bandgap
