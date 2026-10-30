@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, transfer function (`.tf`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -30,7 +30,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -370,6 +370,25 @@ println!("{} V/V, Rin {} Ω, Rout {} Ω", tf.gain, tf.input_resistance, tf.outpu
 
 The input resistance is infinite when the input source draws no small-signal current. Every other independent source is zeroed for the output resistance. A current output (`I(Vx)`) runs from the source's `nodes[0]` through it to `nodes[1]`, as SPICE's.
 
+## DC sensitivity
+
+SPICE's `.sens`: the derivative of one DC output with respect to each component parameter, at the operating point. One adjoint solve covers them all, however many there are.
+
+```rust
+use sindr::{solve_sensitivity, SensConfig, TfOutput};
+
+let config = SensConfig {
+    output: TfOutput::Voltage { node: "out".into(), reference: None }, // or TfOutput::Current { source_id }
+};
+let sens = solve_sensitivity(&circuit, &config)?;
+
+for e in &sens.entries {
+    println!("{}: {} per unit, {} per +1 %", e.component_id, e.sensitivity, e.per_percent);
+}
+```
+
+Entries cover resistance, voltage and current source values, VCVS gain and VCCS gm. Other components get no entry: device-model parameters, CCVS and CCCS gains, capacitors and inductors. There is no AC sensitivity.
+
 ## DC sweep
 
 Sweep a voltage source across a range and collect operating points at each step.
@@ -426,6 +445,7 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `transient_rc` | Transient step response |
 | `bode_plot` | AC analysis |
 | `transfer_function` | Transfer function (`.tf`) |
+| `sensitivity` | DC sensitivity (`.sens`) |
 | `dc_sweep_diode` | DC sweep (diode I–V curve) |
 | `temperature_sweep` | Temperature sweep |
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |

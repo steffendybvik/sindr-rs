@@ -459,6 +459,14 @@ impl SmallSignalSystem {
     pub(crate) fn solve(&self, b: &DVector<Complex64>) -> Result<DVector<Complex64>, SimError> {
         self.a.solve(b)
     }
+
+    /// Solves `Aᵀ x = b`: the adjoint system.
+    pub(crate) fn solve_transpose(
+        &self,
+        b: &DVector<Complex64>,
+    ) -> Result<DVector<Complex64>, SimError> {
+        self.a.transpose().solve(b)
+    }
 }
 
 /// Builds the small-signal system of `circuit` at `omega` (rad/s),
