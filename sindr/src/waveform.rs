@@ -100,6 +100,9 @@ pub enum Waveform {
     },
 }
 
+/// Most breakpoints [`Waveform::breakpoints`] returns.
+pub const MAX_BREAKPOINTS: usize = 10_000_000;
+
 fn default_duty() -> f64 {
     0.5
 }
@@ -227,6 +230,67 @@ impl Waveform {
         }
     }
 
+    /// Times in `(0, t_end)` (s) where this waveform has a corner or a jump:
+    /// pulse edges, square/PWM transitions, triangle peaks, PWL points. A sine
+    /// has none. Sorted; at most [`MAX_BREAKPOINTS`] of them.
+    ///
+    /// The transient stepper lands a step exactly on each one, so a fast
+    /// edge between two steps isn't stepped over.
+    ///
+    /// ```
+    /// use sindr::Waveform;
+    ///
+    /// let pulse = Waveform::Pulse {
+    ///     v1: 0.0, v2: 5.0, delay: 1e-3, rise_time: 1e-9, fall_time: 1e-9,
+    ///     pulse_width: 2e-3, period: 10e-3,
+    /// };
+    /// assert_eq!(pulse.breakpoints(5e-3), vec![1e-3, 1e-3 + 1e-9, 3e-3 + 1e-9, 3e-3 + 2e-9]);
+    /// ```
+    pub fn breakpoints(&self, t_end: f64) -> Vec<f64> {
+        let mut out = Vec::new();
+        // Corners at `start + k·period + offset` for each offset, k ≥ 0.
+        let mut periodic = |start: f64, period: f64, offsets: &[f64]| {
+            if !(period > 0.0 && period.is_finite()) {
+                out.extend(offsets.iter().map(|o| start + o));
+                return;
+            }
+            let mut k = 0.0;
+            while start + k * period < t_end && out.len() < MAX_BREAKPOINTS {
+                out.extend(offsets.iter().map(|o| start + k * period + o));
+                k += 1.0;
+            }
+        };
+        match self {
+            Waveform::Sine { .. } => {}
+            Waveform::Pulse {
+                delay,
+                rise_time,
+                fall_time,
+                pulse_width,
+                period,
+                ..
+            } => {
+                let (tr, pw, tf) = (*rise_time, *pulse_width, *fall_time);
+                periodic(*delay, *period, &[0.0, tr, tr + pw, tr + pw + tf]);
+            }
+            Waveform::Square {
+                frequency, duty, ..
+            }
+            | Waveform::Pwm {
+                frequency, duty, ..
+            } => periodic(0.0, 1.0 / frequency, &[0.0, duty / frequency]),
+            Waveform::Triangle { frequency, .. } => {
+                periodic(0.0, 1.0 / frequency, &[0.0, 0.5 / frequency])
+            }
+            Waveform::Pwl { points } => out.extend(points.iter().map(|p| p.0)),
+        }
+        out.retain(|t| *t > 0.0 && *t < t_end && t.is_finite());
+        out.sort_by(f64::total_cmp);
+        out.dedup();
+        out.truncate(MAX_BREAKPOINTS);
+        out
+    }
+
     /// Return the period of this waveform in seconds, if periodic.
     pub fn period(&self) -> Option<f64> {
         match self {
@@ -255,6 +319,60 @@ impl Waveform {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn breakpoints_of_each_waveform() {
+        let sine = Waveform::Sine {
+            amplitude: 1.0,
+            frequency: 1e3,
+            offset: 0.0,
+            phase: 0.0,
+        };
+        assert!(sine.breakpoints(1.0).is_empty());
+
+        // Square at 1 kHz, 25 % duty: flips at k ms and k ms + 0.25 ms.
+        let square = Waveform::Square {
+            amplitude: 1.0,
+            frequency: 1e3,
+            offset: 0.0,
+            duty: 0.25,
+        };
+        let got = square.breakpoints(2.1e-3);
+        let want = [0.25e-3, 1e-3, 1.25e-3, 2e-3];
+        assert_eq!(got.len(), want.len(), "{got:?}");
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-15, "{got:?}");
+        }
+
+        // Triangle peaks at half periods.
+        let triangle = Waveform::Triangle {
+            amplitude: 1.0,
+            frequency: 1e3,
+            offset: 0.0,
+        };
+        assert_eq!(triangle.breakpoints(1.6e-3).len(), 3);
+
+        // PWL corners inside the window only.
+        let pwl = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1e-3, 1.0), (2e-3, 1.0), (5e-3, 0.0)],
+        };
+        assert_eq!(pwl.breakpoints(3e-3), vec![1e-3, 2e-3]);
+    }
+
+    /// A pulse with a zero period is a single pulse, not an endless loop.
+    #[test]
+    fn pulse_with_zero_period_has_one_set_of_corners() {
+        let pulse = Waveform::Pulse {
+            v1: 0.0,
+            v2: 1.0,
+            delay: 1e-3,
+            rise_time: 1e-6,
+            fall_time: 1e-6,
+            pulse_width: 1e-3,
+            period: 0.0,
+        };
+        assert_eq!(pulse.breakpoints(1.0).len(), 4);
+    }
+
     use super::*;
     use approx::assert_relative_eq;
 

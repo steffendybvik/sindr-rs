@@ -672,28 +672,24 @@ fn capacitor_is_open_circuit_in_dc() {
     );
 }
 
-/// Documents (and locks in) a known limitation: seeding a diode's anode
-/// at the full supply rail forward-biases it by ~5 V, which puts the
-/// device deep into the exponential where current would be ~10^80 A.
-/// The voltage-limiter clamps each Newton step to ~V_T (26 mV), so the
-/// solver would need ~190 iterations to walk down to the real OP — but
-/// MAX_NR_ITERATIONS = 100. The gmin-stepping homotopy doesn't rescue
-/// because the bad seed survives into its first ladder step.
-///
-/// This is a robustness limit, not a math bug: every solution the solver
-/// *does* return satisfies KCL and Shockley to within tolerance. If this
-/// limitation is ever fixed (e.g. by re-seeding inside gmin_stepping at
-/// each ladder step, or by raising MAX_NR_ITERATIONS), this test will
-/// start failing with `Ok(...)` and should be flipped to assert success.
+/// Seeding a diode's anode at the full supply rail forward-biases it by
+/// ~5 V, deep in the exponential. The voltage limiter clamps each Newton
+/// step to ~V_T, so plain Newton–Raphson runs out of iterations walking
+/// down, and gmin stepping starts from the same bad seed. Source stepping,
+/// which ramps the supply up from zero and so ignores the seed, finds the
+/// same operating point as an unseeded solve.
 #[test]
-fn seeding_at_supply_rail_is_a_known_limitation() {
+fn seeding_at_supply_rail_is_rescued_by_source_stepping() {
     let circuit = diode_resistor(5.0, 100.0);
     let mut s = HashMap::new();
     s.insert("n2".to_string(), 5.0);
-    let r = solve_circuit_with_initial_voltages(&circuit, &s);
-    assert!(
-        r.is_err(),
-        "if this now succeeds, gmin homotopy or voltage limiting was \
-         improved — flip this test to assert convergence + KCL"
+    let seeded = solve_circuit_with_initial_voltages(&circuit, &s).unwrap();
+    assert_eq!(
+        seeded.convergence_aid,
+        Some(sindr::ConvergenceAid::SourceStepping)
     );
+    assert_kcl(&circuit, &seeded, 1e-6);
+    let plain = solve_circuit(&circuit).unwrap();
+    let (a, b) = (seeded.node_voltages["n2"], plain.node_voltages["n2"]);
+    assert!((a - b).abs() < 1e-6, "seeded {a} V, unseeded {b} V");
 }

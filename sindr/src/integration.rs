@@ -49,6 +49,10 @@ pub(crate) struct Integrator {
     a1: f64,
     a2: f64,
     b1: f64,
+    /// Order of accuracy k: the local error is `error_constant·h^(k+1)·x^(k+1)`.
+    pub(crate) order: u32,
+    /// Leading coefficient of the local truncation error.
+    pub(crate) error_constant: f64,
 }
 
 impl Integrator {
@@ -59,6 +63,8 @@ impl Integrator {
             a1: -1.0 / h,
             a2: 0.0,
             b1: 0.0,
+            order: 1,
+            error_constant: 0.5,
         }
     }
 
@@ -75,6 +81,8 @@ impl Integrator {
                 a1: -2.0 / h,
                 a2: 0.0,
                 b1: 1.0,
+                order: 2,
+                error_constant: 1.0 / 12.0,
             },
             IntegrationMethod::Gear2 => {
                 let w = h / h_prev;
@@ -83,6 +91,8 @@ impl Integrator {
                     a1: -(1.0 + w) / h,
                     a2: w * w / (h * (1.0 + w)),
                     b1: 0.0,
+                    order: 2,
+                    error_constant: 2.0 / 9.0,
                 }
             }
         }
@@ -108,17 +118,18 @@ impl Integrator {
     }
 
     /// Coupled windings with inductance matrix `l` (H) and histories `h`, in
-    /// the branch form `v_k + Σ_j l_kj·a0·i_j = rhs_k`: returns `(l·a0, rhs)`.
+    /// the branch form `v_k + Σ_j z_kj·i_j = rhs_k`: returns `(z, rhs)`.
     ///
-    /// The branch rows use the convention `v = −L·di/dt` (the winding
-    /// current is the MNA branch current), so `q = −L·i` and `f = v`.
+    /// `i_k` is winding k's current from its first terminal to its second and
+    /// `v_k` the voltage across it the same way round, so `v = L·di/dt`:
+    /// `q = L·i` (flux) and `f = v`, giving `z = −a0·L`.
     pub(crate) fn coupled(&self, l: [[f64; 2]; 2], h: [&History; 2]) -> ([[f64; 2]; 2], [f64; 2]) {
         let mut z = [[0.0; 2]; 2];
         let mut rhs = [0.0; 2];
         for k in 0..2 {
             for j in 0..2 {
-                z[k][j] = l[k][j] * self.a0;
-                rhs[k] -= l[k][j] * (self.a1 * h[j].x1 + self.a2 * h[j].x2);
+                z[k][j] = -l[k][j] * self.a0;
+                rhs[k] += l[k][j] * (self.a1 * h[j].x1 + self.a2 * h[j].x2);
             }
             rhs[k] -= self.b1 * h[k].y1;
         }
@@ -140,6 +151,15 @@ pub(crate) struct History {
 }
 
 impl History {
+    /// A history at rest at state `x`, as at t = 0.
+    pub(crate) fn at(x: f64) -> Self {
+        Self {
+            x1: x,
+            x2: x,
+            y1: 0.0,
+        }
+    }
+
     /// The history after a step that ended at state `x` with rate `y`.
     pub(crate) fn push(self, x: f64, y: f64) -> Self {
         Self {

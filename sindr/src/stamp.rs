@@ -907,10 +907,11 @@ pub(crate) fn stamp_jfet_companion(
 
 /// Stamp a coupled-inductor transformer as two branch-current unknowns.
 ///
-/// `k1`/`k2` are the MNA rows of the primary and secondary currents. Each
-/// winding's branch row is `V(p) − V(q) + Σ_j z[k][j]·I_j = rhs[k]`, with `z`
-/// and `rhs` from the integration formula (`Integrator::coupled`). For
-/// backward Euler, `z = L/dt` and `rhs = (L/dt)·I_prev`.
+/// `k1`/`k2` are the MNA rows of the primary and secondary currents, each
+/// flowing from the winding's first terminal to its second. Each winding's
+/// branch row is `V(p) − V(q) + Σ_j z[k][j]·I_j = rhs[k]`, with `z` and `rhs`
+/// from the integration formula (`Integrator::coupled`). For backward Euler,
+/// `z = −L/dt` and `rhs = −(L/dt)·I_prev`, i.e. `V = L·(I − I_prev)/dt`.
 pub(crate) fn stamp_transformer_companion(
     system: &mut MnaSystem,
     node_map: &NodeMap,
@@ -1760,9 +1761,16 @@ mod tests {
             result.err()
         );
         let result = result.unwrap();
-        // n1 should be very close to 10V (primary is near-short-circuit)
+        // At DC the primary winding is a short, so after the switch-on
+        // transient n1 has fallen from its initial jump to ~0 V.
+        let tran = result.transient.unwrap();
+        let first = tran.timesteps[0].node_voltages["n1"];
         let v_n1 = result.node_voltages["n1"];
-        assert!(v_n1 > 9.0, "Primary voltage should be ~10V, got {}", v_n1);
+        assert!(first > 1.0, "primary should jump at switch-on, got {first}");
+        assert!(
+            v_n1.abs() < 0.05,
+            "primary should settle near 0 V, got {v_n1}"
+        );
     }
 
     /// Varactor DC stamp: treated as 1e12 Ω shunt (open circuit).
@@ -1994,7 +2002,7 @@ mod tests {
                             "{kind:?} vaf={} vbe={vbe} vbc={vbc} row {}",
                             params.vaf, nodes[row]
                         );
-                        let linear = system.a.row(r).dot(&x.transpose()) - system.b[r];
+                        let linear = system.a.to_dense().row(r).dot(&x.transpose()) - system.b[r];
                         assert_relative_eq!(
                             linear,
                             currents[row],
@@ -2073,7 +2081,7 @@ mod tests {
             stamp_jfet_companion(&mut system, &node_map, &nodes, kind, 10e-3, vp, &v);
 
             let row = idx("d");
-            let linear_id = system.a.row(row).dot(&v.transpose()) - system.b[row];
+            let linear_id = system.a.to_dense().row(row).dot(&v.transpose()) - system.b[row];
             let id = jfet_drain_current(kind, vg, vd, vs);
             let label = format!("{kind:?} at vg={vg} vd={vd} vs={vs}");
             assert_relative_eq!(linear_id, id, max_relative = 1e-9, epsilon = 1e-12);
@@ -2155,7 +2163,7 @@ mod tests {
             };
             let currents = |v: &DVector<f64>| {
                 let system = stamp_at(v);
-                &system.a * v - &system.b
+                &system.a.to_dense() * v - &system.b
             };
             let system = stamp_at(&v);
             let h = 1e-6;
@@ -2234,7 +2242,7 @@ mod tests {
             };
             let currents = |v: &DVector<f64>| {
                 let system = stamp_at(v);
-                &system.a * v - &system.b
+                &system.a.to_dense() * v - &system.b
             };
             let system = stamp_at(&v);
             let h = 1e-6;

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use nalgebra::{DMatrix, DVector};
+use nalgebra::DVector;
 use num_complex::Complex64;
 
 use sindr_devices::bjt::{self, BjtKind};
@@ -19,6 +19,7 @@ use sindr_devices::mosfet;
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
 use crate::error::SimError;
+use crate::mna::MnaMatrix;
 use crate::node_map::NodeMap;
 
 /// Frequency sweep spacing.
@@ -105,7 +106,7 @@ impl AcResult {
 /// Complex MNA system for AC analysis.
 #[allow(dead_code)]
 struct ComplexMnaSystem {
-    a: DMatrix<Complex64>,
+    a: MnaMatrix<Complex64>,
     b: DVector<Complex64>,
     num_nodes: usize,
     num_vsources: usize,
@@ -115,7 +116,7 @@ impl ComplexMnaSystem {
     fn new(num_nodes: usize, num_vsources: usize) -> Self {
         let size = num_nodes + num_vsources;
         Self {
-            a: DMatrix::from_element(size, size, Complex64::new(0.0, 0.0)),
+            a: MnaMatrix::zeros(size),
             b: DVector::from_element(size, Complex64::new(0.0, 0.0)),
             num_nodes,
             num_vsources,
@@ -123,20 +124,7 @@ impl ComplexMnaSystem {
     }
 
     fn solve(&self) -> Result<DVector<Complex64>, SimError> {
-        let lu = self.a.clone().lu();
-        let solution = lu.solve(&self.b).ok_or(SimError::SingularMatrix)?;
-
-        for i in 0..solution.len() {
-            if solution[i].re.is_nan()
-                || solution[i].re.is_infinite()
-                || solution[i].im.is_nan()
-                || solution[i].im.is_infinite()
-            {
-                return Err(SimError::InvalidSolution);
-            }
-        }
-
-        Ok(solution)
+        self.a.solve(&self.b)
     }
 }
 
@@ -520,10 +508,26 @@ fn stamp_complex_conductance(
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
+    solve_ac_with_initial_voltages(circuit, config, &HashMap::new())
+}
+
+/// Like [`solve_ac`], seeding the Newton–Raphson solve for the DC bias
+/// point with node voltages (V) keyed by node name, as SPICE's `.nodeset`.
+/// Useful when the bias point is hard to find or not unique. Unknown node
+/// names are ignored.
+///
+/// # Errors
+///
+/// As [`solve_ac`].
+pub fn solve_ac_with_initial_voltages(
+    circuit: &Circuit,
+    config: &AcConfig,
+    initial_voltages: &HashMap<String, f64>,
+) -> Result<AcResult, SimError> {
     validate_config(config)?;
 
     // Step 1: DC operating point
-    let dc_result = crate::solve_dc_operating_point(circuit)?;
+    let dc_result = crate::solve_dc_operating_point(circuit, initial_voltages)?;
 
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
@@ -1470,7 +1474,7 @@ mod tests {
             }
             with(c)
         };
-        let op = crate::solve_dc_operating_point(&stage(true)).unwrap();
+        let op = crate::solve_dc_operating_point(&stage(true), &HashMap::new()).unwrap();
         let plain = crate::solve_circuit(&stage(false)).unwrap();
         // Both are Newton solves stopped at RELTOL = 1e-3 (see SIN-14), so
         // they agree to that precision, not to round-off.

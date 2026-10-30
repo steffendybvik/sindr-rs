@@ -139,12 +139,30 @@ pub struct TimestepSnapshot {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct TransientData {
-    /// Snapshots at each integration step, in time order.
+    /// Snapshots at each accepted integration step, in time order. They
+    /// include every multiple of `time_step`, every waveform breakpoint and
+    /// the end time, plus any shorter steps accuracy needed in between.
     pub timesteps: Vec<TimestepSnapshot>,
-    /// Integration time step (s).
+    /// Requested time step (s): the longest step taken, and the output grid.
     pub time_step: f64,
     /// Total simulated duration (s).
     pub duration: f64,
+    /// How the stepper got there.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub stats: TransientStats,
+}
+
+/// Step counts from one transient run.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TransientStats {
+    /// Steps accepted (one snapshot each).
+    pub accepted_steps: usize,
+    /// Steps rejected because their local truncation error was too large.
+    pub lte_rejections: usize,
+    /// Steps retried at half the size because Newton–Raphson didn't converge.
+    pub newton_rejections: usize,
 }
 
 /// Complete simulation output.
@@ -212,6 +230,28 @@ pub struct SimulationResult {
     /// elements or waveform sources.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub transient: Option<TransientData>,
+    /// The fallback the nonlinear DC solve needed, if plain Newton–Raphson
+    /// didn't converge on its own. `None` for linear circuits, transients and
+    /// plain Newton.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "Option::is_none", default)
+    )]
+    pub convergence_aid: Option<ConvergenceAid>,
+}
+
+/// A convergence fallback for nonlinear DC, tried in this order when plain
+/// Newton–Raphson fails.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConvergenceAid {
+    /// Extra conductance to ground on every node, stepped from 1e-2 S down
+    /// to zero.
+    GminStepping,
+    /// Every independent source ramped from near zero up to its full value.
+    SourceStepping,
 }
 
 /// Look up a node voltage from the solution vector.
@@ -804,6 +844,7 @@ pub fn extract_results(
         op_amp_results: op_amp_results_vec,
         relay_results: relay_results_vec,
         mcu_results: vec![],
+        convergence_aid: None,
         transient: None,
     }
 }
@@ -825,6 +866,7 @@ mod tests {
             op_amp_results: vec![],
             relay_results: vec![],
             mcu_results: vec![],
+            convergence_aid: None,
             transient: None,
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -845,6 +887,7 @@ mod tests {
             op_amp_results: vec![],
             relay_results: vec![],
             mcu_results: vec![],
+            convergence_aid: None,
             transient: Some(TransientData {
                 timesteps: vec![
                     TimestepSnapshot {
@@ -860,6 +903,7 @@ mod tests {
                 ],
                 time_step: 0.001,
                 duration: 0.002,
+                stats: Default::default(),
             }),
         };
         let json = serde_json::to_string(&result).unwrap();

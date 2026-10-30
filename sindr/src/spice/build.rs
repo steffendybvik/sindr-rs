@@ -29,7 +29,8 @@ use miette::NamedSource;
 
 use crate::spice::analysis::{AcSweep, AnalysisRequest};
 use crate::spice::ast::{
-    AcSweepKind, ParamExpr, RawAnalysis, RawElementBody, RawModel, RawWaveform, SourceKind,
+    AcSweepKind, NodeValueKind, ParamExpr, RawAnalysis, RawElementBody, RawModel, RawWaveform,
+    SourceKind,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::flatten::{FlatElement, Flattened};
@@ -63,12 +64,28 @@ pub(crate) fn build_netlist(
         analyses.push(build_analysis(raw, &top_scope).map_err(|e| e.locate(span))?);
     }
 
+    // `.ic` / `.nodeset`: a later card overrides an earlier one per node.
+    let mut initial_conditions = HashMap::new();
+    let mut nodesets = HashMap::new();
+    for (kind, values, span) in &flat.node_values {
+        let (card, map) = match kind {
+            NodeValueKind::Ic => (".ic", &mut initial_conditions),
+            NodeValueKind::Nodeset => (".nodeset", &mut nodesets),
+        };
+        for (node, expr) in values {
+            let v = eval_finite(expr, &top_scope, card, node).map_err(|e| e.locate(span))?;
+            map.insert(node.clone(), v);
+        }
+    }
+
     Ok(ParsedNetlist {
         circuit: Circuit {
             ground_node: "0".to_string(),
             components,
         },
         analyses,
+        initial_conditions,
+        nodesets,
         warnings: warnings.clone(),
         source_map: flat.source_map,
         title,

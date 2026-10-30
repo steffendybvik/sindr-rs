@@ -37,7 +37,7 @@ fn stamp_at(
 ) -> (DMatrix<f64>, DVector<f64>) {
     let mut system = MnaSystem::new(node_map.num_nodes(), 0);
     stamp_circuit(circuit, &mut system, node_map, Some(v)).unwrap();
-    (system.a, system.b)
+    (system.a.to_dense(), system.b)
 }
 
 /// Residual `F(x) = A(x)·x − b(x)`: the device's current out of each node.
