@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Transfer-function analysis, SPICE's `.tf`: `solve_tf` with a `TfConfig`
+  returns the DC small-signal gain from a voltage or current source to a
+  node voltage or a voltage source's current, with the input and output
+  resistance. `sindr::spice` reads `.tf v(out[,ref]) src` and
+  `.tf i(vsrc) src` into `AnalysisRequest::Tf` (`tf_config()`).
+
 - Sparse MNA solve: systems above 100 unknowns are stored sparsely and
   factorised with `faer`'s sparse LU, reusing the symbolic analysis while the
   sparsity pattern doesn't change, for DC, transient and AC alike. A
@@ -56,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PhotodiodeParams`: the thermal voltage kT/q at the junction temperature.
 
 ### Changed
+
+- **Breaking:** `spice::AnalysisRequest` has a `Tf` variant, so a `match`
+  over it needs an arm for it.
 
 - **Breaking:** `MnaSystem::a` is an `MnaMatrix` (dense or sparse) instead of
   a nalgebra `DMatrix`. Index it as before (`a[(r, c)]`); use

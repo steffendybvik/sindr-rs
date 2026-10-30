@@ -723,6 +723,39 @@ fn parse_card_ac(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ))
 }
 
+/// Parse `.tf v(node[,ref]) source` or `.tf i(vsource) source`.
+fn parse_card_tf(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    ws(input)?;
+    // Case is already folded, so `V(` arrives as `v(`.
+    let output = alt((
+        delimited(
+            ('v', ws, '(', ws),
+            (node_name, opt(preceded((ws, ',', ws), node_name))),
+            (ws, ')'),
+        )
+        .map(|((node, _), reference)| crate::TfOutput::Voltage {
+            node,
+            reference: reference.map(|(r, _)| r),
+        }),
+        delimited(('i', ws, '(', ws), ident, (ws, ')'))
+            .map(|(source_id, _)| crate::TfOutput::Current { source_id }),
+    ))
+    .parse_next(input)?;
+    ws(input)?;
+    let (source, _) = ident(input)?;
+    ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawCard::Analysis(
+        RawAnalysis::Tf {
+            output,
+            input: source,
+        },
+        Span::detached(),
+    ))
+}
+
 /// Parse `.op` (no args).
 fn parse_card_op(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
@@ -737,7 +770,7 @@ fn parse_card_op(input: &mut Input<'_>) -> ModalResult<RawCard> {
 /// build the final `Vec<RawCard>` and to handle subckt body collection.
 #[derive(Debug)]
 enum LineOutcome {
-    /// A normal card (element, model, .param, .tran, .dc, .ac, .op, .subckt header, .ends).
+    /// A normal card (element, model, .param, .tran, .dc, .ac, .tf, .op, .subckt header, .ends).
     Card(RawCard),
 }
 
@@ -765,6 +798,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "dc" => parse_card_dc(&mut input),
             "ac" => parse_card_ac(&mut input),
             "op" => parse_card_op(&mut input),
+            "tf" => parse_card_tf(&mut input),
             "ic" => parse_card_node_values(&mut input, NodeValueKind::Ic),
             "nodeset" => parse_card_node_values(&mut input, NodeValueKind::Nodeset),
             "include" | "lib" => {

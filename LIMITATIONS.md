@@ -36,7 +36,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 ### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **No SPICE netlist export.** Cannot hand a circuit off to ngspice / LTspice / Xyce.
 - **No hierarchical data model.** The `spice` parser *flattens* `.subckt` hierarchy (parameter-passing instances, `.`-separated hierarchical node naming) when importing a deck. But the core `Circuit` API itself is a flat `Vec<CircuitElement>` — there is no hierarchical block or instance type exposed programmatically.
 - **No model cards.** Devices take parameters as Rust structs, not BSIM / Gummel-Poon / VBIC / HICUM cards. There is no way to point at a manufacturer model and get matching behaviour.
@@ -50,6 +50,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.dc` (DC sweep) | ✅ | one source at a time |
 | `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` ignored |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
+| `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
 | `.temp` (temperature sweep) | ✅ | junction-device temp parameter |
 | `.noise` (noise analysis) | ❌ | no thermal/shot/flicker noise stamps |
 | `.disto` / harmonic distortion | ❌ | |
@@ -73,7 +74,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No power-MOSFET reverse body diode** as a separate stamped element (must be added explicitly as a `Diode`).
 - **No SiC / GaN device models.**
 - **No magnetics with saturation / hysteresis.** `Transformer` is linear coupled inductors. No B-H curve, no core loss, no saturating inductor, no gapped core.
-- **AC analysis ignores a transformer's coupling** (SIN-39): each winding is stamped as a separate inductor, so nothing reaches the secondary in AC. DC and transient couple the windings.
+- **AC and `.tf` fail on a circuit with a transformer** (SIN-39): AC stamps each winding as a separate inductor and leaves the transformer's two branch rows empty, so the system is singular (`SimError::SingularMatrix`). DC and transient couple the windings.
 - **No transmission lines** (lossless or lossy / W-element).
 - **No crystal / quartz resonator macromodel** (must be built from L/C/R by hand).
 - **No piezo / MEMS / electro-mechanical coupling.**

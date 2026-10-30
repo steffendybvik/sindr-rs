@@ -19,7 +19,8 @@ sindr-rs/
 │   │   ├── newton_raphson.rs   # nonlinear DC solver
 │   │   ├── transient.rs        # transient stepper (TransientConfig, solve_transient)
 │   │   ├── integration.rs      # Gear-2 / trapezoidal / backward-Euler formulas
-│   │   ├── ac_analysis.rs      # small-signal AC
+│   │   ├── ac_analysis.rs      # small-signal AC (and the linearised system .tf reuses)
+│   │   ├── transfer_function.rs # .tf: DC small-signal gain, Rin, Rout
 │   │   ├── dc_sweep.rs         # parameter sweep
 │   │   ├── temp_sweep.rs       # temperature sweep
 │   │   ├── waveform.rs         # Waveform enum (sine, square, pulse, sawtooth)
@@ -112,7 +113,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **BJT nodes**: `[base, collector, emitter]`. **MOSFET nodes**: `[gate, drain, source]`. **IGBT nodes**: `[gate, collector, emitter]`. Order matters; mismatched order silently produces wrong results.
 - **Switches** are `0.01 Ω` closed / `1 GΩ` open — not ideal. In high-impedance circuits prefer explicit resistors.
 - **Capacitors / inductors / varactors / transformers / waveforms automatically trigger transient analysis.** Don't expect a pure DC solve if any are present.
-- **`solve_circuit` never runs AC.** For a frequency response call `sindr::ac_analysis::solve_ac` with an `AcConfig` naming the voltage source that carries the AC stimulus.
+- **`solve_circuit` never runs AC.** For a frequency response call `sindr::ac_analysis::solve_ac` with an `AcConfig` naming the voltage source that carries the AC stimulus. For DC gain, input and output resistance (`.tf`) call `sindr::solve_tf`.
 - **`solve_circuit` picks the transient span itself:** 5·τ_max and τ_max/50 from every R·C and L/R pair, with a 1 µs floor on dt (so τ below ~0.2 µs gives a single step). When the span matters, call `solve_transient` with a `TransientConfig`; for a SPICE deck, `AnalysisRequest::transient_config()` turns its `.tran` card into one.
 - **Junction `temperature` fields are kelvin** (300.15 K = 27 °C, the nominal). IS and the thermal voltage kT/q both follow it.
 - **PMOS `vto` is SPICE-signed:** negative for an enhancement PMOS, as `MosfetParams::default_pmos()` has it.

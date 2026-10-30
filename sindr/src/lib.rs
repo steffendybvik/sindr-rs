@@ -10,6 +10,8 @@
 //! - **Transient** — Gear-2 (or trapezoidal or backward-Euler) timestepping
 //!   when capacitors, inductors, or time-varying sources are present.
 //! - **AC small-signal** — sinusoidal-steady-state via [`ac_analysis::solve_ac`].
+//! - **Transfer function** — DC small-signal gain, input and output
+//!   resistance (SPICE's `.tf`) via [`solve_tf`].
 //! - **DC sweep** — operating point at each value of a swept voltage source,
 //!   via [`fn@dc_sweep`].
 //! - **Temperature sweep** — operating-point sweep over junction temperature
@@ -66,9 +68,10 @@
 //! | Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
 //! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
+//! | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 //! | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
-//! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`] | Seeds Newton for the DC or AC bias point |
+//! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`] | Seeds Newton for the DC, AC or `.tf` bias point |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
 //!
 //! Not available: noise, distortion, pole-zero, sensitivity, Monte Carlo,
@@ -103,8 +106,8 @@
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
 //! and X elements; `.subckt`, `.model`, `.param`, `.include`, `.lib`,
-//! `.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac` and
-//! `.tran`. Not supported: MOSFET (M)
+//! `.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac`, `.tf`
+//! and `.tran`. Not supported: MOSFET (M)
 //! and JFET (J) elements, controlled sources (E, F, G, H), coupled inductors
 //! (K), `B` sources, most `.model` parameters (diodes always use IS = 1e-14,
 //! N = 1; BJTs honour only BF), and netlist export.
@@ -242,6 +245,7 @@ pub mod results;
 pub mod spice;
 pub mod stamp;
 pub mod temp_sweep;
+pub mod transfer_function;
 pub mod transient;
 pub mod validation;
 pub mod waveform;
@@ -256,6 +260,7 @@ pub use results::{
     SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
+pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
 pub use transient::{solve_transient, IntegrationMethod, TransientConfig};
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
@@ -354,7 +359,34 @@ pub(crate) fn solve_dc_operating_point(
     initial_voltages: &std::collections::HashMap<String, f64>,
 ) -> Result<SimulationResult, SimError> {
     validation::validate_circuit(circuit)?;
-    let dc = Circuit {
+    let dc = dc_equivalent(circuit);
+
+    let node_map = NM::from_circuit(&dc);
+    let num_nodes = node_map.num_nodes();
+    let num_vsources = dc.count_voltage_sources();
+    if dc.has_nonlinear_elements() {
+        newton_raphson::solve_nonlinear_with_initial_voltages(
+            &dc,
+            &node_map,
+            num_nodes,
+            num_vsources,
+            initial_voltages,
+        )
+    } else {
+        let mut system = MnaSystem::new(num_nodes, num_vsources);
+        stamp::stamp_circuit(&dc, &mut system, &node_map, None)?;
+        let solution = system.solve()?;
+        Ok(results::extract_results(
+            &dc, &node_map, &solution, num_nodes,
+        ))
+    }
+}
+
+/// `circuit` as it stands at DC: capacitors open (a 1 TΩ leak) and inductors
+/// shorted (0 V sources). The bias point and the `.tf` small-signal system
+/// are both solved on it.
+pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
+    Circuit {
         ground_node: circuit.ground_node.clone(),
         components: circuit
             .components
@@ -379,26 +411,6 @@ pub(crate) fn solve_dc_operating_point(
                 other => other.clone(),
             })
             .collect(),
-    };
-
-    let node_map = NM::from_circuit(&dc);
-    let num_nodes = node_map.num_nodes();
-    let num_vsources = dc.count_voltage_sources();
-    if dc.has_nonlinear_elements() {
-        newton_raphson::solve_nonlinear_with_initial_voltages(
-            &dc,
-            &node_map,
-            num_nodes,
-            num_vsources,
-            initial_voltages,
-        )
-    } else {
-        let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(&dc, &mut system, &node_map, None)?;
-        let solution = system.solve()?;
-        Ok(results::extract_results(
-            &dc, &node_map, &solution, num_nodes,
-        ))
     }
 }
 

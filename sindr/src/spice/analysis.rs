@@ -3,7 +3,7 @@
 //! These are returned in [`crate::spice::ParsedNetlist::analyses`]. They map 1-to-1
 //! onto the analyses that `sindr` knows how to run.
 
-/// One analysis request declared in a netlist (`.tran`, `.dc`, `.ac`, `.op`).
+/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnalysisRequest {
     /// `.op` — DC operating-point analysis.
@@ -39,6 +39,14 @@ pub enum AnalysisRequest {
         /// Stop frequency in Hz.
         fstop: f64,
     },
+    /// `.tf v(node[,ref]) source` or `.tf i(vsource) source` — DC
+    /// small-signal transfer function.
+    Tf {
+        /// What the gain is measured at.
+        output: crate::TfOutput,
+        /// Input source id.
+        input: String,
+    },
 }
 
 impl AnalysisRequest {
@@ -65,6 +73,30 @@ impl AnalysisRequest {
             AnalysisRequest::Tran { tstep, tstop, .. } => {
                 Some(crate::TransientConfig::new(*tstop, *tstep))
             }
+            _ => None,
+        }
+    }
+
+    /// The [`TfConfig`](crate::TfConfig) for a `.tf` request, to pass to
+    /// [`solve_tf`](crate::solve_tf); `None` for any other analysis.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* divider\nV1 in 0 1\nR1 in out 1k\nR2 out 0 3k\n.tf v(out) v1\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].tf_config().unwrap();
+    /// let tf = sindr::solve_tf(&netlist.circuit, &config)?;
+    /// assert!((tf.gain - 0.75).abs() < 1e-12);
+    /// assert!((tf.output_resistance - 750.0).abs() < 1e-9);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn tf_config(&self) -> Option<crate::TfConfig> {
+        match self {
+            AnalysisRequest::Tf { output, input } => Some(crate::TfConfig {
+                output: output.clone(),
+                input_source: input.clone(),
+            }),
             _ => None,
         }
     }
@@ -147,6 +179,44 @@ mod tests {
     }
 
     #[test]
+    fn tf_outputs() {
+        use crate::TfOutput;
+        let tf = |output| AnalysisRequest::Tf {
+            output,
+            input: "v1".into(),
+        };
+        assert_eq!(
+            analyses(".tf v(in) V1\n.tf V( in , 0 ) v1\n.tf I(V1) v1"),
+            vec![
+                tf(TfOutput::Voltage {
+                    node: "in".into(),
+                    reference: None
+                }),
+                tf(TfOutput::Voltage {
+                    node: "in".into(),
+                    reference: Some("0".into())
+                }),
+                tf(TfOutput::Current {
+                    source_id: "v1".into()
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_tf_is_an_error() {
+        for card in [
+            ".tf v(in)",
+            ".tf in v1",
+            ".tf v(in v1",
+            ".tf v(in) v1 extra",
+        ] {
+            let deck = format!("* tf\nV1 in 0 1\nR1 in 0 1k\n{card}\n.end\n");
+            assert!(parse_str(&deck).is_err(), "{card}");
+        }
+    }
+
+    #[test]
     fn directives_keep_source_order() {
         let kinds: Vec<&str> = analyses(".ac lin 2 1 2\n.op\n.tran 1u 1m\n.dc V1 0 1 1")
             .iter()
@@ -155,6 +225,7 @@ mod tests {
                 AnalysisRequest::Tran { .. } => "tran",
                 AnalysisRequest::Dc { .. } => "dc",
                 AnalysisRequest::Ac { .. } => "ac",
+                AnalysisRequest::Tf { .. } => "tf",
             })
             .collect();
         assert_eq!(kinds, ["ac", "op", "tran", "dc"]);

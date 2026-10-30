@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, transfer function (`.tf`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -30,7 +30,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -353,6 +353,23 @@ let phase = result.phase_curve("n_out"); // (Hz, degrees)
 
 `num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidComponent`.
 
+## Transfer function
+
+SPICE's `.tf`: the small-signal DC gain from an input source to an output, the resistance the input source sees, and the output resistance, all at the DC operating point (capacitors open, inductors shorted, nonlinear devices linearised).
+
+```rust
+use sindr::{solve_tf, TfConfig, TfOutput};
+
+let config = TfConfig {
+    output: TfOutput::Voltage { node: "out".into(), reference: None }, // or TfOutput::Current { source_id }
+    input_source: "V1".into(),                                         // a voltage or current source
+};
+let tf = solve_tf(&circuit, &config)?;
+println!("{} V/V, Rin {} Ω, Rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
+```
+
+The input resistance is infinite when the input source draws no small-signal current. Every other independent source is zeroed for the output resistance. A current output (`I(Vx)`) runs from the source's `nodes[0]` through it to `nodes[1]`, as SPICE's.
+
 ## DC sweep
 
 Sweep a voltage source across a range and collect operating points at each step.
@@ -408,6 +425,7 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `bjt_amplifier` | Nonlinear DC with a BJT |
 | `transient_rc` | Transient step response |
 | `bode_plot` | AC analysis |
+| `transfer_function` | Transfer function (`.tf`) |
 | `dc_sweep_diode` | DC sweep (diode I–V curve) |
 | `temperature_sweep` | Temperature sweep |
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |

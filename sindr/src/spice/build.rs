@@ -398,6 +398,10 @@ fn build_analysis(
                 step,
             })
         }
+        RawAnalysis::Tf { output, input } => Ok(AnalysisRequest::Tf {
+            output: output.clone(),
+            input: input.clone(),
+        }),
         RawAnalysis::Ac {
             sweep,
             points,
