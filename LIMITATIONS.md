@@ -48,7 +48,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 |----------|-----------|-------|
 | `.op` (operating point) | ✅ | via `solve_circuit` |
 | `.dc` (DC sweep) | ✅ | one source at a time |
-| `.tran` (transient) | ✅ | Backward Euler; dt = τ/50 from the circuit's time constants, halved only when Newton fails. No truncation-error control, no breakpoints, and `tstop`/`tstep` can't be set yet |
+| `.tran` (transient) | ✅ | Backward Euler at a fixed `tstep` (`solve_transient`), halved only when Newton fails. No truncation-error control, no breakpoints, `tstart` ignored |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.temp` (temperature sweep) | ✅ | junction-device temp parameter |
 | `.noise` (noise analysis) | ❌ | no thermal/shot/flicker noise stamps |

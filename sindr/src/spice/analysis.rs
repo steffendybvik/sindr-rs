@@ -41,6 +41,35 @@ pub enum AnalysisRequest {
     },
 }
 
+impl AnalysisRequest {
+    /// The [`TransientConfig`](crate::TransientConfig) for a `.tran`
+    /// request, to pass to [`solve_transient`](crate::solve_transient);
+    /// `None` for any other analysis.
+    ///
+    /// `tstart` is not applied: the result holds every step from the first
+    /// one on.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 1\nR1 in out 1k\nC1 out 0 1u\n.tran 1u 10m\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].transient_config().unwrap();
+    /// let result = sindr::solve_transient(&netlist.circuit, &config)?;
+    /// let last = result.transient.unwrap().timesteps.last().unwrap().time;
+    /// assert!((last - 10e-3).abs() < 1e-12);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn transient_config(&self) -> Option<crate::TransientConfig> {
+        match self {
+            AnalysisRequest::Tran { tstep, tstop, .. } => {
+                Some(crate::TransientConfig::new(*tstop, *tstep))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Frequency-axis spacing for an AC sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcSweep {

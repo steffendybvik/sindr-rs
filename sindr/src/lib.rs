@@ -64,7 +64,7 @@
 //! | Analysis | Entry point | Notes |
 //! |---|---|---|
 //! | Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
-//! | Transient | [`solve_circuit`] | Taken automatically when the circuit has C, L or waveform sources. Backward Euler only; duration (5 τ) and step (τ/50) come from the circuit's time constants and can't be set yet |
+//! | Transient | [`solve_transient`] | Backward Euler only, at a fixed step set by a [`TransientConfig`]. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
@@ -139,7 +139,9 @@
 //!
 //! A circuit with capacitors, inductors or waveform sources takes the
 //! transient path, and [`SimulationResult::transient`] holds the time series.
-//! The duration (5 τ) and time step come from the circuit's time constants:
+//! [`solve_circuit`] picks the duration (5 τ) and step (τ/50) from the
+//! circuit's time constants; to choose them, as SPICE's `.tran` does, call
+//! [`solve_transient`] with a [`TransientConfig`].
 //!
 //! ```
 //! use sindr::{Circuit, CircuitElement, solve_circuit};
@@ -250,6 +252,7 @@ pub use results::{
     SimulationResult, TimestepSnapshot, TransientData,
 };
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
+pub use transient::{solve_transient, TransientConfig};
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
 
@@ -321,15 +324,8 @@ pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     let num_vsources = circuit.count_voltage_sources();
 
     if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
-        if circuit.has_nonlinear_elements() {
-            return transient::solve_transient_nonlinear(
-                circuit,
-                &node_map,
-                num_nodes,
-                num_vsources,
-            );
-        }
-        return transient::solve_transient(circuit, &node_map, num_nodes, num_vsources);
+        let config = TransientConfig::auto(circuit);
+        return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
     }
 
     if circuit.has_nonlinear_elements() {
@@ -450,17 +446,9 @@ pub fn solve_circuit_with_initial_voltages(
     let num_vsources = circuit.count_voltage_sources();
 
     if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
-        // Transient / AC paths don't currently consume the seed; fall back
-        // to the standard solver.
-        if circuit.has_nonlinear_elements() {
-            return transient::solve_transient_nonlinear(
-                circuit,
-                &node_map,
-                num_nodes,
-                num_vsources,
-            );
-        }
-        return transient::solve_transient(circuit, &node_map, num_nodes, num_vsources);
+        // The transient path doesn't consume the seed.
+        let config = TransientConfig::auto(circuit);
+        return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
     }
 
     if circuit.has_nonlinear_elements() {

@@ -12,7 +12,10 @@ use std::f64::consts::PI;
 use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
-use sindr::{dc_sweep, solve_circuit, Circuit, CircuitElement, TransientData};
+use sindr::{
+    dc_sweep, solve_circuit, solve_transient, Circuit, CircuitElement, TransientConfig,
+    TransientData,
+};
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
     Circuit {
@@ -418,19 +421,20 @@ fn log_log_slope(points: &[(f64, f64)]) -> f64 {
     sxy / sxx
 }
 
-/// Snapshot at time `t`, which must lie on the step grid.
-fn at_time(tran: &TransientData, t: f64) -> &sindr::TimestepSnapshot {
-    tran.timesteps
-        .iter()
-        .find(|s| (s.time - t).abs() < 1e-6 * tran.time_step)
-        .unwrap_or_else(|| panic!("no snapshot at t = {t}"))
+/// The final snapshot of a run of `circuit` from 0 to `tstop` in steps of
+/// `dt`.
+fn run_to(circuit: &Circuit, tstop: f64, dt: f64) -> sindr::TimestepSnapshot {
+    let tran = solve_transient(circuit, &TransientConfig::new(tstop, dt))
+        .unwrap()
+        .transient
+        .unwrap();
+    let last = tran.timesteps.last().unwrap().clone();
+    assert_eq!(last.time, tstop);
+    last
 }
 
-// sindr picks dt itself (τ_max/50, from every R·C and L/R pair), and there is
-// no way yet to ask for one (SIN-20). The convergence tests below scale dt by
-// adding a resistor straight across the ideal source: it changes no node
-// voltage or branch current of the circuit under test, but sets τ_max = k·τ
-// and so dt = k·τ/50. Each run asserts the dt it got.
+/// Steps per time constant for the convergence tests: dt from τ/25 to τ/400.
+const STEPS_PER_TAU: [f64; 5] = [25.0, 50.0, 100.0, 200.0, 400.0];
 
 /// Backward Euler is first order: on an RC step the error at t = τ falls in
 /// proportion to dt.
@@ -438,24 +442,22 @@ fn at_time(tran: &TransientData, t: f64) -> &sindr::TimestepSnapshot {
 fn transient_rc_error_is_first_order_in_dt() {
     let (r, c, v) = (1e3, 1e-6, 1.0);
     let tau = r * c;
-    let errors: Vec<(f64, f64)> = [1.0, 2.0, 5.0, 10.0]
+    let rc = circuit(vec![
+        vsource("V1", "in", "0", v),
+        resistor("R1", "in", "out", r),
+        capacitor("C1", "out", "0", c),
+    ]);
+    let errors: Vec<(f64, f64)> = STEPS_PER_TAU
         .iter()
-        .map(|&k| {
-            let tran = transient(&circuit(vec![
-                vsource("V1", "in", "0", v),
-                resistor("R1", "in", "out", r),
-                capacitor("C1", "out", "0", c),
-                resistor("RAUX", "in", "0", k * r),
-            ]));
-            let dt = tran.time_step;
-            assert!((dt - k * tau / 50.0).abs() < 1e-12 * dt, "k = {k}: dt {dt}");
-            let got = at_time(&tran, tau).node_voltages["out"];
+        .map(|n| {
+            let dt = tau / n;
+            let got = run_to(&rc, tau, dt).node_voltages["out"];
             (dt, (got - v * (1.0 - (-1.0_f64).exp())).abs())
         })
         .collect();
     let slope = log_log_slope(&errors);
     assert!(
-        (slope - 1.0).abs() < 0.1,
+        (slope - 1.0).abs() < 0.05,
         "order {slope}, errors {errors:?}"
     );
 }
@@ -465,24 +467,22 @@ fn transient_rc_error_is_first_order_in_dt() {
 fn transient_rl_error_is_first_order_in_dt() {
     let (r, l, v) = (100.0, 10e-3, 1.0);
     let tau = l / r;
-    let errors: Vec<(f64, f64)> = [1.0, 2.0, 5.0, 10.0]
+    let rl = circuit(vec![
+        vsource("V1", "in", "0", v),
+        resistor("R1", "in", "a", r),
+        inductor("L1", "a", "0", l),
+    ]);
+    let errors: Vec<(f64, f64)> = STEPS_PER_TAU
         .iter()
-        .map(|&k| {
-            let tran = transient(&circuit(vec![
-                vsource("V1", "in", "0", v),
-                resistor("R1", "in", "a", r),
-                inductor("L1", "a", "0", l),
-                resistor("RAUX", "in", "0", r / k),
-            ]));
-            let dt = tran.time_step;
-            assert!((dt - k * tau / 50.0).abs() < 1e-12 * dt, "k = {k}: dt {dt}");
-            let got = current(at_time(&tran, tau), "L1");
+        .map(|n| {
+            let dt = tau / n;
+            let got = current(&run_to(&rl, tau, dt), "L1");
             (dt, (got - v / r * (1.0 - (-1.0_f64).exp())).abs())
         })
         .collect();
     let slope = log_log_slope(&errors);
     assert!(
-        (slope - 1.0).abs() < 0.1,
+        (slope - 1.0).abs() < 0.05,
         "order {slope}, errors {errors:?}"
     );
 }

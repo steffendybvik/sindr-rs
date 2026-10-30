@@ -58,9 +58,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     curve.last().map(|p| p.1).unwrap_or(0.0),
                 );
             }
-            AnalysisRequest::Tran { tstop, .. } => {
-                sindr::solve_circuit(&netlist.circuit)?;
-                println!("transient to {tstop} s");
+            AnalysisRequest::Tran { tstop, tstep, .. } => {
+                let config = analysis.transient_config().ok_or("not a .tran")?;
+                let result = sindr::solve_transient(&netlist.circuit, &config)?;
+                let steps = result.transient.map_or(0, |t| t.timesteps.len());
+                println!("transient to {tstop} s in {tstep} s steps: {steps} snapshots");
             }
             AnalysisRequest::Ac { fstart, fstop, .. } => {
                 println!("ac sweep {fstart}..{fstop} Hz (build an AcConfig for solve_ac)");

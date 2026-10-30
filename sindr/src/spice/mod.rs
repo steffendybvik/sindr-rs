@@ -55,9 +55,8 @@
 //!             println!("dc sweep of {source}: {} points", sweep.points.len());
 //!         }
 //!         AnalysisRequest::Tran { tstop, .. } => {
-//!             // Reactive elements / waveform sources make `solve_circuit`
-//!             // take the transient path automatically.
-//!             let _ = sindr::solve_circuit(&netlist.circuit)?;
+//!             let config = analysis.transient_config().unwrap();
+//!             let _ = sindr::solve_transient(&netlist.circuit, &config)?;
 //!             println!("transient to {tstop} s");
 //!         }
 //!         AnalysisRequest::Ac { fstart, fstop, .. } => {

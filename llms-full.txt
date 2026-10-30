@@ -416,7 +416,17 @@ pub struct MosfetResult {
 }
 ```
 
-For transient circuits, `result.transient` contains a time series:
+For transient circuits, `result.transient` contains a time series. `solve_circuit` picks the duration (5 τ) and step (τ/50) from the circuit's time constants; to set them yourself, as SPICE's `.tran tstep tstop` does, use `solve_transient`:
+
+```rust,ignore
+use sindr::{solve_transient, TransientConfig};
+
+// 10 ms in 1 µs steps; optionally cap the step with .with_tmax(…)
+let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 1e-6))?;
+```
+
+Each snapshot is the end of one backward-Euler step, with sources evaluated at that time; the last is at `tstop`.
+
 
 ```rust
 pub struct TransientData {
@@ -763,7 +773,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 |----------|-----------|-------|
 | `.op` (operating point) | ✅ | via `solve_circuit` |
 | `.dc` (DC sweep) | ✅ | one source at a time |
-| `.tran` (transient) | ✅ | Backward Euler; dt = τ/50 from the circuit's time constants, halved only when Newton fails. No truncation-error control, no breakpoints, and `tstop`/`tstep` can't be set yet |
+| `.tran` (transient) | ✅ | Backward Euler at a fixed `tstep` (`solve_transient`), halved only when Newton fails. No truncation-error control, no breakpoints, `tstart` ignored |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.temp` (temperature sweep) | ✅ | junction-device temp parameter |
 | `.noise` (noise analysis) | ❌ | no thermal/shot/flicker noise stamps |
@@ -1904,7 +1914,7 @@ assert!((v_n2 - 6.6667).abs() < 1e-3);
 | Analysis | Entry point | Notes |
 |---|---|---|
 | Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
-| Transient | [`solve_circuit`] | Taken automatically when the circuit has C, L or waveform sources. Backward Euler only; duration (5 τ) and step (τ/50) come from the circuit's time constants and can't be set yet |
+| Transient | [`solve_transient`] | Backward Euler only, at a fixed step set by a [`TransientConfig`]. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
@@ -1979,7 +1989,9 @@ sindr = { version = "0.1.0-alpha.7", default-features = false }
 
 A circuit with capacitors, inductors or waveform sources takes the
 transient path, and [`SimulationResult::transient`] holds the time series.
-The duration (5 τ) and time step come from the circuit's time constants:
+[`solve_circuit`] picks the duration (5 τ) and step (τ/50) from the
+circuit's time constants; to choose them, as SPICE's `.tran` does, call
+[`solve_transient`] with a [`TransientConfig`].
 
 ```
 use sindr::{Circuit, CircuitElement, solve_circuit};
@@ -2092,6 +2104,8 @@ pub use node_map::NodeMap;
 pub use results:: { … }
 
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
+
+pub use transient::{solve_transient, TransientConfig};
 
 pub use validation::validate_circuit;
 
@@ -2613,6 +2627,28 @@ pub enum AnalysisRequest {
     },
 }
 
+impl AnalysisRequest {
+    /// The [`TransientConfig`](crate::TransientConfig) for a `.tran`
+    /// request, to pass to [`solve_transient`](crate::solve_transient);
+    /// `None` for any other analysis.
+    ///
+    /// `tstart` is not applied: the result holds every step from the first
+    /// one on.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 1\nR1 in out 1k\nC1 out 0 1u\n.tran 1u 10m\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].transient_config().unwrap();
+    /// let result = sindr::solve_transient(&netlist.circuit, &config)?;
+    /// let last = result.transient.unwrap().timesteps.last().unwrap().time;
+    /// assert!((last - 10e-3).abs() < 1e-12);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn transient_config(&self) -> Option<crate::TransientConfig> { … }
+}
+
 /// Frequency-axis spacing for an AC sweep.
 pub enum AcSweep {
     /// `dec` — points per decade, log spacing.
@@ -3034,9 +3070,8 @@ for analysis in &netlist.analyses {
             println!("dc sweep of {source}: {} points", sweep.points.len());
         }
         AnalysisRequest::Tran { tstop, .. } => {
-            // Reactive elements / waveform sources make `solve_circuit`
-            // take the transient path automatically.
-            let _ = sindr::solve_circuit(&netlist.circuit)?;
+            let config = analysis.transient_config().unwrap();
+            let _ = sindr::solve_transient(&netlist.circuit, &config)?;
             println!("transient to {tstop} s");
         }
         AnalysisRequest::Ac { fstart, fstop, .. } => {
@@ -3614,43 +3649,101 @@ while reactive components contribute companion-model stamps.
 /// - dt = tau_max / 50 (floored at 1 microsecond)
 pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) { … }
 
-/// Solve a transient simulation for circuits with both reactive AND nonlinear elements.
+/// Transient analysis settings: how long to simulate and how finely.
 ///
-/// Nests Newton-Raphson iteration inside each transient timestep:
-/// - Outer loop: time-stepping with Backward Euler companions for caps/inductors
-/// - Inner loop: NR iteration with companion models for diodes/LEDs
-/// - Adaptive timestep halving: if NR fails to converge, halve dt and retry
+/// Build one with [`TransientConfig::new`], optionally capped with
+/// [`TransientConfig::with_tmax`], and pass it to [`solve_transient`].
+/// [`solve_circuit`](crate::solve_circuit) instead picks a config from the
+/// circuit's time constants ([`TransientConfig::auto`]).
 ///
-/// Reactive companion state (cap voltages, inductor currents) is fixed during
-/// NR iteration and only updated after convergence.
+/// ```
+/// use sindr::TransientConfig;
 ///
-/// # Errors
-///
-/// [`SimError::ConvergenceFailed`] if Newton–Raphson fails at a timestep even
-/// after halving dt down to its floor, plus any stamping or solve error
-/// ([`SimError::SingularMatrix`], [`SimError::InvalidSolution`], invalid
-/// component values).
-pub fn solve_transient_nonlinear(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    num_nodes: usize,
-    num_vsources: usize,
-) -> Result<SimulationResult, SimError> { … }
+/// // SPICE `.tran 1u 10m`: 10 ms in 1 µs steps.
+/// let config = TransientConfig::new(10e-3, 1e-6);
+/// assert_eq!(config.tstop, 10e-3);
+/// ```
+pub struct TransientConfig {
+    /// End time (s). The run starts at 0 and its last snapshot is at `tstop`.
+    pub tstop: f64,
+    /// Time step (s): snapshots fall on multiples of it, except where a
+    /// failed Newton solve forces smaller steps.
+    pub tstep: f64,
+    /// Largest step allowed (s), as SPICE's TMAX. `None` means `tstep`.
+    pub tmax: Option<f64>,
+}
 
-/// Solve a transient simulation for circuits with reactive elements.
+impl TransientConfig {
+    /// Simulate from 0 to `tstop` seconds in steps of `tstep` seconds.
+    pub fn new(tstop: f64, tstep: f64) -> Self { … }
+
+    /// Cap the step at `tmax` seconds.
+    pub fn with_tmax(mut self, tmax: f64) -> Self { … }
+
+    /// The config [`solve_circuit`](crate::solve_circuit) uses: `tstop` = 5·τ
+    /// and `tstep` = τ/50 for the circuit's longest time constant τ (see
+    /// [`calculate_duration`]).
+    pub fn auto(circuit: &Circuit) -> Self { … }
+}
+
+/// Runs a transient analysis of `circuit` with the given time span and step.
 ///
-/// Uses Backward Euler integration with companion models to step through
-/// time, producing a series of snapshots showing voltage/current evolution.
+/// Integrates with backward Euler from 0 to `config.tstop`, starting from
+/// uncharged capacitors (0 V) and inductors at rest (0 A), with sources at
+/// their value at each step's end time. Each step that contains nonlinear
+/// devices is solved by Newton–Raphson, warm-started from the previous step;
+/// if Newton fails the step is halved and retried, then grows back to
+/// `tstep`. [`SimulationResult::transient`] holds one snapshot per step,
+/// the last at `tstop`; the other fields hold the final instant.
 ///
 /// # Errors
 ///
-/// [`SimError::SingularMatrix`] or [`SimError::InvalidSolution`] if a
-/// timestep's system can't be solved, or an invalid component value.
+/// [`SimError::InvalidComponent`] for an invalid config (a non-finite or
+/// non-positive time, `tstep > tstop`, or more than 10⁷ steps), any
+/// validation error from [`validate_circuit`](crate::validate_circuit),
+/// [`SimError::ConvergenceFailed`] if Newton–Raphson fails even at a step a
+/// million times smaller than `tstep`, and [`SimError::SingularMatrix`] or
+/// [`SimError::InvalidSolution`] if a step can't be solved.
+///
+/// # Example
+///
+/// ```
+/// use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+///
+/// // 5 V step into R = 1 kΩ, C = 1 µF (τ = 1 ms), for 2 ms in 10 µs steps.
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["in".into(), "0".into()],
+///             voltage: 5.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["in".into(), "out".into()],
+///             resistance: 1_000.0,
+///         },
+///         CircuitElement::Capacitor {
+///             id: "C1".into(),
+///             nodes: ["out".into(), "0".into()],
+///             capacitance: 1e-6,
+///         },
+///     ],
+/// };
+///
+/// let result = solve_transient(&circuit, &TransientConfig::new(2e-3, 10e-6)).unwrap();
+/// let tran = result.transient.unwrap();
+/// assert_eq!(tran.timesteps.len(), 200);
+/// let last = tran.timesteps.last().unwrap();
+/// assert!((last.time - 2e-3).abs() < 1e-12);
+/// // 5·(1 − e⁻²) ≈ 4.32 V, less backward Euler's lag.
+/// assert!((last.node_voltages["out"] - 4.32).abs() < 0.02);
+/// ```
 pub fn solve_transient(
     circuit: &Circuit,
-    node_map: &NodeMap,
-    num_nodes: usize,
-    num_vsources: usize,
+    config: &TransientConfig,
 ) -> Result<SimulationResult, SimError> { … }
 ```
 
@@ -4825,9 +4918,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     curve.last().map(|p| p.1).unwrap_or(0.0),
                 );
             }
-            AnalysisRequest::Tran { tstop, .. } => {
-                sindr::solve_circuit(&netlist.circuit)?;
-                println!("transient to {tstop} s");
+            AnalysisRequest::Tran { tstop, tstep, .. } => {
+                let config = analysis.transient_config().ok_or("not a .tran")?;
+                let result = sindr::solve_transient(&netlist.circuit, &config)?;
+                let steps = result.transient.map_or(0, |t| t.timesteps.len());
+                println!("transient to {tstop} s in {tstep} s steps: {steps} snapshots");
             }
             AnalysisRequest::Ac { fstart, fstop, .. } => {
                 println!("ac sweep {fstart}..{fstop} Hz (build an AcConfig for solve_ac)");

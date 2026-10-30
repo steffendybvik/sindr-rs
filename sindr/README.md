@@ -302,7 +302,17 @@ pub struct MosfetResult {
 }
 ```
 
-For transient circuits, `result.transient` contains a time series:
+For transient circuits, `result.transient` contains a time series. `solve_circuit` picks the duration (5 τ) and step (τ/50) from the circuit's time constants; to set them yourself, as SPICE's `.tran tstep tstop` does, use `solve_transient`:
+
+```rust,ignore
+use sindr::{solve_transient, TransientConfig};
+
+// 10 ms in 1 µs steps; optionally cap the step with .with_tmax(…)
+let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 1e-6))?;
+```
+
+Each snapshot is the end of one backward-Euler step, with sources evaluated at that time; the last is at `tstop`.
+
 
 ```rust
 pub struct TransientData {
