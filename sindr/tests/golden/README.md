@@ -47,11 +47,12 @@ element, and the `.cir` is read only by ngspice.
   voltages and 1e-5 on currents. Cases with junctions run ngspice with
   `reltol=1e-9`: at its default 1e-3, ngspice itself stops a few µV short of
   the exact operating point.
-- **Transient:** 1 % of full scale. sindr integrates with fixed-step backward
-  Euler (dt = τ/50 over 5τ). ngspice can't reproduce a fixed step, so the
-  golden is an accurate solution (`reltol=1e-6`, 1 µs max step) resampled
-  onto sindr's grid with `linearize`. That leaves BE's truncation error,
-  which peaks near 0.4 % of the step height.
+- **Transient:** 0.1 % of full scale. sindr integrates with its default
+  Gear-2 at a fixed step (dt = τ/50 over 5τ). ngspice can't reproduce a
+  fixed step, so the golden is an accurate solution (`reltol=1e-6`, 1 µs
+  max step) resampled onto sindr's grid with `linearize`. That leaves
+  sindr's truncation error, about 0.03 % of full scale at the start, where
+  the first step is backward Euler.
 
 ## Coverage
 
