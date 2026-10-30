@@ -15,7 +15,7 @@ use crate::device_params;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
-use crate::results::{self, SimulationResult};
+use crate::results::{self, ConvergenceAid, SimulationResult};
 use crate::stamp;
 
 /// Maximum Newton-Raphson iterations before declaring non-convergence.
@@ -40,10 +40,14 @@ pub const RELTOL: f64 = 1e-3;
 ///    add Gmin shunts, solve, apply voltage limiting, check convergence.
 /// 3. Return results when converged, or error after MAX_NR_ITERATIONS.
 ///
+/// When plain Newton–Raphson fails, retries with gmin stepping and then
+/// source stepping; [`SimulationResult::convergence_aid`] says which one
+/// succeeded.
+///
 /// # Errors
 ///
-/// [`SimError::ConvergenceFailed`] if neither plain Newton–Raphson nor the
-/// gmin-stepping retry converges, plus any stamping or solve error.
+/// [`SimError::ConvergenceFailed`] if plain Newton–Raphson, gmin stepping
+/// and source stepping all fail, plus any stamping or solve error.
 pub fn solve_nonlinear(
     circuit: &Circuit,
     node_map: &NodeMap,
@@ -75,12 +79,90 @@ fn solve_nonlinear_with_seeds(
             // Fall back to gmin stepping: progressively softens the Jacobian
             // by adding extra conductance to ground on every node, then ramps
             // it down while warm-starting from the previous step's solution.
-            gmin_stepping(circuit, node_map, num_nodes, num_vsources, initial_voltages)
+            let gmin = gmin_stepping(circuit, node_map, num_nodes, num_vsources, initial_voltages);
+            match gmin {
+                Ok(mut result) => {
+                    result.convergence_aid = Some(ConvergenceAid::GminStepping);
+                    Ok(result)
+                }
+                Err(SimError::ConvergenceFailed { .. }) => {
+                    // Then source stepping: ramp every source up from zero.
+                    let mut result = source_stepping(circuit, node_map, num_nodes, num_vsources)?;
+                    result.convergence_aid = Some(ConvergenceAid::SourceStepping);
+                    Ok(result)
+                }
+                Err(e) => Err(e),
+            }
         }
         // SingularMatrix and InvalidSolution are topology / numerical errors
         // that gmin stepping cannot fix — propagate immediately.
         Err(e) => Err(e),
     }
+}
+
+/// Source-stepping homotopy, the fallback after gmin stepping.
+///
+/// Solves the circuit with every independent source (voltage and current
+/// sources, regulator outputs) scaled by a factor that ramps from a small
+/// value up to 1, warm-starting each solve from the last. With the sources
+/// near zero every junction is near zero bias, where Newton–Raphson always
+/// converges; each later step starts close to its answer. A step that fails
+/// is retried with half the increment, down to [`MIN_SOURCE_STEP`].
+fn source_stepping(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    num_nodes: usize,
+    num_vsources: usize,
+) -> Result<SimulationResult, SimError> {
+    let mut scale: f64 = 0.0;
+    let mut increment: f64 = 0.1;
+    let mut warm: Option<DVector<f64>> = None;
+    loop {
+        let next = (scale + increment).min(1.0);
+        let scaled = scale_sources(circuit, next);
+        match nr_inner(
+            &scaled,
+            node_map,
+            num_nodes,
+            num_vsources,
+            warm.as_ref(),
+            None,
+            0.0,
+        ) {
+            Ok((result, v)) => {
+                if next >= 1.0 {
+                    return Ok(result);
+                }
+                scale = next;
+                warm = Some(v);
+                increment = (increment * 2.0).min(0.25);
+            }
+            Err(e @ SimError::ConvergenceFailed { .. }) => {
+                increment /= 2.0;
+                if increment < MIN_SOURCE_STEP {
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Smallest source-stepping increment before giving up.
+const MIN_SOURCE_STEP: f64 = 1e-4;
+
+/// `circuit` with every independent source scaled by `factor`.
+fn scale_sources(circuit: &Circuit, factor: f64) -> Circuit {
+    let mut scaled = circuit.clone();
+    for component in &mut scaled.components {
+        match component {
+            CircuitElement::VoltageSource { voltage, .. }
+            | CircuitElement::VoltageRegulator { voltage, .. } => *voltage *= factor,
+            CircuitElement::CurrentSource { current, .. } => *current *= factor,
+            _ => {}
+        }
+    }
+    scaled
 }
 
 /// Gmin-stepping homotopy fallback for nonlinear DC.

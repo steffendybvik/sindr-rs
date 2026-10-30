@@ -76,5 +76,6 @@ Not covered, and why:
   with `CJO` also conducts.
 - **Thermistor, photoresistor, potentiometer:** resistors whose value comes
   from a closed form, which unit tests cover; ngspice would only add a resistor.
-- **`.lib`, `.nodeset`, `.ic`:** sindr's parser doesn't read `.nodeset` or
-  `.ic`, and `.lib` is covered by `tests/spice_end_to_end.rs`.
+- **`.lib`, `.nodeset`, `.ic`:** covered by `tests/spice_end_to_end.rs` and
+  `tests/initial_conditions.rs`. A `.nodeset` doesn't change the answer, and
+  sindr's `.ic` is always `UIC`, which ngspice runs differently.

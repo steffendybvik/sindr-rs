@@ -151,6 +151,15 @@ pub(crate) struct History {
 }
 
 impl History {
+    /// A history at rest at state `x`, as at t = 0.
+    pub(crate) fn at(x: f64) -> Self {
+        Self {
+            x1: x,
+            x2: x,
+            y1: 0.0,
+        }
+    }
+
     /// The history after a step that ended at state `x` with rate `y`.
     pub(crate) fn push(self, x: f64, y: f64) -> Self {
         Self {

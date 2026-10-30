@@ -34,8 +34,8 @@ use winnow::token::{one_of, take_while};
 use winnow::{ModalResult, Parser};
 
 use crate::spice::ast::{
-    AcSweepKind, BinOp, ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawModel,
-    RawSubckt, RawWaveform, SourceKind, Span,
+    AcSweepKind, BinOp, NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody,
+    RawModel, RawSubckt, RawWaveform, SourceKind, Span,
 };
 use crate::spice::error::SpiceParseError;
 use crate::spice::preprocess::{LogicalLine, Preprocessed};
@@ -74,6 +74,7 @@ fn anchor_to_line(card: RawCard, line: &LogicalLine) -> RawCard {
         }
         RawCard::Param(bindings, _) => RawCard::Param(bindings, line_span(line)),
         RawCard::Analysis(analysis, _) => RawCard::Analysis(analysis, line_span(line)),
+        RawCard::NodeValues(kind, values, _) => RawCard::NodeValues(kind, values, line_span(line)),
         other => other,
     }
 }
@@ -627,6 +628,27 @@ fn parse_card_param(input: &mut Input<'_>) -> ModalResult<RawCard> {
     Ok(RawCard::Param(bindings, Span::detached()))
 }
 
+/// Parse `.ic` / `.nodeset`: one or more `V(node)=value`.
+fn parse_card_node_values(input: &mut Input<'_>, kind: NodeValueKind) -> ModalResult<RawCard> {
+    let mut values: Vec<(String, ParamExpr)> = Vec::new();
+    loop {
+        ws(input)?;
+        if input.is_empty() {
+            break;
+        }
+        // Case is already folded, so `V(` arrives as `v(`.
+        ('v', ws, '(', ws).parse_next(input)?;
+        let (node, _) = node_name(input)?;
+        (ws, ')', ws, '=', ws).parse_next(input)?;
+        let (value, _) = value_expr(input)?;
+        values.push((node, value));
+    }
+    if values.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawCard::NodeValues(kind, values, Span::detached()))
+}
+
 /// Parse `.tran tstep tstop [tstart]`.
 fn parse_card_tran(input: &mut Input<'_>) -> ModalResult<RawCard> {
     let mut args: Vec<ParamExpr> = Vec::new();
@@ -743,6 +765,8 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "dc" => parse_card_dc(&mut input),
             "ac" => parse_card_ac(&mut input),
             "op" => parse_card_op(&mut input),
+            "ic" => parse_card_node_values(&mut input, NodeValueKind::Ic),
+            "nodeset" => parse_card_node_values(&mut input, NodeValueKind::Nodeset),
             "include" | "lib" => {
                 // Should have been resolved by the preprocessor.
                 return Err(LocalError::Syntax {

@@ -36,7 +36,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 ### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **No SPICE netlist export.** Cannot hand a circuit off to ngspice / LTspice / Xyce.
 - **No hierarchical data model.** The `spice` parser *flattens* `.subckt` hierarchy (parameter-passing instances, `.`-separated hierarchical node naming) when importing a deck. But the core `Circuit` API itself is a flat `Vec<CircuitElement>` — there is no hierarchical block or instance type exposed programmatically.
 - **No model cards.** Devices take parameters as Rust structs, not BSIM / Gummel-Poon / VBIC / HICUM cards. There is no way to point at a manufacturer model and get matching behaviour.
@@ -84,9 +84,9 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
 - **Dense LU factorisation** (via `nalgebra`). No sparse solver. Practical circuit size is bounded by `O(N²)` memory and `O(N³)` factorisation; large boards (hundreds of nodes) will be slow.
-- **Convergence aids: gmin stepping + Newton damping only.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr automatically retries with a gmin-stepping homotopy (geometric ladder from `1e-2` down to the `1e-12` floor, warm-starting between steps). No source stepping, no pseudo-transient continuation, no general homotopy. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
-- **`.nodeset`-style seeding via `solve_circuit_with_initial_voltages`.** Pass a `HashMap<String, f64>` of node-name → voltage to pre-warm the Newton initial guess. No `.ic` (force-fixed initial conditions) directive yet.
-- **No `uic` (use-initial-conditions) skip-DC option** for transient.
+- **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
+- **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the AC bias point (`solve_ac_with_initial_voltages`).
+- **`.ic` is always `UIC`:** transients never compute a DC operating point first; they start from the initial conditions (`TransientConfig::with_initial_voltages`, `with_initial_current`) or from all-zero. Transformer windings always start at 0 A, and inductor `IC=` on SPICE element lines isn't parsed.
 - **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), not per charge or flux, and the tolerances can't be changed yet. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
 - **No checkpointing / restart** of long transient runs.
 - **No multithreading** in the solver.

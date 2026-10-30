@@ -75,7 +75,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`, `.lib`), flattens hierarchy with `.`-separated node naming, and returns a `SourceMap` to recover original instance paths. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattens hierarchy with `.`-separated node naming, and returns a `SourceMap` to recover original instance paths. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 A runnable walkthrough (parse → solve → dispatch directives → render a diagnostic) lives in [`sindr/examples/parse_netlist.rs`](./sindr/examples/parse_netlist.rs):
 
@@ -144,7 +144,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -763,7 +763,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **No SPICE netlist export.** Cannot hand a circuit off to ngspice / LTspice / Xyce.
 - **No hierarchical data model.** The `spice` parser *flattens* `.subckt` hierarchy (parameter-passing instances, `.`-separated hierarchical node naming) when importing a deck. But the core `Circuit` API itself is a flat `Vec<CircuitElement>` — there is no hierarchical block or instance type exposed programmatically.
 - **No model cards.** Devices take parameters as Rust structs, not BSIM / Gummel-Poon / VBIC / HICUM cards. There is no way to point at a manufacturer model and get matching behaviour.
@@ -811,9 +811,9 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
 - **Dense LU factorisation** (via `nalgebra`). No sparse solver. Practical circuit size is bounded by `O(N²)` memory and `O(N³)` factorisation; large boards (hundreds of nodes) will be slow.
-- **Convergence aids: gmin stepping + Newton damping only.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr automatically retries with a gmin-stepping homotopy (geometric ladder from `1e-2` down to the `1e-12` floor, warm-starting between steps). No source stepping, no pseudo-transient continuation, no general homotopy. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
-- **`.nodeset`-style seeding via `solve_circuit_with_initial_voltages`.** Pass a `HashMap<String, f64>` of node-name → voltage to pre-warm the Newton initial guess. No `.ic` (force-fixed initial conditions) directive yet.
-- **No `uic` (use-initial-conditions) skip-DC option** for transient.
+- **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
+- **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the AC bias point (`solve_ac_with_initial_voltages`).
+- **`.ic` is always `UIC`:** transients never compute a DC operating point first; they start from the initial conditions (`TransientConfig::with_initial_voltages`, `with_initial_current`) or from all-zero. Transformer windings always start at 0 A, and inductor `IC=` on SPICE element lines isn't parsed.
 - **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), not per charge or flux, and the tolerances can't be changed yet. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
 - **No checkpointing / restart** of long transient runs.
 - **No multithreading** in the solver.
@@ -995,6 +995,20 @@ impl AcResult {
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> { … }
+
+/// Like [`solve_ac`], seeding the Newton–Raphson solve for the DC bias
+/// point with node voltages (V) keyed by node name, as SPICE's `.nodeset`.
+/// Useful when the bias point is hard to find or not unique. Unknown node
+/// names are ignored.
+///
+/// # Errors
+///
+/// As [`solve_ac`].
+pub fn solve_ac_with_initial_voltages(
+    circuit: &Circuit,
+    config: &AcConfig,
+    initial_voltages: &HashMap<String, f64>,
+) -> Result<AcResult, SimError> { … }
 ```
 
 ## `sindr/src/circuit.rs`
@@ -1920,7 +1934,8 @@ assert!((v_n2 - 6.6667).abs() < 1e-3);
 | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
-| Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`] | DC only; there's no `.ic` |
+| Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`] | Seeds Newton for the DC or AC bias point |
+| Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
 
 Not available: noise, distortion, pole-zero, sensitivity, Monte Carlo,
 periodic steady state, S-parameters, variable-order integration.
@@ -1945,14 +1960,17 @@ Parameters are Rust structs, not SPICE `.model` cards.
 
 Junction voltage limiting and Newton damping on every nonlinear solve.
 When plain Newton–Raphson fails, the DC solve retries with gmin stepping
-(1e-2 S down to 1e-12 S). There's no source stepping. A transient step
-whose Newton solve fails is retried at half the step.
+(1e-2 S down to 1e-12 S), then with source stepping (every source ramped
+up from zero); [`SimulationResult::convergence_aid`] says which one was
+needed. A transient step whose Newton solve fails is retried at half the
+step.
 
 #### SPICE input (feature `spice`)
 
 [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
-and X elements; `.subckt`, `.model`, `.param`, `.include`, `.lib`; and the
-analysis cards `.op`, `.dc`, `.ac` and `.tran`. Not supported: MOSFET (M)
+and X elements; `.subckt`, `.model`, `.param`, `.include`, `.lib`,
+`.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac` and
+`.tran`. Not supported: MOSFET (M)
 and JFET (J) elements, controlled sources (E, F, G, H), coupled inductors
 (K), `B` sources, most `.model` parameters (diodes always use IS = 1e-14,
 N = 1; BJTs honour only BF), and netlist export.
@@ -2308,10 +2326,14 @@ pub const RELTOL: f64 = 1e-3;
 ///    add Gmin shunts, solve, apply voltage limiting, check convergence.
 /// 3. Return results when converged, or error after MAX_NR_ITERATIONS.
 ///
+/// When plain Newton–Raphson fails, retries with gmin stepping and then
+/// source stepping; [`SimulationResult::convergence_aid`] says which one
+/// succeeded.
+///
 /// # Errors
 ///
-/// [`SimError::ConvergenceFailed`] if neither plain Newton–Raphson nor the
-/// gmin-stepping retry converges, plus any stamping or solve error.
+/// [`SimError::ConvergenceFailed`] if plain Newton–Raphson, gmin stepping
+/// and source stepping all fail, plus any stamping or solve error.
 pub fn solve_nonlinear(
     circuit: &Circuit,
     node_map: &NodeMap,
@@ -2584,6 +2606,24 @@ pub struct SimulationResult {
     /// elements or waveform sources.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub transient: Option<TransientData>,
+    /// The fallback the nonlinear DC solve needed, if plain Newton–Raphson
+    /// didn't converge on its own. `None` for linear circuits, transients and
+    /// plain Newton.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "Option::is_none", default)
+    )]
+    pub convergence_aid: Option<ConvergenceAid>,
+}
+
+/// A convergence fallback for nonlinear DC, tried in this order when plain
+/// Newton–Raphson fails.
+pub enum ConvergenceAid {
+    /// Extra conductance to ground on every node, stepped from 1e-2 S down
+    /// to zero.
+    GminStepping,
+    /// Every independent source ramped from near zero up to its full value.
+    SourceStepping,
 }
 
 /// Extract simulation results from the MNA solution vector.
@@ -3040,6 +3080,11 @@ and X (subcircuit instance). Subcircuits declared with `.subckt` /
 a [`SourceMap`] is returned so callers can recover the original
 instance path for any flattened node.
 
+`.ic` and `.nodeset` cards land in [`ParsedNetlist::initial_conditions`]
+and [`ParsedNetlist::nodesets`]; pass them to
+[`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages)
+and [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages).
+
 Enable the optional `spice` feature to pull this module in
 (`sindr = { version = "0.1.0-alpha.7", features = ["spice"] }`); it is off by
 default so the parser dependencies stay out of the baseline build.
@@ -3155,6 +3200,17 @@ pub struct ParsedNetlist {
     ///
     /// Order matches declaration order in the source.
     pub analyses: Vec<AnalysisRequest>,
+    /// `.ic` node voltages (V), keyed by node name: the state a transient
+    /// starts from. Pass them to
+    /// [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
+    /// Only top-level cards are read.
+    pub initial_conditions: HashMap<String, f64>,
+    /// `.nodeset` node voltages (V), keyed by node name: a starting guess for
+    /// the DC operating point. Pass them to
+    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages)
+    /// or [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages).
+    /// Only top-level cards are read.
+    pub nodesets: HashMap<String, f64>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
     /// [`ParseOptions::strict`] is `true`.
     pub warnings: Vec<ParseWarning>,
@@ -3702,11 +3758,55 @@ pub struct TransientConfig {
     /// `false`, every step is `tstep` (or `tmax`) except where a breakpoint
     /// or Newton failure shortens it.
     pub adaptive: bool,
+    /// Initial node voltages (V), keyed by node name, as SPICE's `.ic` with
+    /// `UIC`: each capacitor (and BJT/MOSFET parasitic capacitor) starts
+    /// charged to the difference of its nodes' values. Nodes not listed
+    /// count as 0 V.
+    pub initial_voltages: HashMap<String, f64>,
+    /// Initial inductor currents (A), keyed by inductor or relay id, flowing
+    /// from the element's first node to its second. Inductors not listed
+    /// start at 0 A.
+    pub initial_currents: HashMap<String, f64>,
 }
 
 impl TransientConfig {
     /// Simulate from 0 to `tstop` seconds in steps of `tstep` seconds.
     pub fn new(tstop: f64, tstep: f64) -> Self { … }
+
+    /// Start from these node voltages (V) instead of all-zero, as SPICE's
+    /// `.ic` with `UIC`. See [`TransientConfig::initial_voltages`].
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+    ///
+    /// // A 1 µF capacitor charged to 5 V discharging through 1 kΩ.
+    /// let circuit = Circuit {
+    ///     ground_node: "0".into(),
+    ///     components: vec![
+    ///         CircuitElement::Resistor {
+    ///             id: "R1".into(),
+    ///             nodes: ["a".into(), "0".into()],
+    ///             resistance: 1e3,
+    ///         },
+    ///         CircuitElement::Capacitor {
+    ///             id: "C1".into(),
+    ///             nodes: ["a".into(), "0".into()],
+    ///             capacitance: 1e-6,
+    ///         },
+    ///     ],
+    /// };
+    /// let config = TransientConfig::new(1e-3, 10e-6)
+    ///     .with_initial_voltages(HashMap::from([("a".to_string(), 5.0)]));
+    /// let tran = solve_transient(&circuit, &config).unwrap().transient.unwrap();
+    /// // After one time constant: 5·e⁻¹ ≈ 1.84 V.
+    /// let v = tran.timesteps.last().unwrap().node_voltages["a"];
+    /// assert!((v - 5.0 * (-1.0_f64).exp()).abs() < 1e-2);
+    /// ```
+    pub fn with_initial_voltages(mut self, voltages: HashMap<String, f64>) -> Self { … }
+
+    /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A.
+    pub fn with_initial_current(mut self, id: impl Into<String>, amps: f64) -> Self { … }
 
     /// Step at a fixed `tstep` instead of controlling the step by local
     /// truncation error.
@@ -5176,5 +5276,156 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+```
+
+## `sindr/examples/zz_probe.rs`
+
+```rust
+use sindr::*;
+fn v(id: &str, p: &str, n: &str, x: f64) -> CircuitElement {
+    CircuitElement::VoltageSource {
+        id: id.into(),
+        nodes: [p.into(), n.into()],
+        voltage: x,
+        waveform: None,
+    }
+}
+fn r(id: &str, a: &str, b: &str, x: f64) -> CircuitElement {
+    CircuitElement::Resistor {
+        id: id.into(),
+        nodes: [a.into(), b.into()],
+        resistance: x,
+    }
+}
+fn d(id: &str, a: &str, k: &str) -> CircuitElement {
+    CircuitElement::Diode {
+        id: id.into(),
+        nodes: [a.into(), k.into()],
+        temperature: 300.15,
+    }
+}
+fn q(id: &str, b: &str, c: &str, e: &str, kind: BjtKind) -> CircuitElement {
+    CircuitElement::Bjt {
+        id: id.into(),
+        nodes: [b.into(), c.into(), e.into()],
+        kind,
+        bf: 100.0,
+        temperature: 300.15,
+        parasitic_caps: None,
+    }
+}
+fn c(v: Vec<CircuitElement>) -> Circuit {
+    Circuit {
+        ground_node: "0".into(),
+        components: v,
+    }
+}
+fn main() {
+    let mut cases: Vec<(String, Circuit)> = vec![];
+    for n in [5usize, 10, 20] {
+        let mut e = vec![v("V1", "in", "0", 100.0), r("R1", "in", "d0", 10.0)];
+        for i in 0..n {
+            e.push(d(
+                &format!("D{i}"),
+                &format!("d{i}"),
+                &if i + 1 == n {
+                    "0".to_string()
+                } else {
+                    format!("d{}", i + 1)
+                },
+            ));
+        }
+        cases.push((format!("diode stack {n} at 100V/10R"), c(e)));
+    }
+    cases.push((
+        "1kV into diode via 1R".into(),
+        c(vec![
+            v("V1", "in", "0", 1000.0),
+            r("R1", "in", "a", 1.0),
+            d("D1", "a", "0"),
+        ]),
+    ));
+    // Darlington emitter follower
+    cases.push((
+        "darlington".into(),
+        c(vec![
+            v("VCC", "vcc", "0", 30.0),
+            v("VB", "b", "0", 20.0),
+            q("Q1", "b", "vcc", "e1", BjtKind::Npn),
+            q("Q2", "e1", "vcc", "e2", BjtKind::Npn),
+            r("RE", "e2", "0", 10.0),
+        ]),
+    ));
+    // cross-coupled latch
+    cases.push((
+        "bjt latch".into(),
+        c(vec![
+            v("VCC", "vcc", "0", 5.0),
+            r("R1", "vcc", "c1", 1e3),
+            r("R2", "vcc", "c2", 1e3),
+            r("RB1", "c1", "b2", 10e3),
+            r("RB2", "c2", "b1", 10e3),
+            q("Q1", "b1", "c1", "0", BjtKind::Npn),
+            q("Q2", "b2", "c2", "0", BjtKind::Npn),
+        ]),
+    ));
+    // current mirror with high-value load
+    cases.push((
+        "mirror".into(),
+        c(vec![
+            v("VCC", "vcc", "0", 30.0),
+            r("RREF", "vcc", "m", 1e3),
+            q("Q1", "m", "m", "0", BjtKind::Npn),
+            q("Q2", "m", "out", "0", BjtKind::Npn),
+            r("RL", "vcc", "out", 1e6),
+        ]),
+    ));
+    // diff pair with tail mirror
+    cases.push((
+        "diff pair".into(),
+        c(vec![
+            v("VCC", "vcc", "0", 15.0),
+            v("VEE", "vee", "0", -15.0),
+            v("VI1", "i1", "0", 0.01),
+            v("VI2", "i2", "0", 0.0),
+            r("RC1", "vcc", "c1", 10e3),
+            r("RC2", "vcc", "c2", 10e3),
+            q("Q1", "i1", "c1", "t", BjtKind::Npn),
+            q("Q2", "i2", "c2", "t", BjtKind::Npn),
+            r("RT", "t", "vee", 14.3e3),
+        ]),
+    ));
+    // diode bridge at DC
+    cases.push((
+        "bridge".into(),
+        c(vec![
+            v("V1", "a", "b", 50.0),
+            r("RS", "b", "0", 1e6),
+            d("D1", "a", "p"),
+            d("D2", "b", "p"),
+            d("D3", "n", "a"),
+            d("D4", "n", "b"),
+            r("RL", "p", "n", 10.0),
+        ]),
+    ));
+    // PNP/NPN complementary pair at high voltage
+    cases.push((
+        "complementary".into(),
+        c(vec![
+            v("VCC", "vcc", "0", 100.0),
+            v("VEE", "vee", "0", -100.0),
+            v("VB", "b", "0", 0.0),
+            q("Q1", "b", "vcc", "o", BjtKind::Npn),
+            q("Q2", "b", "vee", "o", BjtKind::Pnp),
+            r("RL", "o", "0", 8.0),
+        ]),
+    ));
+    for (name, circ) in &cases {
+        match solve_circuit(circ) {
+            Ok(_) => println!("ok    {name}"),
+            Err(e) => println!("FAIL  {name}: {e:?}"),
+        }
+    }
 }
 ```
