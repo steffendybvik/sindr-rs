@@ -64,15 +64,14 @@
 //! | Analysis | Entry point | Notes |
 //! |---|---|---|
 //! | Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
-//! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]) at a fixed step set by a [`TransientConfig`]. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
+//! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`] | DC only; there's no `.ic` |
 //!
 //! Not available: noise, distortion, pole-zero, sensitivity, Monte Carlo,
-//! periodic steady state, S-parameters, variable-order integration,
-//! truncation-error timestep control.
+//! periodic steady state, S-parameters, variable-order integration.
 //!
 //! ## Device models
 //!
@@ -250,7 +249,7 @@ pub use mna::MnaSystem;
 pub use node_map::NodeMap;
 pub use results::{
     BjtResult, ComponentResult, McuResult, MosfetResult, OpAmpResult, RelayResult,
-    SimulationResult, TimestepSnapshot, TransientData,
+    SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
 pub use transient::{solve_transient, IntegrationMethod, TransientConfig};

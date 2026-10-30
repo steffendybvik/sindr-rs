@@ -907,10 +907,11 @@ pub(crate) fn stamp_jfet_companion(
 
 /// Stamp a coupled-inductor transformer as two branch-current unknowns.
 ///
-/// `k1`/`k2` are the MNA rows of the primary and secondary currents. Each
-/// winding's branch row is `V(p) − V(q) + Σ_j z[k][j]·I_j = rhs[k]`, with `z`
-/// and `rhs` from the integration formula (`Integrator::coupled`). For
-/// backward Euler, `z = L/dt` and `rhs = (L/dt)·I_prev`.
+/// `k1`/`k2` are the MNA rows of the primary and secondary currents, each
+/// flowing from the winding's first terminal to its second. Each winding's
+/// branch row is `V(p) − V(q) + Σ_j z[k][j]·I_j = rhs[k]`, with `z` and `rhs`
+/// from the integration formula (`Integrator::coupled`). For backward Euler,
+/// `z = −L/dt` and `rhs = −(L/dt)·I_prev`, i.e. `V = L·(I − I_prev)/dt`.
 pub(crate) fn stamp_transformer_companion(
     system: &mut MnaSystem,
     node_map: &NodeMap,
@@ -1760,9 +1761,16 @@ mod tests {
             result.err()
         );
         let result = result.unwrap();
-        // n1 should be very close to 10V (primary is near-short-circuit)
+        // At DC the primary winding is a short, so after the switch-on
+        // transient n1 has fallen from its initial jump to ~0 V.
+        let tran = result.transient.unwrap();
+        let first = tran.timesteps[0].node_voltages["n1"];
         let v_n1 = result.node_voltages["n1"];
-        assert!(v_n1 > 9.0, "Primary voltage should be ~10V, got {}", v_n1);
+        assert!(first > 1.0, "primary should jump at switch-on, got {first}");
+        assert!(
+            v_n1.abs() < 0.05,
+            "primary should settle near 0 V, got {v_n1}"
+        );
     }
 
     /// Varactor DC stamp: treated as 1e12 Ω shunt (open circuit).

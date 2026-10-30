@@ -315,9 +315,11 @@ const METHODS: [IntegrationMethod; 3] = [
 ];
 
 /// Transient of `circuit` with its automatic span and step, integrated by
-/// `method`.
+/// `method` at that fixed step.
 fn transient(circuit: &Circuit, method: IntegrationMethod) -> TransientData {
-    let config = TransientConfig::auto(circuit).with_method(method);
+    let config = TransientConfig::auto(circuit)
+        .with_method(method)
+        .with_fixed_step();
     solve_transient(circuit, &config)
         .unwrap()
         .transient
@@ -453,15 +455,17 @@ fn log_log_slope(points: &[(f64, f64)]) -> f64 {
     sxy / sxx
 }
 
-/// The final snapshot of a run of `circuit` from 0 to `tstop` in steps of
-/// `dt`, integrated by `method`.
+/// The final snapshot of a run of `circuit` from 0 to `tstop` in fixed steps
+/// of `dt`, integrated by `method`.
 fn run_to(
     circuit: &Circuit,
     tstop: f64,
     dt: f64,
     method: IntegrationMethod,
 ) -> sindr::TimestepSnapshot {
-    let config = TransientConfig::new(tstop, dt).with_method(method);
+    let config = TransientConfig::new(tstop, dt)
+        .with_method(method)
+        .with_fixed_step();
     let tran = solve_transient(circuit, &config)
         .unwrap()
         .transient
@@ -552,7 +556,9 @@ fn lc_tank_amplitude_by_method() {
     ]);
     // Peak-to-peak swing of v_C over the tenth period.
     let swing = |method| {
-        let config = TransientConfig::new(10.0 * period, period / 50.0).with_method(method);
+        let config = TransientConfig::new(10.0 * period, period / 50.0)
+            .with_method(method)
+            .with_fixed_step();
         let tran = solve_transient(&tank, &config).unwrap().transient.unwrap();
         let last: Vec<f64> = tran
             .timesteps
