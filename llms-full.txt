@@ -810,7 +810,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 #### Solver & numerics
 
 - **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
-- **Dense LU factorisation** (via `nalgebra`). No sparse solver. Practical circuit size is bounded by `O(N²)` memory and `O(N³)` factorisation; large boards (hundreds of nodes) will be slow.
+- **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation, and no multithreading.
 - **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
 - **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the AC bias point (`solve_ac_with_initial_voltages`).
 - **`.ic` is always `UIC`:** transients never compute a DC operating point first; they start from the initial conditions (`TransientConfig::with_initial_voltages`, `with_initial_current`) or from all-zero. Transformer windings always start at 0 A, and inductor `IC=` on SPICE element lines isn't parsed.
@@ -2249,17 +2249,74 @@ pub fn solve_circuit_with_initial_voltages(
 
 Modified Nodal Analysis (MNA) matrix system.
 
-Holds the dense `(n+m) × (n+m)` MNA matrix and right-hand-side vector
-that every analysis path eventually solves, where `n` is the number of
-non-ground nodes and `m` is the number of branch-current unknowns
-(independent voltage sources, controlled sources that introduce a branch,
-etc.).
+Holds the `(n+m) × (n+m)` MNA matrix and right-hand-side vector that every
+analysis path eventually solves, where `n` is the number of non-ground
+nodes and `m` is the number of branch-current unknowns (independent
+voltage sources, controlled sources that introduce a branch, etc.).
 
 Components write themselves into this system via [`stamp`](crate::stamp);
 the linear DC, Newton–Raphson, and transient pipelines all build an
 [`MnaSystem`], stamp into it, and call [`MnaSystem::solve`].
 
+The matrix is stored densely for small systems and as a sparse list of
+entries above [`DENSE_MAX`] unknowns, where it is factorised with a sparse
+LU. A circuit's sparsity pattern is the same from one Newton iteration or
+timestep to the next, so the sparse LU's symbolic analysis is reused while
+the pattern doesn't change.
+
 ```rust
+/// Largest system (unknowns) stored and solved densely. Above it the matrix
+/// is sparse. From `benches/mna_solve.rs`: dense and sparse cost about the
+/// same at 100 unknowns (70 µs vs 35–80 µs), dense is 5–7× faster at 10, and
+/// sparse is 50–250× faster at 1 000.
+pub const DENSE_MAX: usize = 100;
+
+/// A scalar the MNA matrix can hold: `f64` for DC and transient,
+/// [`Complex64`] for AC.
+pub trait MnaScalar:
+    nalgebra::ComplexField<RealField = f64> + faer::traits::ComplexField + Copy
+{
+    /// Whether the value is finite (both parts, for a complex number).
+    fn is_finite_value(&self) -> bool;
+}
+
+/// The `size × size` MNA matrix: indexed as `a[(row, col)]` and written with
+/// `+=` by the stamps, whatever its storage.
+pub struct MnaMatrix<T: MnaScalar = f64> {
+    size: usize,
+    storage: Storage<T>,
+    /// Returned when reading an entry a sparse matrix doesn't hold.
+    zero: T,
+}
+
+impl<T: MnaScalar> MnaMatrix<T> {
+    /// A zero `size × size` matrix, dense if `size` ≤ [`DENSE_MAX`].
+    pub fn zeros(size: usize) -> Self { … }
+
+    /// A zero `size × size` matrix stored densely.
+    pub fn dense(size: usize) -> Self { … }
+
+    /// A zero `size × size` matrix stored sparsely.
+    pub fn sparse(size: usize) -> Self { … }
+
+    /// Number of rows (and columns).
+    pub fn size(&self) -> usize { … }
+
+    /// Whether the matrix is stored sparsely.
+    pub fn is_sparse(&self) -> bool { … }
+
+    /// The matrix as a dense nalgebra matrix.
+    pub fn to_dense(&self) -> DMatrix<T> { … }
+
+    /// Solve `self · x = b`.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::SingularMatrix`] if the matrix is singular, or
+    /// [`SimError::InvalidSolution`] if the solution contains NaN or Inf.
+    pub fn solve(&self, b: &DVector<T>) -> Result<DVector<T>, SimError> { … }
+}
+
 /// Modified Nodal Analysis system.
 ///
 /// Holds the (n+m)x(n+m) conductance/constraint matrix `a` and the (n+m)
@@ -2267,7 +2324,7 @@ the linear DC, Newton–Raphson, and transient pipelines all build an
 /// m = number of independent voltage sources.
 pub struct MnaSystem {
     /// (n+m)x(n+m) conductance/constraint matrix (siemens S in the node block).
-    pub a: DMatrix<f64>,
+    pub a: MnaMatrix<f64>,
     /// (n+m) right-hand-side vector (amperes A in the node block, volts V in the source block).
     pub b: DVector<f64>,
     /// Number of non-ground nodes (n).
@@ -2277,13 +2334,14 @@ pub struct MnaSystem {
 }
 
 impl MnaSystem {
-    /// Create a zero-filled MNA system of the given dimensions.
+    /// Create a zero-filled MNA system of the given dimensions, sparse above
+    /// [`DENSE_MAX`] unknowns.
     pub fn new(num_nodes: usize, num_vsources: usize) -> Self { … }
 
     /// Total dimension of the system (n + m).
     pub fn size(&self) -> usize { … }
 
-    /// Solve Ax = b via LU decomposition with partial pivoting.
+    /// Solve Ax = b: LU with partial pivoting, dense or sparse.
     ///
     /// Returns the solution vector on success.
     ///
@@ -5276,156 +5334,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-```
-
-## `sindr/examples/zz_probe.rs`
-
-```rust
-use sindr::*;
-fn v(id: &str, p: &str, n: &str, x: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
-        id: id.into(),
-        nodes: [p.into(), n.into()],
-        voltage: x,
-        waveform: None,
-    }
-}
-fn r(id: &str, a: &str, b: &str, x: f64) -> CircuitElement {
-    CircuitElement::Resistor {
-        id: id.into(),
-        nodes: [a.into(), b.into()],
-        resistance: x,
-    }
-}
-fn d(id: &str, a: &str, k: &str) -> CircuitElement {
-    CircuitElement::Diode {
-        id: id.into(),
-        nodes: [a.into(), k.into()],
-        temperature: 300.15,
-    }
-}
-fn q(id: &str, b: &str, c: &str, e: &str, kind: BjtKind) -> CircuitElement {
-    CircuitElement::Bjt {
-        id: id.into(),
-        nodes: [b.into(), c.into(), e.into()],
-        kind,
-        bf: 100.0,
-        temperature: 300.15,
-        parasitic_caps: None,
-    }
-}
-fn c(v: Vec<CircuitElement>) -> Circuit {
-    Circuit {
-        ground_node: "0".into(),
-        components: v,
-    }
-}
-fn main() {
-    let mut cases: Vec<(String, Circuit)> = vec![];
-    for n in [5usize, 10, 20] {
-        let mut e = vec![v("V1", "in", "0", 100.0), r("R1", "in", "d0", 10.0)];
-        for i in 0..n {
-            e.push(d(
-                &format!("D{i}"),
-                &format!("d{i}"),
-                &if i + 1 == n {
-                    "0".to_string()
-                } else {
-                    format!("d{}", i + 1)
-                },
-            ));
-        }
-        cases.push((format!("diode stack {n} at 100V/10R"), c(e)));
-    }
-    cases.push((
-        "1kV into diode via 1R".into(),
-        c(vec![
-            v("V1", "in", "0", 1000.0),
-            r("R1", "in", "a", 1.0),
-            d("D1", "a", "0"),
-        ]),
-    ));
-    // Darlington emitter follower
-    cases.push((
-        "darlington".into(),
-        c(vec![
-            v("VCC", "vcc", "0", 30.0),
-            v("VB", "b", "0", 20.0),
-            q("Q1", "b", "vcc", "e1", BjtKind::Npn),
-            q("Q2", "e1", "vcc", "e2", BjtKind::Npn),
-            r("RE", "e2", "0", 10.0),
-        ]),
-    ));
-    // cross-coupled latch
-    cases.push((
-        "bjt latch".into(),
-        c(vec![
-            v("VCC", "vcc", "0", 5.0),
-            r("R1", "vcc", "c1", 1e3),
-            r("R2", "vcc", "c2", 1e3),
-            r("RB1", "c1", "b2", 10e3),
-            r("RB2", "c2", "b1", 10e3),
-            q("Q1", "b1", "c1", "0", BjtKind::Npn),
-            q("Q2", "b2", "c2", "0", BjtKind::Npn),
-        ]),
-    ));
-    // current mirror with high-value load
-    cases.push((
-        "mirror".into(),
-        c(vec![
-            v("VCC", "vcc", "0", 30.0),
-            r("RREF", "vcc", "m", 1e3),
-            q("Q1", "m", "m", "0", BjtKind::Npn),
-            q("Q2", "m", "out", "0", BjtKind::Npn),
-            r("RL", "vcc", "out", 1e6),
-        ]),
-    ));
-    // diff pair with tail mirror
-    cases.push((
-        "diff pair".into(),
-        c(vec![
-            v("VCC", "vcc", "0", 15.0),
-            v("VEE", "vee", "0", -15.0),
-            v("VI1", "i1", "0", 0.01),
-            v("VI2", "i2", "0", 0.0),
-            r("RC1", "vcc", "c1", 10e3),
-            r("RC2", "vcc", "c2", 10e3),
-            q("Q1", "i1", "c1", "t", BjtKind::Npn),
-            q("Q2", "i2", "c2", "t", BjtKind::Npn),
-            r("RT", "t", "vee", 14.3e3),
-        ]),
-    ));
-    // diode bridge at DC
-    cases.push((
-        "bridge".into(),
-        c(vec![
-            v("V1", "a", "b", 50.0),
-            r("RS", "b", "0", 1e6),
-            d("D1", "a", "p"),
-            d("D2", "b", "p"),
-            d("D3", "n", "a"),
-            d("D4", "n", "b"),
-            r("RL", "p", "n", 10.0),
-        ]),
-    ));
-    // PNP/NPN complementary pair at high voltage
-    cases.push((
-        "complementary".into(),
-        c(vec![
-            v("VCC", "vcc", "0", 100.0),
-            v("VEE", "vee", "0", -100.0),
-            v("VB", "b", "0", 0.0),
-            q("Q1", "b", "vcc", "o", BjtKind::Npn),
-            q("Q2", "b", "vee", "o", BjtKind::Pnp),
-            r("RL", "o", "0", 8.0),
-        ]),
-    ));
-    for (name, circ) in &cases {
-        match solve_circuit(circ) {
-            Ok(_) => println!("ok    {name}"),
-            Err(e) => println!("FAIL  {name}: {e:?}"),
-        }
-    }
 }
 ```

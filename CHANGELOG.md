@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Sparse MNA solve: systems above 100 unknowns are stored sparsely and
+  factorised with `faer`'s sparse LU, reusing the symbolic analysis while the
+  sparsity pattern doesn't change, for DC, transient and AC alike. A
+  10 000-node ladder solves in ~4 ms; dense took ~80 ms at 1 000 nodes.
+  Benchmark: `cargo bench -p sindr --bench mna_solve`.
 - Source stepping, the DC fallback after gmin stepping: every source ramped
   up from zero, warm-starting each step. `SimulationResult::convergence_aid`
   reports which fallback (`GminStepping` or `SourceStepping`) a solve needed.
@@ -52,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `MnaSystem::a` is an `MnaMatrix` (dense or sparse) instead of
+  a nalgebra `DMatrix`. Index it as before (`a[(r, c)]`); use
+  `MnaMatrix::to_dense()` for a `DMatrix`.
 - Transient snapshots are the accepted steps, so their number varies: every
   multiple of `tstep` is still there, plus shorter steps near edges and
   after switch-on.
