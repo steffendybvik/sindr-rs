@@ -8,6 +8,11 @@
 //! a [`SourceMap`] is returned so callers can recover the original
 //! instance path for any flattened node.
 //!
+//! `.ic` and `.nodeset` cards land in [`ParsedNetlist::initial_conditions`]
+//! and [`ParsedNetlist::nodesets`]; pass them to
+//! [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages)
+//! and [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages).
+//!
 //! Enable the optional `spice` feature to pull this module in
 //! (`sindr = { version = "0.1.0-alpha.7", features = ["spice"] }`); it is off by
 //! default so the parser dependencies stay out of the baseline build.
@@ -129,6 +134,7 @@ pub use analysis::{AcSweep, AnalysisRequest};
 pub use error::{ParseWarning, SpiceParseError};
 pub use source_map::{HierarchyPath, SourceMap};
 
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Successful result of parsing a SPICE netlist.
@@ -144,6 +150,17 @@ pub struct ParsedNetlist {
     ///
     /// Order matches declaration order in the source.
     pub analyses: Vec<AnalysisRequest>,
+    /// `.ic` node voltages (V), keyed by node name: the state a transient
+    /// starts from. Pass them to
+    /// [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
+    /// Only top-level cards are read.
+    pub initial_conditions: HashMap<String, f64>,
+    /// `.nodeset` node voltages (V), keyed by node name: a starting guess for
+    /// the DC operating point. Pass them to
+    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages)
+    /// or [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages).
+    /// Only top-level cards are read.
+    pub nodesets: HashMap<String, f64>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
     /// [`ParseOptions::strict`] is `true`.
     pub warnings: Vec<ParseWarning>,

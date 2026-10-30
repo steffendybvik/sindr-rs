@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Source stepping, the DC fallback after gmin stepping: every source ramped
+  up from zero, warm-starting each step. `SimulationResult::convergence_aid`
+  reports which fallback (`GminStepping` or `SourceStepping`) a solve needed.
+- Transient initial conditions (`.ic` with `UIC`):
+  `TransientConfig::with_initial_voltages` and `with_initial_current`.
+- `ac_analysis::solve_ac_with_initial_voltages`: a `.nodeset` for the AC bias
+  point.
+- `sindr::spice` reads `.ic V(node)=…` and `.nodeset V(node)=…` into
+  `ParsedNetlist::initial_conditions` and `nodesets`.
+- Transient timestep control: steps are shortened where the local truncation
+  error would exceed SPICE's default tolerances, and land exactly on every
+  corner of a source waveform (`Waveform::breakpoints`), restarting the
+  integration there. `TransientData::stats` counts accepted, LTE-rejected and
+  Newton-rejected steps; `TransientConfig::with_fixed_step()` opts out.
 - Trapezoidal and Gear-2 (BDF2) transient integration, chosen with
   `TransientConfig::with_method(IntegrationMethod::…)`. Both are second
   order; trapezoidal keeps an LC tank's amplitude, Gear-2 doesn't ring on
@@ -38,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Transient snapshots are the accepted steps, so their number varies: every
+  multiple of `tstep` is still there, plus shorter steps near edges and
+  after switch-on.
 - Transients integrate with **Gear-2 by default**, including through
   `solve_circuit`, instead of backward Euler. Results are much closer to the
   exact solution (0.03 % against ngspice where BE was 0.4 %) and change
@@ -76,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Transformers in transient modelled negative inductance (the winding rows
+  had V = −L·dI/dt). At the large steps sindr used to take, the unstable mode
+  this created happened to look settled; at short steps the secondary blew
+  up. A winding is now V = L·dI/dt, so it is a short at DC.
 - Varactors in transient: the companion injected its history current with
   the wrong sign, so a varactor charged through a resistor settled about
   1e-3 short of the source voltage.

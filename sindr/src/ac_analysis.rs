@@ -520,10 +520,26 @@ fn stamp_complex_conductance(
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
+    solve_ac_with_initial_voltages(circuit, config, &HashMap::new())
+}
+
+/// Like [`solve_ac`], seeding the Newton–Raphson solve for the DC bias
+/// point with node voltages (V) keyed by node name, as SPICE's `.nodeset`.
+/// Useful when the bias point is hard to find or not unique. Unknown node
+/// names are ignored.
+///
+/// # Errors
+///
+/// As [`solve_ac`].
+pub fn solve_ac_with_initial_voltages(
+    circuit: &Circuit,
+    config: &AcConfig,
+    initial_voltages: &HashMap<String, f64>,
+) -> Result<AcResult, SimError> {
     validate_config(config)?;
 
     // Step 1: DC operating point
-    let dc_result = crate::solve_dc_operating_point(circuit)?;
+    let dc_result = crate::solve_dc_operating_point(circuit, initial_voltages)?;
 
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
@@ -1470,7 +1486,7 @@ mod tests {
             }
             with(c)
         };
-        let op = crate::solve_dc_operating_point(&stage(true)).unwrap();
+        let op = crate::solve_dc_operating_point(&stage(true), &HashMap::new()).unwrap();
         let plain = crate::solve_circuit(&stage(false)).unwrap();
         // Both are Newton solves stopped at RELTOL = 1e-3 (see SIN-14), so
         // they agree to that precision, not to round-off.

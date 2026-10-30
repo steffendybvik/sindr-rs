@@ -144,7 +144,11 @@ fn trapezoidal_rings_on_a_stiff_time_constant_and_gear2_does_not() {
         resistor("R1", "in", "out", 1.0),
         capacitor("C1", "out", "0", 1e-9),
     ]);
-    let config = |m| TransientConfig::new(20e-6, 1e-6).with_method(m);
+    let config = |m| {
+        TransientConfig::new(20e-6, 1e-6)
+            .with_method(m)
+            .with_fixed_step()
+    };
     for m in [IntegrationMethod::Gear2, IntegrationMethod::BackwardEuler] {
         let v = trace(&stiff, &config(m), "out");
         assert!(
