@@ -279,6 +279,49 @@ fn op_mosfet_cs() {
     );
 }
 
+/// A three-terminal MOSFET's body is tied to its source, so a follower
+/// sees no body effect; ngspice's `M1 vdd g s s`.
+#[test]
+fn op_mosfet_follower() {
+    check_op(
+        "op_mosfet_follower",
+        &circuit(vec![
+            vsource("vdd", "vdd", "0", 10.0),
+            vsource("vg", "g", "0", 5.0),
+            resistor("rs", "s", "0", 10e3),
+            CircuitElement::Mosfet {
+                id: "m1".into(),
+                nodes: ["g".into(), "vdd".into(), "s".into()],
+                kind: MosfetKind::Nmos,
+                params: MosfetParams::default_nmos(),
+                parasitic_caps: None,
+            },
+        ]),
+        (OP_V, OP_I),
+    );
+}
+
+/// PMOS with source and body at VDD; ngspice's `M1 d g vdd vdd`.
+#[test]
+fn op_pmos_highside() {
+    check_op(
+        "op_pmos_highside",
+        &circuit(vec![
+            vsource("vdd", "vdd", "0", 10.0),
+            vsource("vg", "g", "0", 5.0),
+            resistor("rd", "d", "0", 10e3),
+            CircuitElement::Mosfet {
+                id: "m1".into(),
+                nodes: ["g".into(), "d".into(), "vdd".into()],
+                kind: MosfetKind::Pmos,
+                params: MosfetParams::default_pmos(),
+                parasitic_caps: None,
+            },
+        ]),
+        (OP_V, OP_I),
+    );
+}
+
 #[test]
 fn op_jfet() {
     check_op(

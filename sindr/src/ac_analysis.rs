@@ -14,7 +14,7 @@ use num_complex::Complex64;
 use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::diode;
 use sindr_devices::jfet;
-use sindr_devices::mosfet::{self, MosfetKind};
+use sindr_devices::mosfet;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
@@ -309,14 +309,11 @@ fn linearize_at_dc(
                 let vd = d.map_or(0.0, |i| dc_solution[i]);
                 let vs = s.map_or(0.0, |i| dc_solution[i]);
 
-                let (vgs, vds, vbs) = match kind {
-                    MosfetKind::Nmos => (vg - vs, vd - vs, -vs), // body tied to ground for now
-                    MosfetKind::Pmos => (vs - vg, vs - vd, vs),
-                };
+                let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
+                let comp = mosfet::mosfet_companion(vgs, vds, 0.0, &params.in_nmos_frame(*kind));
 
-                let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(*kind));
-
-                let mut conds = vec![
+                // The body is tied to the source, so there is no gmb term.
+                let conds = vec![
                     // gm: Id depends on Vgs => dId/dVg = gm, dId/dVs += -gm
                     (d, g, comp.gm),
                     (d, s, -comp.gm),
@@ -328,15 +325,6 @@ fn linearize_at_dc(
                     (d, s, -comp.gds),
                     (s, d, -comp.gds),
                 ];
-
-                // gmb: body transconductance (similar to gm but from Vbs)
-                if comp.gmb.abs() > 1e-15 {
-                    // dId/dVb = gmb, but body is tied to source/ground for simplicity
-                    // In a 3-terminal model (no explicit body), gmb adds to gds-like term
-                    conds.push((d, s, -comp.gmb));
-                    conds.push((d, d, 0.0)); // body at ground
-                    conds.push((s, s, comp.gmb));
-                }
 
                 models.push(SmallSignalModel {
                     conductances: conds,

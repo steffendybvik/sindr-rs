@@ -203,7 +203,8 @@ pub enum CircuitElement {
         parasitic_caps: Option<BjtParasiticCaps>,
     },
 
-    /// MOSFET transistor (3 terminals: gate, drain, source).
+    /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
+    /// to the source).
     #[cfg_attr(feature = "serde", serde(rename = "mosfet"))]
     Mosfet {
         /// Unique component identifier.

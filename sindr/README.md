@@ -141,7 +141,7 @@ CircuitElement::Bjt {
     parasitic_caps: Option<BjtParasiticCaps>, // { cbe, cbc } in Farads; None = disabled
 }
 
-// MOSFET — nodes: [gate, drain, source]
+// MOSFET — nodes: [gate, drain, source]; body tied to source
 CircuitElement::Mosfet {
     id,
     nodes: [String; 3],

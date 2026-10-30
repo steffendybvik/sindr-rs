@@ -66,7 +66,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **No op-amp macromodel beyond ideal-with-rails.** No GBW, slew rate, input bias current, offset, output impedance, current limiting, or supply current. Real op-amp models from vendors cannot be loaded.
 - **No real regulator / reference / DC-DC controller models.** `VoltageRegulator` is an ideal voltage source on the output: no dropout, line/load regulation, quiescent current or current limit.
-- **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation, body effect, gate leakage are absent.
+- **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
+- **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
 - **No JFET parasitic capacitances.** (BJT and MOSFET have optional Cbe/Cbc and Cgs/Cgd; JFET doesn't.)
 - **No power-MOSFET reverse body diode** as a separate stamped element (must be added explicitly as a `Diode`).

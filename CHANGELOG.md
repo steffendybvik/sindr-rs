@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, the solver expected a positive magnitude, so `default_pmos()` gave a
   normally-on device that conducted at V_SG = 0. If you set a positive `vto`
   on a PMOS, negate it.
+- A MOSFET's body is now tied to its source, as in a discrete three-terminal
+  part, so `Vbs = 0` and there is no body effect. Before, the body sat at
+  ground: an NMOS with its source above ground (a source follower, a
+  high-side switch) had its threshold raised through `gamma`, and a PMOS with
+  its source at VDD had it lowered. Results change for any MOSFET whose
+  source isn't at ground.
 
 ### Fixed
 
