@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Source stepping, the DC fallback after gmin stepping: every source ramped
+  up from zero, warm-starting each step. `SimulationResult::convergence_aid`
+  reports which fallback (`GminStepping` or `SourceStepping`) a solve needed.
+- Transient initial conditions (`.ic` with `UIC`):
+  `TransientConfig::with_initial_voltages` and `with_initial_current`.
+- `ac_analysis::solve_ac_with_initial_voltages`: a `.nodeset` for the AC bias
+  point.
+- `sindr::spice` reads `.ic V(node)=…` and `.nodeset V(node)=…` into
+  `ParsedNetlist::initial_conditions` and `nodesets`.
 - Transient timestep control: steps are shortened where the local truncation
   error would exceed SPICE's default tolerances, and land exactly on every
   corner of a source waveform (`Waveform::breakpoints`), restarting the

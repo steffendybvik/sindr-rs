@@ -38,7 +38,8 @@ use std::collections::{HashMap, HashSet};
 use miette::NamedSource;
 
 use crate::spice::ast::{
-    ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawModel, RawSubckt, Span,
+    NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawModel,
+    RawSubckt, Span,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::param_eval::{eval_error_to_parse_error, eval_param_list, ParamScope};
@@ -53,10 +54,15 @@ pub(crate) struct Flattened {
     pub models: HashMap<String, RawModel>,
     pub source_map: SourceMap,
     pub analyses: Vec<(RawAnalysis, Span)>,
+    /// Top-level `.ic` / `.nodeset` cards, in source order.
+    pub node_values: Vec<NodeValueCard>,
     /// Snapshot of the outer-most parameter scope after top-level `.param`
     /// evaluation. Analysis directive arguments are evaluated against this.
     pub top_params: HashMap<String, f64>,
 }
+
+/// A `.ic` / `.nodeset` card: its kind, `V(node)=value` pairs and span.
+pub(crate) type NodeValueCard = (NodeValueKind, Vec<(String, ParamExpr)>, Span);
 
 /// One device-instance line lifted out of all subckt nesting. The
 /// `scope_snapshot` carries every parameter visible at the point of
@@ -83,6 +89,7 @@ pub(crate) fn flatten(
     let mut models: HashMap<String, RawModel> = HashMap::new();
     let mut top_param_lists: Vec<(Vec<(String, ParamExpr)>, Span)> = Vec::new();
     let mut top_analyses: Vec<(RawAnalysis, Span)> = Vec::new();
+    let mut top_node_values = Vec::new();
     let mut top_elements: Vec<RawElement> = Vec::new();
 
     for card in cards {
@@ -95,6 +102,7 @@ pub(crate) fn flatten(
             }
             RawCard::Param(list, span) => top_param_lists.push((list, span)),
             RawCard::Analysis(a, span) => top_analyses.push((a, span)),
+            RawCard::NodeValues(kind, values, span) => top_node_values.push((kind, values, span)),
             RawCard::Element(e) => top_elements.push(e),
             RawCard::Include(_) | RawCard::Lib { .. } => {
                 // The preprocessor resolves these; if one survives this far
@@ -161,6 +169,7 @@ pub(crate) fn flatten(
         models,
         source_map,
         analyses: top_analyses,
+        node_values: top_node_values,
         top_params: top_params_snapshot,
     })
 }
@@ -306,6 +315,7 @@ fn expand_instance(
                 // No-op for now.
             }
             RawCard::Analysis(..)
+            | RawCard::NodeValues(..)
             | RawCard::Include(_)
             | RawCard::Lib { .. }
             | RawCard::Ends(_) => {

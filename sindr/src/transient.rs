@@ -1250,6 +1250,15 @@ pub struct TransientConfig {
     /// `false`, every step is `tstep` (or `tmax`) except where a breakpoint
     /// or Newton failure shortens it.
     pub adaptive: bool,
+    /// Initial node voltages (V), keyed by node name, as SPICE's `.ic` with
+    /// `UIC`: each capacitor (and BJT/MOSFET parasitic capacitor) starts
+    /// charged to the difference of its nodes' values. Nodes not listed
+    /// count as 0 V.
+    pub initial_voltages: HashMap<String, f64>,
+    /// Initial inductor currents (A), keyed by inductor or relay id, flowing
+    /// from the element's first node to its second. Inductors not listed
+    /// start at 0 A.
+    pub initial_currents: HashMap<String, f64>,
 }
 
 /// Most steps one transient run may take.
@@ -1264,7 +1273,50 @@ impl TransientConfig {
             tmax: None,
             method: IntegrationMethod::default(),
             adaptive: true,
+            initial_voltages: HashMap::new(),
+            initial_currents: HashMap::new(),
         }
+    }
+
+    /// Start from these node voltages (V) instead of all-zero, as SPICE's
+    /// `.ic` with `UIC`. See [`TransientConfig::initial_voltages`].
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+    ///
+    /// // A 1 µF capacitor charged to 5 V discharging through 1 kΩ.
+    /// let circuit = Circuit {
+    ///     ground_node: "0".into(),
+    ///     components: vec![
+    ///         CircuitElement::Resistor {
+    ///             id: "R1".into(),
+    ///             nodes: ["a".into(), "0".into()],
+    ///             resistance: 1e3,
+    ///         },
+    ///         CircuitElement::Capacitor {
+    ///             id: "C1".into(),
+    ///             nodes: ["a".into(), "0".into()],
+    ///             capacitance: 1e-6,
+    ///         },
+    ///     ],
+    /// };
+    /// let config = TransientConfig::new(1e-3, 10e-6)
+    ///     .with_initial_voltages(HashMap::from([("a".to_string(), 5.0)]));
+    /// let tran = solve_transient(&circuit, &config).unwrap().transient.unwrap();
+    /// // After one time constant: 5·e⁻¹ ≈ 1.84 V.
+    /// let v = tran.timesteps.last().unwrap().node_voltages["a"];
+    /// assert!((v - 5.0 * (-1.0_f64).exp()).abs() < 1e-2);
+    /// ```
+    pub fn with_initial_voltages(mut self, voltages: HashMap<String, f64>) -> Self {
+        self.initial_voltages = voltages;
+        self
+    }
+
+    /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A.
+    pub fn with_initial_current(mut self, id: impl Into<String>, amps: f64) -> Self {
+        self.initial_currents.insert(id.into(), amps);
+        self
     }
 
     /// Step at a fixed `tstep` instead of controlling the step by local
@@ -1414,26 +1466,53 @@ pub(crate) fn run_transient(
 
     // Initial state: uncharged caps (0 V), inductors at rest (0 A), as if the
     // circuit were switched on at t = 0.
+    // Initial state: the config's initial conditions, otherwise uncharged
+    // caps (0 V) and inductors at rest (0 A), as if the circuit were
+    // switched on at t = 0.
+    let ic = |node: &String| config.initial_voltages.get(node).copied().unwrap_or(0.0);
+    let across = |a: &String, b: &String| History::at(ic(a) - ic(b));
+    let current =
+        |id: &String| History::at(config.initial_currents.get(id).copied().unwrap_or(0.0));
     let mut caps: Vec<History> = Vec::new();
     let mut inds: Vec<History> = Vec::new();
+    // Parasitic cap histories, keyed by "component_id-junction" ("Q1-be").
+    let mut parasitic: HashMap<String, History> = HashMap::new();
     for component in &circuit.components {
         match component {
-            CircuitElement::Capacitor { .. } | CircuitElement::Varactor { .. } => {
-                caps.push(History::default());
+            CircuitElement::Capacitor { nodes, .. } | CircuitElement::Varactor { nodes, .. } => {
+                caps.push(across(&nodes[0], &nodes[1]));
             }
-            CircuitElement::Inductor { .. } => inds.push(History::default()),
-            CircuitElement::Relay { inductance, .. } if *inductance > 0.0 => {
-                inds.push(History::default());
+            CircuitElement::Inductor { id, .. } => inds.push(current(id)),
+            CircuitElement::Relay { id, inductance, .. } if *inductance > 0.0 => {
+                inds.push(current(id));
             }
             CircuitElement::Transformer { .. } => {
                 inds.push(History::default()); // primary
                 inds.push(History::default()); // secondary
             }
+            CircuitElement::Bjt {
+                id,
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (junction, _, a, b) in bjt_parasitics(nodes, pc) {
+                    parasitic.insert(format!("{id}-{junction}"), across(&a, &b));
+                }
+            }
+            CircuitElement::Mosfet {
+                id,
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (junction, _, a, b) in mosfet_parasitics(nodes, pc) {
+                    parasitic.insert(format!("{id}-{junction}"), across(&a, &b));
+                }
+            }
             _ => {}
         }
     }
-    // Parasitic cap histories, keyed by "component_id-junction" ("Q1-be").
-    let mut parasitic: HashMap<String, History> = HashMap::new();
     // The accepted step before this one; `None` until the first is taken.
     let mut h_prev: Option<f64> = None;
 
@@ -1455,7 +1534,13 @@ pub(crate) fn run_transient(
     let mut next_bp = 0;
     let mut grid = 0u64; // index of the last tstep multiple reached
 
+    // Newton starts its first step from the initial node voltages.
     let mut solution = DVector::zeros(num_nodes + num_vsources);
+    for (node, v) in &config.initial_voltages {
+        if let Some(i) = node_map.index(node) {
+            solution[i] = *v;
+        }
+    }
     let mut timesteps = Vec::new();
     let mut stats = TransientStats::default();
     let mut time = 0.0;
@@ -1585,6 +1670,7 @@ pub(crate) fn run_transient(
         op_amp_results: vec![],
         relay_results: vec![],
         mcu_results: vec![],
+        convergence_aid: None,
         transient: Some(TransientData {
             timesteps,
             time_step: config.tstep,
