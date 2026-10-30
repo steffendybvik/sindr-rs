@@ -75,7 +75,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattens hierarchy with `.`-separated node naming, and returns a `SourceMap` to recover original instance paths. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattens hierarchy with `.`-separated node naming, and returns a `SourceMap` to recover original instance paths. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 A runnable walkthrough (parse → solve → dispatch directives → render a diagnostic) lives in [`sindr/examples/parse_netlist.rs`](./sindr/examples/parse_netlist.rs):
 
@@ -116,7 +116,7 @@ conditions.
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, transfer function (`.tf`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -144,7 +144,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -467,6 +467,23 @@ let phase = result.phase_curve("n_out"); // (Hz, degrees)
 
 `num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidComponent`.
 
+### Transfer function
+
+SPICE's `.tf`: the small-signal DC gain from an input source to an output, the resistance the input source sees, and the output resistance, all at the DC operating point (capacitors open, inductors shorted, nonlinear devices linearised).
+
+```rust
+use sindr::{solve_tf, TfConfig, TfOutput};
+
+let config = TfConfig {
+    output: TfOutput::Voltage { node: "out".into(), reference: None }, // or TfOutput::Current { source_id }
+    input_source: "V1".into(),                                         // a voltage or current source
+};
+let tf = solve_tf(&circuit, &config)?;
+println!("{} V/V, Rin {} Ω, Rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
+```
+
+The input resistance is infinite when the input source draws no small-signal current. Every other independent source is zeroed for the output resistance. A current output (`I(Vx)`) runs from the source's `nodes[0]` through it to `nodes[1]`, as SPICE's.
+
 ### DC sweep
 
 Sweep a voltage source across a range and collect operating points at each step.
@@ -522,6 +539,7 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `bjt_amplifier` | Nonlinear DC with a BJT |
 | `transient_rc` | Transient step response |
 | `bode_plot` | AC analysis |
+| `transfer_function` | Transfer function (`.tf`) |
 | `dc_sweep_diode` | DC sweep (diode I–V curve) |
 | `temperature_sweep` | Temperature sweep |
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
@@ -763,7 +781,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **No SPICE netlist export.** Cannot hand a circuit off to ngspice / LTspice / Xyce.
 - **No hierarchical data model.** The `spice` parser *flattens* `.subckt` hierarchy (parameter-passing instances, `.`-separated hierarchical node naming) when importing a deck. But the core `Circuit` API itself is a flat `Vec<CircuitElement>` — there is no hierarchical block or instance type exposed programmatically.
 - **No model cards.** Devices take parameters as Rust structs, not BSIM / Gummel-Poon / VBIC / HICUM cards. There is no way to point at a manufacturer model and get matching behaviour.
@@ -777,6 +795,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.dc` (DC sweep) | ✅ | one source at a time |
 | `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` ignored |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
+| `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
 | `.temp` (temperature sweep) | ✅ | junction-device temp parameter |
 | `.noise` (noise analysis) | ❌ | no thermal/shot/flicker noise stamps |
 | `.disto` / harmonic distortion | ❌ | |
@@ -800,7 +819,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No power-MOSFET reverse body diode** as a separate stamped element (must be added explicitly as a `Diode`).
 - **No SiC / GaN device models.**
 - **No magnetics with saturation / hysteresis.** `Transformer` is linear coupled inductors. No B-H curve, no core loss, no saturating inductor, no gapped core.
-- **AC analysis ignores a transformer's coupling** (SIN-39): each winding is stamped as a separate inductor, so nothing reaches the secondary in AC. DC and transient couple the windings.
+- **AC and `.tf` fail on a circuit with a transformer** (SIN-39): AC stamps each winding as a separate inductor and leaves the transformer's two branch rows empty, so the system is singular (`SimError::SingularMatrix`). DC and transient couple the windings.
 - **No transmission lines** (lossless or lossy / W-element).
 - **No crystal / quartz resonator macromodel** (must be built from L/C/R by hand).
 - **No piezo / MEMS / electro-mechanical coupling.**
@@ -1876,6 +1895,8 @@ picks the right path automatically:
 - **Transient** — Gear-2 (or trapezoidal or backward-Euler) timestepping
   when capacitors, inductors, or time-varying sources are present.
 - **AC small-signal** — sinusoidal-steady-state via [`ac_analysis::solve_ac`].
+- **Transfer function** — DC small-signal gain, input and output
+  resistance (SPICE's `.tf`) via [`solve_tf`].
 - **DC sweep** — operating point at each value of a swept voltage source,
   via [`fn@dc_sweep`].
 - **Temperature sweep** — operating-point sweep over junction temperature
@@ -1932,9 +1953,10 @@ assert!((v_n2 - 6.6667).abs() < 1e-3);
 | Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
 | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
+| Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
-| Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`] | Seeds Newton for the DC or AC bias point |
+| Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`] | Seeds Newton for the DC, AC or `.tf` bias point |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
 
 Not available: noise, distortion, pole-zero, sensitivity, Monte Carlo,
@@ -1969,8 +1991,8 @@ step.
 
 [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
 and X elements; `.subckt`, `.model`, `.param`, `.include`, `.lib`,
-`.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac` and
-`.tran`. Not supported: MOSFET (M)
+`.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac`, `.tf`
+and `.tran`. Not supported: MOSFET (M)
 and JFET (J) elements, controlled sources (E, F, G, H), coupled inductors
 (K), `B` sources, most `.model` parameters (diodes always use IS = 1e-14,
 N = 1; BJTs honour only BF), and netlist export.
@@ -2104,6 +2126,8 @@ pub mod stamp;
 
 pub mod temp_sweep;
 
+pub mod transfer_function;
+
 pub mod transient;
 
 pub mod validation;
@@ -2123,6 +2147,8 @@ pub use node_map::NodeMap;
 pub use results:: { … }
 
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
+
+pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
 
 pub use transient::{solve_transient, IntegrationMethod, TransientConfig};
 
@@ -2704,7 +2730,7 @@ These are returned in [`crate::spice::ParsedNetlist::analyses`]. They map 1-to-1
 onto the analyses that `sindr` knows how to run.
 
 ```rust
-/// One analysis request declared in a netlist (`.tran`, `.dc`, `.ac`, `.op`).
+/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`).
 pub enum AnalysisRequest {
     /// `.op` — DC operating-point analysis.
     Op,
@@ -2739,6 +2765,14 @@ pub enum AnalysisRequest {
         /// Stop frequency in Hz.
         fstop: f64,
     },
+    /// `.tf v(node[,ref]) source` or `.tf i(vsource) source` — DC
+    /// small-signal transfer function.
+    Tf {
+        /// What the gain is measured at.
+        output: crate::TfOutput,
+        /// Input source id.
+        input: String,
+    },
 }
 
 impl AnalysisRequest {
@@ -2761,6 +2795,22 @@ impl AnalysisRequest {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn transient_config(&self) -> Option<crate::TransientConfig> { … }
+
+    /// The [`TfConfig`](crate::TfConfig) for a `.tf` request, to pass to
+    /// [`solve_tf`](crate::solve_tf); `None` for any other analysis.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* divider\nV1 in 0 1\nR1 in out 1k\nR2 out 0 3k\n.tf v(out) v1\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].tf_config().unwrap();
+    /// let tf = sindr::solve_tf(&netlist.circuit, &config)?;
+    /// assert!((tf.gain - 0.75).abs() < 1e-12);
+    /// assert!((tf.output_resistance - 750.0).abs() < 1e-9);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn tf_config(&self) -> Option<crate::TfConfig> { … }
 }
 
 /// Frequency-axis spacing for an AC sweep.
@@ -3175,7 +3225,7 @@ use sindr::spice::{parse_file, AnalysisRequest};
 let netlist = parse_file("amp.cir")?;
 println!("parsed `{}` ({} components)", netlist.title, netlist.circuit.components.len());
 
-// `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac`
+// `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf`
 // directives, in source order. The parser does not run them — you do.
 for analysis in &netlist.analyses {
     match analysis {
@@ -3196,6 +3246,10 @@ for analysis in &netlist.analyses {
         AnalysisRequest::Ac { fstart, fstop, .. } => {
             // Build an `AcConfig` and call `sindr::ac_analysis::solve_ac`.
             println!("ac sweep {fstart}..{fstop} Hz");
+        }
+        AnalysisRequest::Tf { .. } => {
+            let tf = sindr::solve_tf(&netlist.circuit, &analysis.tf_config().unwrap())?;
+            println!("tf: gain {}, rin {} Ω, rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
         }
     }
 }
@@ -3762,6 +3816,137 @@ pub fn temperature_sweep(
     temp_end: f64,
     num_steps: usize,
 ) -> Result<TempSweepResult, SimError> { … }
+```
+
+## `sindr/src/transfer_function.rs`
+
+DC small-signal transfer function, as SPICE's `.tf`.
+
+Linearises the circuit at its DC operating point, then reports the DC
+gain from an input source to an output, the resistance the input source
+sees, and the resistance at the output.
+
+```rust
+/// What a transfer function is measured at.
+pub enum TfOutput {
+    /// `V(node[,reference])`: the voltage of `node` against `reference`,
+    /// or against ground when `reference` is `None`.
+    Voltage {
+        /// Output node.
+        node: String,
+        /// Reference node; ground when `None`.
+        reference: Option<String>,
+    },
+    /// `I(source)`: the current through an independent voltage source,
+    /// from its `nodes[0]` through the source to its `nodes[1]`.
+    Current {
+        /// Id of the voltage source the current runs through.
+        source_id: String,
+    },
+}
+
+/// Transfer-function analysis configuration.
+pub struct TfConfig {
+    /// The output the gain is measured at.
+    pub output: TfOutput,
+    /// Id of the input: an independent voltage or current source.
+    pub input_source: String,
+}
+
+/// Result of a transfer-function analysis.
+///
+/// The gain's unit follows the input and output: V/V for a voltage in and
+/// out, A/A for a current in and out, Ω or S for a mix.
+pub struct TfResult {
+    /// Small-signal DC gain: d(output)/d(input).
+    pub gain: f64,
+    /// Resistance (Ω) the input source sees, looking into the circuit.
+    /// Infinite when it draws no small-signal current.
+    pub input_resistance: f64,
+    /// Resistance (Ω) at the output with every independent source zeroed.
+    /// For a voltage output it is the resistance between the output node
+    /// and its reference; for a current output, the resistance in series
+    /// with the measuring source.
+    pub output_resistance: f64,
+    /// Configuration used to produce this result.
+    pub config: TfConfig,
+}
+
+/// Runs a DC small-signal transfer-function analysis, as SPICE's `.tf`.
+///
+/// # Algorithm
+///
+/// 1. Solve the DC operating point of `circuit` (capacitors open,
+///    inductors shorted).
+/// 2. Linearise every nonlinear element at that operating point.
+/// 3. Excite the input source with a unit signal, everything else zero,
+///    and read the output: that is the gain. The input source's own
+///    response gives the input resistance.
+/// 4. Drive a unit test current into the output (or a unit voltage on a
+///    current output's source) and read the response: that is the output
+///    resistance.
+///
+/// # Errors
+///
+/// - [`SimError::InvalidComponent`] if the input is not an independent
+///   voltage or current source, the output node is not in the circuit, or
+///   a current output does not name an independent voltage source
+/// - Any [`SimError`] from the DC operating-point solve
+/// - [`SimError::SingularMatrix`] if the linearised system is singular
+///
+/// # Example
+///
+/// ```
+/// use sindr::{Circuit, CircuitElement};
+/// use sindr::transfer_function::{solve_tf, TfConfig, TfOutput};
+///
+/// // A 1 kΩ / 3 kΩ divider: gain 3/4, Rin 4 kΩ, Rout 1k ‖ 3k = 750 Ω.
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["in".into(), "0".into()],
+///             voltage: 1.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["in".into(), "out".into()],
+///             resistance: 1_000.0,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R2".into(),
+///             nodes: ["out".into(), "0".into()],
+///             resistance: 3_000.0,
+///         },
+///     ],
+/// };
+///
+/// let config = TfConfig {
+///     output: TfOutput::Voltage { node: "out".into(), reference: None },
+///     input_source: "V1".into(),
+/// };
+/// let tf = solve_tf(&circuit, &config)?;
+/// assert!((tf.gain - 0.75).abs() < 1e-9);
+/// assert!((tf.input_resistance - 4_000.0).abs() < 1e-6);
+/// assert!((tf.output_resistance - 750.0).abs() < 1e-6);
+/// # Ok::<(), sindr::SimError>(())
+/// ```
+pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimError> { … }
+
+/// Like [`solve_tf`], seeding the Newton–Raphson solve for the DC bias
+/// point with node voltages (V) keyed by node name, as SPICE's `.nodeset`.
+/// Unknown node names are ignored.
+///
+/// # Errors
+///
+/// As [`solve_tf`].
+pub fn solve_tf_with_initial_voltages(
+    circuit: &Circuit,
+    config: &TfConfig,
+    initial_voltages: &HashMap<String, f64>,
+) -> Result<TfResult, SimError> { … }
 ```
 
 ## `sindr/src/transient.rs`
@@ -5090,13 +5275,14 @@ fn main() {
 
 use sindr::spice::{parse_str, parse_str_with_options, AnalysisRequest, ParseOptions};
 
-// A resistor divider plus a `.dc` sweep directive. V1 = 9 V across
+// A resistor divider plus `.dc` sweep and `.tf` directives. V1 = 9 V across
 // R1 = 1k / R2 = 2k, so node `n2` sits at 6 V at the nominal source value.
 const DECK: &str = "* resistor divider\n\
                     V1 n1 0 DC 9\n\
                     R1 n1 n2 1k\n\
                     R2 n2 0 2k\n\
                     .dc V1 0 9 0.9\n\
+                    .tf V(n2) V1\n\
                     .end\n";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -5144,6 +5330,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             AnalysisRequest::Ac { fstart, fstop, .. } => {
                 println!("ac sweep {fstart}..{fstop} Hz (build an AcConfig for solve_ac)");
+            }
+            AnalysisRequest::Tf { .. } => {
+                let config = analysis.tf_config().ok_or("not a .tf")?;
+                let tf = sindr::solve_tf(&netlist.circuit, &config)?;
+                println!(
+                    "tf: gain {:.4}, input {:.1} Ω, output {:.1} Ω",
+                    tf.gain, tf.input_resistance, tf.output_resistance
+                );
             }
         }
     }
@@ -5280,6 +5474,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             point.result.node_voltages["out"]
         );
     }
+
+    Ok(())
+}
+```
+
+## `sindr/examples/transfer_function.rs`
+
+```rust
+use sindr::{examples, solve_tf, TfConfig, TfOutput};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let circuit = examples::npn_common_emitter();
+
+    // How much supply ripple reaches the collector, what the supply sees,
+    // and how stiff the collector node is.
+    let config = TfConfig {
+        output: TfOutput::Voltage {
+            node: "collector".into(),
+            reference: None,
+        },
+        input_source: "Vcc".into(),
+    };
+    let tf = solve_tf(&circuit, &config)?;
+
+    println!("=== NPN Common Emitter — .tf V(collector) Vcc ===");
+    println!("gain               = {:.4} V/V", tf.gain);
+    println!("input resistance   = {:.1} Ω", tf.input_resistance);
+    println!("output resistance  = {:.1} Ω", tf.output_resistance);
 
     Ok(())
 }

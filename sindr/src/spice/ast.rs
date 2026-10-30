@@ -155,6 +155,10 @@ pub(crate) enum RawAnalysis {
         fstart: ParamExpr,
         fstop: ParamExpr,
     },
+    Tf {
+        output: crate::TfOutput,
+        input: String,
+    },
 }
 
 /// AC sweep style keyword.

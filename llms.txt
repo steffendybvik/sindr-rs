@@ -1,6 +1,6 @@
 # sindr
 
-> Analog circuit simulator in pure Rust: a SPICE-style modified nodal analysis (MNA) solver with built-in semiconductor device models. Build a `Circuit` (a flat list of `CircuitElement`s plus a ground node name) in Rust or JSON, or parse a SPICE3 subset, then run DC operating point, transient (Gear-2 by default, or trapezoidal or backward Euler), AC small-signal, DC sweep or temperature sweep. Two crates: `sindr` (solver) and `sindr-devices` (device companion models). Pre-release alpha.
+> Analog circuit simulator in pure Rust: a SPICE-style modified nodal analysis (MNA) solver with built-in semiconductor device models. Build a `Circuit` (a flat list of `CircuitElement`s plus a ground node name) in Rust or JSON, or parse a SPICE3 subset, then run DC operating point, transient (Gear-2 by default, or trapezoidal or backward Euler), AC small-signal, transfer function (`.tf`), DC sweep or temperature sweep. Two crates: `sindr` (solver) and `sindr-devices` (device companion models). Pre-release alpha.
 
 Key facts for generating code:
 
