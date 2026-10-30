@@ -112,7 +112,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Switches** are `0.01 Ω` closed / `1 GΩ` open — not ideal. In high-impedance circuits prefer explicit resistors.
 - **Capacitors / inductors / varactors / transformers / waveforms automatically trigger transient analysis.** Don't expect a pure DC solve if any are present.
 - **`solve_circuit` never runs AC.** For a frequency response call `sindr::ac_analysis::solve_ac` with an `AcConfig` naming the voltage source that carries the AC stimulus.
-- **Transient duration and step can't be set.** They're 5·τ_max and τ_max/50 from every R·C and L/R pair, with a 1 µs floor on dt (so τ below ~0.2 µs gives a single 1 µs step). A SPICE `.tran` card's values are not applied.
+- **`solve_circuit` picks the transient span itself:** 5·τ_max and τ_max/50 from every R·C and L/R pair, with a 1 µs floor on dt (so τ below ~0.2 µs gives a single step). When the span matters, call `solve_transient` with a `TransientConfig`; for a SPICE deck, `AnalysisRequest::transient_config()` turns its `.tran` card into one.
 - **Junction `temperature` fields are kelvin** (300.15 K = 27 °C, the nominal). IS and the thermal voltage kT/q both follow it.
 - **PMOS `vto` is SPICE-signed:** negative for an enhancement PMOS, as `MosfetParams::default_pmos()` has it.
 - **Backward Euler is L-stable but dissipative.** Lightly damped LC tanks will lose amplitude. Don't use sindr to verify ringing amplitude in resonant circuits today.
