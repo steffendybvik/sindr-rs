@@ -783,44 +783,6 @@ pub(crate) fn stamp_varactor_dc(system: &mut MnaSystem, node_map: &NodeMap, node
     stamp_resistor(system, node_map, nodes, 1e12);
 }
 
-/// Stamp a varactor in transient analysis: voltage-dependent capacitor companion model.
-///
-/// Uses backward Euler: g_eq = C_j(v_prev) / dt, i_eq = -g_eq * v_prev.
-/// v_prev is the voltage across the varactor at the previous timestep (solution_prev[anode] - solution_prev[cathode]).
-pub(crate) fn stamp_varactor_transient(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    v_prev_across: f64,
-    dt: f64,
-    params: &sindr_devices::varactor::VaractorParams,
-) {
-    let (g_eq, i_eq) = sindr_devices::varactor::varactor_companion(v_prev_across, dt, params);
-    let p = node_map.index(&nodes[0]);
-    let q = node_map.index(&nodes[1]);
-
-    // Stamp conductance (same pattern as capacitor companion)
-    if let Some(pi) = p {
-        system.a[(pi, pi)] += g_eq;
-    }
-    if let Some(qi) = q {
-        system.a[(qi, qi)] += g_eq;
-    }
-    if let (Some(pi), Some(qi)) = (p, q) {
-        system.a[(pi, qi)] -= g_eq;
-        system.a[(qi, pi)] -= g_eq;
-    }
-
-    // Stamp history current source: enters positive terminal (nodes[0])
-    // i_eq = -g_eq * v_prev (from varactor_companion sign convention)
-    if let Some(pi) = p {
-        system.b[pi] += i_eq;
-    }
-    if let Some(qi) = q {
-        system.b[qi] -= i_eq;
-    }
-}
-
 /// Stamp an IGBT companion model (nonlinear, called each NR iteration).
 ///
 /// Linearizes IGBT (MOSFET gate + BJT output) at operating point v_prev:
@@ -943,133 +905,39 @@ pub(crate) fn stamp_jfet_companion(
     }
 }
 
-/// Stamp BJT parasitic capacitances as companion capacitors.
+/// Stamp a coupled-inductor transformer as two branch-current unknowns.
 ///
-/// Uses HashMap-keyed v_prev values (not positional Vec).
-/// nodes: [base, collector, emitter]
-pub(crate) fn stamp_bjt_parasitic_caps(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    caps: &crate::circuit::BjtParasiticCaps,
-    dt: f64,
-    v_be_prev: f64,
-    v_bc_prev: f64,
-) {
-    if caps.cbe > 0.0 {
-        stamp_capacitor_companion(
-            system,
-            node_map,
-            &[nodes[0].clone(), nodes[2].clone()], // base-emitter
-            caps.cbe,
-            dt,
-            v_be_prev,
-        );
-    }
-    if caps.cbc > 0.0 {
-        stamp_capacitor_companion(
-            system,
-            node_map,
-            &[nodes[0].clone(), nodes[1].clone()], // base-collector
-            caps.cbc,
-            dt,
-            v_bc_prev,
-        );
-    }
-}
-
-/// Stamp MOSFET parasitic capacitances (Cgs, Cgd) as companion capacitors.
-///
-/// Uses HashMap-keyed v_prev values (not positional Vec).
-/// nodes: [gate, drain, source]
-pub(crate) fn stamp_mosfet_parasitic_caps(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    caps: &crate::circuit::MosfetParasiticCaps,
-    dt: f64,
-    v_gs_prev: f64,
-    v_gd_prev: f64,
-) {
-    if caps.cgs > 0.0 {
-        stamp_capacitor_companion(
-            system,
-            node_map,
-            &[nodes[0].clone(), nodes[2].clone()], // gate-source
-            caps.cgs,
-            dt,
-            v_gs_prev,
-        );
-    }
-    if caps.cgd > 0.0 {
-        stamp_capacitor_companion(
-            system,
-            node_map,
-            &[nodes[0].clone(), nodes[1].clone()], // gate-drain
-            caps.cgd,
-            dt,
-            v_gd_prev,
-        );
-    }
-}
-
-/// Stamp coupled inductor transformer (Backward Euler, 2 branch current unknowns).
-///
-/// branch_row_k1: index into extended MNA rows for primary branch current (= num_nodes + vsource_offset)
-/// branch_row_k2: branch_row_k1 + 1 (secondary)
-/// i1_prev, i2_prev: primary and secondary currents from previous timestep
-///
-/// MNA equations (backward Euler):
-///   -V(p1) + V(q1) + (L1/dt)*I1 + (M/dt)*I2 = L1/dt*I1_prev + M/dt*I2_prev
-///   -V(p2) + V(q2) + (L2/dt)*I2 + (M/dt)*I1 = L2/dt*I2_prev + M/dt*I1_prev
-#[allow(clippy::too_many_arguments)]
+/// `k1`/`k2` are the MNA rows of the primary and secondary currents, each
+/// flowing from the winding's first terminal to its second. Each winding's
+/// branch row is `V(p) − V(q) + Σ_j z[k][j]·I_j = rhs[k]`, with `z` and `rhs`
+/// from the integration formula (`Integrator::coupled`). For backward Euler,
+/// `z = −L/dt` and `rhs = −(L/dt)·I_prev`, i.e. `V = L·(I − I_prev)/dt`.
 pub(crate) fn stamp_transformer_companion(
     system: &mut MnaSystem,
     node_map: &NodeMap,
     nodes: &[String; 4], // [p1, q1, p2, q2]
-    l1: f64,
-    l2: f64,
-    k: f64,
-    dt: f64,
-    i1_prev: f64,
-    i2_prev: f64,
+    z: [[f64; 2]; 2],
+    rhs: [f64; 2],
     k1: usize, // branch row/col index for primary current
     k2: usize, // branch row/col index for secondary current
 ) {
-    let m = k * (l1 * l2).sqrt(); // mutual inductance
-
-    let p1 = node_map.index(&nodes[0]);
-    let q1 = node_map.index(&nodes[1]);
-    let p2 = node_map.index(&nodes[2]);
-    let q2 = node_map.index(&nodes[3]);
-
-    // Primary winding: branch k1 between p1 and q1
-    if let Some(p1i) = p1 {
-        system.a[(p1i, k1)] += 1.0;
-        system.a[(k1, p1i)] += 1.0;
+    let rows = [k1, k2];
+    for (w, &k) in rows.iter().enumerate() {
+        let p = node_map.index(&nodes[2 * w]);
+        let q = node_map.index(&nodes[2 * w + 1]);
+        if let Some(pi) = p {
+            system.a[(pi, k)] += 1.0;
+            system.a[(k, pi)] += 1.0;
+        }
+        if let Some(qi) = q {
+            system.a[(qi, k)] -= 1.0;
+            system.a[(k, qi)] -= 1.0;
+        }
+        for (j, &col) in rows.iter().enumerate() {
+            system.a[(k, col)] += z[w][j];
+        }
+        system.b[k] += rhs[w];
     }
-    if let Some(q1i) = q1 {
-        system.a[(q1i, k1)] -= 1.0;
-        system.a[(k1, q1i)] -= 1.0;
-    }
-    system.a[(k1, k1)] += l1 / dt;
-    system.a[(k1, k2)] += m / dt;
-
-    // Secondary winding: branch k2 between p2 and q2
-    if let Some(p2i) = p2 {
-        system.a[(p2i, k2)] += 1.0;
-        system.a[(k2, p2i)] += 1.0;
-    }
-    if let Some(q2i) = q2 {
-        system.a[(q2i, k2)] -= 1.0;
-        system.a[(k2, q2i)] -= 1.0;
-    }
-    system.a[(k2, k2)] += l2 / dt;
-    system.a[(k2, k1)] += m / dt; // symmetric
-
-    // History currents (RHS b vector, branch rows):
-    system.b[k1] += (l1 / dt) * i1_prev + (m / dt) * i2_prev;
-    system.b[k2] += (l2 / dt) * i2_prev + (m / dt) * i1_prev;
 }
 
 /// Stamp a Voltage-Controlled Voltage Source (VCVS).
@@ -1893,9 +1761,16 @@ mod tests {
             result.err()
         );
         let result = result.unwrap();
-        // n1 should be very close to 10V (primary is near-short-circuit)
+        // At DC the primary winding is a short, so after the switch-on
+        // transient n1 has fallen from its initial jump to ~0 V.
+        let tran = result.transient.unwrap();
+        let first = tran.timesteps[0].node_voltages["n1"];
         let v_n1 = result.node_voltages["n1"];
-        assert!(v_n1 > 9.0, "Primary voltage should be ~10V, got {}", v_n1);
+        assert!(first > 1.0, "primary should jump at switch-on, got {first}");
+        assert!(
+            v_n1.abs() < 0.05,
+            "primary should settle near 0 V, got {v_n1}"
+        );
     }
 
     /// Varactor DC stamp: treated as 1e12 Ω shunt (open circuit).
@@ -2127,7 +2002,7 @@ mod tests {
                             "{kind:?} vaf={} vbe={vbe} vbc={vbc} row {}",
                             params.vaf, nodes[row]
                         );
-                        let linear = system.a.row(r).dot(&x.transpose()) - system.b[r];
+                        let linear = system.a.to_dense().row(r).dot(&x.transpose()) - system.b[r];
                         assert_relative_eq!(
                             linear,
                             currents[row],
@@ -2206,7 +2081,7 @@ mod tests {
             stamp_jfet_companion(&mut system, &node_map, &nodes, kind, 10e-3, vp, &v);
 
             let row = idx("d");
-            let linear_id = system.a.row(row).dot(&v.transpose()) - system.b[row];
+            let linear_id = system.a.to_dense().row(row).dot(&v.transpose()) - system.b[row];
             let id = jfet_drain_current(kind, vg, vd, vs);
             let label = format!("{kind:?} at vg={vg} vd={vd} vs={vs}");
             assert_relative_eq!(linear_id, id, max_relative = 1e-9, epsilon = 1e-12);
@@ -2288,7 +2163,7 @@ mod tests {
             };
             let currents = |v: &DVector<f64>| {
                 let system = stamp_at(v);
-                &system.a * v - &system.b
+                &system.a.to_dense() * v - &system.b
             };
             let system = stamp_at(&v);
             let h = 1e-6;
@@ -2367,7 +2242,7 @@ mod tests {
             };
             let currents = |v: &DVector<f64>| {
                 let system = stamp_at(v);
-                &system.a * v - &system.b
+                &system.a.to_dense() * v - &system.b
             };
             let system = stamp_at(&v);
             let h = 1e-6;

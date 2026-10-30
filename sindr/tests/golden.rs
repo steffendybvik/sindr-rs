@@ -496,10 +496,10 @@ fn ac_bjt_ce() {
 
 // ---------------------------------------------------------------- .tran
 
-/// sindr steps with backward Euler at a fixed dt = τ/50 over 5τ; the golden
-/// is an accurate ngspice solution resampled onto that grid. BE's global
-/// error at that step peaks near 0.4 % of the step height, so allow 1 % of
-/// full scale.
+/// sindr steps with its default Gear-2 at a fixed dt = τ/50 over 5τ; the
+/// golden is an accurate ngspice solution resampled onto that grid. The
+/// largest error, about 0.03 % of full scale, comes from the backward-Euler
+/// first step; allow 0.1 %. (Backward Euler alone peaks near 0.4 %.)
 fn check_tran(case: &'static str, vectors: &[&str]) {
     let golden = Golden::load(case);
     let result = solve_circuit(&parse(case)).unwrap();
@@ -538,7 +538,7 @@ fn check_tran(case: &'static str, vectors: &[&str]) {
             &want,
             Tol {
                 rel: 0.0,
-                abs: 0.01 * full_scale,
+                abs: 1e-3 * full_scale,
             },
         );
     }

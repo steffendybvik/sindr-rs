@@ -47,11 +47,12 @@ element, and the `.cir` is read only by ngspice.
   voltages and 1e-5 on currents. Cases with junctions run ngspice with
   `reltol=1e-9`: at its default 1e-3, ngspice itself stops a few µV short of
   the exact operating point.
-- **Transient:** 1 % of full scale. sindr integrates with fixed-step backward
-  Euler (dt = τ/50 over 5τ). ngspice can't reproduce a fixed step, so the
-  golden is an accurate solution (`reltol=1e-6`, 1 µs max step) resampled
-  onto sindr's grid with `linearize`. That leaves BE's truncation error,
-  which peaks near 0.4 % of the step height.
+- **Transient:** 0.1 % of full scale. sindr integrates with its default
+  Gear-2 at a fixed step (dt = τ/50 over 5τ). ngspice can't reproduce a
+  fixed step, so the golden is an accurate solution (`reltol=1e-6`, 1 µs
+  max step) resampled onto sindr's grid with `linearize`. That leaves
+  sindr's truncation error, about 0.03 % of full scale at the start, where
+  the first step is backward Euler.
 
 ## Coverage
 
@@ -75,5 +76,6 @@ Not covered, and why:
   with `CJO` also conducts.
 - **Thermistor, photoresistor, potentiometer:** resistors whose value comes
   from a closed form, which unit tests cover; ngspice would only add a resistor.
-- **`.lib`, `.nodeset`, `.ic`:** sindr's parser doesn't read `.nodeset` or
-  `.ic`, and `.lib` is covered by `tests/spice_end_to_end.rs`.
+- **`.lib`, `.nodeset`, `.ic`:** covered by `tests/spice_end_to_end.rs` and
+  `tests/initial_conditions.rs`. A `.nodeset` doesn't change the answer, and
+  sindr's `.ic` is always `UIC`, which ngspice runs differently.

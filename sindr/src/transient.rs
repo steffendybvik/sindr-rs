@@ -13,18 +13,20 @@ use sindr_devices::mosfet::{self, MosfetKind};
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
 use crate::error::SimError;
+pub use crate::integration::IntegrationMethod;
+use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
 use crate::newton_raphson::{self, MAX_NR_ITERATIONS};
 use crate::node_map::NodeMap;
 use crate::results::{
     BjtResult, ComponentResult, MosfetResult, SimulationResult, TimestepSnapshot, TransientData,
+    TransientStats,
 };
 use crate::stamp::{
-    stamp_bjt_companion, stamp_bjt_parasitic_caps, stamp_capacitor_companion, stamp_cccs,
-    stamp_ccvs, stamp_current_source, stamp_diode_companion, stamp_igbt_companion,
-    stamp_inductor_companion, stamp_jfet_companion, stamp_mosfet_companion,
-    stamp_mosfet_parasitic_caps, stamp_resistor, stamp_transformer_companion, stamp_vccs,
-    stamp_vcvs, stamp_voltage_source, SWITCH_R_CLOSED, SWITCH_R_OPEN,
+    stamp_bjt_companion, stamp_cccs, stamp_ccvs, stamp_current_source, stamp_diode_companion,
+    stamp_igbt_companion, stamp_jfet_companion, stamp_mosfet_companion, stamp_resistor,
+    stamp_transformer_companion, stamp_vccs, stamp_vcvs, stamp_voltage_source, SWITCH_R_CLOSED,
+    SWITCH_R_OPEN,
 };
 
 /// Calculate simulation duration and timestep from circuit time constants.
@@ -149,22 +151,22 @@ pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) {
 
 /// Stamp all circuit components for one transient step ending at time `t`.
 ///
-/// Capacitors and inductors use backward-Euler companions built from their
-/// state at the start of the step (`cap_voltages`, `ind_currents`); sources
-/// are evaluated at `t`. Nonlinear devices are linearised at `v_prev`, the
-/// current Newton iterate. BJT/MOSFET parasitic capacitances use
-/// `parasitic_cap_voltages`, keyed by "component_id-junction" ("Q1-be").
+/// Capacitors and inductors use `integ`'s companions, built from their
+/// history at the start of the step (`caps`, `inds`, in component order);
+/// sources are evaluated at `t`. Nonlinear devices are linearised at
+/// `v_prev`, the current Newton iterate. BJT/MOSFET parasitic capacitances
+/// use `parasitic`, keyed by "component_id-junction" ("Q1-be").
 #[allow(clippy::too_many_arguments)]
 fn stamp_circuit_transient(
     circuit: &Circuit,
     system: &mut MnaSystem,
     node_map: &NodeMap,
-    dt: f64,
+    integ: &Integrator,
     t: f64,
-    cap_voltages: &[f64],
-    ind_currents: &[f64],
+    caps: &[History],
+    inds: &[History],
     v_prev: &DVector<f64>,
-    parasitic_cap_voltages: &HashMap<String, f64>,
+    parasitic: &HashMap<String, History>,
 ) -> Result<(), SimError> {
     let num_nodes = node_map.num_nodes();
     let mut vsource_index: usize = 0;
@@ -220,15 +222,15 @@ fn stamp_circuit_transient(
             CircuitElement::Capacitor {
                 nodes, capacitance, ..
             } => {
-                let v_cap_prev = cap_voltages[cap_index];
-                stamp_capacitor_companion(system, node_map, nodes, *capacitance, dt, v_cap_prev);
+                let (g, i_hist) = integ.capacitor(*capacitance, &caps[cap_index]);
+                stamp_companion(system, node_map, nodes, g, i_hist);
                 cap_index += 1;
             }
             CircuitElement::Inductor {
                 nodes, inductance, ..
             } => {
-                let i_ind_prev = ind_currents[ind_index];
-                stamp_inductor_companion(system, node_map, nodes, *inductance, dt, i_ind_prev);
+                let (g, i_hist) = integ.inductor(*inductance, &inds[ind_index]);
+                stamp_companion(system, node_map, nodes, g, i_hist);
                 ind_index += 1;
             }
             CircuitElement::Diode {
@@ -256,17 +258,12 @@ fn stamp_circuit_transient(
             } => {
                 let params = device_params::bjt(*bf, *temperature);
                 stamp_bjt_companion(system, node_map, nodes, v_prev, &params, *kind);
-                // Parasitic capacitances: stamp using HashMap-keyed previous voltages
-                if let Some(caps) = parasitic_caps {
-                    let v_be_prev = *parasitic_cap_voltages
-                        .get(&format!("{}-be", id))
-                        .unwrap_or(&0.0);
-                    let v_bc_prev = *parasitic_cap_voltages
-                        .get(&format!("{}-bc", id))
-                        .unwrap_or(&0.0);
-                    stamp_bjt_parasitic_caps(
-                        system, node_map, nodes, caps, dt, v_be_prev, v_bc_prev,
-                    );
+                if let Some(pc) = parasitic_caps {
+                    for (junction, c, a, b) in bjt_parasitics(nodes, pc) {
+                        let (g, i_hist) =
+                            integ.capacitor(c, &parasitic_history(parasitic, id, junction));
+                        stamp_companion(system, node_map, &[a, b], g, i_hist);
+                    }
                 }
             }
             CircuitElement::Mosfet {
@@ -277,17 +274,12 @@ fn stamp_circuit_transient(
                 parasitic_caps,
             } => {
                 stamp_mosfet_companion(system, node_map, nodes, v_prev, params, *kind);
-                // Parasitic capacitances: stamp using HashMap-keyed previous voltages
-                if let Some(caps) = parasitic_caps {
-                    let v_gs_prev = *parasitic_cap_voltages
-                        .get(&format!("{}-gs", id))
-                        .unwrap_or(&0.0);
-                    let v_gd_prev = *parasitic_cap_voltages
-                        .get(&format!("{}-gd", id))
-                        .unwrap_or(&0.0);
-                    stamp_mosfet_parasitic_caps(
-                        system, node_map, nodes, caps, dt, v_gs_prev, v_gd_prev,
-                    );
+                if let Some(pc) = parasitic_caps {
+                    for (junction, c, a, b) in mosfet_parasitics(nodes, pc) {
+                        let (g, i_hist) =
+                            integ.capacitor(c, &parasitic_history(parasitic, id, junction));
+                        stamp_companion(system, node_map, &[a, b], g, i_hist);
+                    }
                 }
             }
             // JFET — nonlinear companion in NR transient loop
@@ -380,15 +372,8 @@ fn stamp_circuit_transient(
                 let coil_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
                 stamp_resistor(system, node_map, &coil_nodes, *coil_resistance);
                 if *inductance > 0.0 {
-                    let i_ind_prev = ind_currents[ind_index];
-                    stamp_inductor_companion(
-                        system,
-                        node_map,
-                        &[nodes[0].clone(), nodes[1].clone()],
-                        *inductance,
-                        dt,
-                        i_ind_prev,
-                    );
+                    let (g, i_hist) = integ.inductor(*inductance, &inds[ind_index]);
+                    stamp_companion(system, node_map, &coil_nodes, g, i_hist);
                     ind_index += 1;
                 }
                 let vc_pos = node_map.index(&nodes[0]).map_or(0.0, |i| v_prev[i]);
@@ -472,15 +457,11 @@ fn stamp_circuit_transient(
                 vsource_index += 1;
             }
             CircuitElement::Varactor { nodes, params, .. } => {
-                let v_varactor_prev = cap_voltages[cap_index];
-                crate::stamp::stamp_varactor_transient(
-                    system,
-                    node_map,
-                    nodes,
-                    v_varactor_prev,
-                    dt,
-                    params,
-                );
+                // Linearised at the voltage the step starts from.
+                let history = &caps[cap_index];
+                let c = sindr_devices::varactor::junction_capacitance(history.x1, params);
+                let (g, i_hist) = integ.capacitor(c, history);
+                stamp_companion(system, node_map, nodes, g, i_hist);
                 cap_index += 1;
             }
             CircuitElement::Igbt { nodes, params, .. } => {
@@ -489,15 +470,15 @@ fn stamp_circuit_transient(
             CircuitElement::Transformer {
                 nodes, l1, l2, k, ..
             } => {
-                let i1_prev = ind_currents[ind_index];
-                let i2_prev = ind_currents[ind_index + 1];
+                let (z, rhs) = integ.coupled(
+                    transformer_inductances(*l1, *l2, *k),
+                    [&inds[ind_index], &inds[ind_index + 1]],
+                );
                 ind_index += 2;
                 let k1 = num_nodes + vsource_index;
                 let k2 = num_nodes + vsource_index + 1;
                 vsource_index += 2;
-                stamp_transformer_companion(
-                    system, node_map, nodes, *l1, *l2, *k, dt, i1_prev, i2_prev, k1, k2,
-                );
+                stamp_transformer_companion(system, node_map, nodes, z, rhs, k1, k2);
             }
             // Fuse: stamp as resistor (intact=0.001 Ohm, blown=1e9 Ohm) in NR transient
             CircuitElement::Fuse { nodes, blown, .. } => {
@@ -525,7 +506,8 @@ fn node_voltage(node: &str, node_map: &NodeMap, solution: &DVector<f64>) -> f64 
     }
 }
 
-/// Extract per-timestep results from solution vector.
+/// Extract per-timestep results from solution vector, and the reactive
+/// histories after this step (`caps_prev`/`inds_prev` are those before it).
 #[allow(clippy::too_many_arguments)]
 fn extract_timestep_results(
     circuit: &Circuit,
@@ -533,10 +515,10 @@ fn extract_timestep_results(
     solution: &DVector<f64>,
     num_nodes: usize,
     time: f64,
-    dt: f64,
-    cap_voltages_prev: &[f64],
-    ind_currents_prev: &[f64],
-) -> (TimestepSnapshot, Vec<f64>, Vec<f64>) {
+    integ: &Integrator,
+    caps_prev: &[History],
+    inds_prev: &[History],
+) -> (TimestepSnapshot, Vec<History>, Vec<History>) {
     // Node voltages
     let mut node_voltages = HashMap::new();
     for i in 0..num_nodes {
@@ -551,8 +533,8 @@ fn extract_timestep_results(
     let mut cap_index: usize = 0;
     let mut ind_index: usize = 0;
 
-    let mut new_cap_voltages = Vec::new();
-    let mut new_ind_currents = Vec::new();
+    let mut new_caps = Vec::new();
+    let mut new_inds = Vec::new();
 
     for component in &circuit.components {
         match component {
@@ -620,9 +602,10 @@ fn extract_timestep_results(
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_now = vp - vq;
-                let v_prev = cap_voltages_prev[cap_index];
-                let i = (capacitance / dt) * (v_now - v_prev);
-                new_cap_voltages.push(v_now);
+                let history = caps_prev[cap_index];
+                let (g, i_hist) = integ.capacitor(*capacitance, &history);
+                let i = g * v_now + i_hist;
+                new_caps.push(history.push(v_now, i));
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_now,
@@ -639,9 +622,10 @@ fn extract_timestep_results(
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let i_prev = ind_currents_prev[ind_index];
-                let i_now = i_prev + (dt / inductance) * v_across;
-                new_ind_currents.push(i_now);
+                let history = inds_prev[ind_index];
+                let (g, i_hist) = integ.inductor(*inductance, &history);
+                let i_now = g * v_across + i_hist;
+                new_inds.push(history.push(i_now, v_across));
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_across,
@@ -847,9 +831,9 @@ fn extract_timestep_results(
                 let coil_voltage = vc_pos - vc_neg;
                 // If relay has inductance, update the inductor current state
                 if *inductance > 0.0 {
-                    let i_prev = ind_currents_prev[ind_index];
-                    let i_now = i_prev + (dt / inductance) * coil_voltage;
-                    new_ind_currents.push(i_now);
+                    let history = inds_prev[ind_index];
+                    let (g, i_hist) = integ.inductor(*inductance, &history);
+                    new_inds.push(history.push(g * coil_voltage + i_hist, coil_voltage));
                     ind_index += 1;
                 }
                 let coil_current = coil_voltage / coil_resistance;
@@ -975,15 +959,12 @@ fn extract_timestep_results(
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_now = vp - vq;
                 // Update varactor voltage state for next timestep (uses positional cap_index)
-                let v_prev_across = cap_voltages_prev[cap_index];
-                // Current approximation: i = C_j(v_prev) / dt * (v_now - v_prev)
-                let cj = sindr_devices::varactor::junction_capacitance(v_prev_across, params);
-                let i_through = if dt > 0.0 {
-                    (cj / dt) * (v_now - v_prev_across)
-                } else {
-                    0.0
-                };
-                new_cap_voltages.push(v_now);
+                // The companion the step was solved with (see the stamp).
+                let history = caps_prev[cap_index];
+                let cj = sindr_devices::varactor::junction_capacitance(history.x1, params);
+                let (g, i_hist) = integ.capacitor(cj, &history);
+                let i_through = g * v_now + i_hist;
+                new_caps.push(history.push(v_now, i_through));
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_now,
@@ -1020,8 +1001,10 @@ fn extract_timestep_results(
                 let i1_now = solution[num_nodes + vsource_index];
                 let i2_now = solution[num_nodes + vsource_index + 1];
                 vsource_index += 2;
-                new_ind_currents.push(i1_now);
-                new_ind_currents.push(i2_now);
+                // Winding rate is the branch-convention voltage (see
+                // Integrator::coupled).
+                new_inds.push(inds_prev[ind_index].push(i1_now, v_primary));
+                new_inds.push(inds_prev[ind_index + 1].push(i2_now, v_secondary));
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_primary,
@@ -1099,7 +1082,7 @@ fn extract_timestep_results(
         component_results,
     };
 
-    (snapshot, new_cap_voltages, new_ind_currents)
+    (snapshot, new_caps, new_inds)
 }
 
 /// Extract BJT results from a converged timestep snapshot.
@@ -1232,6 +1215,13 @@ fn extract_mosfet_results_from_snapshot(
 
 /// Transient analysis settings: how long to simulate and how finely.
 ///
+/// `tstep` is both the longest step and the output grid: every multiple of
+/// it gets a snapshot. By default the stepper also shortens steps where the
+/// local truncation error would exceed SPICE's default tolerances (RELTOL
+/// 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source
+/// waveform ([`Waveform::breakpoints`](crate::Waveform::breakpoints)),
+/// restarting the integration there.
+///
 /// Build one with [`TransientConfig::new`], optionally capped with
 /// [`TransientConfig::with_tmax`], and pass it to [`solve_transient`].
 /// [`solve_circuit`](crate::solve_circuit) instead picks a config from the
@@ -1254,6 +1244,21 @@ pub struct TransientConfig {
     pub tstep: f64,
     /// Largest step allowed (s), as SPICE's TMAX. `None` means `tstep`.
     pub tmax: Option<f64>,
+    /// Integration method. Default [`IntegrationMethod::Gear2`].
+    pub method: IntegrationMethod,
+    /// Control the step by local truncation error (default `true`). When
+    /// `false`, every step is `tstep` (or `tmax`) except where a breakpoint
+    /// or Newton failure shortens it.
+    pub adaptive: bool,
+    /// Initial node voltages (V), keyed by node name, as SPICE's `.ic` with
+    /// `UIC`: each capacitor (and BJT/MOSFET parasitic capacitor) starts
+    /// charged to the difference of its nodes' values. Nodes not listed
+    /// count as 0 V.
+    pub initial_voltages: HashMap<String, f64>,
+    /// Initial inductor currents (A), keyed by inductor or relay id, flowing
+    /// from the element's first node to its second. Inductors not listed
+    /// start at 0 A.
+    pub initial_currents: HashMap<String, f64>,
 }
 
 /// Most steps one transient run may take.
@@ -1266,7 +1271,65 @@ impl TransientConfig {
             tstop,
             tstep,
             tmax: None,
+            method: IntegrationMethod::default(),
+            adaptive: true,
+            initial_voltages: HashMap::new(),
+            initial_currents: HashMap::new(),
         }
+    }
+
+    /// Start from these node voltages (V) instead of all-zero, as SPICE's
+    /// `.ic` with `UIC`. See [`TransientConfig::initial_voltages`].
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+    ///
+    /// // A 1 µF capacitor charged to 5 V discharging through 1 kΩ.
+    /// let circuit = Circuit {
+    ///     ground_node: "0".into(),
+    ///     components: vec![
+    ///         CircuitElement::Resistor {
+    ///             id: "R1".into(),
+    ///             nodes: ["a".into(), "0".into()],
+    ///             resistance: 1e3,
+    ///         },
+    ///         CircuitElement::Capacitor {
+    ///             id: "C1".into(),
+    ///             nodes: ["a".into(), "0".into()],
+    ///             capacitance: 1e-6,
+    ///         },
+    ///     ],
+    /// };
+    /// let config = TransientConfig::new(1e-3, 10e-6)
+    ///     .with_initial_voltages(HashMap::from([("a".to_string(), 5.0)]));
+    /// let tran = solve_transient(&circuit, &config).unwrap().transient.unwrap();
+    /// // After one time constant: 5·e⁻¹ ≈ 1.84 V.
+    /// let v = tran.timesteps.last().unwrap().node_voltages["a"];
+    /// assert!((v - 5.0 * (-1.0_f64).exp()).abs() < 1e-2);
+    /// ```
+    pub fn with_initial_voltages(mut self, voltages: HashMap<String, f64>) -> Self {
+        self.initial_voltages = voltages;
+        self
+    }
+
+    /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A.
+    pub fn with_initial_current(mut self, id: impl Into<String>, amps: f64) -> Self {
+        self.initial_currents.insert(id.into(), amps);
+        self
+    }
+
+    /// Step at a fixed `tstep` instead of controlling the step by local
+    /// truncation error.
+    pub fn with_fixed_step(mut self) -> Self {
+        self.adaptive = false;
+        self
+    }
+
+    /// Integrate with `method` instead of the default Gear-2.
+    pub fn with_method(mut self, method: IntegrationMethod) -> Self {
+        self.method = method;
+        self
     }
 
     /// Cap the step at `tmax` seconds.
@@ -1319,7 +1382,7 @@ impl TransientConfig {
 
 /// Runs a transient analysis of `circuit` with the given time span and step.
 ///
-/// Integrates with backward Euler from 0 to `config.tstop`, starting from
+/// Integrates with `config.method` from 0 to `config.tstop`, starting from
 /// uncharged capacitors (0 V) and inductors at rest (0 A), with sources at
 /// their value at each step's end time. Each step that contains nonlinear
 /// devices is solved by Newton–Raphson, warm-started from the previous step;
@@ -1366,11 +1429,12 @@ impl TransientConfig {
 ///
 /// let result = solve_transient(&circuit, &TransientConfig::new(2e-3, 10e-6)).unwrap();
 /// let tran = result.transient.unwrap();
-/// assert_eq!(tran.timesteps.len(), 200);
+/// // At least one snapshot per 10 µs, more where the step was shortened.
+/// assert!(tran.timesteps.len() >= 200);
 /// let last = tran.timesteps.last().unwrap();
 /// assert!((last.time - 2e-3).abs() < 1e-12);
-/// // 5·(1 − e⁻²) ≈ 4.32 V, less backward Euler's lag.
-/// assert!((last.node_voltages["out"] - 4.32).abs() < 0.02);
+/// // 5·(1 − e⁻²) = 4.3233 V
+/// assert!((last.node_voltages["out"] - 4.3233).abs() < 1e-3);
 /// ```
 pub fn solve_transient(
     circuit: &Circuit,
@@ -1384,7 +1448,7 @@ pub fn solve_transient(
     run_transient(circuit, &node_map, num_nodes, num_vsources, config)
 }
 
-/// The backward-Euler stepper behind [`solve_transient`] and the transient
+/// The stepper behind [`solve_transient`] and the transient
 /// path of [`solve_circuit`](crate::solve_circuit), for a validated circuit
 /// and config.
 pub(crate) fn run_transient(
@@ -1402,26 +1466,55 @@ pub(crate) fn run_transient(
 
     // Initial state: uncharged caps (0 V), inductors at rest (0 A), as if the
     // circuit were switched on at t = 0.
-    let mut cap_voltages: Vec<f64> = Vec::new();
-    let mut ind_currents: Vec<f64> = Vec::new();
+    // Initial state: the config's initial conditions, otherwise uncharged
+    // caps (0 V) and inductors at rest (0 A), as if the circuit were
+    // switched on at t = 0.
+    let ic = |node: &String| config.initial_voltages.get(node).copied().unwrap_or(0.0);
+    let across = |a: &String, b: &String| History::at(ic(a) - ic(b));
+    let current =
+        |id: &String| History::at(config.initial_currents.get(id).copied().unwrap_or(0.0));
+    let mut caps: Vec<History> = Vec::new();
+    let mut inds: Vec<History> = Vec::new();
+    // Parasitic cap histories, keyed by "component_id-junction" ("Q1-be").
+    let mut parasitic: HashMap<String, History> = HashMap::new();
     for component in &circuit.components {
         match component {
-            CircuitElement::Capacitor { .. } | CircuitElement::Varactor { .. } => {
-                cap_voltages.push(0.0);
+            CircuitElement::Capacitor { nodes, .. } | CircuitElement::Varactor { nodes, .. } => {
+                caps.push(across(&nodes[0], &nodes[1]));
             }
-            CircuitElement::Inductor { .. } => ind_currents.push(0.0),
-            CircuitElement::Relay { inductance, .. } if *inductance > 0.0 => {
-                ind_currents.push(0.0);
+            CircuitElement::Inductor { id, .. } => inds.push(current(id)),
+            CircuitElement::Relay { id, inductance, .. } if *inductance > 0.0 => {
+                inds.push(current(id));
             }
             CircuitElement::Transformer { .. } => {
-                ind_currents.push(0.0); // primary
-                ind_currents.push(0.0); // secondary
+                inds.push(History::default()); // primary
+                inds.push(History::default()); // secondary
+            }
+            CircuitElement::Bjt {
+                id,
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (junction, _, a, b) in bjt_parasitics(nodes, pc) {
+                    parasitic.insert(format!("{id}-{junction}"), across(&a, &b));
+                }
+            }
+            CircuitElement::Mosfet {
+                id,
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (junction, _, a, b) in mosfet_parasitics(nodes, pc) {
+                    parasitic.insert(format!("{id}-{junction}"), across(&a, &b));
+                }
             }
             _ => {}
         }
     }
-    // Parasitic cap voltages, keyed by "component_id-junction" ("Q1-be").
-    let mut parasitic_cap_voltages: HashMap<String, f64> = HashMap::new();
+    // The accepted step before this one; `None` until the first is taken.
+    let mut h_prev: Option<f64> = None;
 
     let step = StepSolver {
         circuit,
@@ -1437,61 +1530,117 @@ pub(crate) fn run_transient(
         igbt_info: newton_raphson::collect_igbt_info(circuit, node_map),
     };
 
+    let breakpoints = waveform_breakpoints(circuit, tstop);
+    let mut next_bp = 0;
+    let mut grid = 0u64; // index of the last tstep multiple reached
+
+    // Newton starts its first step from the initial node voltages.
     let mut solution = DVector::zeros(num_nodes + num_vsources);
+    for (node, v) in &config.initial_voltages {
+        if let Some(i) = node_map.index(node) {
+            solution[i] = *v;
+        }
+    }
     let mut timesteps = Vec::new();
+    let mut stats = TransientStats::default();
     let mut time = 0.0;
-    let mut h = h_max;
+    // Start small: the switch-on at t = 0 is itself a corner.
+    let mut h = if config.adaptive {
+        h_max / RESTART_FRACTION
+    } else {
+        h_max
+    };
+    // Accepted (time, node voltages) since the last restart, newest last.
+    let mut recent: Vec<(f64, DVector<f64>)> = Vec::new();
 
     while tstop - time > 1e-9 * h_max {
-        // Land exactly on tstop rather than a hair short of or past it.
-        let last = tstop - time < h * (1.0 + 1e-9);
-        let (dt, t_next) = if last {
-            (tstop - time, tstop)
+        // The next point a step must not pass: a breakpoint, a multiple of
+        // tstep, or tstop.
+        // Targets closer than this are taken as already reached, so no step
+        // is ever vanishingly short.
+        let eps = 1e-9 * h_max;
+        while next_bp < breakpoints.len() && breakpoints[next_bp] <= time + eps {
+            next_bp += 1;
+        }
+        while (grid + 1) as f64 * config.tstep <= time + eps {
+            grid += 1;
+        }
+        // A grid point within rounding of tstop is tstop.
+        let next_grid = match (grid + 1) as f64 * config.tstep {
+            g if tstop - g <= eps => tstop,
+            g => g,
+        };
+        let bp = breakpoints.get(next_bp).copied().unwrap_or(f64::INFINITY);
+        let target = tstop.min(next_grid).min(bp);
+        let landing = target - time <= h * (1.0 + 1e-9);
+        let (dt, t_next) = if landing {
+            (target - time, target)
         } else {
             (h, time + h)
         };
 
-        match step.solve(
-            dt,
-            t_next,
-            &cap_voltages,
-            &ind_currents,
-            &parasitic_cap_voltages,
-            &solution,
-        ) {
-            Ok(next) => {
-                let (snapshot, new_cap_v, new_ind_i) = extract_timestep_results(
-                    circuit,
-                    node_map,
-                    &next,
-                    num_nodes,
-                    t_next,
-                    dt,
-                    &cap_voltages,
-                    &ind_currents,
-                );
-                timesteps.push(snapshot);
-                cap_voltages = new_cap_v;
-                ind_currents = new_ind_i;
-                update_parasitic_cap_voltages(
-                    circuit,
-                    node_map,
-                    &next,
-                    &mut parasitic_cap_voltages,
-                );
-                solution = next;
-                time = t_next;
-                // Grow back towards the requested step after a halving.
-                h = (h * 2.0).min(h_max);
-            }
+        let integ = Integrator::for_step(config.method, dt, h_prev);
+        let next = match step.solve(&integ, t_next, &caps, &inds, &parasitic, &solution) {
+            Ok(next) => next,
             Err(e @ SimError::ConvergenceFailed { .. }) => {
+                stats.newton_rejections += 1;
                 h = dt / 2.0;
                 if h < h_min {
                     return Err(e);
                 }
+                continue;
             }
             Err(e) => return Err(e),
+        };
+
+        // Accept or reject by local truncation error, and size the next step.
+        let mut grow = 2.0;
+        if config.adaptive {
+            if let Some(ratio) = lte_ratio(&integ, &recent, t_next, &next, num_nodes) {
+                let k = f64::from(integ.order + 1);
+                let factor = 0.9 * ratio.powf(-1.0 / k);
+                if ratio > 1.0 && dt > h_min {
+                    stats.lte_rejections += 1;
+                    h = dt * factor.clamp(0.25, 0.9);
+                    continue;
+                }
+                grow = factor.min(2.0);
+            }
         }
+
+        let (snapshot, new_caps, new_inds) = extract_timestep_results(
+            circuit, node_map, &next, num_nodes, t_next, &integ, &caps, &inds,
+        );
+        timesteps.push(snapshot);
+        stats.accepted_steps += 1;
+        caps = new_caps;
+        inds = new_inds;
+        update_parasitic_histories(circuit, node_map, &next, &integ, &mut parasitic);
+        time = t_next;
+        // A landing step was cut short; size the next from the step wanted.
+        let base = if landing { h.max(dt) } else { dt };
+        h = if config.adaptive {
+            (base * grow).clamp(h_min, h_max)
+        } else {
+            (base * 2.0).min(h_max)
+        };
+
+        if landing && t_next == bp {
+            // A corner in a source: the history before it doesn't predict
+            // what follows, so restart with a short backward-Euler step.
+            h_prev = None;
+            recent.clear();
+            if config.adaptive {
+                h = h.min(h_max / RESTART_FRACTION);
+            }
+        } else {
+            h_prev = Some(dt);
+        }
+        recent.push((t_next, next.rows(0, num_nodes).into_owned()));
+        if recent.len() > 3 {
+            recent.remove(0);
+        }
+        solution = next;
     }
 
     let final_snapshot = timesteps.last().ok_or(SimError::InvalidSolution)?;
@@ -1521,12 +1670,87 @@ pub(crate) fn run_transient(
         op_amp_results: vec![],
         relay_results: vec![],
         mcu_results: vec![],
+        convergence_aid: None,
         transient: Some(TransientData {
             timesteps,
             time_step: config.tstep,
             duration: tstop,
+            stats,
         }),
     })
+}
+
+/// A step after a restart (t = 0 or a breakpoint) is at most `tstep` divided
+/// by this, so the unchecked backward-Euler step that starts the integration
+/// is short.
+const RESTART_FRACTION: f64 = 100.0;
+
+/// SPICE's default transient tolerances: the local truncation error of a
+/// node voltage may be up to `TRTOL·(RELTOL·|v| + VNTOL)`.
+const RELTOL: f64 = 1e-3;
+const VNTOL: f64 = 1e-6;
+const TRTOL: f64 = 7.0;
+
+/// Every waveform breakpoint of the circuit's sources in `(0, tstop)`,
+/// sorted and without near-duplicates.
+fn waveform_breakpoints(circuit: &Circuit, tstop: f64) -> Vec<f64> {
+    let mut all: Vec<f64> = circuit
+        .components
+        .iter()
+        .filter_map(|c| match c {
+            CircuitElement::VoltageSource {
+                waveform: Some(w), ..
+            }
+            | CircuitElement::CurrentSource {
+                waveform: Some(w), ..
+            } => Some(w.breakpoints(tstop)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    all.sort_by(f64::total_cmp);
+    all.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * tstop);
+    all
+}
+
+/// The worst ratio, over all node voltages, of the step's estimated local
+/// truncation error to its tolerance; above 1 the step should be rejected.
+///
+/// The error of an order-k step of length h is `C·h^(k+1)·v^(k+1)`, with C the
+/// method's error constant and the derivative estimated as `(k+1)!` times the
+/// (k+1)-th divided difference of the last k+2 points (`recent` plus the new
+/// one). `None` until a restart has accumulated that many.
+fn lte_ratio(
+    integ: &Integrator,
+    recent: &[(f64, DVector<f64>)],
+    t: f64,
+    v: &DVector<f64>,
+    num_nodes: usize,
+) -> Option<f64> {
+    let k = integ.order as usize;
+    if recent.len() < k + 1 {
+        return None;
+    }
+    let pts = &recent[recent.len() - (k + 1)..];
+    let times: Vec<f64> = pts.iter().map(|p| p.0).chain([t]).collect();
+    let h = t - pts[k].0;
+    let factorial: f64 = (1..=k + 1).map(|i| i as f64).product();
+    let mut worst: f64 = 0.0;
+    for node in 0..num_nodes {
+        // Divided differences in place, Newton's table.
+        let mut dd: Vec<f64> = pts.iter().map(|p| p.1[node]).chain([v[node]]).collect();
+        for level in 1..=k + 1 {
+            for i in (level..dd.len()).rev() {
+                dd[i] = (dd[i] - dd[i - 1]) / (times[i] - times[i - level]);
+            }
+        }
+        let derivative = factorial * dd[k + 1];
+        let lte = integ.error_constant * h.powi(k as i32 + 1) * derivative.abs();
+        let previous = pts[k].1[node];
+        let tol = TRTOL * (RELTOL * v[node].abs().max(previous.abs()) + VNTOL);
+        worst = worst.max(lte / tol);
+    }
+    Some(worst)
 }
 
 /// Solves one transient step: a single linear solve, or Newton–Raphson when
@@ -1542,16 +1766,16 @@ struct StepSolver<'a> {
 }
 
 impl StepSolver<'_> {
-    /// The solution at `t`, the end of a step of length `dt` from the state
-    /// `cap_voltages` / `ind_currents` / `parasitic`. Newton starts from
-    /// `start`, the previous step's solution.
+    /// The solution at `t`, the end of a step integrated by `integ` from the
+    /// histories `caps` / `inds` / `parasitic`. Newton starts from `start`,
+    /// the previous step's solution.
     fn solve(
         &self,
-        dt: f64,
+        integ: &Integrator,
         t: f64,
-        cap_voltages: &[f64],
-        ind_currents: &[f64],
-        parasitic: &HashMap<String, f64>,
+        caps: &[History],
+        inds: &[History],
+        parasitic: &HashMap<String, History>,
         start: &DVector<f64>,
     ) -> Result<DVector<f64>, SimError> {
         let stamp = |v_prev: &DVector<f64>| -> Result<MnaSystem, SimError> {
@@ -1560,10 +1784,10 @@ impl StepSolver<'_> {
                 self.circuit,
                 &mut system,
                 self.node_map,
-                dt,
+                integ,
                 t,
-                cap_voltages,
-                ind_currents,
+                caps,
+                inds,
                 v_prev,
                 parasitic,
             )?;
@@ -1598,39 +1822,108 @@ impl StepSolver<'_> {
     }
 }
 
-/// Record the BJT/MOSFET junction voltages of `solution` as the parasitic
-/// capacitors' state for the next step.
-fn update_parasitic_cap_voltages(
+/// Push each BJT/MOSFET parasitic capacitor's voltage and current at
+/// `solution` onto its history.
+fn update_parasitic_histories(
     circuit: &Circuit,
     node_map: &NodeMap,
     solution: &DVector<f64>,
-    parasitic: &mut HashMap<String, f64>,
+    integ: &Integrator,
+    parasitic: &mut HashMap<String, History>,
 ) {
     let v = |n: &String| node_map.index(n).map_or(0.0, |i| solution[i]);
     for component in &circuit.components {
-        match component {
+        let (id, caps) = match component {
             CircuitElement::Bjt {
                 id,
                 nodes,
-                parasitic_caps: Some(_),
+                parasitic_caps: Some(pc),
                 ..
-            } => {
-                let (b, c, e) = (v(&nodes[0]), v(&nodes[1]), v(&nodes[2]));
-                parasitic.insert(format!("{id}-be"), b - e);
-                parasitic.insert(format!("{id}-bc"), b - c);
-            }
+            } => (id, bjt_parasitics(nodes, pc)),
             CircuitElement::Mosfet {
                 id,
                 nodes,
-                parasitic_caps: Some(_),
+                parasitic_caps: Some(pc),
                 ..
-            } => {
-                let (g, d, s) = (v(&nodes[0]), v(&nodes[1]), v(&nodes[2]));
-                parasitic.insert(format!("{id}-gs"), g - s);
-                parasitic.insert(format!("{id}-gd"), g - d);
-            }
-            _ => {}
+            } => (id, mosfet_parasitics(nodes, pc)),
+            _ => continue,
+        };
+        for (junction, c, a, b) in caps {
+            let history = parasitic_history(parasitic, id, junction);
+            let (g, i_hist) = integ.capacitor(c, &history);
+            let v_now = v(&a) - v(&b);
+            parasitic.insert(
+                format!("{id}-{junction}"),
+                history.push(v_now, g * v_now + i_hist),
+            );
         }
+    }
+}
+
+/// A BJT's parasitic capacitors as `(junction, C, terminal, terminal)`:
+/// Cbe base–emitter and Cbc base–collector, each only if > 0.
+fn bjt_parasitics(
+    nodes: &[String; 3],
+    pc: &crate::circuit::BjtParasiticCaps,
+) -> Vec<(&'static str, f64, String, String)> {
+    let [b, c, e] = nodes.clone();
+    [("be", pc.cbe, b.clone(), e), ("bc", pc.cbc, b, c)]
+        .into_iter()
+        .filter(|cap| cap.1 > 0.0)
+        .collect()
+}
+
+/// A MOSFET's parasitic capacitors as `(junction, C, terminal, terminal)`:
+/// Cgs gate–source and Cgd gate–drain, each only if > 0.
+fn mosfet_parasitics(
+    nodes: &[String; 3],
+    pc: &crate::circuit::MosfetParasiticCaps,
+) -> Vec<(&'static str, f64, String, String)> {
+    let [g, d, s] = nodes.clone();
+    [("gs", pc.cgs, g.clone(), s), ("gd", pc.cgd, g, d)]
+        .into_iter()
+        .filter(|cap| cap.1 > 0.0)
+        .collect()
+}
+
+/// The history of component `id`'s parasitic capacitor at `junction`
+/// (uncharged before its first step).
+fn parasitic_history(parasitic: &HashMap<String, History>, id: &str, junction: &str) -> History {
+    parasitic
+        .get(&format!("{id}-{junction}"))
+        .copied()
+        .unwrap_or_default()
+}
+
+/// A transformer's inductance matrix `[[L1, M], [M, L2]]`, M = k·√(L1·L2).
+fn transformer_inductances(l1: f64, l2: f64, k: f64) -> [[f64; 2]; 2] {
+    let m = k * (l1 * l2).sqrt();
+    [[l1, m], [m, l2]]
+}
+
+/// Stamp a companion branch between `nodes`: conductance `g` plus the
+/// history current `i_hist`, so the current from `nodes[0]` to `nodes[1]`
+/// is `g·v + i_hist`.
+fn stamp_companion(
+    system: &mut MnaSystem,
+    node_map: &NodeMap,
+    nodes: &[String; 2],
+    g: f64,
+    i_hist: f64,
+) {
+    let p = node_map.index(&nodes[0]);
+    let q = node_map.index(&nodes[1]);
+    if let Some(pi) = p {
+        system.a[(pi, pi)] += g;
+        system.b[pi] -= i_hist;
+    }
+    if let Some(qi) = q {
+        system.a[(qi, qi)] += g;
+        system.b[qi] += i_hist;
+    }
+    if let (Some(pi), Some(qi)) = (p, q) {
+        system.a[(pi, qi)] -= g;
+        system.a[(qi, pi)] -= g;
     }
 }
 
@@ -1787,7 +2080,11 @@ mod tests {
                 },
             ],
         };
-        let result = solve_circuit(&circuit).unwrap();
+        // Fixed-step backward Euler, so the first step is exactly tstep.
+        let config = TransientConfig::auto(&circuit)
+            .with_method(IntegrationMethod::BackwardEuler)
+            .with_fixed_step();
+        let result = solve_transient(&circuit, &config).unwrap();
         let transient = result.transient.unwrap();
         let dt = transient.time_step;
         let first = &transient.timesteps[0];
@@ -2076,22 +2373,33 @@ mod tests {
             "Expected at least one timestep"
         );
 
-        // At steady state, Transformer T1 component result should be present
         let t1 = result.component_results.iter().find(|c| c.id == "T1");
         assert!(
             t1.is_some(),
             "Transformer T1 should appear in component results"
         );
 
-        // Secondary voltage (n3) should be elevated relative to primary (n2).
-        // Ideal turns ratio: Vs/Vp = sqrt(L2/L1) = 2.
-        // Backward Euler damping means exact steady state may differ; test for non-zero secondary voltage.
-        let v_secondary = result.node_voltages.get("n3").copied().unwrap_or(0.0);
-        assert!(
-            v_secondary.abs() > 0.1,
-            "Secondary voltage should be non-zero, got {}",
-            v_secondary
-        );
+        // While the primary has a voltage across it, the secondary follows
+        // at M/L1 = k·√(L2/L1) = 1.998, once the 8 ns leakage time constant
+        // into 1 kΩ has died out (the first, backward-Euler, step leaves
+        // h/τ of it). The step is controlled to SPICE's default tolerance,
+        // TRTOL·RELTOL = 0.7 % of the voltage, so check to 1 %. At DC a
+        // winding is a short, so both decay towards 0.
+        let peak = transient
+            .timesteps
+            .iter()
+            .map(|s| s.node_voltages["n2"].abs())
+            .fold(0.0, f64::max);
+        assert!(peak > 1.0, "primary peak {peak}");
+        for s in &transient.timesteps[2..] {
+            let (vp, vs) = (s.node_voltages["n2"], s.node_voltages["n3"]);
+            assert!(
+                (vs - 1.998 * vp).abs() < 1e-2 * (1.998 * peak),
+                "t = {}: secondary {vs}, primary {vp}",
+                s.time
+            );
+        }
+        assert!(result.node_voltages["n2"].abs() < 1e-3 * peak);
     }
 
     /// Test 5: Circuit with both reactive and nonlinear solves successfully.

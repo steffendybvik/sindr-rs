@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (backward Euler), AC analysis, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -30,7 +30,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -169,7 +169,7 @@ CircuitElement::Jfet {
 
 `BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps` and `MosfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
-When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as Backward Euler capacitor companions each transient timestep, with per-junction voltage state tracked internally. This automatically triggers transient analysis.
+When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally. This automatically triggers transient analysis.
 
 **NPN common-emitter example:**
 
@@ -265,7 +265,7 @@ CircuitElement::Fuse             { id, nodes: [String; 2], rating: f64, blown: b
 CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64 }   // ideal source from output to gnd
 ```
 
-When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as a Backward Euler inductor companion). This triggers transient automatically.
+When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
 
 ## Reading results
 
@@ -311,7 +311,9 @@ use sindr::{solve_transient, TransientConfig};
 let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 1e-6))?;
 ```
 
-Each snapshot is the end of one backward-Euler step, with sources evaluated at that time; the last is at `tstop`.
+Each snapshot is the end of one step, with sources evaluated at that time; the last is at `tstop`. The default integrator is Gear-2 (second order, no ringing); `.with_method(IntegrationMethod::Trapezoidal)` keeps an LC tank's amplitude exactly, and `IntegrationMethod::BackwardEuler` matches sindr before 0.1.0-alpha.7. Every method takes its first step as backward Euler.
+
+Steps are at most `tstep` long and every multiple of `tstep` gets a snapshot. In between, the stepper shortens steps where the local truncation error would exceed SPICE's default tolerances, and lands exactly on each corner of a source waveform (pulse edges, PWL points, square-wave flips), so a 1 ns edge in a 1 ms run is resolved without 1 ns steps everywhere. `result.transient.stats` counts accepted and rejected steps; `.with_fixed_step()` turns the error control off.
 
 
 ```rust
@@ -437,7 +439,7 @@ pub enum SimError {
 |---|---|
 | Only linear elements | Direct MNA (LU factorisation) |
 | Nonlinear elements (diodes, BJTs, MOSFETs, IGBTs…) | Newton-Raphson iteration |
-| Reactive elements (C, L, Varactor, Transformer) or waveform sources | Backward Euler transient |
+| Reactive elements (C, L, Varactor, Transformer) or waveform sources | Transient (Gear-2 by default) |
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
 The transient solver uses adaptive timestepping: dt halves on Newton-Raphson convergence failure, and doubles after 5 consecutive successful timesteps (clamped to 10× the initial dt).

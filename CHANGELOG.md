@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Sparse MNA solve: systems above 100 unknowns are stored sparsely and
+  factorised with `faer`'s sparse LU, reusing the symbolic analysis while the
+  sparsity pattern doesn't change, for DC, transient and AC alike. A
+  10 000-node ladder solves in ~4 ms; dense took ~80 ms at 1 000 nodes.
+  Benchmark: `cargo bench -p sindr --bench mna_solve`.
+- Source stepping, the DC fallback after gmin stepping: every source ramped
+  up from zero, warm-starting each step. `SimulationResult::convergence_aid`
+  reports which fallback (`GminStepping` or `SourceStepping`) a solve needed.
+- Transient initial conditions (`.ic` with `UIC`):
+  `TransientConfig::with_initial_voltages` and `with_initial_current`.
+- `ac_analysis::solve_ac_with_initial_voltages`: a `.nodeset` for the AC bias
+  point.
+- `sindr::spice` reads `.ic V(node)=…` and `.nodeset V(node)=…` into
+  `ParsedNetlist::initial_conditions` and `nodesets`.
+- Transient timestep control: steps are shortened where the local truncation
+  error would exceed SPICE's default tolerances, and land exactly on every
+  corner of a source waveform (`Waveform::breakpoints`), restarting the
+  integration there. `TransientData::stats` counts accepted, LTE-rejected and
+  Newton-rejected steps; `TransientConfig::with_fixed_step()` opts out.
+- Trapezoidal and Gear-2 (BDF2) transient integration, chosen with
+  `TransientConfig::with_method(IntegrationMethod::…)`. Both are second
+  order; trapezoidal keeps an LC tank's amplitude, Gear-2 doesn't ring on
+  fast time constants.
 - `sindr::solve_transient(circuit, &TransientConfig)`: transient analysis
   over a chosen span and step (`TransientConfig::new(tstop, tstep)`,
   optionally `.with_tmax(…)`), as SPICE's `.tran`. `solve_circuit` keeps
@@ -34,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `MnaSystem::a` is an `MnaMatrix` (dense or sparse) instead of
+  a nalgebra `DMatrix`. Index it as before (`a[(r, c)]`); use
+  `MnaMatrix::to_dense()` for a `DMatrix`.
+- Transient snapshots are the accepted steps, so their number varies: every
+  multiple of `tstep` is still there, plus shorter steps near edges and
+  after switch-on.
+- Transients integrate with **Gear-2 by default**, including through
+  `solve_circuit`, instead of backward Euler. Results are much closer to the
+  exact solution (0.03 % against ngspice where BE was 0.4 %) and change
+  accordingly. `IntegrationMethod::BackwardEuler` reproduces the old ones.
 - **Breaking:** `sindr::transient::solve_transient` now takes
   `(&Circuit, &TransientConfig)`, and `solve_transient_nonlinear` is gone:
   linear and nonlinear circuits share one stepper.
@@ -68,6 +101,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Transformers in transient modelled negative inductance (the winding rows
+  had V = −L·dI/dt). At the large steps sindr used to take, the unstable mode
+  this created happened to look settled; at short steps the secondary blew
+  up. A winding is now V = L·dI/dt, so it is a short at DC.
+- Varactors in transient: the companion injected its history current with
+  the wrong sign, so a varactor charged through a resistor settled about
+  1e-3 short of the source voltage.
 - Diode, LED and Schottky reverse leakage. The companion floored its
   conductance at GMIN but built its current source from the unfloored one,
   which added a GMIN conductance across every reverse-biased junction (twice

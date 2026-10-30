@@ -6,7 +6,7 @@ Status: pre-release alpha (`0.1.0-alpha.7`). Anything below may change.
 
 ## What sindr is
 
-- DC, nonlinear DC (Newton-Raphson), transient (Backward Euler), AC, DC sweep, temperature sweep
+- DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
 - Thermistor, photoresistor, potentiometer, relay, fuse, ideal fixed-output voltage regulator
@@ -36,7 +36,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 ### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **No SPICE netlist export.** Cannot hand a circuit off to ngspice / LTspice / Xyce.
 - **No hierarchical data model.** The `spice` parser *flattens* `.subckt` hierarchy (parameter-passing instances, `.`-separated hierarchical node naming) when importing a deck. But the core `Circuit` API itself is a flat `Vec<CircuitElement>` — there is no hierarchical block or instance type exposed programmatically.
 - **No model cards.** Devices take parameters as Rust structs, not BSIM / Gummel-Poon / VBIC / HICUM cards. There is no way to point at a manufacturer model and get matching behaviour.
@@ -48,7 +48,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 |----------|-----------|-------|
 | `.op` (operating point) | ✅ | via `solve_circuit` |
 | `.dc` (DC sweep) | ✅ | one source at a time |
-| `.tran` (transient) | ✅ | Backward Euler at a fixed `tstep` (`solve_transient`), halved only when Newton fails. No truncation-error control, no breakpoints, `tstart` ignored |
+| `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` ignored |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.temp` (temperature sweep) | ✅ | junction-device temp parameter |
 | `.noise` (noise analysis) | ❌ | no thermal/shot/flicker noise stamps |
@@ -82,12 +82,12 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 ### Solver & numerics
 
-- **Backward Euler is the only transient integrator.** No trapezoidal, no Gear-2, no variable-order. BE is L-stable but numerically dissipative — expect amplitude decay on lightly-damped LC tanks. This is not tunable.
-- **Dense LU factorisation** (via `nalgebra`). No sparse solver. Practical circuit size is bounded by `O(N²)` memory and `O(N³)` factorisation; large boards (hundreds of nodes) will be slow.
-- **Convergence aids: gmin stepping + Newton damping only.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr automatically retries with a gmin-stepping homotopy (geometric ladder from `1e-2` down to the `1e-12` floor, warm-starting between steps). No source stepping, no pseudo-transient continuation, no general homotopy. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
-- **`.nodeset`-style seeding via `solve_circuit_with_initial_voltages`.** Pass a `HashMap<String, f64>` of node-name → voltage to pre-warm the Newton initial guess. No `.ic` (force-fixed initial conditions) directive yet.
-- **No `uic` (use-initial-conditions) skip-DC option** for transient.
-- **No adaptive timestep by local truncation error, and no waveform breakpoints.** A fast PWL corner or pulse edge between two steps can be stepped over.
+- **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
+- **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation, and no multithreading.
+- **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
+- **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the AC bias point (`solve_ac_with_initial_voltages`).
+- **`.ic` is always `UIC`:** transients never compute a DC operating point first; they start from the initial conditions (`TransientConfig::with_initial_voltages`, `with_initial_current`) or from all-zero. Transformer windings always start at 0 A, and inductor `IC=` on SPICE element lines isn't parsed.
+- **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), not per charge or flux, and the tolerances can't be changed yet. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
 - **No checkpointing / restart** of long transient runs.
 - **No multithreading** in the solver.
 - **No automatic differentiation / adjoint sensitivity.**
@@ -114,7 +114,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - Transformer coupling `k = 1.0` is mathematically singular — clamp to `≤ 0.999`.
 - Switches are modelled as `0.01 Ω` / `1 GΩ` resistors — they are not ideal, and very high-impedance circuits may need explicit values.
 - The op-amp / comparator macromodel is a saturating VCVS with gain `1e5` — it has no frequency response, so AC and transient closed-loop bandwidth predictions are not realistic.
-- Backward Euler over-damps resonant tanks (ringing decays faster than it should); if you need accurate ringing amplitude, this is the wrong tool today.
+- For accurate ringing amplitude in a resonant circuit, use `IntegrationMethod::Trapezoidal` with a step well below the period: Gear-2 and especially backward Euler damp it.
 - Photodiode / photoresistor / thermistor "stimulus" parameters (irradiance, light level, temperature) are **constants per solve**, not time-varying inputs. There is no environmental waveform.
 
 ## Useful workarounds

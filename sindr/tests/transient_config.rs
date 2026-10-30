@@ -5,7 +5,8 @@
 use std::f64::consts::PI;
 
 use sindr::{
-    solve_circuit, solve_transient, Circuit, CircuitElement, SimError, TransientConfig, Waveform,
+    solve_circuit, solve_transient, Circuit, CircuitElement, IntegrationMethod, SimError,
+    TransientConfig, Waveform,
 };
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
@@ -41,6 +42,29 @@ fn rc() -> Circuit {
     }
 }
 
+/// Every multiple of `tstep` up to the end has a snapshot, and no step is
+/// longer than `tstep`.
+fn assert_on_grid(tran: &sindr::TransientData) {
+    let times: Vec<f64> = tran.timesteps.iter().map(|s| s.time).collect();
+    let n = (tran.duration / tran.time_step).round() as usize;
+    for k in 1..=n {
+        let t = k as f64 * tran.time_step;
+        assert!(
+            times.iter().any(|x| (x - t).abs() < 1e-9 * tran.time_step),
+            "no snapshot at {t}"
+        );
+    }
+    let mut prev = 0.0;
+    for t in &times {
+        assert!(
+            t - prev <= tran.time_step * (1.0 + 1e-9),
+            "step {} at {t}",
+            t - prev
+        );
+        prev = *t;
+    }
+}
+
 #[test]
 fn invalid_configs_are_rejected() {
     let nan = f64::NAN;
@@ -69,15 +93,15 @@ fn invalid_configs_are_rejected() {
 }
 
 /// `.tran`-style 10 µs steps to 2 ms: 200 snapshots on the step grid, the
-/// last at exactly tstop, each the backward-Euler update
+/// last at exactly tstop, each (with backward Euler) the update
 /// `v_n = (v_{n−1} + (dt/τ)·V) / (1 + dt/τ)`.
 #[test]
 fn requested_span_and_step_are_honoured() {
     let (tstop, tstep, tau) = (2e-3, 10e-6, 1e-3);
-    let tran = solve_transient(&rc(), &TransientConfig::new(tstop, tstep))
-        .unwrap()
-        .transient
-        .unwrap();
+    let config = TransientConfig::new(tstop, tstep)
+        .with_method(IntegrationMethod::BackwardEuler)
+        .with_fixed_step();
+    let tran = solve_transient(&rc(), &config).unwrap().transient.unwrap();
     assert_eq!(tran.timesteps.len(), 200);
     assert_eq!(tran.time_step, tstep);
     assert_eq!(tran.duration, tstop);
@@ -94,10 +118,13 @@ fn requested_span_and_step_are_honoured() {
 /// A tstop that isn't a multiple of tstep ends on a short last step.
 #[test]
 fn last_step_lands_on_tstop() {
-    let tran = solve_transient(&rc(), &TransientConfig::new(1.05e-3, 0.1e-3))
-        .unwrap()
-        .transient
-        .unwrap();
+    let tran = solve_transient(
+        &rc(),
+        &TransientConfig::new(1.05e-3, 0.1e-3).with_fixed_step(),
+    )
+    .unwrap()
+    .transient
+    .unwrap();
     let times: Vec<f64> = tran.timesteps.iter().map(|s| s.time).collect();
     assert_eq!(times.len(), 11);
     assert!((times[9] - 1.0e-3).abs() < 1e-15);
@@ -107,10 +134,10 @@ fn last_step_lands_on_tstop() {
 /// `tmax` below `tstep` caps the step.
 #[test]
 fn tmax_caps_the_step() {
-    let tran = solve_transient(&rc(), &TransientConfig::new(1e-3, 100e-6).with_tmax(25e-6))
-        .unwrap()
-        .transient
-        .unwrap();
+    let config = TransientConfig::new(1e-3, 100e-6)
+        .with_tmax(25e-6)
+        .with_fixed_step();
+    let tran = solve_transient(&rc(), &config).unwrap().transient.unwrap();
     assert_eq!(tran.timesteps.len(), 40);
     assert!((tran.timesteps[0].time - 25e-6).abs() < 1e-18);
 }
@@ -160,7 +187,8 @@ fn solve_circuit_uses_the_auto_config() {
     assert_eq!((auto.tstop, auto.tstep), (5e-3, 20e-6));
     let a = solve_circuit(&circuit).unwrap().transient.unwrap();
     let b = solve_transient(&circuit, &auto).unwrap().transient.unwrap();
-    assert_eq!(a.timesteps.len(), 250);
+    assert_eq!(a.timesteps.len(), b.timesteps.len());
+    assert_on_grid(&a);
     assert_eq!(a.timesteps.last().unwrap().time, 5e-3);
     for (x, y) in a.timesteps.iter().zip(&b.timesteps) {
         assert_eq!(x.node_voltages["out"], y.node_voltages["out"]);
@@ -200,7 +228,7 @@ fn nonlinear_transient_honours_the_config() {
         .unwrap()
         .transient
         .unwrap();
-    assert_eq!(tran.timesteps.len(), 2000);
+    assert_on_grid(&tran);
     assert_eq!(tran.timesteps.last().unwrap().time, 40e-3);
     let peak = tran
         .timesteps

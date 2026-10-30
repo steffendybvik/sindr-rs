@@ -1,15 +1,15 @@
 # sindr
 
-> Analog circuit simulator in pure Rust: a SPICE-style modified nodal analysis (MNA) solver with built-in semiconductor device models. Build a `Circuit` (a flat list of `CircuitElement`s plus a ground node name) in Rust or JSON, or parse a SPICE3 subset, then run DC operating point, transient (backward Euler), AC small-signal, DC sweep or temperature sweep. Two crates: `sindr` (solver) and `sindr-devices` (device companion models). Pre-release alpha.
+> Analog circuit simulator in pure Rust: a SPICE-style modified nodal analysis (MNA) solver with built-in semiconductor device models. Build a `Circuit` (a flat list of `CircuitElement`s plus a ground node name) in Rust or JSON, or parse a SPICE3 subset, then run DC operating point, transient (Gear-2 by default, or trapezoidal or backward Euler), AC small-signal, DC sweep or temperature sweep. Two crates: `sindr` (solver) and `sindr-devices` (device companion models). Pre-release alpha.
 
 Key facts for generating code:
 
 - `solve_circuit` runs DC, or transient when the circuit has capacitors, inductors or waveform sources. It never runs AC: use `sindr::ac_analysis::solve_ac` with an `AcConfig`.
-- `solve_circuit` picks the transient duration and step from the circuit's time constants (5 τ, τ/50). To set them, as SPICE's `.tran` does, call `solve_transient(&circuit, &TransientConfig::new(tstop, tstep))`.
+- `solve_circuit` picks the transient duration and step from the circuit's time constants (5 τ, τ/50). To set them, as SPICE's `.tran` does, call `solve_transient(&circuit, &TransientConfig::new(tstop, tstep))`. Steps never exceed `tstep`; the stepper adds shorter ones where accuracy or a waveform edge needs them, so snapshot counts vary.
 - Node order: BJT `[base, collector, emitter]`, MOSFET and JFET `[gate, drain, source]`, IGBT `[gate, collector, emitter]`, op-amp `[in_plus, in_minus, out]`. Voltage source `nodes[0]` is the positive terminal.
 - Every node needs a DC path to ground, and one node must equal `Circuit::ground_node`.
 - SI units throughout (V, A, Ω, F, H, s, K). Junction temperatures are in kelvin; 300.15 K is nominal.
-- Device models: Shockley diodes, Ebers–Moll BJT, Level-1 MOSFET, square-law JFET and IGBT. No BSIM or Gummel–Poon, no `.model` cards. SPICE input (feature `spice`) reads R, L, C, V, I, D, Q, X only.
+- Device models: Shockley diodes, Ebers–Moll BJT, Level-1 MOSFET, square-law JFET and IGBT. No BSIM or Gummel–Poon, no `.model` cards. SPICE input (feature `spice`) reads R, L, C, V, I, D, Q, X elements only, plus `.ic`/`.nodeset` into `ParsedNetlist::{initial_conditions, nodesets}`.
 
 ## Docs
 
