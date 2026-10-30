@@ -255,7 +255,7 @@ CircuitElement::Bjt {
     parasitic_caps: Option<BjtParasiticCaps>, // { cbe, cbc } in Farads; None = disabled
 }
 
-// MOSFET — nodes: [gate, drain, source]
+// MOSFET — nodes: [gate, drain, source]; body tied to source
 CircuitElement::Mosfet {
     id,
     nodes: [String; 3],
@@ -781,12 +781,14 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **No op-amp macromodel beyond ideal-with-rails.** No GBW, slew rate, input bias current, offset, output impedance, current limiting, or supply current. Real op-amp models from vendors cannot be loaded.
 - **No real regulator / reference / DC-DC controller models.** `VoltageRegulator` is an ideal voltage source on the output: no dropout, line/load regulation, quiescent current or current limit.
-- **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation, body effect, gate leakage are absent.
+- **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
+- **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
 - **No JFET parasitic capacitances.** (BJT and MOSFET have optional Cbe/Cbc and Cgs/Cgd; JFET doesn't.)
 - **No power-MOSFET reverse body diode** as a separate stamped element (must be added explicitly as a `Diode`).
 - **No SiC / GaN device models.**
 - **No magnetics with saturation / hysteresis.** `Transformer` is linear coupled inductors. No B-H curve, no core loss, no saturating inductor, no gapped core.
+- **AC analysis ignores a transformer's coupling** (SIN-39): each winding is stamped as a separate inductor, so nothing reaches the secondary in AC. DC and transient couple the windings.
 - **No transmission lines** (lossless or lossy / W-element).
 - **No crystal / quartz resonator macromodel** (must be built from L/C/R by hand).
 - **No piezo / MEMS / electro-mechanical coupling.**
@@ -1178,7 +1180,8 @@ pub enum CircuitElement {
         parasitic_caps: Option<BjtParasiticCaps>,
     },
 
-    /// MOSFET transistor (3 terminals: gate, drain, source).
+    /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
+    /// to the source).
     #[cfg_attr(feature = "serde", serde(rename = "mosfet"))]
     Mosfet {
         /// Unique component identifier.
@@ -4268,6 +4271,16 @@ pub enum MosfetKind {
     /// P-channel MOSFET (holes are majority carriers in the channel).
     #[cfg_attr(feature = "serde", serde(rename = "pmos"))]
     Pmos,
+}
+
+impl MosfetKind {
+    /// Gate–source and drain–source voltages `(vgs, vds)` of a three-terminal
+    /// MOSFET with node voltages `vg`, `vd`, `vs`, in the N-channel frame that
+    /// [`mosfet_companion`] works in: mirrored (`vsg`, `vsd`) for a PMOS.
+    ///
+    /// A three-terminal MOSFET is a discrete part, whose body is tied to its
+    /// source inside the package, so its `vbs` is always 0.
+    pub fn nmos_frame(self, vg: f64, vd: f64, vs: f64) -> (f64, f64) { … }
 }
 
 /// Operating region of a MOSFET.
