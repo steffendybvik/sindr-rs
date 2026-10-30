@@ -57,6 +57,58 @@
 //! assert!((v_n2 - 6.6667).abs() < 1e-3);
 //! ```
 //!
+//! # Capabilities
+//!
+//! ## Analyses
+//!
+//! | Analysis | Entry point | Notes |
+//! |---|---|---|
+//! | Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
+//! | Transient | [`solve_circuit`] | Taken automatically when the circuit has C, L or waveform sources. Backward Euler only; duration (5 τ) and step (τ/50) come from the circuit's time constants and can't be set yet |
+//! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
+//! | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
+//! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
+//! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`] | DC only; there's no `.ic` |
+//!
+//! Not available: noise, distortion, pole-zero, sensitivity, Monte Carlo,
+//! periodic steady state, S-parameters, trapezoidal or Gear integration,
+//! truncation-error timestep control.
+//!
+//! ## Device models
+//!
+//! | Device | Model |
+//! |---|---|
+//! | Diode, LED, Schottky, photodiode | Shockley; IS and V_T = kT/q follow each device's `temperature` (SPICE IS(T), XTI = 3) |
+//! | Zener | Shockley forward, linear breakdown at `vz` |
+//! | BJT (NPN/PNP) | Ebers–Moll with Early voltage; not Gummel–Poon |
+//! | MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges); no BSIM |
+//! | JFET (N/P) | Shichman–Hodges square law |
+//! | IGBT | MOSFET-like gate control, square-law collector current |
+//! | Varactor | Voltage-dependent junction capacitance (transient) |
+//! | Op-amp, comparator | Saturating VCVS, gain 1e5; no GBW or slew rate |
+//! | Transformer | Linear coupled inductors |
+//!
+//! Parameters are Rust structs, not SPICE `.model` cards.
+//!
+//! ## Convergence aids
+//!
+//! Junction voltage limiting and Newton damping on every nonlinear solve.
+//! When plain Newton–Raphson fails, the DC solve retries with gmin stepping
+//! (1e-2 S down to 1e-12 S). There's no source stepping. A transient step
+//! whose Newton solve fails is retried at half the step.
+//!
+//! ## SPICE input (feature `spice`)
+//!
+//! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
+//! and X elements; `.subckt`, `.model`, `.param`, `.include`, `.lib`; and the
+//! analysis cards `.op`, `.dc`, `.ac` and `.tran`. Not supported: MOSFET (M)
+//! and JFET (J) elements, controlled sources (E, F, G, H), coupled inductors
+//! (K), `B` sources, most `.model` parameters (diodes always use IS = 1e-14,
+//! N = 1; BJTs honour only BF), and netlist export.
+//!
+//! The full list of what sindr doesn't do is in
+//! [LIMITATIONS.md](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
+//!
 //! # Conventions
 //!
 //! - **Ground node** must exist on at least one component. Its voltage is
@@ -136,9 +188,17 @@
 //! sindr = { version = "0.1.0-alpha.7", features = ["spice"] }
 //! ```
 //!
-//! ```ignore
+//! (`no_run`: it reads `amp.cir`, which doesn't exist where doctests run.)
+//!
+//! ```no_run
+//! # #[cfg(feature = "spice")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let netlist = sindr::spice::parse_file("amp.cir")?;
 //! let result = sindr::solve_circuit(&netlist.circuit)?;
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "spice"))]
+//! # fn main() {}
 //! ```
 //!
 //! See the [`spice`] module for a runnable example, the supported subset and
@@ -153,9 +213,13 @@
 //! - [`SimError`] — what can go wrong
 
 #![deny(missing_docs)]
+#![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
+#![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod examples;
 #[cfg(feature = "examples")]
+#[cfg_attr(docsrs, doc(cfg(feature = "examples")))]
 pub use examples::{get_examples, ExampleCircuit};
 
 pub mod ac_analysis;
@@ -168,6 +232,7 @@ pub mod newton_raphson;
 pub mod node_map;
 pub mod results;
 #[cfg(feature = "spice")]
+#[cfg_attr(docsrs, doc(cfg(feature = "spice")))]
 pub mod spice;
 pub mod stamp;
 pub mod temp_sweep;
@@ -336,6 +401,10 @@ pub(crate) fn solve_dc_operating_point(circuit: &Circuit) -> Result<SimulationRe
 /// Only consulted when the circuit contains nonlinear elements; for purely
 /// linear DC and for transient analysis the seed is ignored. Unknown node
 /// names in `initial_voltages` are silently skipped.
+///
+/// # Errors
+///
+/// As [`solve_circuit`].
 ///
 /// # Example
 ///

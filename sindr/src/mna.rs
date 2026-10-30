@@ -49,8 +49,12 @@ impl MnaSystem {
 
     /// Solve Ax = b via LU decomposition with partial pivoting.
     ///
-    /// Returns the solution vector on success, or a [`SimError`] if the
-    /// matrix is singular or the solution contains NaN/Inf values.
+    /// Returns the solution vector on success.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::SingularMatrix`] if the matrix is singular, or
+    /// [`SimError::InvalidSolution`] if the solution contains NaN or Inf.
     pub fn solve(&self) -> Result<DVector<f64>, SimError> {
         let solution = self
             .a

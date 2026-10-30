@@ -45,6 +45,11 @@ pub fn ldr_resistance(light_level: f64) -> f64 {
 /// When `v_prev` is `Some`, nonlinear components (Diode, Led, BJT, MOSFET) are stamped
 /// using their companion model evaluated at the given operating point.
 /// When `v_prev` is `None`, nonlinear components are skipped (linear solve).
+///
+/// # Errors
+///
+/// [`SimError::InvalidResistance`] for a resistor with zero or negative
+/// resistance.
 pub fn stamp_circuit(
     circuit: &Circuit,
     system: &mut MnaSystem,

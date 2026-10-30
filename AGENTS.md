@@ -35,6 +35,10 @@ sindr-rs/
 ├── sindr-devices/      # device physics (no solver dep)
 │   └── src/{diode,bjt,mosfet,igbt,jfet,varactor,schottky,zener,led,
 │            photodiode,photoresistor,thermistor}.rs
+├── docs/RELEASING.md    # where capabilities are documented + release checklist
+├── scripts/gen_llms_full.py  # regenerates llms-full.txt
+├── llms.txt            # short index for LLMs (llmstxt.org)
+├── llms-full.txt       # generated: READMEs, LIMITATIONS, public API, examples
 └── .planning/          # local GSD workflow artefacts (gitignored) — IGNORE for normal code work
 ```
 
@@ -53,6 +57,7 @@ cargo run --example list_examples             # list every bundled example circu
 cargo doc --workspace --no-deps --all-features --open  # API docs (CI uses RUSTDOCFLAGS=-D warnings)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint (CI)
 cargo fmt --all                               # format
+python3 scripts/gen_llms_full.py              # regenerate llms-full.txt (CI checks it)
 ```
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the version-bump and CHANGELOG rule CI enforces on PRs.
@@ -97,6 +102,8 @@ These trip up human users *and* code-generating agents. If you are producing exa
 
 - **One node must equal `Circuit::ground_node`.** Otherwise → `SimError::NoGround`.
 - **Every node must have a DC path to ground.** Floating sub-circuits (e.g. capacitor stack with no DC return) → `FloatingNode`. Add a large bleeder resistor if the topology calls for it.
+- **Every node needs at least two connections.** A node reached by a single component (a dangling resistor end) is also `FloatingNode`.
+- **No loops of voltage sources or inductors.** An inductor is a short at DC, so a loop of inductors (or of inductors and voltage sources) is `SingularMatrix`, in AC too, which solves the DC operating point first. Put a small resistor in the loop.
 - **Transformer `k` must satisfy `k ≤ 0.999`.** `k = 1.0` is mathematically singular. Default is `0.999`.
 - **Voltage source `nodes[0]` is the positive terminal.** Easy to flip and end up with negative supply rails.
 - **Current source convention**: current flows from `nodes[0]` toward `nodes[1]`.
@@ -104,6 +111,10 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **BJT nodes**: `[base, collector, emitter]`. **MOSFET nodes**: `[gate, drain, source]`. **IGBT nodes**: `[gate, collector, emitter]`. Order matters; mismatched order silently produces wrong results.
 - **Switches** are `0.01 Ω` closed / `1 GΩ` open — not ideal. In high-impedance circuits prefer explicit resistors.
 - **Capacitors / inductors / varactors / transformers / waveforms automatically trigger transient analysis.** Don't expect a pure DC solve if any are present.
+- **`solve_circuit` never runs AC.** For a frequency response call `sindr::ac_analysis::solve_ac` with an `AcConfig` naming the voltage source that carries the AC stimulus.
+- **Transient duration and step can't be set.** They're 5·τ_max and τ_max/50 from every R·C and L/R pair, with a 1 µs floor on dt (so τ below ~0.2 µs gives a single 1 µs step). A SPICE `.tran` card's values are not applied.
+- **Junction `temperature` fields are kelvin** (300.15 K = 27 °C, the nominal). IS and the thermal voltage kT/q both follow it.
+- **PMOS `vto` is SPICE-signed:** negative for an enhancement PMOS, as `MosfetParams::default_pmos()` has it.
 - **Backward Euler is L-stable but dissipative.** Lightly damped LC tanks will lose amplitude. Don't use sindr to verify ringing amplitude in resonant circuits today.
 - **`ConvergenceFailed { iterations, max_step_volts }`**: usually a nonlinear element with no DC path to ground, or component values orders of magnitude outside typical ranges. `max_step_volts` is the max Newton step (not a KCL residual). The solver already retries with gmin stepping (homotopy ladder `1e-2` → `1e-12`) before giving up; no source stepping. If gmin stepping doesn't rescue it, perturb the circuit or pass a starting guess via `solve_circuit_with_initial_voltages` — don't blindly retry.
 
@@ -117,6 +128,7 @@ When in doubt, run `cargo run --example list_examples` and copy the closest exis
 - **Don't implement BSIM / Gummel-Poon / VBIC** speculatively. They are large undertakings; coordinate via an issue first.
 - **Don't bypass `SimError`** with `panic!` / `unwrap()` in solver code.
 - **Don't write to `.planning/`** unless you are explicitly running a GSD command. It is workflow state, not source.
+- **Don't edit `llms-full.txt` by hand.** It's generated: `python3 scripts/gen_llms_full.py`. CI fails if it's stale.
 - **Don't commit `target/`, `*.swp`, or editor scratch files.** `.gitignore` covers the basics; check `git status` before committing.
 - **Don't squash existing public-API types into private ones** without a deprecation note in the commit message.
 

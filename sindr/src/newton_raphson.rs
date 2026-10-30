@@ -40,6 +40,10 @@ pub const RELTOL: f64 = 1e-3;
 ///    add Gmin shunts, solve, apply voltage limiting, check convergence.
 /// 3. Return results when converged, or error after MAX_NR_ITERATIONS.
 ///
+/// # Errors
+///
+/// [`SimError::ConvergenceFailed`] if neither plain Newton–Raphson nor the
+/// gmin-stepping retry converges, plus any stamping or solve error.
 pub fn solve_nonlinear(
     circuit: &Circuit,
     node_map: &NodeMap,
@@ -142,6 +146,10 @@ fn gmin_stepping(
 /// points or when default heuristics fail to converge. Unknown node names
 /// are silently ignored; nodes not in the map fall back to the default
 /// initialisation.
+///
+/// # Errors
+///
+/// As [`solve_nonlinear`].
 pub fn solve_nonlinear_with_initial_voltages(
     circuit: &Circuit,
     node_map: &NodeMap,

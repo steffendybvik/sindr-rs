@@ -386,6 +386,22 @@ pub struct TempSweepPoint {
 
 `num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
 
+## Examples
+
+One small program per capability in [`examples/`](./examples), run with `cargo run -p sindr --example <name>`:
+
+| Example | Shows |
+|---|---|
+| `voltage_divider` | Linear DC operating point |
+| `bjt_amplifier` | Nonlinear DC with a BJT |
+| `transient_rc` | Transient step response |
+| `bode_plot` | AC analysis |
+| `dc_sweep_diode` | DC sweep (diode I–V curve) |
+| `temperature_sweep` | Temperature sweep |
+| `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
+| `parse_netlist` | SPICE input (`--features spice`) |
+| `list_examples`, `run_example` | The built-in named circuits |
+
 ## Error handling
 
 ```rust
