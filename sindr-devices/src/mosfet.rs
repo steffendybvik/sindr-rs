@@ -16,6 +16,21 @@ pub enum MosfetKind {
     Pmos,
 }
 
+impl MosfetKind {
+    /// Gate–source and drain–source voltages `(vgs, vds)` of a three-terminal
+    /// MOSFET with node voltages `vg`, `vd`, `vs`, in the N-channel frame that
+    /// [`mosfet_companion`] works in: mirrored (`vsg`, `vsd`) for a PMOS.
+    ///
+    /// A three-terminal MOSFET is a discrete part, whose body is tied to its
+    /// source inside the package, so its `vbs` is always 0.
+    pub fn nmos_frame(self, vg: f64, vd: f64, vs: f64) -> (f64, f64) {
+        match self {
+            MosfetKind::Nmos => (vg - vs, vd - vs),
+            MosfetKind::Pmos => (vs - vg, vs - vd),
+        }
+    }
+}
+
 /// Operating region of a MOSFET.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]

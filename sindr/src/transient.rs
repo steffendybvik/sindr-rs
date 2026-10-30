@@ -598,11 +598,8 @@ fn extract_timestep_results(
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
-                let (vgs, vds, vbs) = match kind {
-                    MosfetKind::Nmos => (vg - vs, vd - vs, -vs),
-                    MosfetKind::Pmos => (vs - vg, vs - vd, vs),
-                };
-                let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(*kind));
+                let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
+                let comp = mosfet::mosfet_companion(vgs, vds, 0.0, &params.in_nmos_frame(*kind));
                 let id_current = match kind {
                     MosfetKind::Nmos => comp.id,
                     MosfetKind::Pmos => -comp.id,
@@ -1263,12 +1260,8 @@ fn extract_mosfet_results_from_snapshot(
                 .copied()
                 .unwrap_or(0.0);
 
-            let (vgs, vds, vbs) = match kind {
-                MosfetKind::Nmos => (vg - vs, vd - vs, -vs),
-                MosfetKind::Pmos => (vs - vg, vs - vd, vs),
-            };
-
-            let comp = mosfet::mosfet_companion(vgs, vds, vbs, &params.in_nmos_frame(*kind));
+            let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
+            let comp = mosfet::mosfet_companion(vgs, vds, 0.0, &params.in_nmos_frame(*kind));
             let id_current = match kind {
                 MosfetKind::Nmos => comp.id,
                 MosfetKind::Pmos => -comp.id,

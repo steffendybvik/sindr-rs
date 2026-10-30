@@ -57,7 +57,7 @@ element, and the `.cir` is read only by ngspice.
 
 | Analysis | Cases |
 |---|---|
-| Operating point | `op_resistive`, `op_diode`, `op_diode_series`, `op_bjt_ce`, `op_mosfet_cs`, `op_jfet`, `op_led`, `op_schottky`, `op_photodiode`, `op_subckt_param` (`.param`, nested `.subckt`, `.include`) |
+| Operating point | `op_resistive`, `op_diode`, `op_diode_series`, `op_bjt_ce`, `op_mosfet_cs`, `op_mosfet_follower`, `op_pmos_highside`, `op_jfet`, `op_led`, `op_schottky`, `op_photodiode`, `op_subckt_param` (`.param`, nested `.subckt`, `.include`) |
 | DC sweep | `dc_diode_iv` |
 | AC | `ac_rc_lowpass`, `ac_rlc_bandpass`, `ac_bjt_ce` |
 | Transient | `tran_rc_step`, `tran_rl_step` |
