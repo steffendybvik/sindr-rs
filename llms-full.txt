@@ -810,7 +810,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 #### Solver & numerics
 
 - **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
-- **Dense LU factorisation** (via `nalgebra`). No sparse solver. Practical circuit size is bounded by `O(N²)` memory and `O(N³)` factorisation; large boards (hundreds of nodes) will be slow.
+- **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation, and no multithreading.
 - **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
 - **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the AC bias point (`solve_ac_with_initial_voltages`).
 - **`.ic` is always `UIC`:** transients never compute a DC operating point first; they start from the initial conditions (`TransientConfig::with_initial_voltages`, `with_initial_current`) or from all-zero. Transformer windings always start at 0 A, and inductor `IC=` on SPICE element lines isn't parsed.
@@ -2249,17 +2249,74 @@ pub fn solve_circuit_with_initial_voltages(
 
 Modified Nodal Analysis (MNA) matrix system.
 
-Holds the dense `(n+m) × (n+m)` MNA matrix and right-hand-side vector
-that every analysis path eventually solves, where `n` is the number of
-non-ground nodes and `m` is the number of branch-current unknowns
-(independent voltage sources, controlled sources that introduce a branch,
-etc.).
+Holds the `(n+m) × (n+m)` MNA matrix and right-hand-side vector that every
+analysis path eventually solves, where `n` is the number of non-ground
+nodes and `m` is the number of branch-current unknowns (independent
+voltage sources, controlled sources that introduce a branch, etc.).
 
 Components write themselves into this system via [`stamp`](crate::stamp);
 the linear DC, Newton–Raphson, and transient pipelines all build an
 [`MnaSystem`], stamp into it, and call [`MnaSystem::solve`].
 
+The matrix is stored densely for small systems and as a sparse list of
+entries above [`DENSE_MAX`] unknowns, where it is factorised with a sparse
+LU. A circuit's sparsity pattern is the same from one Newton iteration or
+timestep to the next, so the sparse LU's symbolic analysis is reused while
+the pattern doesn't change.
+
 ```rust
+/// Largest system (unknowns) stored and solved densely. Above it the matrix
+/// is sparse. From `benches/mna_solve.rs`: dense and sparse cost about the
+/// same at 100 unknowns (70 µs vs 35–80 µs), dense is 5–7× faster at 10, and
+/// sparse is 50–250× faster at 1 000.
+pub const DENSE_MAX: usize = 100;
+
+/// A scalar the MNA matrix can hold: `f64` for DC and transient,
+/// [`Complex64`] for AC.
+pub trait MnaScalar:
+    nalgebra::ComplexField<RealField = f64> + faer::traits::ComplexField + Copy
+{
+    /// Whether the value is finite (both parts, for a complex number).
+    fn is_finite_value(&self) -> bool;
+}
+
+/// The `size × size` MNA matrix: indexed as `a[(row, col)]` and written with
+/// `+=` by the stamps, whatever its storage.
+pub struct MnaMatrix<T: MnaScalar = f64> {
+    size: usize,
+    storage: Storage<T>,
+    /// Returned when reading an entry a sparse matrix doesn't hold.
+    zero: T,
+}
+
+impl<T: MnaScalar> MnaMatrix<T> {
+    /// A zero `size × size` matrix, dense if `size` ≤ [`DENSE_MAX`].
+    pub fn zeros(size: usize) -> Self { … }
+
+    /// A zero `size × size` matrix stored densely.
+    pub fn dense(size: usize) -> Self { … }
+
+    /// A zero `size × size` matrix stored sparsely.
+    pub fn sparse(size: usize) -> Self { … }
+
+    /// Number of rows (and columns).
+    pub fn size(&self) -> usize { … }
+
+    /// Whether the matrix is stored sparsely.
+    pub fn is_sparse(&self) -> bool { … }
+
+    /// The matrix as a dense nalgebra matrix.
+    pub fn to_dense(&self) -> DMatrix<T> { … }
+
+    /// Solve `self · x = b`.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::SingularMatrix`] if the matrix is singular, or
+    /// [`SimError::InvalidSolution`] if the solution contains NaN or Inf.
+    pub fn solve(&self, b: &DVector<T>) -> Result<DVector<T>, SimError> { … }
+}
+
 /// Modified Nodal Analysis system.
 ///
 /// Holds the (n+m)x(n+m) conductance/constraint matrix `a` and the (n+m)
@@ -2267,7 +2324,7 @@ the linear DC, Newton–Raphson, and transient pipelines all build an
 /// m = number of independent voltage sources.
 pub struct MnaSystem {
     /// (n+m)x(n+m) conductance/constraint matrix (siemens S in the node block).
-    pub a: DMatrix<f64>,
+    pub a: MnaMatrix<f64>,
     /// (n+m) right-hand-side vector (amperes A in the node block, volts V in the source block).
     pub b: DVector<f64>,
     /// Number of non-ground nodes (n).
@@ -2277,13 +2334,14 @@ pub struct MnaSystem {
 }
 
 impl MnaSystem {
-    /// Create a zero-filled MNA system of the given dimensions.
+    /// Create a zero-filled MNA system of the given dimensions, sparse above
+    /// [`DENSE_MAX`] unknowns.
     pub fn new(num_nodes: usize, num_vsources: usize) -> Self { … }
 
     /// Total dimension of the system (n + m).
     pub fn size(&self) -> usize { … }
 
-    /// Solve Ax = b via LU decomposition with partial pivoting.
+    /// Solve Ax = b: LU with partial pivoting, dense or sparse.
     ///
     /// Returns the solution vector on success.
     ///

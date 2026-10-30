@@ -2002,7 +2002,7 @@ mod tests {
                             "{kind:?} vaf={} vbe={vbe} vbc={vbc} row {}",
                             params.vaf, nodes[row]
                         );
-                        let linear = system.a.row(r).dot(&x.transpose()) - system.b[r];
+                        let linear = system.a.to_dense().row(r).dot(&x.transpose()) - system.b[r];
                         assert_relative_eq!(
                             linear,
                             currents[row],
@@ -2081,7 +2081,7 @@ mod tests {
             stamp_jfet_companion(&mut system, &node_map, &nodes, kind, 10e-3, vp, &v);
 
             let row = idx("d");
-            let linear_id = system.a.row(row).dot(&v.transpose()) - system.b[row];
+            let linear_id = system.a.to_dense().row(row).dot(&v.transpose()) - system.b[row];
             let id = jfet_drain_current(kind, vg, vd, vs);
             let label = format!("{kind:?} at vg={vg} vd={vd} vs={vs}");
             assert_relative_eq!(linear_id, id, max_relative = 1e-9, epsilon = 1e-12);
@@ -2163,7 +2163,7 @@ mod tests {
             };
             let currents = |v: &DVector<f64>| {
                 let system = stamp_at(v);
-                &system.a * v - &system.b
+                &system.a.to_dense() * v - &system.b
             };
             let system = stamp_at(&v);
             let h = 1e-6;
@@ -2242,7 +2242,7 @@ mod tests {
             };
             let currents = |v: &DVector<f64>| {
                 let system = stamp_at(v);
-                &system.a * v - &system.b
+                &system.a.to_dense() * v - &system.b
             };
             let system = stamp_at(&v);
             let h = 1e-6;

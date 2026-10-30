@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use nalgebra::{DMatrix, DVector};
+use nalgebra::DVector;
 use num_complex::Complex64;
 
 use sindr_devices::bjt::{self, BjtKind};
@@ -19,6 +19,7 @@ use sindr_devices::mosfet;
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
 use crate::error::SimError;
+use crate::mna::MnaMatrix;
 use crate::node_map::NodeMap;
 
 /// Frequency sweep spacing.
@@ -105,7 +106,7 @@ impl AcResult {
 /// Complex MNA system for AC analysis.
 #[allow(dead_code)]
 struct ComplexMnaSystem {
-    a: DMatrix<Complex64>,
+    a: MnaMatrix<Complex64>,
     b: DVector<Complex64>,
     num_nodes: usize,
     num_vsources: usize,
@@ -115,7 +116,7 @@ impl ComplexMnaSystem {
     fn new(num_nodes: usize, num_vsources: usize) -> Self {
         let size = num_nodes + num_vsources;
         Self {
-            a: DMatrix::from_element(size, size, Complex64::new(0.0, 0.0)),
+            a: MnaMatrix::zeros(size),
             b: DVector::from_element(size, Complex64::new(0.0, 0.0)),
             num_nodes,
             num_vsources,
@@ -123,20 +124,7 @@ impl ComplexMnaSystem {
     }
 
     fn solve(&self) -> Result<DVector<Complex64>, SimError> {
-        let lu = self.a.clone().lu();
-        let solution = lu.solve(&self.b).ok_or(SimError::SingularMatrix)?;
-
-        for i in 0..solution.len() {
-            if solution[i].re.is_nan()
-                || solution[i].re.is_infinite()
-                || solution[i].im.is_nan()
-                || solution[i].im.is_infinite()
-            {
-                return Err(SimError::InvalidSolution);
-            }
-        }
-
-        Ok(solution)
+        self.a.solve(&self.b)
     }
 }
 
