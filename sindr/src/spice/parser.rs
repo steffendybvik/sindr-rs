@@ -723,11 +723,10 @@ fn parse_card_ac(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ))
 }
 
-/// Parse `.tf v(node[,ref]) source` or `.tf i(vsource) source`.
-fn parse_card_tf(input: &mut Input<'_>) -> ModalResult<RawCard> {
-    ws(input)?;
+/// Parse an output variable: `v(node[,ref])` or `i(vsource)`.
+fn output_variable(input: &mut Input<'_>) -> ModalResult<crate::TfOutput> {
     // Case is already folded, so `V(` arrives as `v(`.
-    let output = alt((
+    alt((
         delimited(
             ('v', ws, '(', ws),
             (node_name, opt(preceded((ws, ',', ws), node_name))),
@@ -740,7 +739,27 @@ fn parse_card_tf(input: &mut Input<'_>) -> ModalResult<RawCard> {
         delimited(('i', ws, '(', ws), ident, (ws, ')'))
             .map(|(source_id, _)| crate::TfOutput::Current { source_id }),
     ))
-    .parse_next(input)?;
+    .parse_next(input)
+}
+
+/// Parse `.sens v(node[,ref])` or `.sens i(vsource)`.
+fn parse_card_sens(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    ws(input)?;
+    let output = output_variable(input)?;
+    ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawCard::Analysis(
+        RawAnalysis::Sens { output },
+        Span::detached(),
+    ))
+}
+
+/// Parse `.tf v(node[,ref]) source` or `.tf i(vsource) source`.
+fn parse_card_tf(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    ws(input)?;
+    let output = output_variable(input)?;
     ws(input)?;
     let (source, _) = ident(input)?;
     ws(input)?;
@@ -770,7 +789,7 @@ fn parse_card_op(input: &mut Input<'_>) -> ModalResult<RawCard> {
 /// build the final `Vec<RawCard>` and to handle subckt body collection.
 #[derive(Debug)]
 enum LineOutcome {
-    /// A normal card (element, model, .param, .tran, .dc, .ac, .tf, .op, .subckt header, .ends).
+    /// A normal card (element, model, .param, .tran, .dc, .ac, .tf, .sens, .op, .subckt header, .ends).
     Card(RawCard),
 }
 
@@ -799,6 +818,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "ac" => parse_card_ac(&mut input),
             "op" => parse_card_op(&mut input),
             "tf" => parse_card_tf(&mut input),
+            "sens" => parse_card_sens(&mut input),
             "ic" => parse_card_node_values(&mut input, NodeValueKind::Ic),
             "nodeset" => parse_card_node_values(&mut input, NodeValueKind::Nodeset),
             "include" | "lib" => {

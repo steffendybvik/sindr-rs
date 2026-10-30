@@ -159,6 +159,9 @@ pub(crate) enum RawAnalysis {
         output: crate::TfOutput,
         input: String,
     },
+    Sens {
+        output: crate::TfOutput,
+    },
 }
 
 /// AC sweep style keyword.

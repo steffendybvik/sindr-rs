@@ -169,7 +169,7 @@ pub fn solve_tf_with_initial_voltages(
 /// Branch row of the voltage source `id` of the original `circuit`. The
 /// system is built on the DC equivalent, where an inductor is a 0 V source
 /// too, and that isn't a source to name.
-fn independent_vsource_branch(
+pub(crate) fn independent_vsource_branch(
     circuit: &Circuit,
     system: &SmallSignalSystem,
     id: &str,
@@ -185,7 +185,7 @@ fn independent_vsource_branch(
 /// A port of the linearised system: either the branch of a voltage source
 /// (driven with 1 V, read as a current) or a node pair (driven with 1 A,
 /// read as a voltage).
-enum Port {
+pub(crate) enum Port {
     Branch(usize),
     /// Current goes in at `.0` and out at `.1`; `None` is ground.
     Nodes(Option<usize>, Option<usize>),
@@ -219,7 +219,7 @@ impl Port {
             })
     }
 
-    fn output(
+    pub(crate) fn output(
         circuit: &Circuit,
         node_map: &NodeMap,
         system: &SmallSignalSystem,
@@ -249,7 +249,7 @@ impl Port {
         }
     }
 
-    fn excitation(&self, size: usize) -> DVector<Complex64> {
+    pub(crate) fn excitation(&self, size: usize) -> DVector<Complex64> {
         let mut b = DVector::from_element(size, Complex64::new(0.0, 0.0));
         match *self {
             Port::Branch(k) => b[k] = Complex64::new(1.0, 0.0),

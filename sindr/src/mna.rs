@@ -129,6 +129,27 @@ impl<T: MnaScalar> MnaMatrix<T> {
         }
     }
 
+    /// The transpose of the matrix, in the same storage.
+    pub fn transpose(&self) -> Self {
+        let storage = match &self.storage {
+            Storage::Dense(m) => Storage::Dense(m.transpose()),
+            Storage::Sparse { entries, .. } => {
+                let entries: Vec<_> = entries.iter().map(|&(r, c, v)| (c, r, v)).collect();
+                let index = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &(r, c, _))| ((r, c), k))
+                    .collect();
+                Storage::Sparse { entries, index }
+            }
+        };
+        Self {
+            size: self.size,
+            storage,
+            zero: T::zero(),
+        }
+    }
+
     /// Solve `self · x = b`.
     ///
     /// # Errors
