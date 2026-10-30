@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Diode, LED and Schottky reverse leakage. The companion floored its
+  conductance at GMIN but built its current source from the unfloored one,
+  which added a GMIN conductance across every reverse-biased junction (twice
+  ngspice's leakage). The floor now only shapes the Newton steps.
 - A nonlinear transient with a `VoltageRegulator` listed before a
   `Transformer` read the transformer's winding currents from the wrong rows,
   so the result depended on component order.

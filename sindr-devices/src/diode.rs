@@ -123,12 +123,15 @@ pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) {
     // Junction conductance g_j = (IS / (N*V_T)) * exp(V_j / (N*V_T)), seen
     // through RS at the terminals: g_d = g_j / (1 + RS*g_j)
     let g_j = (params.is / nv_t) * exp_vj;
-    let g_d = g_j / (1.0 + params.rs * g_j);
+    // Floored at GMIN so the Jacobian never loses the diode in deep reverse.
+    let g_d = (g_j / (1.0 + params.rs * g_j)).max(GMIN);
 
-    // Companion current source: I_eq = I_d - g_d * V_d
+    // Companion current source: I_eq = I_d - g_d * V_d, from the same g_d
+    // that is stamped, so g_d * V_d + I_eq is I_d and the floor only shapes
+    // the Newton steps, not the converged current.
     let i_eq = i_d - g_d * v_d;
 
-    (g_d.max(GMIN), i_eq)
+    (g_d, i_eq)
 }
 
 /// Compute the diode current at terminal voltage `v_d`, including the drop
@@ -384,6 +387,26 @@ mod tests {
 
         assert_relative_eq!(g_d, expected_g_d, epsilon = 1e-15);
         assert_relative_eq!(i_eq, expected_i_eq, epsilon = 1e-15);
+    }
+
+    /// The linearisation reproduces the diode current at its own operating
+    /// point, deep reverse bias included, where `g_d` sits on the GMIN floor.
+    #[test]
+    fn diode_companion_reproduces_current_at_operating_point() {
+        let mut with_rs = DiodeParams::silicon();
+        with_rs.rs = 10.0;
+        for params in [DiodeParams::silicon(), with_rs] {
+            for v_d in [-50.0, -5.0, -0.5, 0.0, 0.3, 0.65, 0.8] {
+                let (g_d, i_eq) = diode_companion(v_d, &params);
+                let i_d = diode_current(v_d, &params);
+                assert!(
+                    (g_d * v_d + i_eq - i_d).abs() <= 1e-12 * i_d.abs() + 1e-24,
+                    "rs = {}, v = {v_d}: g·v + i_eq = {}, I_d = {i_d}",
+                    params.rs,
+                    g_d * v_d + i_eq
+                );
+            }
+        }
     }
 
     /// Terminal current of a diode with series resistance, by bisection on
