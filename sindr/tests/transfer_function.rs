@@ -299,6 +299,33 @@ fn bad_input_or_output_is_an_error() {
     ] {
         assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
     }
+    // An inductor is a 0 V source in the DC system, but not a source to name.
+    let mut with_l = divider();
+    with_l.components[1] = resistor("R1", "in", "mid", 1e3);
+    with_l.components.push(CircuitElement::Inductor {
+        id: "L1".into(),
+        nodes: ["mid".into(), "out".into()],
+        inductance: 1e-3,
+    });
+    for (output, input) in [
+        (v_out("out"), "L1"),
+        (
+            TfOutput::Current {
+                source_id: "L1".into(),
+            },
+            "V1",
+        ),
+    ] {
+        let err = solve_tf(
+            &with_l,
+            &TfConfig {
+                output,
+                input_source: input.into(),
+            },
+        );
+        assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
+    }
+
     // Ground is a valid output node: the gain to it is zero.
     let r = run(v_out("0"), "V1").unwrap();
     assert_eq!(r.gain, 0.0);

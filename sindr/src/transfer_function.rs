@@ -166,6 +166,22 @@ pub fn solve_tf_with_initial_voltages(
     })
 }
 
+/// Branch row of the voltage source `id` of the original `circuit`. The
+/// system is built on the DC equivalent, where an inductor is a 0 V source
+/// too, and that isn't a source to name.
+fn independent_vsource_branch(
+    circuit: &Circuit,
+    system: &SmallSignalSystem,
+    id: &str,
+) -> Option<usize> {
+    circuit
+        .components
+        .iter()
+        .any(|c| matches!(c, CircuitElement::VoltageSource { id: vid, .. } if vid == id))
+        .then(|| system.vsource_branch(id))
+        .flatten()
+}
+
 /// A port of the linearised system: either the branch of a voltage source
 /// (driven with 1 V, read as a current) or a node pair (driven with 1 A,
 /// read as a voltage).
@@ -182,7 +198,7 @@ impl Port {
         system: &SmallSignalSystem,
         id: &str,
     ) -> Result<Self, SimError> {
-        if let Some(branch) = system.vsource_branch(id) {
+        if let Some(branch) = independent_vsource_branch(circuit, system, id) {
             return Ok(Port::Branch(branch));
         }
         circuit
@@ -223,8 +239,7 @@ impl Port {
                 };
                 Ok(Port::Nodes(index(node)?, reference))
             }
-            TfOutput::Current { source_id } => system
-                .vsource_branch(source_id)
+            TfOutput::Current { source_id } => independent_vsource_branch(circuit, system, source_id)
                 .map(Port::Branch)
                 .ok_or_else(|| {
                     SimError::InvalidComponent(format!(
