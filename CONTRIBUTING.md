@@ -21,6 +21,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo test --workspace --no-default-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+python3 scripts/gen_llms_full.py --check
 ```
 
 - `--all-features` turns on the `spice` parser and its end-to-end tests.
@@ -29,6 +30,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
   comment.
 - The code blocks in `sindr-devices/README.md` run as doctests, so a stale
   README example fails `cargo test`.
+- `llms-full.txt` is generated from the READMEs, LIMITATIONS, doc comments
+  and examples. If you changed any of them, run
+  `python3 scripts/gen_llms_full.py` and commit the result.
 
 ## Tests
 
@@ -78,6 +82,13 @@ feature PRs.
 Write CHANGELOG entries in the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 style under `Added` / `Changed` / `Fixed` / `Removed`, and call out breaking
 API changes.
+
+## Documentation and releases
+
+[`docs/RELEASING.md`](./docs/RELEASING.md) lists where each capability is
+documented (crate docs, READMEs, LIMITATIONS, `llms.txt`, examples), what a
+PR that adds or changes a capability must update, and the per-release
+checklist.
 
 ## Commits and PRs
 

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Crate docs list sindr's capabilities: analyses with their entry points,
+  device models, convergence aids and the supported SPICE subset. On docs.rs
+  the `spice` and `examples` items carry feature badges.
+- `llms.txt` and a generated `llms-full.txt` for LLMs and agents, and
+  `docs/RELEASING.md`, the per-release documentation checklist.
+- Examples `temperature_sweep` and `initial_voltages`.
 - `sindr_devices::bjt::{bjt_terminal_currents, bjt_terminal_jacobian, BjtJacobian}`:
   the BJT's large-signal terminal currents (Early effect included) and their
   exact, uncapped Jacobian, valid in every operating region.

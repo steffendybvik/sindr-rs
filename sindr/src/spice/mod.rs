@@ -33,7 +33,7 @@
 //!
 //! For a deck on disk, parse it, hand the flattened [`Circuit`](crate::Circuit) to the
 //! solver, then dispatch each parsed analysis directive to the matching
-//! `sindr` routine:
+//! `sindr` routine (`no_run`: `amp.cir` doesn't exist where doctests run):
 //!
 //! ```no_run
 //! use sindr::spice::{parse_file, AnalysisRequest};
@@ -96,9 +96,10 @@
 //! [`SpiceParseError`] implements [`miette::Diagnostic`] and embeds the
 //! source text with labelled spans. Add `miette` with its `fancy` feature
 //! and render the error through a [`miette::Report`] for annotated,
-//! underlined output pointing at the offending line:
+//! underlined output pointing at the offending line (`no_run`: `bad.cir`
+//! doesn't exist where doctests run):
 //!
-//! ```ignore
+//! ```no_run
 //! match sindr::spice::parse_file("bad.cir") {
 //!     Ok(netlist) => { /* ... */ }
 //!     Err(e) => eprintln!("{:?}", miette::Report::new(e)),

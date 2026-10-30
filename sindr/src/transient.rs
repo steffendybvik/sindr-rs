@@ -991,6 +991,13 @@ const DT_FLOOR: f64 = 1e-6;
 ///
 /// Reactive companion state (cap voltages, inductor currents) is fixed during
 /// NR iteration and only updated after convergence.
+///
+/// # Errors
+///
+/// [`SimError::ConvergenceFailed`] if Newton–Raphson fails at a timestep even
+/// after halving dt down to its floor, plus any stamping or solve error
+/// ([`SimError::SingularMatrix`], [`SimError::InvalidSolution`], invalid
+/// component values).
 pub fn solve_transient_nonlinear(
     circuit: &Circuit,
     node_map: &NodeMap,
@@ -1125,7 +1132,7 @@ pub fn solve_transient_nonlinear(
     }
 
     // Build final result from last snapshot
-    let final_snapshot = timesteps.last().unwrap();
+    let final_snapshot = timesteps.last().ok_or(SimError::InvalidSolution)?;
     let mut branch_currents = HashMap::new();
     for component in &circuit.components {
         if let CircuitElement::VoltageSource { id, .. } = component {
@@ -1784,6 +1791,11 @@ fn nr_at_timestep_with_parasitic(
 ///
 /// Uses Backward Euler integration with companion models to step through
 /// time, producing a series of snapshots showing voltage/current evolution.
+///
+/// # Errors
+///
+/// [`SimError::SingularMatrix`] or [`SimError::InvalidSolution`] if a
+/// timestep's system can't be solved, or an invalid component value.
 pub fn solve_transient(
     circuit: &Circuit,
     node_map: &NodeMap,
@@ -1885,7 +1897,7 @@ pub fn solve_transient(
     }
 
     // Final timestep data for the steady-state snapshot
-    let final_snapshot = timesteps.last().unwrap();
+    let final_snapshot = timesteps.last().ok_or(SimError::InvalidSolution)?;
 
     // Build branch_currents from final solution
     let mut branch_currents = HashMap::new();

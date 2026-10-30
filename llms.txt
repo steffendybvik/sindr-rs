@@ -1,0 +1,32 @@
+# sindr
+
+> Analog circuit simulator in pure Rust: a SPICE-style modified nodal analysis (MNA) solver with built-in semiconductor device models. Build a `Circuit` (a flat list of `CircuitElement`s plus a ground node name) in Rust or JSON, or parse a SPICE3 subset, then run DC operating point, transient (backward Euler), AC small-signal, DC sweep or temperature sweep. Two crates: `sindr` (solver) and `sindr-devices` (device companion models). Pre-release alpha.
+
+Key facts for generating code:
+
+- `solve_circuit` runs DC, or transient when the circuit has capacitors, inductors or waveform sources. It never runs AC: use `sindr::ac_analysis::solve_ac` with an `AcConfig`.
+- Transient duration and step come from the circuit's time constants (5 τ, τ/50); they can't be set yet.
+- Node order: BJT `[base, collector, emitter]`, MOSFET and JFET `[gate, drain, source]`, IGBT `[gate, collector, emitter]`, op-amp `[in_plus, in_minus, out]`. Voltage source `nodes[0]` is the positive terminal.
+- Every node needs a DC path to ground, and one node must equal `Circuit::ground_node`.
+- SI units throughout (V, A, Ω, F, H, s, K). Junction temperatures are in kelvin; 300.15 K is nominal.
+- Device models: Shockley diodes, Ebers–Moll BJT, Level-1 MOSFET, square-law JFET and IGBT. No BSIM or Gummel–Poon, no `.model` cards. SPICE input (feature `spice`) reads R, L, C, V, I, D, Q, X only.
+
+## Docs
+
+- [README](https://github.com/steffendybvik/sindr-rs/blob/main/README.md): workspace overview
+- [sindr README](https://github.com/steffendybvik/sindr-rs/blob/main/sindr/README.md): every `CircuitElement`, analyses, results, JSON format
+- [sindr-devices README](https://github.com/steffendybvik/sindr-rs/blob/main/sindr-devices/README.md): device models and companion functions
+- [LIMITATIONS](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md): what sindr does not do; read this before assuming a feature exists
+- [sindr on docs.rs](https://docs.rs/sindr): API reference, with a capability table on the front page
+- [sindr-devices on docs.rs](https://docs.rs/sindr-devices): device model API reference
+- [llms-full.txt](https://github.com/steffendybvik/sindr-rs/blob/main/llms-full.txt): all of the above plus the public API and examples in one file
+
+## Examples
+
+- [Examples directory](https://github.com/steffendybvik/sindr-rs/tree/main/sindr/examples): one small program per capability (voltage divider, BJT amplifier, transient RC, Bode plot, DC sweep, temperature sweep, initial voltages, SPICE netlist)
+
+## Optional
+
+- [CHANGELOG](https://github.com/steffendybvik/sindr-rs/blob/main/CHANGELOG.md): changes per release, including breaking ones
+- [AGENTS.md](https://github.com/steffendybvik/sindr-rs/blob/main/AGENTS.md): orientation for agents working on the repo itself
+- [CONTRIBUTING](https://github.com/steffendybvik/sindr-rs/blob/main/CONTRIBUTING.md): development setup and conventions
