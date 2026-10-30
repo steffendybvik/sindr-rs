@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   node voltage or a voltage source's current, with the input and output
   resistance. `sindr::spice` reads `.tf v(out[,ref]) src` and
   `.tf i(vsrc) src` into `AnalysisRequest::Tf` (`tf_config()`).
+- DC sensitivity analysis, SPICE's `.sens`: `solve_sensitivity` with a
+  `SensConfig` returns the derivative of one output with respect to each
+  resistance, source value, VCVS gain and VCCS gm, by one adjoint solve.
+  `sindr::spice` reads `.sens v(out[,ref])` and `.sens i(vsrc)` into
+  `AnalysisRequest::Sens` (`sens_config()`).
+- `MnaMatrix::transpose`.
 
 - Sparse MNA solve: systems above 100 unknowns are stored sparsely and
   factorised with `faer`'s sparse LU, reusing the symbolic analysis while the
@@ -63,8 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking:** `spice::AnalysisRequest` has a `Tf` variant, so a `match`
-  over it needs an arm for it.
+- **Breaking:** `spice::AnalysisRequest` has `Tf` and `Sens` variants, so a
+  `match` over it needs arms for them.
 
 - **Breaking:** `MnaSystem::a` is an `MnaMatrix` (dense or sparse) instead of
   a nalgebra `DMatrix`. Index it as before (`a[(r, c)]`); use

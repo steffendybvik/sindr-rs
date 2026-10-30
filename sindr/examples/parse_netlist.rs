@@ -12,7 +12,7 @@
 
 use sindr::spice::{parse_str, parse_str_with_options, AnalysisRequest, ParseOptions};
 
-// A resistor divider plus `.dc` sweep and `.tf` directives. V1 = 9 V across
+// A resistor divider plus `.dc` sweep, `.tf` and `.sens` directives. V1 = 9 V across
 // R1 = 1k / R2 = 2k, so node `n2` sits at 6 V at the nominal source value.
 const DECK: &str = "* resistor divider\n\
                     V1 n1 0 DC 9\n\
@@ -20,6 +20,7 @@ const DECK: &str = "* resistor divider\n\
                     R2 n2 0 2k\n\
                     .dc V1 0 9 0.9\n\
                     .tf V(n2) V1\n\
+                    .sens V(n2)\n\
                     .end\n";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -67,6 +68,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             AnalysisRequest::Ac { fstart, fstop, .. } => {
                 println!("ac sweep {fstart}..{fstop} Hz (build an AcConfig for solve_ac)");
+            }
+            AnalysisRequest::Sens { .. } => {
+                let config = analysis.sens_config().ok_or("not a .sens")?;
+                let sens = sindr::solve_sensitivity(&netlist.circuit, &config)?;
+                println!("sens: {} parameters", sens.entries.len());
             }
             AnalysisRequest::Tf { .. } => {
                 let config = analysis.tf_config().ok_or("not a .tf")?;

@@ -46,7 +46,7 @@
 //! let netlist = parse_file("amp.cir")?;
 //! println!("parsed `{}` ({} components)", netlist.title, netlist.circuit.components.len());
 //!
-//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf`
+//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf` / `.sens`
 //! // directives, in source order. The parser does not run them — you do.
 //! for analysis in &netlist.analyses {
 //!     match analysis {
@@ -67,6 +67,10 @@
 //!         AnalysisRequest::Ac { fstart, fstop, .. } => {
 //!             // Build an `AcConfig` and call `sindr::ac_analysis::solve_ac`.
 //!             println!("ac sweep {fstart}..{fstop} Hz");
+//!         }
+//!         AnalysisRequest::Sens { .. } => {
+//!             let sens = sindr::solve_sensitivity(&netlist.circuit, &analysis.sens_config().unwrap())?;
+//!             println!("sens: {} parameters", sens.entries.len());
 //!         }
 //!         AnalysisRequest::Tf { .. } => {
 //!             let tf = sindr::solve_tf(&netlist.circuit, &analysis.tf_config().unwrap())?;
