@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `sindr::solve_transient(circuit, &TransientConfig)`: transient analysis
+  over a chosen span and step (`TransientConfig::new(tstop, tstep)`,
+  optionally `.with_tmax(…)`), as SPICE's `.tran`. `solve_circuit` keeps
+  choosing them from the circuit's time constants (`TransientConfig::auto`).
+- `spice::AnalysisRequest::transient_config()` turns a parsed `.tran` card
+  into a `TransientConfig`.
 - Crate docs list sindr's capabilities: analyses with their entry points,
   device models, convergence aids and the supported SPICE subset. On docs.rs
   the `spice` and `examples` items carry feature badges.
@@ -28,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `sindr::transient::solve_transient` now takes
+  `(&Circuit, &TransientConfig)`, and `solve_transient_nonlinear` is gone:
+  linear and nonlinear circuits share one stepper.
+- Transient steps evaluate sources at the step's end time, as backward Euler
+  requires. Before, sources were sampled at the step's start, so waveforms
+  lagged by one step. The run now ends exactly at its duration instead of one
+  step past it.
+- A nonlinear transient keeps the requested step. It used to double the step
+  after five easy Newton solves, up to 10× (with no accuracy check), and
+  report the original step in `TransientData::time_step`. Newton now starts
+  each step from the previous solution instead of 0 V.
 - **Breaking:** a PMOS's `MosfetParams::vto` is now SPICE-signed: negative
   for an enhancement PMOS, as `MosfetParams::default_pmos()` already was.
   Before, the solver expected a positive magnitude, so `default_pmos()` gave a
@@ -51,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A nonlinear transient with a `VoltageRegulator` listed before a
+  `Transformer` read the transformer's winding currents from the wrong rows,
+  so the result depended on component order.
 - AC analysis linearises IGBTs at their operating point. Before, an IGBT was
   an open circuit in AC, so a gate-driven IGBT stage showed no gain.
 - Junction temperature scaling. `temperature_scale_is` multiplied the bandgap
