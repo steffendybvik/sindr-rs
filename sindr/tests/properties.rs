@@ -12,10 +12,11 @@ use sindr::{solve_circuit, Circuit, CircuitElement};
 /// ground through every node and back (so nothing floats or dangles), then
 /// extra elements
 /// between random node pairs. `kinds` picks each extra element: 0 a
-/// resistor, 1 a capacitor, 2 an inductor (reactive ones only if `reactive`).
-/// Each inductor sits in series with 1 Ω on an internal node: a loop of
-/// inductors alone is a short at DC, so the operating point AC needs would
-/// be singular.
+/// resistor, 1 a capacitor, 2 an inductor, 3 a transformer from `a` to
+/// ground coupled to `b` to ground (reactive ones only if `reactive`).
+/// Each inductor and winding sits in series with 1 Ω on an internal node: a
+/// loop of inductors alone is a short at DC, so the operating point AC needs
+/// would be singular.
 #[derive(Debug, Clone)]
 struct Network {
     nodes: usize,
@@ -63,6 +64,23 @@ impl Network {
                         resistance: 1.0,
                     });
                 }
+                3 => {
+                    let (m1, m2) = (format!("x{k}"), format!("y{k}"));
+                    out.push(CircuitElement::Transformer {
+                        id,
+                        nodes: [nodes[0].clone(), m1.clone(), nodes[1].clone(), m2.clone()],
+                        l1: value * 1e-6,
+                        l2: value * 0.5e-6,
+                        k: 0.9,
+                    });
+                    for (i, mid) in [m1, m2].into_iter().enumerate() {
+                        out.push(CircuitElement::Resistor {
+                            id: format!("XR{k}_{i}"),
+                            nodes: [mid, "0".into()],
+                            resistance: 1.0,
+                        });
+                    }
+                }
                 _ => out.push(CircuitElement::Resistor {
                     id,
                     nodes,
@@ -79,7 +97,7 @@ fn network() -> impl Strategy<Value = Network> {
         (
             Just(nodes),
             prop::collection::vec(10.0f64..1e5, nodes + 1),
-            prop::collection::vec((0..=nodes, 0..=nodes, 0u8..3, 10.0f64..1e5), 0..8),
+            prop::collection::vec((0..=nodes, 0..=nodes, 0u8..4, 10.0f64..1e5), 0..8),
         )
             .prop_map(|(nodes, chain, extras)| Network {
                 nodes,

@@ -74,7 +74,6 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No power-MOSFET reverse body diode** as a separate stamped element (must be added explicitly as a `Diode`).
 - **No SiC / GaN device models.**
 - **No magnetics with saturation / hysteresis.** `Transformer` is linear coupled inductors. No B-H curve, no core loss, no saturating inductor, no gapped core.
-- **AC and `.tf` fail on a circuit with a transformer** (SIN-39): AC stamps each winding as a separate inductor and leaves the transformer's two branch rows empty, so the system is singular (`SimError::SingularMatrix`). DC and transient couple the windings.
 - **No transmission lines** (lossless or lossy / W-element).
 - **No crystal / quartz resonator macromodel** (must be built from L/C/R by hand).
 - **No piezo / MEMS / electro-mechanical coupling.**

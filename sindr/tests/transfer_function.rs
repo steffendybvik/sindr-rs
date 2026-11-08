@@ -330,3 +330,29 @@ fn bad_input_or_output_is_an_error() {
     let r = run(v_out("0"), "V1").unwrap();
     assert_eq!(r.gain, 0.0);
 }
+
+/// At DC both windings of a transformer are shorts: the source sees R1
+/// into the shorted primary, and the shorted secondary passes nothing on.
+#[test]
+fn transformer_windings_are_shorts() {
+    let c = circuit(vec![
+        CircuitElement::Transformer {
+            id: "T1".into(),
+            nodes: ["p".into(), "0".into(), "s".into(), "0".into()],
+            l1: 1e-3,
+            l2: 4e-3,
+            k: 0.99,
+        },
+        vsource("V1", "in", "0", 1.0),
+        resistor("R1", "in", "p", 1e3),
+        resistor("R2", "s", "0", 1e3),
+    ]);
+    let r = tf(&c, v_out("s"), "V1");
+    assert!(r.gain.abs() < 1e-12, "gain {}", r.gain);
+    assert_relative_eq!(r.input_resistance, 1e3, max_relative = 1e-12);
+    assert!(
+        r.output_resistance.abs() < 1e-9,
+        "Rout {}",
+        r.output_resistance
+    );
+}

@@ -284,6 +284,31 @@ fn ac_parallel_rlc_tank() {
     assert_transfer(&tank, "out", (1e3, 1e7), h);
 }
 
+/// Loaded transformer, R_s into the primary and R_L across the secondary:
+/// H = jωM·R_L / ((R_s + jωL1)(R_L + jωL2) + ω²M²), M = k·√(L1·L2).
+/// The transformer comes before the source in the netlist, so its two
+/// branch rows sit ahead of the source's.
+#[test]
+fn ac_loaded_transformer_matches_transfer_function() {
+    let (rs, rl, l1, l2, k): (f64, f64, f64, f64, f64) = (50.0, 1e3, 10e-3, 40e-3, 0.95);
+    let m = k * (l1 * l2).sqrt();
+    let xfmr = circuit(vec![
+        CircuitElement::Transformer {
+            id: "T1".into(),
+            nodes: ["p".into(), "0".into(), "out".into(), "0".into()],
+            l1,
+            l2,
+            k,
+        },
+        vsource("V1", "in", "0", 0.0),
+        resistor("RS", "in", "p", rs),
+        resistor("RL", "out", "0", rl),
+    ]);
+    assert_transfer(&xfmr, "out", (1.0, 1e6), |w| {
+        J * w * m * rl / ((rs + J * w * l1) * (rl + J * w * l2) + w * w * m * m)
+    });
+}
+
 /// Unity-gain Sallen-Key low-pass with an ideal buffer (a VCVS of gain 1):
 /// H = 1 / (1 + jω·C2·(R1 + R2) − ω²·R1·R2·C1·C2), with C1 the feedback
 /// capacitor and C2 the one to ground.

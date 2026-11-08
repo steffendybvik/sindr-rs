@@ -110,6 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AC and `.tf` on a circuit with a transformer: the bias point left the
+  transformer's two branch rows empty, so both failed with
+  `SingularMatrix`. The DC equivalent now shorts each winding with a 0 V
+  source, and AC stamps the coupled pair, `V = jω·[[L1, M], [M, L2]]·I`,
+  so the secondary carries signal. Before, AC dropped the mutual inductance
+  and shifted the branch rows of every source after a transformer.
 - Transformers in transient modelled negative inductance (the winding rows
   had V = −L·dI/dt). At the large steps sindr used to take, the unstable mode
   this created happened to look settled; at short steps the secondary blew
