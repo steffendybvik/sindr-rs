@@ -655,33 +655,31 @@ pub(crate) fn small_signal_system(
             | CircuitElement::Photodiode { .. }
             | CircuitElement::Jfet { .. }
             | CircuitElement::Igbt { .. } => {}
-            // Transformer: coupled inductors — stamp admittances in AC (Y = 1/(j*omega*L))
-            // For simplicity, stamp both windings as independent inductors (ignores mutual coupling in AC)
-            // A full coupled-inductor AC stamp would require expanding the MNA with 2 branch vars here too.
-            CircuitElement::Transformer { nodes, l1, l2, .. } => {
-                let y1 = if omega.abs() > 1e-15 {
-                    Complex64::new(1.0, 0.0) / (j_omega * *l1)
-                } else {
-                    Complex64::new(1e12, 0.0)
-                };
-                let p1 = node_map.index(&nodes[0]);
-                let q1 = node_map.index(&nodes[1]);
-                stamp_complex_conductance(&mut a, p1, p1, y1);
-                stamp_complex_conductance(&mut a, q1, q1, y1);
-                stamp_complex_conductance(&mut a, p1, q1, -y1);
-                stamp_complex_conductance(&mut a, q1, p1, -y1);
-
-                let y2 = if omega.abs() > 1e-15 {
-                    Complex64::new(1.0, 0.0) / (j_omega * *l2)
-                } else {
-                    Complex64::new(1e12, 0.0)
-                };
-                let p2 = node_map.index(&nodes[2]);
-                let q2 = node_map.index(&nodes[3]);
-                stamp_complex_conductance(&mut a, p2, p2, y2);
-                stamp_complex_conductance(&mut a, q2, q2, y2);
-                stamp_complex_conductance(&mut a, p2, q2, -y2);
-                stamp_complex_conductance(&mut a, q2, p2, -y2);
+            // Transformer: coupled inductors with a branch current per
+            // winding (I1 into p1, I2 into p2), as in transient:
+            //   V1 = jω·L1·I1 + jω·M·I2,  V2 = jω·M·I1 + jω·L2·I2,
+            // with M = k·√(L1·L2). At ω = 0 both windings are shorts.
+            CircuitElement::Transformer {
+                nodes, l1, l2, k, ..
+            } => {
+                let m = *k * (*l1 * *l2).sqrt();
+                let z = [[j_omega * *l1, j_omega * m], [j_omega * m, j_omega * *l2]];
+                let rows = [num_nodes + vsource_index, num_nodes + vsource_index + 1];
+                let one = Complex64::new(1.0, 0.0);
+                for (w, &row) in rows.iter().enumerate() {
+                    if let Some(pi) = node_map.index(&nodes[2 * w]) {
+                        a[(pi, row)] += one;
+                        a[(row, pi)] += one;
+                    }
+                    if let Some(qi) = node_map.index(&nodes[2 * w + 1]) {
+                        a[(qi, row)] -= one;
+                        a[(row, qi)] -= one;
+                    }
+                    for (j, &col) in rows.iter().enumerate() {
+                        a[(row, col)] -= z[w][j];
+                    }
+                }
+                vsource_index += 2;
             }
             // OpAmp/Comparator: high-gain VCVS (gain=1e5) — linear, stamp properly in AC
             CircuitElement::OpAmp { nodes, .. } | CircuitElement::Comparator { nodes, .. } => {

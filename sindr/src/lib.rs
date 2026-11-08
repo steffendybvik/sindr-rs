@@ -382,33 +382,54 @@ pub(crate) fn solve_dc_operating_point(
     }
 }
 
-/// `circuit` as it stands at DC: capacitors open (a 1 TΩ leak) and inductors
-/// shorted (0 V sources). The bias point and the `.tf` small-signal system
-/// are both solved on it.
+/// `circuit` as it stands at DC: capacitors open (a 1 TΩ leak), inductors and
+/// transformer windings shorted (0 V sources). The bias point and the `.tf`
+/// small-signal system are both solved on it.
 pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
     Circuit {
         ground_node: circuit.ground_node.clone(),
         components: circuit
             .components
             .iter()
-            .map(|c| match c {
-                // A 1 TΩ leak rather than nothing, so a node between two
-                // capacitors isn't singular (as the varactor's DC stamp).
-                CircuitElement::Capacitor { id, nodes, .. } => CircuitElement::Resistor {
-                    id: id.clone(),
-                    nodes: nodes.clone(),
-                    resistance: 1e12,
-                },
-                // An exact short: a 0 V source. A tiny resistor would put a
-                // ~1e9 S entry beside milli-siemens ones and cost the LU
-                // about twelve digits.
-                CircuitElement::Inductor { id, nodes, .. } => CircuitElement::VoltageSource {
-                    id: id.clone(),
-                    nodes: nodes.clone(),
-                    voltage: 0.0,
-                    waveform: None,
-                },
-                other => other.clone(),
+            .flat_map(|c| {
+                vec![match c {
+                    // A 1 TΩ leak rather than nothing, so a node between two
+                    // capacitors isn't singular (as the varactor's DC stamp).
+                    CircuitElement::Capacitor { id, nodes, .. } => CircuitElement::Resistor {
+                        id: id.clone(),
+                        nodes: nodes.clone(),
+                        resistance: 1e12,
+                    },
+                    // An exact short: a 0 V source. A tiny resistor would put a
+                    // ~1e9 S entry beside milli-siemens ones and cost the LU
+                    // about twelve digits.
+                    CircuitElement::Inductor { id, nodes, .. } => CircuitElement::VoltageSource {
+                        id: id.clone(),
+                        nodes: nodes.clone(),
+                        voltage: 0.0,
+                        waveform: None,
+                    },
+                    // Both windings shorted, one 0 V source each: they fill the
+                    // transformer's two branch rows, in its place.
+                    CircuitElement::Transformer { id, nodes, .. } => {
+                        let [p1, q1, p2, q2] = nodes.clone();
+                        return vec![
+                            CircuitElement::VoltageSource {
+                                id: id.clone(),
+                                nodes: [p1, q1],
+                                voltage: 0.0,
+                                waveform: None,
+                            },
+                            CircuitElement::VoltageSource {
+                                id: format!("{id}#2"),
+                                nodes: [p2, q2],
+                                voltage: 0.0,
+                                waveform: None,
+                            },
+                        ];
+                    }
+                    other => other.clone(),
+                }]
             })
             .collect(),
     }

@@ -218,7 +218,7 @@ CircuitElement::Transformer {
 }
 ```
 
-Mutual inductance M = k·√(L1·L2). In DC analysis both windings are stamped as short circuits. In transient, two branch current unknowns are added to the MNA system. k=1 is mathematically singular — use k≤0.999.
+Mutual inductance M = k·√(L1·L2). In DC analysis both windings are short circuits. In AC and transient, two branch current unknowns (one per winding) are added to the MNA system, so the windings are coupled through M. k=1 is mathematically singular — use k≤0.999.
 
 ### Controlled sources
 
