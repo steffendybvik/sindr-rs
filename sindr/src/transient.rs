@@ -1807,9 +1807,12 @@ impl StepSolver<'_> {
 
             let mut v_limited =
                 newton_raphson::apply_voltage_limiting(&v_new, &v_prev, &self.diode_info);
-            newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &self.igbt_info);
+            let igbt_limited =
+                newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &self.igbt_info);
 
-            if newton_raphson::converged(&v_prev, &v_limited, self.num_nodes, &self.diode_info) {
+            if !igbt_limited
+                && newton_raphson::converged(&v_prev, &v_limited, self.num_nodes, &self.diode_info)
+            {
                 return Ok(v_limited);
             }
             last_step = newton_raphson::max_node_step(&v_prev, &v_limited, self.num_nodes);
