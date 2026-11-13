@@ -296,7 +296,7 @@ fn nr_inner(
         let v_new = system.solve()?;
 
         let mut v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
-        apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
+        let igbt_limited = apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
 
         if debug_nr && _iteration < 30 {
             eprintln!(
@@ -308,7 +308,7 @@ fn nr_inner(
             );
         }
 
-        if converged(&v_prev, &v_limited, num_nodes, &diode_info) {
+        if !igbt_limited && converged(&v_prev, &v_limited, num_nodes, &diode_info) {
             let result = results::extract_results(circuit, node_map, &v_limited, num_nodes);
             return Ok((result, v_limited));
         }
@@ -635,11 +635,19 @@ pub(crate) fn collect_igbt_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<Ig
 /// `vce_old / 2` instead, which walks it down into the triode region where
 /// Newton converges. The correction goes to the collector (the emitter if
 /// the collector is ground).
+///
+/// When the true solution is reverse-blocking, Newton keeps proposing
+/// `vce <= 0` and halving alone would only approach 0 V; once `vce_old` is
+/// within [`IGBT_VCE_FLOOR`] of it the step lands on 0 V instead, from where
+/// the next step is unlimited. Returns whether any step was limited: a
+/// limited iterate is not a Newton solution, so it must not count as
+/// converged (SPICE's `noncon`).
 pub(crate) fn apply_igbt_limiting(
     v_limited: &mut DVector<f64>,
     v_prev: &DVector<f64>,
     igbt_info: &[IgbtLimitInfo],
-) {
+) -> bool {
+    let mut limited = false;
     for info in igbt_info {
         let vce = |v: &DVector<f64>| {
             info.collector_idx.map_or(0.0, |i| v[i]) - info.emitter_idx.map_or(0.0, |i| v[i])
@@ -648,14 +656,25 @@ pub(crate) fn apply_igbt_limiting(
         if vce_old <= 0.0 || vce_new > 0.0 {
             continue;
         }
-        let delta = vce_old / 2.0 - vce_new;
+        let target = if vce_old > IGBT_VCE_FLOOR {
+            vce_old / 2.0
+        } else {
+            0.0
+        };
+        let delta = target - vce_new;
         match (info.collector_idx, info.emitter_idx) {
             (Some(ci), _) => v_limited[ci] += delta,
             (None, Some(ei)) => v_limited[ei] -= delta,
-            (None, None) => {}
+            (None, None) => continue,
         }
+        limited = true;
     }
+    limited
 }
+
+/// Below this `vce` (V), [`apply_igbt_limiting`] lands a step into reverse
+/// blocking on 0 V rather than halving it again.
+const IGBT_VCE_FLOOR: f64 = 10e-3;
 
 /// Add Gmin conductance shunts to every node diagonal.
 ///
