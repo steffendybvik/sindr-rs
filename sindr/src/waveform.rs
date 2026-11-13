@@ -252,7 +252,14 @@ impl Waveform {
     /// assert_eq!(pulse.breakpoints(5e-3), vec![1e-3, 1e-3 + 1e-9, 3e-3 + 1e-9, 3e-3 + 2e-9]);
     /// ```
     pub fn breakpoints(&self, t_end: f64) -> Vec<f64> {
+        self.capped_breakpoints(t_end).0
+    }
+
+    /// [`Self::breakpoints`], and whether some were dropped to keep to
+    /// [`MAX_BREAKPOINTS`].
+    pub(crate) fn capped_breakpoints(&self, t_end: f64) -> (Vec<f64>, bool) {
         let mut out = Vec::new();
+        let mut capped = false;
         // Corners at `start + k·period + offset` for each offset, k ≥ 0.
         let mut periodic = |start: f64, period: f64, offsets: &[f64]| {
             if !(period > 0.0 && period.is_finite()) {
@@ -260,7 +267,11 @@ impl Waveform {
                 return;
             }
             let mut k = 0.0;
-            while start + k * period < t_end && out.len() < MAX_BREAKPOINTS {
+            while start + k * period < t_end {
+                if out.len() >= MAX_BREAKPOINTS {
+                    capped = true;
+                    break;
+                }
                 out.extend(offsets.iter().map(|o| start + k * period + o));
                 k += 1.0;
             }
@@ -292,8 +303,9 @@ impl Waveform {
         out.retain(|t| *t > 0.0 && *t < t_end && t.is_finite());
         out.sort_by(f64::total_cmp);
         out.dedup();
+        capped |= out.len() > MAX_BREAKPOINTS;
         out.truncate(MAX_BREAKPOINTS);
-        out
+        (out, capped)
     }
 
     /// Return the period of this waveform in seconds, if periodic.

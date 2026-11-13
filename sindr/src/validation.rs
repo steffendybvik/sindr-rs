@@ -11,6 +11,21 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::circuit::Circuit;
 use crate::error::SimError;
 
+/// Most points one AC, DC or temperature sweep may have. Each point is a
+/// full solve, so this is far past anything useful; it exists so a huge
+/// count returns an error instead of failing to allocate.
+pub(crate) const MAX_SWEEP_POINTS: usize = 10_000_000;
+
+/// Rejects a sweep of more than [`MAX_SWEEP_POINTS`] points.
+pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(), SimError> {
+    if n > MAX_SWEEP_POINTS {
+        return Err(SimError::InvalidComponent(format!(
+            "{what}: {name} = {n} is more than the {MAX_SWEEP_POINTS} allowed"
+        )));
+    }
+    Ok(())
+}
+
 /// Validate a circuit before solving.
 ///
 /// Checks are run in order of most-helpful-first:

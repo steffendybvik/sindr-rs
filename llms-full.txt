@@ -1683,7 +1683,7 @@ impl DcSweepResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_points < 2`, `start` or `stop`
+/// - [`SimError::InvalidComponent`] if `num_points < 2` or above 10⁷, `start` or `stop`
 ///   is not finite, or `source_id` doesn't match any voltage source in the
 ///   circuit
 /// - Any [`SimError`] returned by [`solve_circuit`](crate::solve_circuit)
@@ -2186,7 +2186,9 @@ pub use sindr_devices::varactor::VaractorParams;
 /// Returns [`SimError`] if the circuit fails validation (no ground node,
 /// floating nodes, invalid component values, etc.) or if the solver itself
 /// fails to converge or produces a singular matrix. See [`SimError`] for the
-/// full list.
+/// full list. A transient whose automatic span and step would take more than
+/// 10⁷ steps is [`SimError::InvalidComponent`]; run it with
+/// [`solve_transient`] and a coarser [`TransientConfig`].
 ///
 /// # Example
 ///
@@ -3778,7 +3780,7 @@ pub struct TempSweepResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_steps < 2`, or either endpoint
+/// - [`SimError::InvalidComponent`] if `num_steps < 2` or above 10⁷, or either endpoint
 ///   is not finite or not above 0 K
 /// - Any [`SimError`] from solving at one of the temperatures (propagated
 ///   immediately)
@@ -4079,7 +4081,8 @@ impl TransientConfig {
 /// # Errors
 ///
 /// [`SimError::InvalidComponent`] for an invalid config (a non-finite or
-/// non-positive time, `tstep > tstop`, or more than 10⁷ steps), any
+/// non-positive time, `tstep > tstop`, or more than 10⁷ steps counting one
+/// for each waveform breakpoint), any
 /// validation error from [`validate_circuit`](crate::validate_circuit),
 /// [`SimError::ConvergenceFailed`] if Newton–Raphson fails even at a step a
 /// million times smaller than `tstep`, and [`SimError::SingularMatrix`] or

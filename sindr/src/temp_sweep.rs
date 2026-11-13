@@ -55,7 +55,7 @@ pub struct TempSweepResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_steps < 2`, or either endpoint
+/// - [`SimError::InvalidComponent`] if `num_steps < 2` or above 10⁷, or either endpoint
 ///   is not finite or not above 0 K
 /// - Any [`SimError`] from solving at one of the temperatures (propagated
 ///   immediately)
@@ -97,6 +97,7 @@ pub fn temperature_sweep(
             "temperature_sweep: num_steps must be >= 2".into(),
         ));
     }
+    crate::validation::check_sweep_points("temperature_sweep", "num_steps", num_steps)?;
     for t in [temp_start, temp_end] {
         if !t.is_finite() || t <= 0.0 {
             return Err(SimError::InvalidComponent(format!(
