@@ -130,7 +130,12 @@ impl Waveform {
                 if t < *delay {
                     return *v1;
                 }
-                let t_rel = (t - delay) % period;
+                // SPICE reads a zero (or unset) period as a single pulse.
+                let t_rel = if *period > 0.0 && period.is_finite() {
+                    (t - delay) % period
+                } else {
+                    t - delay
+                };
                 if t_rel < *rise_time {
                     // Rising edge
                     let frac = if *rise_time > 0.0 {
@@ -301,7 +306,13 @@ impl Waveform {
                     None
                 }
             }
-            Waveform::Pulse { period, .. } => Some(*period),
+            Waveform::Pulse { period, .. } => {
+                if *period > 0.0 && period.is_finite() {
+                    Some(*period)
+                } else {
+                    None
+                }
+            }
             Waveform::Square { frequency, .. }
             | Waveform::Triangle { frequency, .. }
             | Waveform::Pwm { frequency, .. } => {
@@ -371,6 +382,28 @@ mod tests {
             period: 0.0,
         };
         assert_eq!(pulse.breakpoints(1.0).len(), 4);
+    }
+
+    /// A one-shot pulse (period 0, as SPICE writes it) rises, holds and
+    /// falls once, then stays at v1; it has no period.
+    #[test]
+    fn pulse_with_zero_period_fires_once() {
+        for period in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let pulse = Waveform::Pulse {
+                v1: 0.0,
+                v2: 1.0,
+                delay: 10e-6,
+                rise_time: 1e-9,
+                fall_time: 1e-9,
+                pulse_width: 20e-6,
+                period,
+            };
+            assert_eq!(pulse.evaluate(5e-6), 0.0, "period {period}: before delay");
+            assert_relative_eq!(pulse.evaluate(10e-6 + 0.5e-9), 0.5, epsilon = 1e-9);
+            assert_eq!(pulse.evaluate(20e-6), 1.0, "period {period}: high");
+            assert_eq!(pulse.evaluate(1.0), 0.0, "period {period}: after");
+            assert!(pulse.period().is_none(), "period {period}");
+        }
     }
 
     use super::*;

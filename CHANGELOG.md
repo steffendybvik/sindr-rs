@@ -110,6 +110,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A PULSE with period 0, SPICE's one-shot pulse, never fired: the waveform
+  took `t % 0`, got NaN and stayed at `v1` for the whole run. A zero,
+  negative or non-finite period now means a single pulse, and
+  `Waveform::period()` returns `None` for it.
 - AC and `.tf` on a circuit with a transformer: the bias point left the
   transformer's two branch rows empty, so both failed with
   `SingularMatrix`. The DC equivalent now shorts each winding with a 0 V
