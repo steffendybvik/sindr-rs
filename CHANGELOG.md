@@ -114,6 +114,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   took `t % 0`, got NaN and stayed at `v1` for the whole run. A zero,
   negative or non-finite period now means a single pulse, and
   `Waveform::period()` returns `None` for it.
+- JFETs in the ohmic region with the drain below the source had the wrong
+  sign of `gm`: `JfetCompanion::gm` took the absolute value of
+  `2·IDSS·Vds/Vp²`. DC still converged, but on the wrong Jacobian, and AC
+  and `.tf` reported a gain of the wrong sign (an N-JFET at Vds < 0 gave
+  −0.0487 where the DC slope is +0.0491). `gm` is now negative there.
 - AC and `.tf` on a circuit with a transformer: the bias point left the
   transformer's two branch rows empty, so both failed with
   `SingularMatrix`. The DC equivalent now shorts each winding with a 0 V
