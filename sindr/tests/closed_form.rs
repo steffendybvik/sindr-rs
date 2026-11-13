@@ -603,3 +603,98 @@ fn lc_tank_amplitude_by_method() {
     assert!(gear < trap && gear > 1.5, "Gear-2 swing {gear}");
     assert!(be < 0.5, "backward Euler swing {be}");
 }
+
+/// The undamped LC tank of [`lc_tank_amplitude_by_method`]: 1 V stepped into
+/// L = 1 mH in series with C = 1 µF. Returns the circuit and its period.
+fn lc_tank() -> (Circuit, f64, f64, f64) {
+    let (l, c): (f64, f64) = (1e-3, 1e-6);
+    let period = 2.0 * PI * (l * c).sqrt();
+    let tank = circuit(vec![
+        vsource("V1", "in", "0", 1.0),
+        inductor("L1", "in", "out", l),
+        capacitor("C1", "out", "0", c),
+    ]);
+    (tank, period, l, c)
+}
+
+/// Fixed-step run of the LC tank over `periods` periods at `steps_per_period`.
+fn lc_run(method: IntegrationMethod, periods: f64, steps_per_period: f64) -> TransientData {
+    let (tank, period, _, _) = lc_tank();
+    let config = TransientConfig::new(periods * period, period / steps_per_period)
+        .with_method(method)
+        .with_fixed_step();
+    solve_transient(&tank, &config).unwrap().transient.unwrap()
+}
+
+/// At a fine step the tank follows the exact solution point by point:
+/// v_C = 1 − cos(ω₀t) and i_L = C·ω₀·sin(ω₀t). The tank's energy about the
+/// source, ½·C·(v_C − 1)² + ½·L·i_L², starts at ½·C·1². The backward-Euler
+/// start step loses about (ω₀·dt)² of it; after that trapezoidal conserves
+/// it to round-off on a linear tank, and Gear-2 loses a little each period.
+#[test]
+fn lc_tank_matches_cosine_and_keeps_its_energy() {
+    let (_, period, l, c) = lc_tank();
+    let w0 = 2.0 * PI / period;
+    let e0 = 0.5 * c;
+    for (method, v_tol, e_tol) in [
+        (IntegrationMethod::Trapezoidal, 2e-5, 1e-11),
+        (IntegrationMethod::Gear2, 1e-4, 2e-5),
+    ] {
+        let tran = lc_run(method, 2.0, 2000.0);
+        let mut worst_v: f64 = 0.0;
+        let mut worst_i: f64 = 0.0;
+        let mut drift: f64 = 0.0;
+        let energy = |s: &sindr::TimestepSnapshot| {
+            let (v, i) = (s.node_voltages["out"], current(s, "L1"));
+            0.5 * c * (v - 1.0).powi(2) + 0.5 * l * i * i
+        };
+        let e1 = energy(&tran.timesteps[0]);
+        let start_loss = (e1 - e0).abs() / e0;
+        let w0dt = w0 * (tran.timesteps[1].time - tran.timesteps[0].time);
+        for s in &tran.timesteps {
+            let t = s.time;
+            let v = s.node_voltages["out"];
+            let i = current(s, "L1");
+            worst_v = worst_v.max((v - (1.0 - (w0 * t).cos())).abs());
+            worst_i = worst_i.max((i.abs() - (c * w0 * (w0 * t).sin()).abs()).abs());
+            drift = drift.max((energy(s) - e1).abs() / e0);
+        }
+        let i_peak = c * w0;
+        assert!(worst_v < v_tol, "{method:?}: v_C off by {worst_v}");
+        assert!(worst_i < v_tol * i_peak, "{method:?}: i_L off by {worst_i}");
+        assert!(
+            start_loss < 1.5 * w0dt * w0dt,
+            "{method:?}: start step lost {start_loss} of the energy"
+        );
+        assert!(
+            drift < e_tol,
+            "{method:?}: energy drifted by {drift} (relative)"
+        );
+    }
+}
+
+/// The LC tank's worst error over one period falls with each method's order.
+#[test]
+fn transient_lc_error_falls_with_each_methods_order() {
+    let (_, period, _, _) = lc_tank();
+    let w0 = 2.0 * PI / period;
+    for method in METHODS {
+        let errors: Vec<(f64, f64)> = [400.0, 800.0, 1600.0, 3200.0, 6400.0]
+            .iter()
+            .map(|n| {
+                let tran = lc_run(method, 1.0, *n);
+                let worst = tran
+                    .timesteps
+                    .iter()
+                    .map(|s| (s.node_voltages["out"] - (1.0 - (w0 * s.time).cos())).abs())
+                    .fold(0.0, f64::max);
+                (period / n, worst)
+            })
+            .collect();
+        let slope = log_log_slope(&errors);
+        assert!(
+            (slope - order(method)).abs() < 0.05,
+            "{method:?}: order {slope}, errors {errors:?}"
+        );
+    }
+}
