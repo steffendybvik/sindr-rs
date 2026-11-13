@@ -114,6 +114,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   took `t % 0`, got NaN and stayed at `v1` for the whole run. A zero,
   negative or non-finite period now means a single pulse, and
   `Waveform::period()` returns `None` for it.
+- AC and `.tf` always linearised a relay's contact as open, while DC closes
+  it once the coil is at pickup, so a relay switching a signal path showed
+  ~1e-6 gain instead of the real one. They now take the contact state from
+  the DC bias point.
+- `solve_ac` with a `source_id` that names no voltage source (a typo, or a
+  current source) returned 0 V everywhere. It's now `InvalidComponent`
+  naming the id, as `dc_sweep` and `.tf` already did.
 - AC and `.tf` on a circuit with a transformer: the bias point left the
   transformer's two branch rows empty, so both failed with
   `SingularMatrix`. The DC equivalent now shorts each winding with a 0 V
