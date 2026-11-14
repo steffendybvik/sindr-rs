@@ -125,6 +125,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transient initial conditions that name no node or inductor (a typo), sit
   on a transformer or aren't finite were ignored or failed later as
   `InvalidSolution`. They're now `InvalidComponent` naming the key.
+- AC and `.tf` always linearised a relay's contact as open, while DC closes
+  it once the coil is at pickup, so a relay switching a signal path showed
+  ~1e-6 gain instead of the real one. They now take the contact state from
+  the DC bias point.
+- `solve_ac` with a `source_id` that names no voltage source (a typo, or a
+  current source) returned 0 V everywhere. It's now `InvalidComponent`
+  naming the id, as `dc_sweep` and `.tf` already did.
 - AC and `.tf` on a circuit with a transformer: the bias point left the
   transformer's two branch rows empty, so both failed with
   `SingularMatrix`. The DC equivalent now shorts each winding with a 0 V
