@@ -3,7 +3,7 @@
 //! Forward bias: standard Shockley diode.
 //! Reverse breakdown: linearised clamp at -Vz.
 
-use crate::diode::V_T;
+use crate::diode::{thermal_voltage, T_NOM};
 
 /// Zener diode parameters.
 #[derive(Debug, Clone)]
@@ -14,6 +14,8 @@ pub struct ZenerParams {
     pub rz: f64,
     /// Saturation current for the forward diode region.
     pub is: f64,
+    /// Junction temperature (K). Default 300.15 K = 27°C.
+    pub temperature: f64,
 }
 
 impl ZenerParams {
@@ -23,7 +25,13 @@ impl ZenerParams {
             vz,
             rz: 1.0,
             is: 1e-14,
+            temperature: T_NOM,
         }
+    }
+
+    /// Thermal voltage kT/q (V) at the junction temperature.
+    pub fn vt(&self) -> f64 {
+        thermal_voltage(self.temperature)
     }
 }
 
@@ -41,7 +49,7 @@ pub fn zener_companion(v_d: f64, params: &ZenerParams) -> (f64, f64) {
     const CLAMP: f64 = 40.0;
 
     if v_d > -params.vz {
-        let nv_t = V_T; // emission coefficient = 1 for silicon
+        let nv_t = params.vt(); // emission coefficient = 1 for silicon
         let v_clamped = v_d.min(CLAMP * nv_t);
         let exp_v = (v_clamped / nv_t).exp();
         let i_d = params.is * (exp_v - 1.0);

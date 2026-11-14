@@ -203,7 +203,8 @@ pub enum CircuitElement {
         parasitic_caps: Option<BjtParasiticCaps>,
     },
 
-    /// MOSFET transistor (3 terminals: gate, drain, source).
+    /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
+    /// to the source).
     #[cfg_attr(feature = "serde", serde(rename = "mosfet"))]
     Mosfet {
         /// Unique component identifier.
@@ -484,7 +485,7 @@ pub enum CircuitElement {
     /// k=1 is ideal (no leakage), but mathematically singular — use k<=0.999.
     ///
     /// In DC analysis: both windings stamped as short circuits (zero resistance).
-    /// In transient: coupled inductor Backward Euler stamp with 2 branch current unknowns.
+    /// In transient: coupled-inductor companion with 2 branch current unknowns.
     #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
     Transformer {
         /// Unique component identifier.

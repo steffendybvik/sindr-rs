@@ -1,0 +1,9 @@
+op: N-channel JFET self-bias (built in Rust on the sindr side)
+VDD vdd 0 12
+RD vdd d 1k
+RS s 0 220
+RG g 0 1meg
+J1 d g s jn
+* sindr: IDSS = 10 mA, Vp = -2 V  =>  BETA = IDSS/Vp^2, no channel-length modulation
+.model jn NJF(VTO=-2 BETA=2.5m LAMBDA=0)
+.end

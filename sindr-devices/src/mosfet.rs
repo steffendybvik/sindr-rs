@@ -16,6 +16,21 @@ pub enum MosfetKind {
     Pmos,
 }
 
+impl MosfetKind {
+    /// Gate–source and drain–source voltages `(vgs, vds)` of a three-terminal
+    /// MOSFET with node voltages `vg`, `vd`, `vs`, in the N-channel frame that
+    /// [`mosfet_companion`] works in: mirrored (`vsg`, `vsd`) for a PMOS.
+    ///
+    /// A three-terminal MOSFET is a discrete part, whose body is tied to its
+    /// source inside the package, so its `vbs` is always 0.
+    pub fn nmos_frame(self, vg: f64, vd: f64, vs: f64) -> (f64, f64) {
+        match self {
+            MosfetKind::Nmos => (vg - vs, vd - vs),
+            MosfetKind::Pmos => (vs - vg, vs - vd),
+        }
+    }
+}
+
 /// Operating region of a MOSFET.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,7 +60,9 @@ impl MosfetRegion {
 pub struct MosfetParams {
     /// Transconductance parameter (A/V^2). SPICE KP parameter.
     pub kp: f64,
-    /// Zero-bias threshold voltage (V). SPICE VTO parameter.
+    /// Zero-bias threshold voltage (V). SPICE VTO parameter, signed as in
+    /// SPICE: positive for an enhancement NMOS, negative for an enhancement
+    /// PMOS (see [`MosfetParams::in_nmos_frame`]).
     pub vto: f64,
     /// Channel-length modulation (1/V). SPICE LAMBDA parameter.
     pub lambda: f64,
@@ -75,6 +92,23 @@ impl MosfetParams {
             lambda: 0.02,
             gamma: 0.4,
             phi: 0.6,
+        }
+    }
+}
+
+impl MosfetParams {
+    /// These parameters in the N-channel frame that [`mosfet_companion`]
+    /// works in. Callers mirror a PMOS's voltages (`vsg`, `vsd`, …) before
+    /// calling it; this mirrors the threshold to match, so a SPICE-signed
+    /// VTO (−0.7 V for [`MosfetParams::default_pmos`]) becomes the +0.7 V
+    /// the N-channel equations expect.
+    pub fn in_nmos_frame(&self, kind: MosfetKind) -> MosfetParams {
+        match kind {
+            MosfetKind::Nmos => self.clone(),
+            MosfetKind::Pmos => MosfetParams {
+                vto: -self.vto,
+                ..self.clone()
+            },
         }
     }
 }
@@ -141,9 +175,11 @@ pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> 
         };
     }
 
-    // Body effect transconductance factor: dVth/dVbs
-    let phi_minus_vbs = (params.phi - vbs).max(1e-6);
-    let dvth_dvbs = if params.gamma > 0.0 {
+    // Body effect transconductance factor: dVth/dVbs. Zero once the body is
+    // forward-biased past PHI, where `threshold_voltage` clamps the sqrt term
+    // and Vth stops depending on Vbs.
+    let phi_minus_vbs = params.phi - vbs;
+    let dvth_dvbs = if params.gamma > 0.0 && phi_minus_vbs > 0.0 {
         -params.gamma / (2.0 * phi_minus_vbs.sqrt())
     } else {
         0.0
@@ -308,5 +344,37 @@ mod tests {
 
         // Triode
         assert_eq!(detect_region(3.0, 0.5, vth), MosfetRegion::Triode);
+    }
+
+    /// gm, gds and gmb must be the derivatives of the drain current the
+    /// companion returns, including with the body forward-biased past PHI
+    /// (a PMOS with its body at ground and source at VDD sits there).
+    #[test]
+    fn companion_conductances_match_finite_difference() {
+        let params = MosfetParams {
+            vto: 0.7,
+            ..MosfetParams::default_nmos()
+        };
+        let id = |vgs: f64, vds: f64, vbs: f64| mosfet_companion(vgs, vds, vbs, &params).id;
+        let h = 1e-6;
+        for vbs in [-3.0, -0.5, 0.0, 0.3, 2.0, 5.0] {
+            for (vgs, vds) in [(0.3, 2.0), (3.0, 0.5), (3.0, 5.0), (1.5, 0.2), (2.0, 4.0)] {
+                let c = mosfet_companion(vgs, vds, vbs, &params);
+                let fd_gm = (id(vgs + h, vds, vbs) - id(vgs - h, vds, vbs)) / (2.0 * h);
+                let fd_gds = (id(vgs, vds + h, vbs) - id(vgs, vds - h, vbs)) / (2.0 * h);
+                let fd_gmb = (id(vgs, vds, vbs + h) - id(vgs, vds, vbs - h)) / (2.0 * h);
+                for (name, analytic, fd) in [
+                    ("gm", c.gm, fd_gm),
+                    ("gds", c.gds, fd_gds),
+                    ("gmb", c.gmb, fd_gmb),
+                ] {
+                    let tol = 1e-5 * analytic.abs().max(fd.abs()) + 1e-12;
+                    assert!(
+                        (analytic - fd).abs() <= tol,
+                        "{name} at vgs={vgs}, vds={vds}, vbs={vbs}: analytic={analytic:e}, finite difference={fd:e}"
+                    );
+                }
+            }
+        }
     }
 }

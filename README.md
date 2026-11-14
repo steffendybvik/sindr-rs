@@ -12,7 +12,7 @@ Rust circuit simulator. SPICE-style MNA solver with built-in semiconductor devic
 | Crate | Purpose |
 |-------|---------|
 | [`sindr`](./sindr) | MNA solver: DC, transient, AC, DC sweep, temperature sweep |
-| [`sindr-devices`](./sindr-devices) | Device physics: diode, BJT, MOSFET, IGBT, JFET, varactor companion models |
+| [`sindr-devices`](./sindr-devices) | Device physics: diode family, BJT, MOSFET, JFET, IGBT, varactor, thermistor and photoresistor models |
 
 `sindr` depends on `sindr-devices`. The split lets you use the device-physics models with your own solver if you don't want the `nalgebra` linear-algebra stack.
 
@@ -60,7 +60,7 @@ A SPICE3 netlist parser ships inside `sindr` behind the optional, default-off `s
 
 ```toml
 [dependencies]
-sindr = { version = "0.1", features = ["spice"] }
+sindr = { version = "0.1.0-alpha.7", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -68,7 +68,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.op`, `.param`, `.include`, `.lib`), flattens hierarchy with `.`-separated node naming, and returns a `SourceMap` to recover original instance paths. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattens hierarchy with `.`-separated node naming, and returns a `SourceMap` to recover original instance paths. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 A runnable walkthrough (parse → solve → dispatch directives → render a diagnostic) lives in [`sindr/examples/parse_netlist.rs`](./sindr/examples/parse_netlist.rs):
 
@@ -78,13 +78,13 @@ cargo run --example parse_netlist --features spice
 
 ## Status
 
-Pre-release alpha (`0.1.0-alpha.6`), [published on crates.io](https://crates.io/crates/sindr). API is liable to change.
+Pre-release alpha (`0.1.0-alpha.7`), [published on crates.io](https://crates.io/crates/sindr). API is liable to change.
 
 ## Scope & limitations
 
 sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, noise/Monte-Carlo/pole-zero analyses, BSIM-class device models, and self-heating co-simulation are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
-AI coding agents (Claude Code, Codex, Cursor, etc.) working on this repo should read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
+To work on sindr itself, see [`CONTRIBUTING.md`](./CONTRIBUTING.md). AI coding agents (Claude Code, Codex, Cursor, etc.) should also read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
 
 ## License
 

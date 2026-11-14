@@ -6,7 +6,7 @@
 //! In dark (irradiance=0), behaves identically to a silicon diode.
 //! With irradiance, produces reverse photocurrent that can drive loads.
 
-use crate::diode::{diode_companion, DiodeParams};
+use crate::diode::{diode_companion, thermal_voltage, DiodeParams, T_NOM};
 
 /// Photodiode parameters.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -19,6 +19,8 @@ pub struct PhotodiodeParams {
     /// Responsivity (A/W). Converts irradiance to photocurrent.
     /// Typical silicon photodiode: 0.4–0.7 A/W.
     pub responsivity: f64,
+    /// Junction temperature (K). Default 300.15 K = 27°C.
+    pub temperature: f64,
 }
 
 impl PhotodiodeParams {
@@ -28,7 +30,13 @@ impl PhotodiodeParams {
             is: 1e-12,
             n: 1.0,
             responsivity: 0.5,
+            temperature: T_NOM,
         }
+    }
+
+    /// Thermal voltage kT/q (V) at the junction temperature.
+    pub fn vt(&self) -> f64 {
+        thermal_voltage(self.temperature)
     }
 }
 
@@ -49,7 +57,7 @@ pub fn photodiode_companion(v_d: f64, irradiance: f64, params: &PhotodiodeParams
             is: params.is,
             n: params.n,
             rs: 0.0,
-            temperature: 300.15,
+            temperature: params.temperature,
         },
     );
     let i_photo = params.responsivity * irradiance.max(0.0);

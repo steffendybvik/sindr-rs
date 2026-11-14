@@ -1,6 +1,6 @@
 [package]
 name = "sindr"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 edition = "2021"
 rust-version = "1.87"
 description = "Rust circuit simulator: SPICE-style MNA solver with built-in semiconductor device models. Transient, AC, DC sweep, temperature sweep."
@@ -19,6 +19,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 sindr-devices = { workspace = true }
 nalgebra = "0.34"
+# Sparse LU for large MNA systems.
+faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
 num-complex = "0.4"
 serde = { version = "1", features = ["derive"], optional = true }
 thiserror = { workspace = true }
@@ -35,6 +37,9 @@ spice = ["dep:winnow", "dep:miette"]
 
 [dev-dependencies]
 approx = "0.5"
+criterion = { version = "0.5", default-features = false }
+# Capped: proptest 1.12 needs Rust 1.88, above our MSRV (1.87).
+proptest = { version = ">=1.11, <1.12", default-features = false, features = ["std"] }
 serde_json = { workspace = true }
 # Fancy diagnostic rendering used by the SPICE end-to-end tests.
 miette = { version = "7", features = ["fancy"] }
@@ -50,3 +55,7 @@ required-features = ["examples"]
 [[example]]
 name = "parse_netlist"
 required-features = ["spice"]
+
+[[bench]]
+name = "mna_solve"
+harness = false

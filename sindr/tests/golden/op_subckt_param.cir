@@ -1,0 +1,8 @@
+op: .param, nested .subckt and .include
+.param rtop=2k rbot={rtop*2}
+.include 'golden_divider.inc'
+V1 in 0 9
+X1 in mid div2 rt={rtop} rb={rbot}
+X2 mid out div2 rt=1k rb=1k
+RL out 0 10k
+.end
