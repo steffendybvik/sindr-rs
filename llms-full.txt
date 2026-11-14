@@ -4050,6 +4050,9 @@ impl TransientConfig {
     pub fn with_initial_voltages(mut self, voltages: HashMap<String, f64>) -> Self { … }
 
     /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A.
+    /// An id that isn't an inductor or a relay with coil inductance (a
+    /// transformer, for now) makes the run fail with
+    /// [`SimError::InvalidComponent`].
     pub fn with_initial_current(mut self, id: impl Into<String>, amps: f64) -> Self { … }
 
     /// Step at a fixed `tstep` instead of controlling the step by local
@@ -4082,7 +4085,8 @@ impl TransientConfig {
 ///
 /// [`SimError::InvalidComponent`] for an invalid config (a non-finite or
 /// non-positive time, `tstep > tstop`, or more than 10⁷ steps counting one
-/// for each waveform breakpoint), any
+/// for each waveform breakpoint) or an initial condition that names no node
+/// or inductor in the circuit or isn't finite, any
 /// validation error from [`validate_circuit`](crate::validate_circuit),
 /// [`SimError::ConvergenceFailed`] if Newton–Raphson fails even at a step a
 /// million times smaller than `tstep`, and [`SimError::SingularMatrix`] or

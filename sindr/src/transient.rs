@@ -508,6 +508,8 @@ fn node_voltage(node: &str, node_map: &NodeMap, solution: &DVector<f64>) -> f64 
 
 /// Extract per-timestep results from solution vector, and the reactive
 /// histories after this step (`caps_prev`/`inds_prev` are those before it).
+/// Sources report their value at `source_time`, the time the step was
+/// solved with.
 #[allow(clippy::too_many_arguments)]
 fn extract_timestep_results(
     circuit: &Circuit,
@@ -515,6 +517,7 @@ fn extract_timestep_results(
     solution: &DVector<f64>,
     num_nodes: usize,
     time: f64,
+    source_time: f64,
     integ: &Integrator,
     caps_prev: &[History],
     inds_prev: &[History],
@@ -554,27 +557,37 @@ fn extract_timestep_results(
                     power: v * i,
                 });
             }
-            CircuitElement::VoltageSource { id, voltage, .. } => {
+            CircuitElement::VoltageSource {
+                id,
+                voltage,
+                waveform,
+                ..
+            } => {
+                let v = voltage + waveform.as_ref().map_or(0.0, |w| w.evaluate(source_time));
                 let i = solution[num_nodes + vsource_index];
                 component_results.push(ComponentResult {
                     id: id.clone(),
-                    voltage_across: *voltage,
+                    voltage_across: v,
                     current_through: i,
-                    power: voltage * i,
+                    power: v * i,
                 });
                 vsource_index += 1;
             }
             CircuitElement::CurrentSource {
-                id, nodes, current, ..
+                id,
+                nodes,
+                current,
+                waveform,
             } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v = vp - vq;
+                let i = current + waveform.as_ref().map_or(0.0, |w| w.evaluate(source_time));
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v,
-                    current_through: *current,
-                    power: v * current,
+                    current_through: i,
+                    power: v * i,
                 });
             }
             CircuitElement::Switch { id, nodes, closed } => {
@@ -1314,6 +1327,9 @@ impl TransientConfig {
     }
 
     /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A.
+    /// An id that isn't an inductor or a relay with coil inductance (a
+    /// transformer, for now) makes the run fail with
+    /// [`SimError::InvalidComponent`].
     pub fn with_initial_current(mut self, id: impl Into<String>, amps: f64) -> Self {
         self.initial_currents.insert(id.into(), amps);
         self
@@ -1394,7 +1410,8 @@ impl TransientConfig {
 ///
 /// [`SimError::InvalidComponent`] for an invalid config (a non-finite or
 /// non-positive time, `tstep > tstop`, or more than 10⁷ steps counting one
-/// for each waveform breakpoint), any
+/// for each waveform breakpoint) or an initial condition that names no node
+/// or inductor in the circuit or isn't finite, any
 /// validation error from [`validate_circuit`](crate::validate_circuit),
 /// [`SimError::ConvergenceFailed`] if Newton–Raphson fails even at a step a
 /// million times smaller than `tstep`, and [`SimError::SingularMatrix`] or
@@ -1465,8 +1482,8 @@ pub(crate) fn run_transient(
     let h_min = h_max * 1e-6;
     let nonlinear = circuit.has_nonlinear_elements();
 
-    // Initial state: uncharged caps (0 V), inductors at rest (0 A), as if the
-    // circuit were switched on at t = 0.
+    check_initial_conditions(circuit, node_map, config)?;
+
     // Initial state: the config's initial conditions, otherwise uncharged
     // caps (0 V) and inductors at rest (0 A), as if the circuit were
     // switched on at t = 0.
@@ -1590,8 +1607,19 @@ pub(crate) fn run_transient(
             (h, time + h)
         };
 
+        // A step that ends on a breakpoint integrates up to it, so it sees
+        // each source's left limit there: a jump at `bp` belongs to the
+        // step after. 1e-12 relative is far above rounding in the waveforms'
+        // `%` and far below anything a ramp could show.
+        let on_bp = landing && (t_next - bp).abs() <= eps;
+        let t_src = if on_bp {
+            t_next - 1e-12 * t_next.abs().max(h_max)
+        } else {
+            t_next
+        };
+
         let integ = Integrator::for_step(config.method, dt, h_prev);
-        let next = match step.solve(&integ, t_next, &caps, &inds, &parasitic, &solution) {
+        let next = match step.solve(&integ, t_src, &caps, &inds, &parasitic, &solution) {
             Ok(next) => next,
             Err(e @ SimError::ConvergenceFailed { .. }) => {
                 stats.newton_rejections += 1;
@@ -1620,7 +1648,7 @@ pub(crate) fn run_transient(
         }
 
         let (snapshot, new_caps, new_inds) = extract_timestep_results(
-            circuit, node_map, &next, num_nodes, t_next, &integ, &caps, &inds,
+            circuit, node_map, &next, num_nodes, t_next, t_src, &integ, &caps, &inds,
         );
         timesteps.push(snapshot);
         stats.accepted_steps += 1;
@@ -1636,7 +1664,7 @@ pub(crate) fn run_transient(
             (base * 2.0).min(h_max)
         };
 
-        if landing && t_next == bp {
+        if on_bp {
             // A corner in a source: the history before it doesn't predict
             // what follows, so restart with a short backward-Euler step.
             h_prev = None;
@@ -1701,6 +1729,73 @@ const RESTART_FRACTION: f64 = 100.0;
 const RELTOL: f64 = 1e-3;
 const VNTOL: f64 = 1e-6;
 const TRTOL: f64 = 7.0;
+
+/// Rejects an initial condition that would otherwise be ignored or surface
+/// later as a bare `InvalidSolution`: a node or inductor id the circuit
+/// doesn't have, a non-finite value, a nonzero ground voltage, or a current
+/// on a transformer (its windings take none yet).
+fn check_initial_conditions(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    config: &TransientConfig,
+) -> Result<(), SimError> {
+    let invalid = |msg: String| Err(SimError::InvalidComponent(format!("transient: {msg}")));
+    let mut voltages: Vec<_> = config.initial_voltages.iter().collect();
+    voltages.sort_by(|a, b| a.0.cmp(b.0));
+    for (node, v) in voltages {
+        if !v.is_finite() {
+            return invalid(format!(
+                "initial voltage of node '{node}' must be finite (got {v})"
+            ));
+        }
+        if *node == circuit.ground_node {
+            if *v != 0.0 {
+                return invalid(format!("ground node '{node}' can't start at {v} V"));
+            }
+        } else if node_map.index(node).is_none() {
+            return invalid(format!(
+                "initial voltage {v} V for node '{node}', which the circuit doesn't have"
+            ));
+        }
+    }
+    let mut currents: Vec<_> = config.initial_currents.iter().collect();
+    currents.sort_by(|a, b| a.0.cmp(b.0));
+    for (id, i) in currents {
+        if !i.is_finite() {
+            return invalid(format!(
+                "initial current of '{id}' must be finite (got {i})"
+            ));
+        }
+        let target = circuit.components.iter().find_map(|c| match c {
+            CircuitElement::Inductor { id: cid, .. } if cid == id => Some(Ok(())),
+            CircuitElement::Relay {
+                id: cid,
+                inductance,
+                ..
+            } if cid == id => Some(if *inductance > 0.0 {
+                Ok(())
+            } else {
+                Err("is a relay with no coil inductance")
+            }),
+            CircuitElement::Transformer { id: cid, .. } if cid == id => Some(Err(
+                "is a transformer, whose windings take no initial current yet",
+            )),
+            _ => None,
+        });
+        match target {
+            Some(Ok(())) => {}
+            Some(Err(why)) => {
+                return invalid(format!("initial current {i} A for '{id}', which {why}"))
+            }
+            None => {
+                return invalid(format!(
+                    "initial current {i} A for '{id}', which is not an inductor in the circuit"
+                ))
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Every waveform breakpoint of the circuit's sources in `(0, tstop)`,
 /// sorted and without near-duplicates.
