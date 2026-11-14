@@ -125,6 +125,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transient initial conditions that name no node or inductor (a typo), sit
   on a transformer or aren't finite were ignored or failed later as
   `InvalidSolution`. They're now `InvalidComponent` naming the key.
+- Every transient and sweep is bounded. `solve_circuit` and
+  `solve_circuit_with_initial_voltages` now check their automatic transient
+  config like `solve_transient` does, so a circuit whose time constants ask
+  for 5·10⁸ steps errors instead of running out of memory. Waveform
+  breakpoints count against the 10⁷-step cap, and a source with more
+  breakpoints than are kept is an error naming it instead of being stepped
+  over. An AC, DC or temperature sweep of more than 10⁷ points returns
+  `InvalidComponent` instead of panicking with "capacity overflow".
 - AC and `.tf` on a circuit with a transformer: the bias point left the
   transformer's two branch rows empty, so both failed with
   `SingularMatrix`. The DC equivalent now shorts each winding with a 0 V

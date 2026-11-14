@@ -275,6 +275,21 @@ pub use sindr_devices::varactor::VaractorParams;
 
 use node_map::NodeMap as NM;
 
+/// The automatic transient config [`solve_circuit`] runs, checked like a
+/// user's: a circuit whose time constants and waveforms ask for more than
+/// 10⁷ steps gets an error naming them, not a run that never ends.
+fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError> {
+    let config = TransientConfig::auto(circuit);
+    config.validate().map_err(|e| match e {
+        SimError::InvalidComponent(msg) => SimError::InvalidComponent(format!(
+            "{msg} (automatic span {} s and step {} s; set them with solve_transient)",
+            config.tstop, config.tstep
+        )),
+        other => other,
+    })?;
+    Ok(config)
+}
+
 /// Solves a circuit end-to-end and returns voltages, currents, and power for
 /// every component.
 ///
@@ -296,7 +311,9 @@ use node_map::NodeMap as NM;
 /// Returns [`SimError`] if the circuit fails validation (no ground node,
 /// floating nodes, invalid component values, etc.) or if the solver itself
 /// fails to converge or produces a singular matrix. See [`SimError`] for the
-/// full list.
+/// full list. A transient whose automatic span and step would take more than
+/// 10⁷ steps is [`SimError::InvalidComponent`]; run it with
+/// [`solve_transient`] and a coarser [`TransientConfig`].
 ///
 /// # Example
 ///
@@ -333,7 +350,7 @@ pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     let num_vsources = circuit.count_voltage_sources();
 
     if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
-        let config = TransientConfig::auto(circuit);
+        let config = auto_transient_config(circuit)?;
         return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
     }
 
@@ -494,7 +511,7 @@ pub fn solve_circuit_with_initial_voltages(
 
     if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
         // The transient path doesn't consume the seed.
-        let config = TransientConfig::auto(circuit);
+        let config = auto_transient_config(circuit)?;
         return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
     }
 

@@ -1367,7 +1367,7 @@ impl TransientConfig {
         self.tmax.map_or(self.tstep, |tmax| self.tstep.min(tmax))
     }
 
-    fn validate(&self) -> Result<(), SimError> {
+    pub(crate) fn validate(&self) -> Result<(), SimError> {
         let invalid = |msg: String| Err(SimError::InvalidComponent(format!("transient: {msg}")));
         for (name, value) in [
             ("tstop", Some(self.tstop)),
@@ -1409,9 +1409,9 @@ impl TransientConfig {
 /// # Errors
 ///
 /// [`SimError::InvalidComponent`] for an invalid config (a non-finite or
-/// non-positive time, `tstep > tstop`, or more than 10⁷ steps) or an initial
-/// condition that names no node or inductor in the circuit or isn't finite,
-/// any
+/// non-positive time, `tstep > tstop`, or more than 10⁷ steps counting one
+/// for each waveform breakpoint) or an initial condition that names no node
+/// or inductor in the circuit or isn't finite, any
 /// validation error from [`validate_circuit`](crate::validate_circuit),
 /// [`SimError::ConvergenceFailed`] if Newton–Raphson fails even at a step a
 /// million times smaller than `tstep`, and [`SimError::SingularMatrix`] or
@@ -1548,7 +1548,17 @@ pub(crate) fn run_transient(
         igbt_info: newton_raphson::collect_igbt_info(circuit, node_map),
     };
 
-    let breakpoints = waveform_breakpoints(circuit, tstop);
+    let breakpoints = waveform_breakpoints(circuit, tstop)?;
+    // Each breakpoint forces a step of its own, so they count against the
+    // step budget together with the tstep grid.
+    let steps = (tstop / h_max).ceil() + breakpoints.len() as f64;
+    if steps > MAX_STEPS {
+        return Err(SimError::InvalidComponent(format!(
+            "transient: {:.3e} grid steps plus {} waveform breakpoints is more than the {MAX_STEPS:e} steps allowed",
+            (tstop / h_max).ceil(),
+            breakpoints.len()
+        )));
+    }
     let mut next_bp = 0;
     let mut grid = 0u64; // index of the last tstep multiple reached
 
@@ -1789,24 +1799,38 @@ fn check_initial_conditions(
 
 /// Every waveform breakpoint of the circuit's sources in `(0, tstop)`,
 /// sorted and without near-duplicates.
-fn waveform_breakpoints(circuit: &Circuit, tstop: f64) -> Vec<f64> {
-    let mut all: Vec<f64> = circuit
-        .components
-        .iter()
-        .filter_map(|c| match c {
-            CircuitElement::VoltageSource {
-                waveform: Some(w), ..
-            }
-            | CircuitElement::CurrentSource {
-                waveform: Some(w), ..
-            } => Some(w.breakpoints(tstop)),
-            _ => None,
-        })
-        .flatten()
-        .collect();
+///
+/// A source with more than
+/// [`MAX_BREAKPOINTS`](crate::waveform::MAX_BREAKPOINTS) would have had the
+/// rest dropped, so it is rejected rather than stepped over.
+fn waveform_breakpoints(circuit: &Circuit, tstop: f64) -> Result<Vec<f64>, SimError> {
+    let mut all = Vec::new();
+    for c in &circuit.components {
+        let (CircuitElement::VoltageSource {
+            id,
+            waveform: Some(w),
+            ..
+        }
+        | CircuitElement::CurrentSource {
+            id,
+            waveform: Some(w),
+            ..
+        }) = c
+        else {
+            continue;
+        };
+        let (bps, capped) = w.capped_breakpoints(tstop);
+        if capped {
+            return Err(SimError::InvalidComponent(format!(
+                "transient: source '{id}' has more than {} waveform breakpoints before tstop = {tstop} s",
+                crate::waveform::MAX_BREAKPOINTS
+            )));
+        }
+        all.extend(bps);
+    }
     all.sort_by(f64::total_cmp);
     all.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * tstop);
-    all
+    Ok(all)
 }
 
 /// The worst ratio, over all node voltages, of the step's estimated local
