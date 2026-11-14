@@ -285,6 +285,26 @@ fn p_jfet_ac_matches_dc() {
     assert_ac_matches_dc("P-JFET", &circuit, &[1.5, 0.0, -1.0]);
 }
 
+/// The drain below the source with the channel on: VDD = ∓1 V through
+/// 1 kΩ, 100 Ω at the source, the gate at ∓0.5 V. In the ohmic region
+/// `∂Id/∂Vgs` takes the sign of V_DS, so here it is negative.
+#[test]
+fn jfet_ac_matches_dc_with_the_drain_below_the_source() {
+    for (kind, sign) in [(JfetKind::NChannel, 1.0), (JfetKind::PChannel, -1.0)] {
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                vsource("V1", "g", "0", 0.0),
+                vsource("VDD", "vdd", "0", -sign),
+                resistor("RD", "vdd", "d", 1e3),
+                resistor("RS", "s", "0", 100.0),
+                jfet(kind),
+            ],
+        };
+        assert_ac_matches_dc(&format!("{kind:?}"), &circuit, &[-0.5 * sign]);
+    }
+}
+
 #[test]
 fn igbt_ac_matches_dc() {
     let circuit = Circuit {
