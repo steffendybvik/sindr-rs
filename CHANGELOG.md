@@ -114,6 +114,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   took `t % 0`, got NaN and stayed at `v1` for the whole run. A zero,
   negative or non-finite period now means a single pulse, and
   `Waveform::period()` returns `None` for it.
+- Transient: a step ending on a source's jump (a square, PWM or zero-rise
+  PULSE edge) took the value after the jump, so the edge landed one step
+  early. At a fixed 100 µs step, a 1 kHz square into a 100 µs RC read
+  `out = 0.21` at its first falling edge instead of 0.99. That step now
+  sees the source's value just before the edge.
+- Transient snapshots reported a waveform source's DC term as its voltage
+  (or current) and power, ignoring the waveform. They now report its value
+  at that time.
+- Transient initial conditions that name no node or inductor (a typo), sit
+  on a transformer or aren't finite were ignored or failed later as
+  `InvalidSolution`. They're now `InvalidComponent` naming the key.
 - AC and `.tf` always linearised a relay's contact as open, while DC closes
   it once the coil is at pickup, so a relay switching a signal path showed
   ~1e-6 gain instead of the real one. They now take the contact state from
