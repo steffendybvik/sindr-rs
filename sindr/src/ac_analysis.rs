@@ -613,6 +613,7 @@ pub(crate) fn small_signal_system(
             CircuitElement::Relay {
                 nodes,
                 coil_resistance,
+                pickup_voltage,
                 ..
             } => {
                 let g = Complex64::new(1.0 / coil_resistance, 0.0);
@@ -622,14 +623,20 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, q, q, g);
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
-                // Contact: treat as open for AC analysis
-                let g_open = Complex64::new(1.0 / 1e9, 0.0);
+                // Contact: open or closed as at the DC bias point.
+                let r = crate::stamp::relay_contact_resistance(
+                    node_map,
+                    nodes,
+                    *pickup_voltage,
+                    Some(dc_solution),
+                );
+                let g = Complex64::new(1.0 / r, 0.0);
                 let c1 = node_map.index(&nodes[2]);
                 let c2 = node_map.index(&nodes[3]);
-                stamp_complex_conductance(&mut a, c1, c1, g_open);
-                stamp_complex_conductance(&mut a, c2, c2, g_open);
-                stamp_complex_conductance(&mut a, c1, c2, -g_open);
-                stamp_complex_conductance(&mut a, c2, c1, -g_open);
+                stamp_complex_conductance(&mut a, c1, c1, g);
+                stamp_complex_conductance(&mut a, c2, c2, g);
+                stamp_complex_conductance(&mut a, c1, c2, -g);
+                stamp_complex_conductance(&mut a, c2, c1, -g);
             }
             // Thermistor: passive resistor with temperature-dependent resistance
             CircuitElement::Thermistor {
@@ -882,7 +889,8 @@ pub(crate) fn small_signal_system(
 ///
 /// - [`SimError::InvalidComponent`] if `config` is invalid: zero points,
 ///   non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic
-///   spacing, or `f_start < 0` with linear spacing
+///   spacing, or `f_start < 0` with linear spacing; or if `source_id` isn't
+///   the id of a voltage source in `circuit`
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised AC system is singular
 ///   at any frequency
@@ -950,6 +958,16 @@ pub fn solve_ac_with_initial_voltages(
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<AcResult, SimError> {
     validate_config(config)?;
+    let drives_a_voltage_source = circuit
+        .components
+        .iter()
+        .any(|c| matches!(c, CircuitElement::VoltageSource { id, .. } if *id == config.source_id));
+    if !drives_a_voltage_source {
+        return Err(SimError::InvalidComponent(format!(
+            "AC sweep: source_id '{}' is not a voltage source in the circuit",
+            config.source_id
+        )));
+    }
 
     let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;
     let num_nodes = node_map.num_nodes();

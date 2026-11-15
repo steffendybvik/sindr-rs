@@ -130,6 +130,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `2·IDSS·Vds/Vp²`. DC still converged, but on the wrong Jacobian, and AC
   and `.tf` reported a gain of the wrong sign (an N-JFET at Vds < 0 gave
   −0.0487 where the DC slope is +0.0491). `gm` is now negative there.
+- AC and `.tf` always linearised a relay's contact as open, while DC closes
+  it once the coil is at pickup, so a relay switching a signal path showed
+  ~1e-6 gain instead of the real one. They now take the contact state from
+  the DC bias point.
+- `solve_ac` with a `source_id` that names no voltage source (a typo, or a
+  current source) returned 0 V everywhere. It's now `InvalidComponent`
+  naming the id, as `dc_sweep` and `.tf` already did.
 - AC and `.tf` on a circuit with a transformer: the bias point left the
   transformer's two branch rows empty, so both failed with
   `SingularMatrix`. The DC equivalent now shorts each winding with a 0 V

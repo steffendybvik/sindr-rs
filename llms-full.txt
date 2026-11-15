@@ -962,7 +962,8 @@ impl AcResult {
 ///
 /// - [`SimError::InvalidComponent`] if `config` is invalid: zero points,
 ///   non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic
-///   spacing, or `f_start < 0` with linear spacing
+///   spacing, or `f_start < 0` with linear spacing; or if `source_id` isn't
+///   the id of a voltage source in `circuit`
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised AC system is singular
 ///   at any frequency
