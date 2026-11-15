@@ -22,9 +22,13 @@ use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
 /// Per-component voltage, current, and power.
 ///
-/// Reported for every two-terminal component. Sign convention: current
-/// flows from `nodes[0]` to `nodes[1]`; positive `power` means the
-/// component is dissipating energy.
+/// Reported for every component. For a two-terminal one, current flows
+/// from `nodes[0]` to `nodes[1]` and positive `power` means it is
+/// dissipating energy. Components with more terminals report one port:
+/// BJTs and IGBTs give Vce and Ic, MOSFETs and JFETs give Vds and Id, with
+/// `power` as the magnitude `|V·I|` (their full results are in
+/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, and a
+/// transformer its primary.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ComponentResult {
@@ -55,7 +59,8 @@ pub struct BjtResult {
     pub ic: f64,
     /// Emitter current (A).
     pub ie: f64,
-    /// Total dissipation (W).
+    /// Collector dissipation `|Ic·Vce|` (W). The base's `Ib·Vbe` is left
+    /// out.
     pub power: f64,
     /// Operating region: `"active"`, `"saturation"`, or `"cutoff"`.
     pub region: String,
