@@ -252,6 +252,95 @@ fn sparse_system_uses_the_transpose_too() {
 }
 
 #[test]
+fn sparse_asymmetric_system_matches_finite_differences() {
+    // Resistors and independent sources alone give a symmetric MNA matrix,
+    // where the transpose changes nothing. A VCVS and a VCCS make it
+    // asymmetric, and a ladder above 100 unknowns puts it in sparse storage.
+    const N: usize = 150;
+    let name = |i: usize| {
+        if i == 0 {
+            "0".to_string()
+        } else {
+            format!("n{i}")
+        }
+    };
+    let mut components = vec![vsource("V1", &name(N), "0", 6.0)];
+    for i in 0..N {
+        components.push(resistor(&format!("R{i}"), &name(i + 1), &name(i), 1e3));
+    }
+    components.extend([
+        CircuitElement::Vcvs {
+            id: "E1".into(),
+            nodes: ["e".into(), "0".into()],
+            control_nodes: [name(90), name(30)],
+            gain: 2.5,
+        },
+        resistor("RE", "e", "out", 2e3),
+        CircuitElement::Vccs {
+            id: "G1".into(),
+            nodes: ["out".into(), "0".into()],
+            control_nodes: [name(120), "0".into()],
+            gm: 1e-4,
+        },
+        resistor("RL", "out", "0", 3e3),
+    ]);
+    let c = circuit(components);
+    assert_matches_finite_differences("sparse ladder", &c, "out", 1e-6);
+    assert_matches_finite_differences("sparse ladder", &c, &name(60), 1e-6);
+}
+
+#[test]
+fn closed_relay_contact_matches_finite_differences() {
+    // The coil sits at 12 V against a 5 V pickup, so DC closes the contact
+    // and the path V2 → R2 → contact → R1 carries the signal.
+    let c = circuit(vec![
+        vsource("V1", "coil", "0", 12.0),
+        vsource("V2", "src", "0", 10.0),
+        resistor("R2", "src", "a", 1e3),
+        CircuitElement::Relay {
+            id: "K1".into(),
+            nodes: ["coil".into(), "0".into(), "a".into(), "b".into()],
+            coil_resistance: 500.0,
+            pickup_voltage: 5.0,
+            inductance: 0.0,
+        },
+        resistor("R1", "b", "0", 1e3),
+    ]);
+    let r = sens(&c, v_out("b"));
+    assert_relative_eq!(of(&r, "V2"), 0.5, max_relative = 1e-4);
+    assert_matches_finite_differences("closed relay", &c, "b", 1e-4);
+}
+
+#[test]
+fn transformer_matches_closed_form() {
+    // At DC each winding is a short, so V(m) = V1·R3/(R1 + R3) and the
+    // secondary's loop carries no current. Closed form rather than finite
+    // differences: `solve_circuit` runs a circuit with a transformer as a
+    // transient, whose last step is only close to the DC point.
+    let c = circuit(vec![
+        vsource("V1", "in", "0", 4.0),
+        resistor("R1", "in", "m", 1e3),
+        resistor("R3", "m", "a", 3e3),
+        CircuitElement::Transformer {
+            id: "T1".into(),
+            nodes: ["a".into(), "0".into(), "s".into(), "0".into()],
+            l1: 1e-3,
+            l2: 4e-3,
+            k: 0.99,
+        },
+        resistor("RL", "s", "0", 100.0),
+    ]);
+    let r = sens(&c, v_out("m"));
+    assert!(r.get("T1").is_none());
+    let (v, r1, r3) = (4.0, 1e3, 3e3);
+    let total = r1 + r3;
+    assert_relative_eq!(of(&r, "V1"), r3 / total, max_relative = 1e-9);
+    assert_relative_eq!(of(&r, "R1"), -v * r3 / (total * total), max_relative = 1e-9);
+    assert_relative_eq!(of(&r, "R3"), v * r1 / (total * total), max_relative = 1e-9);
+    assert_relative_eq!(of(&r, "RL"), 0.0, epsilon = 1e-12);
+}
+
+#[test]
 fn reactive_parts_get_no_entry_and_leave_the_rest_right() {
     let mut c = divider();
     c.components[1] = resistor("R1", "in", "mid", R1);
