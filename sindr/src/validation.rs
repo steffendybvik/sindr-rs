@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::circuit::Circuit;
+use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
 
 /// Validate a circuit before solving.
@@ -97,7 +97,48 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Check 4: Device values the models can't take
+    // ------------------------------------------------------------------
+    for comp in &circuit.components {
+        check_values(comp)?;
+    }
+
     Ok(())
+}
+
+/// Rejects a device temperature or BJT gain the models can't use, naming the
+/// component, field and value. Left alone, a 0 K junction divides by zero and
+/// fails much later as a bare [`SimError::InvalidSolution`], and β ≤ 0 as
+/// that or a convergence failure.
+fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
+    let positive = |field: &str, value: f64, unit: &str| {
+        if value.is_finite() && value > 0.0 {
+            Ok(())
+        } else {
+            Err(SimError::InvalidComponent(format!(
+                "`{}`: {field} {value}{unit} must be a positive, finite number",
+                comp.id()
+            )))
+        }
+    };
+    match comp {
+        CircuitElement::Diode { temperature, .. }
+        | CircuitElement::Led { temperature, .. }
+        | CircuitElement::ZenerDiode { temperature, .. }
+        | CircuitElement::SchottkyDiode { temperature, .. }
+        | CircuitElement::Thermistor { temperature, .. }
+        | CircuitElement::Photodiode { temperature, .. } => {
+            positive("temperature", *temperature, " K")
+        }
+        CircuitElement::Bjt {
+            bf, temperature, ..
+        } => {
+            positive("temperature", *temperature, " K")?;
+            positive("bf", *bf, "")
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +147,56 @@ mod tests {
     use crate::circuit::{Circuit, CircuitElement};
     use crate::error::SimError;
     use crate::solve_circuit;
+
+    #[test]
+    fn bad_device_temperature_or_gain_names_the_field() {
+        let diode = |temperature: f64| Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["a".into(), "0".into()],
+                    voltage: 1.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["a".into(), "b".into()],
+                    resistance: 1e3,
+                },
+                CircuitElement::Diode {
+                    id: "D1".into(),
+                    nodes: ["b".into(), "0".into()],
+                    temperature,
+                },
+            ],
+        };
+        for t in [0.0, -10.0, f64::NAN, f64::INFINITY] {
+            match validate_circuit(&diode(t)) {
+                Err(SimError::InvalidComponent(msg)) => {
+                    assert!(msg.contains("D1") && msg.contains("temperature"), "{msg}");
+                }
+                other => panic!("T = {t}: {other:?}"),
+            }
+        }
+        assert!(validate_circuit(&diode(300.15)).is_ok());
+
+        let mut bjt = diode(300.15);
+        bjt.components[2] = CircuitElement::Bjt {
+            id: "Q1".into(),
+            nodes: ["b".into(), "a".into(), "0".into()],
+            kind: crate::BjtKind::Npn,
+            bf: 0.0,
+            temperature: 300.15,
+            parasitic_caps: None,
+        };
+        match validate_circuit(&bjt) {
+            Err(SimError::InvalidComponent(msg)) => {
+                assert!(msg.contains("Q1") && msg.contains("bf"), "{msg}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[test]
     fn no_ground_node_returns_error() {

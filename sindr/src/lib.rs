@@ -382,7 +382,7 @@ pub(crate) fn solve_dc_operating_point(
     }
 }
 
-/// `circuit` as it stands at DC: capacitors open (a 1 TΩ leak), inductors and
+/// `circuit` as it stands at DC: capacitors and varactors open (a 1 TΩ leak), inductors and
 /// transformer windings shorted (0 V sources). The bias point and the `.tf`
 /// small-signal system are both solved on it.
 pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
@@ -394,8 +394,11 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
             .flat_map(|c| {
                 vec![match c {
                     // A 1 TΩ leak rather than nothing, so a node between two
-                    // capacitors isn't singular (as the varactor's DC stamp).
-                    CircuitElement::Capacitor { id, nodes, .. } => CircuitElement::Resistor {
+                    // capacitors or varactors isn't singular. The same leak as
+                    // the varactor's DC stamp, which `.tf`'s ω = 0 small-signal
+                    // stamp (its capacitance only) would otherwise drop.
+                    CircuitElement::Capacitor { id, nodes, .. }
+                    | CircuitElement::Varactor { id, nodes, .. } => CircuitElement::Resistor {
                         id: id.clone(),
                         nodes: nodes.clone(),
                         resistance: 1e12,

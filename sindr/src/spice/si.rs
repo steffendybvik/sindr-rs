@@ -27,6 +27,7 @@ const SUFFIXES: &[(&str, f64)] = &[
     ("n", 1e-9),
     ("p", 1e-12),
     ("f", 1e-15),
+    ("a", 1e-18),
 ];
 
 /// Returns `(multiplier, suffix_len_in_bytes)`.
