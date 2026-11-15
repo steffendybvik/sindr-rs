@@ -125,6 +125,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transient initial conditions that name no node or inductor (a typo), sit
   on a transformer or aren't finite were ignored or failed later as
   `InvalidSolution`. They're now `InvalidComponent` naming the key.
+- JFETs in the ohmic region with the drain below the source had the wrong
+  sign of `gm`: `JfetCompanion::gm` took the absolute value of
+  `2·IDSS·Vds/Vp²`. DC still converged, but on the wrong Jacobian, and AC
+  and `.tf` reported a gain of the wrong sign (an N-JFET at Vds < 0 gave
+  −0.0487 where the DC slope is +0.0491). `gm` is now negative there.
 - AC and `.tf` always linearised a relay's contact as open, while DC closes
   it once the coil is at pickup, so a relay switching a signal path showed
   ~1e-6 gain instead of the real one. They now take the contact state from

@@ -300,9 +300,11 @@ fn jfet(kind: JfetKind) -> Circuit {
 
 /// N-channel biases `(vg, vd, vs)` relative to a 1 V offset; P-channel uses them negated.
 const JFET_BIASES: &[[f64; 3]] = &[
-    [-3.0, 5.0, 0.0], // cutoff
-    [-0.5, 5.0, 0.0], // saturation
-    [-0.5, 0.5, 0.0], // triode
+    [-3.0, 5.0, 0.0],  // cutoff
+    [-0.5, 5.0, 0.0],  // saturation
+    [-0.5, 0.5, 0.0],  // triode
+    [-0.5, -0.5, 0.0], // drain below source, channel on
+    [-1.0, -0.2, 0.0], // drain below source, nearer pinch-off
 ];
 
 fn jfet_biases(sign: f64) -> Vec<Vec<(&'static str, f64)>> {
