@@ -154,7 +154,42 @@ fn param_assign(input: &mut Input<'_>) -> ModalResult<(String, ParamExpr)> {
 //   4. unary minus
 //   5. atom: number | ident | `(expr)`
 
+/// Deepest nesting of `(`, unary minus and `^` an expression may have. The
+/// grammar recurses once per level, so an unbounded depth would let a long run
+/// of `(((…` overflow the stack, which `catch_unwind` can't recover from.
+const MAX_EXPR_DEPTH: usize = 256;
+
+thread_local! {
+    static EXPR_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Holds one level of expression nesting; dropping it gives the level back.
+struct DepthGuard;
+
+impl DepthGuard {
+    fn enter(input: &Input<'_>) -> ModalResult<Self> {
+        let depth = EXPR_DEPTH.with(|d| {
+            let next = d.get() + 1;
+            d.set(next);
+            next
+        });
+        let guard = DepthGuard;
+        if depth > MAX_EXPR_DEPTH {
+            // Cut, so `alt` doesn't retry every branch at every level.
+            return Err(ErrMode::Cut(ContextError::from_input(input)));
+        }
+        Ok(guard)
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        EXPR_DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
 fn expr_atom(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
+    let _depth = DepthGuard::enter(input)?;
     ws(input)?;
     alt((
         // `(expr)`
@@ -170,6 +205,7 @@ fn expr_atom(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
 }
 
 fn expr_pow(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
+    let _depth = DepthGuard::enter(input)?;
     let lhs = expr_atom(input)?;
     ws(input)?;
     if opt('^').parse_next(input)?.is_some() {

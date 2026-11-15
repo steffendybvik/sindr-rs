@@ -149,6 +149,15 @@ pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) {
     (duration, dt)
 }
 
+/// A companion `i = g·v + i_hist` in series with a resistance `r`, as one
+/// companion across both: from `v = r·i + v_L` and `i = g·v_L + i_hist`,
+/// `i = g/(1 + g·r)·v + i_hist/(1 + g·r)`. A relay coil is its winding's
+/// resistance in series with its inductance.
+fn series_resistance(g: f64, i_hist: f64, r: f64) -> (f64, f64) {
+    let k = 1.0 + g * r;
+    (g / k, i_hist / k)
+}
+
 /// Stamp all circuit components for one transient step ending at time `t`.
 ///
 /// Capacitors and inductors use `integ`'s companions, built from their
@@ -370,11 +379,13 @@ fn stamp_circuit_transient(
                 ..
             } => {
                 let coil_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
-                stamp_resistor(system, node_map, &coil_nodes, *coil_resistance);
                 if *inductance > 0.0 {
                     let (g, i_hist) = integ.inductor(*inductance, &inds[ind_index]);
+                    let (g, i_hist) = series_resistance(g, i_hist, *coil_resistance);
                     stamp_companion(system, node_map, &coil_nodes, g, i_hist);
                     ind_index += 1;
+                } else {
+                    stamp_resistor(system, node_map, &coil_nodes, *coil_resistance);
                 }
                 let vc_pos = node_map.index(&nodes[0]).map_or(0.0, |i| v_prev[i]);
                 let vc_neg = node_map.index(&nodes[1]).map_or(0.0, |i| v_prev[i]);
@@ -842,14 +853,20 @@ fn extract_timestep_results(
                 let vc_pos = node_voltage(&nodes[0], node_map, solution);
                 let vc_neg = node_voltage(&nodes[1], node_map, solution);
                 let coil_voltage = vc_pos - vc_neg;
-                // If relay has inductance, update the inductor current state
-                if *inductance > 0.0 {
+                // With inductance, the coil current is the inductor's, and
+                // the inductor sees the coil voltage less the resistive drop.
+                let coil_current = if *inductance > 0.0 {
                     let history = inds_prev[ind_index];
                     let (g, i_hist) = integ.inductor(*inductance, &history);
-                    new_inds.push(history.push(g * coil_voltage + i_hist, coil_voltage));
+                    let (g_s, i_s) = series_resistance(g, i_hist, *coil_resistance);
+                    let current = g_s * coil_voltage + i_s;
+                    let v_inductor = coil_voltage - coil_resistance * current;
+                    new_inds.push(history.push(current, v_inductor));
                     ind_index += 1;
-                }
-                let coil_current = coil_voltage / coil_resistance;
+                    current
+                } else {
+                    coil_voltage / coil_resistance
+                };
                 let contact_closed = coil_voltage.abs() >= *pickup_voltage;
                 let contact_r = if contact_closed {
                     SWITCH_R_CLOSED

@@ -56,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the BJT's large-signal terminal currents (Early effect included) and their
   exact, uncapped Jacobian, valid in every operating region.
 - `MosfetParams::in_nmos_frame`: a device's parameters in the N-channel frame
-  that `mosfet_companion` works in.
+  that `mosfet_companion` works in, and `MosfetKind::nmos_frame`: a
+  three-terminal device's `(vgs, vds)` in that frame.
 - `sindr_devices::diode::{thermal_voltage, K_OVER_Q, T_NOM}` and a `vt()`
   method on `DiodeParams`, `BjtParams`, `ZenerParams` and
   `PhotodiodeParams`: the thermal voltage kT/q at the junction temperature.
@@ -65,6 +66,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking:** `spice::AnalysisRequest` has a `Tf` variant, so a `match`
   over it needs an arm for it.
+- **Breaking:** new public fields `SimulationResult::convergence_aid`,
+  `TransientData::stats` and `ParsedNetlist::{initial_conditions, nodesets}`
+  mean code that builds these structs with a literal must set them.
+- A device `temperature` that is zero, negative or not finite, and a BJT
+  `bf` that isn't positive, are now rejected up front as `InvalidComponent`
+  naming the component and field. They used to fail mid-solve as a bare
+  `InvalidSolution` or a convergence failure.
+- `sindr::spice` rejects, at the card's line: a `.dc` whose step is zero or
+  points away from stop, a `.dc` sweeping a source the deck doesn't define,
+  an `.ac` with fstart above fstop or (for `dec`/`oct`) at or below 0, and
+  any value that evaluates to NaN or ±∞ (`1e400`, `{1/0}`). These used to
+  parse and fail later with no line, or reach the solver as infinite values.
+- The SPICE suffix `a` is atto (1e-18), as in ngspice. `1a` read as 1.
 
 - **Breaking:** `MnaSystem::a` is an `MnaMatrix` (dense or sparse) instead of
   a nalgebra `DMatrix`. Index it as before (`a[(r, c)]`); use
@@ -109,6 +123,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source isn't at ground.
 
 ### Fixed
+
+- A relay coil with inductance was stamped in transient as its resistance
+  and inductance in parallel, so the coil became a short once current built
+  up: 12 V through 100 Ω into a 500 Ω, 0.1 H coil settled near 0 V across it
+  instead of 10 V. They're now in series, as in DC.
+- A SPICE expression nested a few thousand levels deep (`{((((…))))}`)
+  overflowed the parser's stack and aborted the process. Nesting deeper than
+  256 levels is now a parse error.
+- A diode with series resistance in reverse bias, when `RS·IS` is many
+  `N·V_T`, returned an unconverged junction voltage, and past about 18 V of
+  `RS·IS` NaN. With `RS = 0`, an overflowing junction conductance was hidden
+  as GMIN instead of staying infinite.
+- `.tf` with a misspelt input or output now reports it before solving the
+  bias point, so it isn't masked by a DC failure. A node between two
+  varactors, held only by their DC leak, was singular in `.tf`.
 
 - A PULSE with period 0, SPICE's one-shot pulse, never fired: the waveform
   took `t % 0`, got NaN and stayed at `v1` for the whole run. A zero,

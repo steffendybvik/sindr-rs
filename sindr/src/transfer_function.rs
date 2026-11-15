@@ -139,6 +139,8 @@ pub fn solve_tf_with_initial_voltages(
     config: &TfConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<TfResult, SimError> {
+    // Name the bad port before paying for the bias point.
+    check_ports(circuit, config)?;
     let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;
     // The bias-point circuit, so an inductor is an exact short (a 0 V
     // source) rather than AC's large conductance at ω = 0.
@@ -164,6 +166,48 @@ pub fn solve_tf_with_initial_voltages(
         output_resistance,
         config: config.clone(),
     })
+}
+
+/// The errors [`Port::input`] and [`Port::output`] would give, from the names
+/// alone, so a misspelt port fails before the DC solve rather than after it.
+fn check_ports(circuit: &Circuit, config: &TfConfig) -> Result<(), SimError> {
+    let is_vsource = |id: &str| {
+        circuit
+            .components
+            .iter()
+            .any(|c| matches!(c, CircuitElement::VoltageSource { id: v, .. } if v == id))
+    };
+    let is_isource = |id: &str| {
+        circuit
+            .components
+            .iter()
+            .any(|c| matches!(c, CircuitElement::CurrentSource { id: i, .. } if i == id))
+    };
+    let id = &config.input_source;
+    if !is_vsource(id) && !is_isource(id) {
+        return Err(SimError::InvalidComponent(format!(
+            "transfer function: input `{id}` is not an independent voltage or current source"
+        )));
+    }
+    match &config.output {
+        TfOutput::Voltage { node, reference } => {
+            let node_map = NodeMap::from_circuit(circuit);
+            for name in std::iter::once(node).chain(reference) {
+                if node_map.index(name).is_none() && *name != circuit.ground_node {
+                    return Err(SimError::InvalidComponent(format!(
+                        "transfer function: output node `{name}` is not in the circuit"
+                    )));
+                }
+            }
+        }
+        TfOutput::Current { source_id } if !is_vsource(source_id) => {
+            return Err(SimError::InvalidComponent(format!(
+                "transfer function: output current source `{source_id}` is not an independent voltage source"
+            )));
+        }
+        TfOutput::Current { .. } => {}
+    }
+    Ok(())
 }
 
 /// Branch row of the voltage source `id` of the original `circuit`. The
@@ -284,8 +328,11 @@ impl Port {
             // so the current the source delivers to the circuit is its
             // negative.
             Port::Branch(_) => {
+                // A source into an open circuit delivers only round-off, so
+                // anything far below the smallest leak sindr stamps (1 TΩ) is
+                // an open port, not a 1e30 Ω one.
                 let delivered = -self.response(x);
-                if delivered == 0.0 {
+                if delivered.abs() < 1e-18 {
                     f64::INFINITY
                 } else {
                     1.0 / delivered
