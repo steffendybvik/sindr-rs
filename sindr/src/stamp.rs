@@ -31,6 +31,26 @@ pub const SWITCH_R_CLOSED: f64 = 0.01;
 /// Switch open resistance (very high, near open circuit).
 pub const SWITCH_R_OPEN: f64 = 1e9;
 
+/// Resistance of a relay's contact (`nodes[2]`–`nodes[3]`): closed when the
+/// coil voltage `nodes[0]`–`nodes[1]` in `v` is at least `pickup_voltage` in
+/// magnitude, open otherwise and when there is no `v` yet.
+pub(crate) fn relay_contact_resistance(
+    node_map: &NodeMap,
+    nodes: &[String; 4],
+    pickup_voltage: f64,
+    v: Option<&nalgebra::DVector<f64>>,
+) -> f64 {
+    let closed = v.is_some_and(|v| {
+        let at = |n: &String| node_map.index(n).map_or(0.0, |i| v[i]);
+        (at(&nodes[0]) - at(&nodes[1])).abs() >= pickup_voltage
+    });
+    if closed {
+        SWITCH_R_CLOSED
+    } else {
+        SWITCH_R_OPEN
+    }
+}
+
 /// Compute LDR (photoresistor) resistance from light level.
 pub fn ldr_resistance(light_level: f64) -> f64 {
     rs_ldr_resistance(light_level, &PhotoresistorParams::default())
@@ -220,19 +240,7 @@ pub fn stamp_circuit(
                 let coil_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
                 stamp_resistor(system, node_map, &coil_nodes, *coil_resistance);
                 let _ = inductance; // inductance is handled in transient solver
-                                    // Contact: determined by previous iteration coil voltage
-                let contact_closed = if let Some(vp) = v_prev {
-                    let vc_pos = node_map.index(&nodes[0]).map_or(0.0, |i| vp[i]);
-                    let vc_neg = node_map.index(&nodes[1]).map_or(0.0, |i| vp[i]);
-                    (vc_pos - vc_neg).abs() >= *pickup_voltage
-                } else {
-                    false
-                };
-                let contact_r = if contact_closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
+                let contact_r = relay_contact_resistance(node_map, nodes, *pickup_voltage, v_prev);
                 let contact_nodes: [String; 2] = [nodes[2].clone(), nodes[3].clone()];
                 stamp_resistor(system, node_map, &contact_nodes, contact_r);
             }
