@@ -460,7 +460,7 @@ pub enum SimError {
 | Reactive elements (C, L, Varactor, Transformer) or waveform sources | Transient (Gear-2 by default) |
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
-The transient solver uses adaptive timestepping: dt halves on Newton-Raphson convergence failure, and doubles after 5 consecutive successful timesteps (clamped to 10× the initial dt).
+The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
 
 ## Serde
 

@@ -31,9 +31,14 @@ use crate::stamp::{
 
 /// Calculate simulation duration and timestep from circuit time constants.
 ///
-/// Returns (duration, dt) where:
-/// - duration = 5 * tau_max (5 time constants for ~99% settling)
-/// - dt = tau_max / 50 (floored at 1 microsecond)
+/// Returns `(duration, dt)` in seconds, from the longest RC/RL time
+/// constant τ (1 ms if the circuit has none):
+/// - duration = 5·τ (about 99 % settling)
+/// - dt = τ/50, floored at 1 µs
+///
+/// With periodic waveform sources, the longest period T also counts:
+/// duration is at least 3·T and dt at most T/100 (also floored at 1 µs).
+/// Without RC/RL time constants, those alone set it.
 pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) {
     // Collect R, C, L values
     let mut resistances: Vec<f64> = Vec::new();
@@ -1252,8 +1257,9 @@ fn extract_mosfet_results_from_snapshot(
 pub struct TransientConfig {
     /// End time (s). The run starts at 0 and its last snapshot is at `tstop`.
     pub tstop: f64,
-    /// Time step (s): snapshots fall on multiples of it, except where a
-    /// failed Newton solve forces smaller steps.
+    /// Time step (s): the output grid, and the longest step unless `tmax`
+    /// says otherwise. Truncation-error control, breakpoints and failed
+    /// Newton solves add shorter steps in between.
     pub tstep: f64,
     /// Largest step allowed (s), as SPICE's TMAX. `None` means `tstep`.
     pub tmax: Option<f64>,
@@ -1355,8 +1361,9 @@ impl TransientConfig {
     }
 
     /// The config [`solve_circuit`](crate::solve_circuit) uses: `tstop` = 5·τ
-    /// and `tstep` = τ/50 for the circuit's longest time constant τ (see
-    /// [`calculate_duration`]).
+    /// and `tstep` = τ/50 for the circuit's longest time constant τ,
+    /// stretched to cover 3 periods of a periodic source at 100 steps per
+    /// period (see [`calculate_duration`]).
     pub fn auto(circuit: &Circuit) -> Self {
         let (duration, dt) = calculate_duration(circuit);
         Self::new(duration, dt.min(duration))
@@ -1401,9 +1408,11 @@ impl TransientConfig {
 /// Integrates with `config.method` from 0 to `config.tstop`, starting from
 /// uncharged capacitors (0 V) and inductors at rest (0 A), with sources at
 /// their value at each step's end time. Each step that contains nonlinear
-/// devices is solved by Newton–Raphson, warm-started from the previous step;
-/// if Newton fails the step is halved and retried, then grows back to
-/// `tstep`. [`SimulationResult::transient`] holds one snapshot per step,
+/// devices is solved by Newton–Raphson, warm-started from the previous step.
+/// Steps are at most `tstep` (or `tmax`, if smaller), shortened where the
+/// truncation error is too large (unless `config.adaptive` is off), cut to
+/// land on every source-waveform breakpoint, and halved and retried when
+/// Newton fails. [`SimulationResult::transient`] holds one snapshot per step,
 /// the last at `tstop`; the other fields hold the final instant.
 ///
 /// # Errors
