@@ -69,7 +69,7 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 
 ## Conventions
 
-- **Edition 2021, MSRV 1.87** (`rust-version` in both manifests; CI tests on 1.87 and stable). Don't use std/language features newer than 1.87.
+- **Edition 2021, MSRV 1.89** (`rust-version` in both manifests; CI tests on 1.89 and stable). Don't use std/language features newer than 1.89.
 - **No `unsafe`.** This is a numerical library; we have no reason for it.
 - **No `unwrap()` / `expect()` in non-test code paths.** Return `SimError` instead.
 - **Errors flow through `SimError`** (see `sindr/src/error.rs`). When adding a new failure mode, prefer extending the enum over `String` errors.

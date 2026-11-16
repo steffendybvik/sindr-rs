@@ -73,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** nalgebra 0.35. `MnaMatrix::to_dense`, `MnaSystem::b` and
   `MnaSystem::solve` use its `DMatrix`/`DVector`, so callers on nalgebra
   0.34 need to upgrade too.
+- MSRV is Rust 1.89 (was 1.87), which nalgebra 0.35 requires.
 - **Breaking:** `spice::AnalysisRequest` has `Tf` and `Sens` variants, so a
   `match` over it needs arms for them.
 - **Breaking:** new public fields `SimulationResult::convergence_aid`,
