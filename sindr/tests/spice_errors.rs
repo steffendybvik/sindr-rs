@@ -166,3 +166,77 @@ fn error_in_an_included_file_points_into_that_file() {
         contents.name()
     );
 }
+
+#[test]
+fn deeply_nested_expression_is_an_error_not_a_stack_overflow() {
+    // 5,000 levels used to overflow a 2 MB thread's stack, which no
+    // `catch_unwind` can recover from. Run on such a thread to prove it can't.
+    let open = "(".repeat(5_000);
+    let close = ")".repeat(5_000);
+    let deck = format!("* t\nV1 a 0 1\nR1 a 0 {{{open}1k{close}}}\n.end\n");
+    let result = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || parse_str(&deck).is_err())
+        .unwrap()
+        .join()
+        .expect("parser must not overflow the stack");
+    assert!(result);
+}
+
+#[test]
+fn moderately_nested_expression_still_parses() {
+    let open = "(".repeat(100);
+    let close = ")".repeat(100);
+    let deck = format!("* t\nV1 a 0 1\nR1 a 0 {{{open}1k{close}}}\n.end\n");
+    parse_str(&deck).expect("100 levels is well inside the cap");
+}
+
+/// Analysis cards that can't run fail at parse time, pointing at the card,
+/// rather than later in the solver with no line.
+#[test]
+fn unrunnable_analysis_cards_point_at_the_card() {
+    for card in [
+        ".dc V1 0 1 0",
+        ".dc V1 0 1 -0.1",
+        ".dc VX 0 1 0.1",
+        ".ac dec 10 100 1",
+        ".ac dec 10 0 1k",
+    ] {
+        let deck = format!("* t\nV1 a 0 1\nR1 a 0 1k\n{card}\n.end\n");
+        let err = parse_str(&deck).expect_err(card);
+        assert!(
+            labelled(&err, &deck).iter().any(|l| l.contains(card)),
+            "{card}: {err:?} labels {:?}",
+            labelled(&err, &deck)
+        );
+    }
+    // Still fine: a sweep to itself, a downward sweep, a linear sweep from 0.
+    for card in [".dc V1 1 1 0", ".dc V1 1 0 -0.1", ".ac lin 10 0 1k"] {
+        let deck = format!("* t\nV1 a 0 1\nR1 a 0 1k\n{card}\n.end\n");
+        parse_str(&deck).unwrap_or_else(|e| panic!("{card}: {e:?}"));
+    }
+}
+
+#[test]
+fn infinite_value_is_an_error() {
+    for value in ["1e400", "{1/0}"] {
+        let deck = format!("* t\nV1 a 0 1\nR1 a 0 {value}\n.end\n");
+        assert!(parse_str(&deck).is_err(), "{value}");
+    }
+}
+
+#[test]
+fn a_suffix_is_atto() {
+    let deck = "* t\nV1 a 0 1\nC1 a 0 3a\nR1 a 0 1k\n.end\n";
+    let parsed = parse_str(deck).unwrap();
+    let c = parsed
+        .circuit
+        .components
+        .iter()
+        .find_map(|c| match c {
+            sindr::CircuitElement::Capacitor { capacitance, .. } => Some(*capacitance),
+            _ => None,
+        })
+        .unwrap();
+    assert!((c - 3e-18).abs() < 1e-30, "{c}");
+}

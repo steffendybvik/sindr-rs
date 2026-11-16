@@ -594,7 +594,7 @@ pub enum SimError {
 | Reactive elements (C, L, Varactor, Transformer) or waveform sources | Transient (Gear-2 by default) |
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
-The transient solver uses adaptive timestepping: dt halves on Newton-Raphson convergence failure, and doubles after 5 consecutive successful timesteps (clamped to 10× the initial dt).
+The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
 
 ### Serde
 
@@ -630,7 +630,7 @@ Pure electronics device physics companion models for MNA circuit simulation.
 |--------|--------|-------|
 | `diode` | Silicon diode | Shockley companion with series resistance and temperature IS scaling |
 | `bjt` | BJT (NPN/PNP) | Ebers-Moll companion with Early voltage |
-| `mosfet` | MOSFET (NMOS/PMOS) | Level-1 companion with body effect |
+| `mosfet` | MOSFET (NMOS/PMOS) | Level-1 companion; body effect when called with a `vbs` (in a sindr circuit the body is tied to the source) |
 | `jfet` | JFET (N/P-channel) | Shichman-Hodges |
 | `igbt` | IGBT | MOSFET square-law collector current, blocks reverse V_CE |
 | `led` | LED | Diode with colour-dependent forward voltage |
@@ -848,7 +848,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 #### Solver & numerics
 
 - **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
-- **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation, and no multithreading.
+- **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation.
 - **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
 - **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the AC bias point (`solve_ac_with_initial_voltages`).
 - **`.ic` is always `UIC`:** transients never compute a DC operating point first; they start from the initial conditions (`TransientConfig::with_initial_voltages`, `with_initial_current`) or from all-zero. Transformer windings always start at 0 A, and inductor `IC=` on SPICE element lines isn't parsed.
@@ -2533,9 +2533,13 @@ appear in the circuit.
 ```rust
 /// Per-component voltage, current, and power.
 ///
-/// Reported for every two-terminal component. Sign convention: current
-/// flows from `nodes[0]` to `nodes[1]`; positive `power` means the
-/// component is dissipating energy.
+/// Reported for every component. For a two-terminal one, current flows
+/// from `nodes[0]` to `nodes[1]` and positive `power` means it is
+/// dissipating energy. Components with more terminals report one port:
+/// BJTs and IGBTs give Vce and Ic, MOSFETs and JFETs give Vds and Id, with
+/// `power` as the magnitude `|V·I|` (their full results are in
+/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, and a
+/// transformer its primary.
 pub struct ComponentResult {
     /// Component id (matches the id on the source [`CircuitElement`]).
     pub id: String,
@@ -2562,7 +2566,8 @@ pub struct BjtResult {
     pub ic: f64,
     /// Emitter current (A).
     pub ie: f64,
-    /// Total dissipation (W).
+    /// Collector dissipation `|Ic·Vce|` (W). The base's `Ib·Vbe` is left
+    /// out.
     pub power: f64,
     /// Operating region: `"active"`, `"saturation"`, or `"cutoff"`.
     pub region: String,
@@ -4146,9 +4151,14 @@ pub use crate::integration::IntegrationMethod;
 
 /// Calculate simulation duration and timestep from circuit time constants.
 ///
-/// Returns (duration, dt) where:
-/// - duration = 5 * tau_max (5 time constants for ~99% settling)
-/// - dt = tau_max / 50 (floored at 1 microsecond)
+/// Returns `(duration, dt)` in seconds, from the longest RC/RL time
+/// constant τ (1 ms if the circuit has none):
+/// - duration = 5·τ (about 99 % settling)
+/// - dt = τ/50, floored at 1 µs
+///
+/// With periodic waveform sources, the longest period T also counts:
+/// duration is at least 3·T and dt at most T/100 (also floored at 1 µs).
+/// Without RC/RL time constants, those alone set it.
 pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) { … }
 
 /// Transient analysis settings: how long to simulate and how finely.
@@ -4175,8 +4185,9 @@ pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) { … }
 pub struct TransientConfig {
     /// End time (s). The run starts at 0 and its last snapshot is at `tstop`.
     pub tstop: f64,
-    /// Time step (s): snapshots fall on multiples of it, except where a
-    /// failed Newton solve forces smaller steps.
+    /// Time step (s): the output grid, and the longest step unless `tmax`
+    /// says otherwise. Truncation-error control, breakpoints and failed
+    /// Newton solves add shorter steps in between.
     pub tstep: f64,
     /// Largest step allowed (s), as SPICE's TMAX. `None` means `tstep`.
     pub tmax: Option<f64>,
@@ -4250,8 +4261,9 @@ impl TransientConfig {
     pub fn with_tmax(mut self, tmax: f64) -> Self { … }
 
     /// The config [`solve_circuit`](crate::solve_circuit) uses: `tstop` = 5·τ
-    /// and `tstep` = τ/50 for the circuit's longest time constant τ (see
-    /// [`calculate_duration`]).
+    /// and `tstep` = τ/50 for the circuit's longest time constant τ,
+    /// stretched to cover 3 periods of a periodic source at 100 steps per
+    /// period (see [`calculate_duration`]).
     pub fn auto(circuit: &Circuit) -> Self { … }
 }
 
@@ -4260,9 +4272,11 @@ impl TransientConfig {
 /// Integrates with `config.method` from 0 to `config.tstop`, starting from
 /// uncharged capacitors (0 V) and inductors at rest (0 A), with sources at
 /// their value at each step's end time. Each step that contains nonlinear
-/// devices is solved by Newton–Raphson, warm-started from the previous step;
-/// if Newton fails the step is halved and retried, then grows back to
-/// `tstep`. [`SimulationResult::transient`] holds one snapshot per step,
+/// devices is solved by Newton–Raphson, warm-started from the previous step.
+/// Steps are at most `tstep` (or `tmax`, if smaller), shortened where the
+/// truncation error is too large (unless `config.adaptive` is off), cut to
+/// land on every source-waveform breakpoint, and halved and retried when
+/// Newton fails. [`SimulationResult::transient`] holds one snapshot per step,
 /// the last at `tstop`; the other fields hold the final instant.
 ///
 /// # Errors

@@ -124,7 +124,15 @@ pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) {
     // through RS at the terminals: g_d = g_j / (1 + RS*g_j)
     let g_j = (params.is / nv_t) * exp_vj;
     // Floored at GMIN so the Jacobian never loses the diode in deep reverse.
-    let g_d = (g_j / (1.0 + params.rs * g_j)).max(GMIN);
+    // Written as 1/(1/g_j + RS) so an overflowing g_j gives 1/RS, not inf/inf.
+    // RS = 0 skips it so an overflowing g_j stays infinite rather than turning
+    // into NaN that the floor would quietly hide.
+    let g_d = if params.rs > 0.0 {
+        1.0 / (1.0 / g_j + params.rs)
+    } else {
+        g_j
+    }
+    .max(GMIN);
 
     // Companion current source: I_eq = I_d - g_d * V_d, from the same g_d
     // that is stamped, so g_d * V_d + I_eq is I_d and the floor only shapes
@@ -148,7 +156,10 @@ pub fn diode_current(v_d: f64, params: &DiodeParams) -> f64 {
 /// monotonically down to it without overshooting. The start is an upper bound:
 /// for `v_d >= 0` the current is at most `v_d / RS`, which bounds `v_j` by
 /// `N*V_T * ln(1 + v_d / (RS*IS))` (and by `v_d`); for `v_d < 0` the current is
-/// above `-IS`, so `v_j < v_d + RS*IS`.
+/// above `-IS`, so `v_j < v_d + RS*IS`, and the current is negative, so
+/// `v_j < 0`. Starting at the smaller of the two matters when `RS*IS` is large:
+/// from `v_d + RS*IS > 0` Newton crawls down one `N*V_T` per step, and past
+/// about 700 `N*V_T` the exponential overflows.
 fn junction_voltage(v_d: f64, params: &DiodeParams) -> f64 {
     let rs = params.rs;
     if rs <= 0.0 {
@@ -160,7 +171,7 @@ fn junction_voltage(v_d: f64, params: &DiodeParams) -> f64 {
     let mut v_j = if v_d >= 0.0 {
         v_d.min(nv_t * (v_d / (rs * is)).ln_1p())
     } else {
-        v_d + rs * is
+        (v_d + rs * is).min(0.0)
     };
     for _ in 0..100 {
         let exp_vj = (v_j / nv_t).exp();
@@ -453,6 +464,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// When RS*IS is many N*V_T, reverse bias still solves exactly. Starting
+    /// Newton at `v_d + RS*IS` used to stall at the iteration cap and, past
+    /// about 18 V of RS*IS, overflow to NaN.
+    #[test]
+    fn diode_rs_reverse_bias_with_large_rs_is() {
+        for (is, rs) in [(1e-6, 1e7), (1e-6, 1e8), (1e-3, 1e5)] {
+            let mut params = DiodeParams::silicon();
+            params.is = is;
+            params.rs = rs;
+            for v in [-0.01, -0.5, -5.0, -50.0] {
+                let expected = rs_current_by_bisection(v, &params);
+                let i = diode_current(v, &params);
+                assert!(
+                    (i - expected).abs() <= 1e-9 * expected.abs() + 1e-20,
+                    "is={is} rs={rs} v={v}: diode_current {i} vs implicit {expected}"
+                );
+                let (g_d, i_eq) = diode_companion(v, &params);
+                assert!(g_d.is_finite() && i_eq.is_finite(), "is={is} rs={rs} v={v}");
+            }
+        }
+    }
+
+    /// With RS = 0, an overflowing junction conductance stays infinite instead
+    /// of turning into NaN and being floored to GMIN.
+    #[test]
+    fn diode_companion_rs_zero_overflow_is_not_floored() {
+        let params = DiodeParams::silicon();
+        let (g_d, _) = diode_companion(100.0, &params);
+        assert!(g_d > 1.0, "g_d = {g_d}");
     }
 
     /// With rs > 0, the companion conductance is the terminal dI/dV, which

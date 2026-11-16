@@ -61,7 +61,11 @@ pub(crate) fn build_netlist(
     let mut analyses: Vec<AnalysisRequest> = Vec::with_capacity(flat.analyses.len());
     let top_scope = scope_from_snapshot(&flat.top_params);
     for (raw, span) in &flat.analyses {
-        analyses.push(build_analysis(raw, &top_scope).map_err(|e| e.locate(span))?);
+        analyses.push(
+            build_analysis(raw, &top_scope)
+                .and_then(|a| check_sweep_source(a, &components))
+                .map_err(|e| e.locate(span))?,
+        );
     }
 
     // `.ic` / `.nodeset`: a later card overrides an earlier one per node.
@@ -349,6 +353,38 @@ fn translate_waveform(
     }
 }
 
+/// A syntax error with no span of its own: the caller locates it on the card.
+fn card_error(message: String) -> SpiceParseError {
+    SpiceParseError::Syntax {
+        message,
+        src: NamedSource::new("<build>", String::new()),
+        bad_span: (0, 0).into(),
+    }
+}
+
+/// A `.dc` card must sweep a source the deck defines: an independent voltage
+/// or current source. Caught here, it points at the card; left to the solver,
+/// it fails with no line.
+fn check_sweep_source(
+    analysis: AnalysisRequest,
+    components: &[CircuitElement],
+) -> Result<AnalysisRequest, SpiceParseError> {
+    if let AnalysisRequest::Dc { source, .. } = &analysis {
+        let found = components.iter().any(|c| {
+            matches!(
+                c,
+                CircuitElement::VoltageSource { .. } | CircuitElement::CurrentSource { .. }
+            ) && c.id().eq_ignore_ascii_case(source)
+        });
+        if !found {
+            return Err(card_error(format!(
+                "`.dc` sweeps `{source}`, which is not a voltage or current source in the deck"
+            )));
+        }
+    }
+    Ok(analysis)
+}
+
 fn build_analysis(
     raw: &RawAnalysis,
     scope: &ParamScope,
@@ -391,6 +427,13 @@ fn build_analysis(
             let start = eval_finite(&args[0], scope, ".dc", "start")?;
             let stop = eval_finite(&args[1], scope, ".dc", "stop")?;
             let step = eval_finite(&args[2], scope, ".dc", "step")?;
+            // A zero step never reaches stop, and one pointing away from it
+            // never gets there either.
+            if start != stop && (step == 0.0 || (stop - start).signum() != step.signum()) {
+                return Err(card_error(format!(
+                    "`.dc` step {step} doesn't move from {start} towards {stop}"
+                )));
+            }
             Ok(AnalysisRequest::Dc {
                 source: source.clone(),
                 start,
@@ -424,6 +467,24 @@ fn build_analysis(
                     bad_span: (0, 0).into(),
                 });
             }
+            let fstart = eval_finite(fstart, scope, ".ac", "fstart")?;
+            let fstop = eval_finite(fstop, scope, ".ac", "fstop")?;
+            let log = !matches!(sweep, AcSweepKind::Lin);
+            if (log && fstart <= 0.0) || fstart < 0.0 {
+                return Err(card_error(format!(
+                    "`.ac` fstart must be {} (got {fstart})",
+                    if log {
+                        "above 0 for a log sweep"
+                    } else {
+                        "at least 0"
+                    }
+                )));
+            }
+            if fstart > fstop {
+                return Err(card_error(format!(
+                    "`.ac` fstart {fstart} is above fstop {fstop}"
+                )));
+            }
             Ok(AnalysisRequest::Ac {
                 sweep: match sweep {
                     AcSweepKind::Dec => AcSweep::Dec,
@@ -431,8 +492,8 @@ fn build_analysis(
                     AcSweepKind::Lin => AcSweep::Lin,
                 },
                 points: pts as usize,
-                fstart: eval_finite(fstart, scope, ".ac", "fstart")?,
-                fstop: eval_finite(fstop, scope, ".ac", "fstop")?,
+                fstart,
+                fstop,
             })
         }
     }
@@ -477,8 +538,14 @@ fn scope_from_snapshot(snapshot: &HashMap<String, f64>) -> ParamScope {
     s
 }
 
+/// Evaluates `expr`, rejecting NaN and ±∞: `1e400` or `{1/0}` would
+/// otherwise reach the solver as an infinite component value.
 fn eval_or_lift(expr: &ParamExpr, scope: &ParamScope) -> Result<f64, SpiceParseError> {
-    eval(expr, scope).map_err(|e| eval_error_to_parse_error(e, "<build>"))
+    let v = eval(expr, scope).map_err(|e| eval_error_to_parse_error(e, "<build>"))?;
+    if !v.is_finite() {
+        return Err(card_error(format!("value is {v}, not a finite number")));
+    }
+    Ok(v)
 }
 
 /// Like [`eval_or_lift`], but additionally rejects non-finite (NaN / ±∞)
@@ -850,8 +917,19 @@ mod tests {
 
     #[test]
     fn dc_analysis_param_expression_evaluates() {
-        // .param vcc=12; .dc V1 0 {vcc} 1
+        // .param vcc=12; V1 a 0 0; .dc V1 0 {vcc} 1
         let cards = vec![
+            RawCard::Element(RawElement {
+                id: "V1".to_string(),
+                prefix: 'v',
+                nodes: vec!["a".to_string(), "0".to_string()],
+                body: RawElementBody::Source {
+                    kind: SourceKind::Voltage,
+                    dc: Some(ParamExpr::Number(0.0)),
+                    waveform: None,
+                },
+                span: span(),
+            }),
             RawCard::Param(
                 vec![("vcc".to_string(), ParamExpr::Number(12.0))],
                 Span::detached(),
