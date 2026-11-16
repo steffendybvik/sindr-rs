@@ -1,0 +1,8 @@
+op: reverse-biased photodiode, 0.1 mW irradiance (built in Rust on the sindr side)
+V1 k 0 5
+R1 k a 10k
+D1 0 a dpd
+* sindr photocurrent = responsivity 0.5 A/W x 0.1 mW = 50 uA, cathode -> anode inside the diode
+I1 a 0 50u
+.model dpd D(IS=1e-12 N=1)
+.end

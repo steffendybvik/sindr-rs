@@ -1,0 +1,6 @@
+dc: diode I-V through 10 ohm
+V1 a 0 0
+R1 a b 10
+D1 b 0 dsi
+.model dsi D(IS=1e-14 N=1)
+.end

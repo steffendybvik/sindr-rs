@@ -1,0 +1,7 @@
+op: red LED with 150 ohm from 5 V (built in Rust on the sindr side)
+V1 in 0 5
+R1 in out 150
+D1 out 0 dred
+* sindr DiodeParams::led(1.8): N=2, IS = 20 mA / (exp(1.8/(2*V_T)) - 1) with V_T = kT/q at 300.15 K
+.model dred D(IS=1.5461489461e-17 N=2)
+.end

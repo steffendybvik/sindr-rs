@@ -29,7 +29,8 @@ use miette::NamedSource;
 
 use crate::spice::analysis::{AcSweep, AnalysisRequest};
 use crate::spice::ast::{
-    AcSweepKind, ParamExpr, RawAnalysis, RawElementBody, RawModel, RawWaveform, SourceKind,
+    AcSweepKind, NodeValueKind, ParamExpr, RawAnalysis, RawElementBody, RawModel, RawWaveform,
+    SourceKind,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::flatten::{FlatElement, Flattened};
@@ -52,14 +53,33 @@ pub(crate) fn build_netlist(
     let mut components: Vec<CircuitElement> = Vec::with_capacity(flat.elements.len());
 
     for fe in &flat.elements {
-        let element = build_element(fe, &flat.models, strict, warnings)?;
+        let element = build_element(fe, &flat.models, strict, warnings)
+            .map_err(|e| e.locate(&fe.raw.span))?;
         components.push(element);
     }
 
     let mut analyses: Vec<AnalysisRequest> = Vec::with_capacity(flat.analyses.len());
     let top_scope = scope_from_snapshot(&flat.top_params);
-    for raw in &flat.analyses {
-        analyses.push(build_analysis(raw, &top_scope)?);
+    for (raw, span) in &flat.analyses {
+        analyses.push(
+            build_analysis(raw, &top_scope)
+                .and_then(|a| check_sweep_source(a, &components))
+                .map_err(|e| e.locate(span))?,
+        );
+    }
+
+    // `.ic` / `.nodeset`: a later card overrides an earlier one per node.
+    let mut initial_conditions = HashMap::new();
+    let mut nodesets = HashMap::new();
+    for (kind, values, span) in &flat.node_values {
+        let (card, map) = match kind {
+            NodeValueKind::Ic => (".ic", &mut initial_conditions),
+            NodeValueKind::Nodeset => (".nodeset", &mut nodesets),
+        };
+        for (node, expr) in values {
+            let v = eval_finite(expr, &top_scope, card, node).map_err(|e| e.locate(span))?;
+            map.insert(node.clone(), v);
+        }
     }
 
     Ok(ParsedNetlist {
@@ -68,6 +88,8 @@ pub(crate) fn build_netlist(
             components,
         },
         analyses,
+        initial_conditions,
+        nodesets,
         warnings: warnings.clone(),
         source_map: flat.source_map,
         title,
@@ -331,6 +353,38 @@ fn translate_waveform(
     }
 }
 
+/// A syntax error with no span of its own: the caller locates it on the card.
+fn card_error(message: String) -> SpiceParseError {
+    SpiceParseError::Syntax {
+        message,
+        src: NamedSource::new("<build>", String::new()),
+        bad_span: (0, 0).into(),
+    }
+}
+
+/// A `.dc` card must sweep a source the deck defines: an independent voltage
+/// or current source. Caught here, it points at the card; left to the solver,
+/// it fails with no line.
+fn check_sweep_source(
+    analysis: AnalysisRequest,
+    components: &[CircuitElement],
+) -> Result<AnalysisRequest, SpiceParseError> {
+    if let AnalysisRequest::Dc { source, .. } = &analysis {
+        let found = components.iter().any(|c| {
+            matches!(
+                c,
+                CircuitElement::VoltageSource { .. } | CircuitElement::CurrentSource { .. }
+            ) && c.id().eq_ignore_ascii_case(source)
+        });
+        if !found {
+            return Err(card_error(format!(
+                "`.dc` sweeps `{source}`, which is not a voltage or current source in the deck"
+            )));
+        }
+    }
+    Ok(analysis)
+}
+
 fn build_analysis(
     raw: &RawAnalysis,
     scope: &ParamScope,
@@ -373,6 +427,13 @@ fn build_analysis(
             let start = eval_finite(&args[0], scope, ".dc", "start")?;
             let stop = eval_finite(&args[1], scope, ".dc", "stop")?;
             let step = eval_finite(&args[2], scope, ".dc", "step")?;
+            // A zero step never reaches stop, and one pointing away from it
+            // never gets there either.
+            if start != stop && (step == 0.0 || (stop - start).signum() != step.signum()) {
+                return Err(card_error(format!(
+                    "`.dc` step {step} doesn't move from {start} towards {stop}"
+                )));
+            }
             Ok(AnalysisRequest::Dc {
                 source: source.clone(),
                 start,
@@ -380,6 +441,13 @@ fn build_analysis(
                 step,
             })
         }
+        RawAnalysis::Sens { output } => Ok(AnalysisRequest::Sens {
+            output: output.clone(),
+        }),
+        RawAnalysis::Tf { output, input } => Ok(AnalysisRequest::Tf {
+            output: output.clone(),
+            input: input.clone(),
+        }),
         RawAnalysis::Ac {
             sweep,
             points,
@@ -399,6 +467,24 @@ fn build_analysis(
                     bad_span: (0, 0).into(),
                 });
             }
+            let fstart = eval_finite(fstart, scope, ".ac", "fstart")?;
+            let fstop = eval_finite(fstop, scope, ".ac", "fstop")?;
+            let log = !matches!(sweep, AcSweepKind::Lin);
+            if (log && fstart <= 0.0) || fstart < 0.0 {
+                return Err(card_error(format!(
+                    "`.ac` fstart must be {} (got {fstart})",
+                    if log {
+                        "above 0 for a log sweep"
+                    } else {
+                        "at least 0"
+                    }
+                )));
+            }
+            if fstart > fstop {
+                return Err(card_error(format!(
+                    "`.ac` fstart {fstart} is above fstop {fstop}"
+                )));
+            }
             Ok(AnalysisRequest::Ac {
                 sweep: match sweep {
                     AcSweepKind::Dec => AcSweep::Dec,
@@ -406,8 +492,8 @@ fn build_analysis(
                     AcSweepKind::Lin => AcSweep::Lin,
                 },
                 points: pts as usize,
-                fstart: eval_finite(fstart, scope, ".ac", "fstart")?,
-                fstop: eval_finite(fstop, scope, ".ac", "fstop")?,
+                fstart,
+                fstop,
             })
         }
     }
@@ -452,8 +538,14 @@ fn scope_from_snapshot(snapshot: &HashMap<String, f64>) -> ParamScope {
     s
 }
 
+/// Evaluates `expr`, rejecting NaN and ±∞: `1e400` or `{1/0}` would
+/// otherwise reach the solver as an infinite component value.
 fn eval_or_lift(expr: &ParamExpr, scope: &ParamScope) -> Result<f64, SpiceParseError> {
-    eval(expr, scope).map_err(|e| eval_error_to_parse_error(e, "<build>"))
+    let v = eval(expr, scope).map_err(|e| eval_error_to_parse_error(e, "<build>"))?;
+    if !v.is_finite() {
+        return Err(card_error(format!("value is {v}, not a finite number")));
+    }
+    Ok(v)
 }
 
 /// Like [`eval_or_lift`], but additionally rejects non-finite (NaN / ±∞)
@@ -497,6 +589,7 @@ mod tests {
             start: 0,
             end: 0,
             file: Arc::from("test.cir"),
+            src: Arc::default(),
         }
     }
 
@@ -647,9 +740,12 @@ mod tests {
 
     #[test]
     fn tran_analysis_evaluates() {
-        let cards = vec![RawCard::Analysis(RawAnalysis::Tran {
-            args: vec![ParamExpr::Number(1e-6), ParamExpr::Number(1e-3)],
-        })];
+        let cards = vec![RawCard::Analysis(
+            RawAnalysis::Tran {
+                args: vec![ParamExpr::Number(1e-6), ParamExpr::Number(1e-3)],
+            },
+            Span::detached(),
+        )];
         let netlist = build_from_cards(cards).unwrap();
         assert_eq!(netlist.analyses.len(), 1);
         match &netlist.analyses[0] {
@@ -668,12 +764,15 @@ mod tests {
 
     #[test]
     fn ac_analysis_evaluates() {
-        let cards = vec![RawCard::Analysis(RawAnalysis::Ac {
-            sweep: AcSweepKind::Dec,
-            points: ParamExpr::Number(50.0),
-            fstart: ParamExpr::Number(10.0),
-            fstop: ParamExpr::Number(1e5),
-        })];
+        let cards = vec![RawCard::Analysis(
+            RawAnalysis::Ac {
+                sweep: AcSweepKind::Dec,
+                points: ParamExpr::Number(50.0),
+                fstart: ParamExpr::Number(10.0),
+                fstop: ParamExpr::Number(1e5),
+            },
+            Span::detached(),
+        )];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.analyses[0] {
             AnalysisRequest::Ac {
@@ -695,12 +794,15 @@ mod tests {
     fn ac_points_absurd_value_is_rejected_not_panicked() {
         // A fat-fingered exponent saturates the `as usize` cast to usize::MAX,
         // which would abort in Vec::with_capacity. It must surface as an error.
-        let cards = vec![RawCard::Analysis(RawAnalysis::Ac {
-            sweep: AcSweepKind::Dec,
-            points: ParamExpr::Number(1e18),
-            fstart: ParamExpr::Number(10.0),
-            fstop: ParamExpr::Number(1e5),
-        })];
+        let cards = vec![RawCard::Analysis(
+            RawAnalysis::Ac {
+                sweep: AcSweepKind::Dec,
+                points: ParamExpr::Number(1e18),
+                fstart: ParamExpr::Number(10.0),
+                fstop: ParamExpr::Number(1e5),
+            },
+            Span::detached(),
+        )];
         let err = build_from_cards(cards).unwrap_err();
         assert!(
             matches!(err, SpiceParseError::Syntax { .. }),
@@ -710,20 +812,26 @@ mod tests {
 
     #[test]
     fn ac_points_just_above_max_is_rejected() {
-        let cards = vec![RawCard::Analysis(RawAnalysis::Ac {
-            sweep: AcSweepKind::Dec,
-            points: ParamExpr::Number((MAX_AC_POINTS + 1) as f64),
-            fstart: ParamExpr::Number(10.0),
-            fstop: ParamExpr::Number(1e5),
-        })];
+        let cards = vec![RawCard::Analysis(
+            RawAnalysis::Ac {
+                sweep: AcSweepKind::Dec,
+                points: ParamExpr::Number((MAX_AC_POINTS + 1) as f64),
+                fstart: ParamExpr::Number(10.0),
+                fstop: ParamExpr::Number(1e5),
+            },
+            Span::detached(),
+        )];
         assert!(build_from_cards(cards).is_err());
     }
 
     #[test]
     fn tran_nonfinite_arg_is_rejected() {
-        let cards = vec![RawCard::Analysis(RawAnalysis::Tran {
-            args: vec![ParamExpr::Number(f64::INFINITY), ParamExpr::Number(1e-3)],
-        })];
+        let cards = vec![RawCard::Analysis(
+            RawAnalysis::Tran {
+                args: vec![ParamExpr::Number(f64::INFINITY), ParamExpr::Number(1e-3)],
+            },
+            Span::detached(),
+        )];
         let err = build_from_cards(cards).unwrap_err();
         assert!(
             matches!(err, SpiceParseError::Syntax { .. }),
@@ -733,14 +841,17 @@ mod tests {
 
     #[test]
     fn dc_nonfinite_arg_is_rejected() {
-        let cards = vec![RawCard::Analysis(RawAnalysis::Dc {
-            source: "V1".to_string(),
-            args: vec![
-                ParamExpr::Number(0.0),
-                ParamExpr::Number(f64::NAN),
-                ParamExpr::Number(1.0),
-            ],
-        })];
+        let cards = vec![RawCard::Analysis(
+            RawAnalysis::Dc {
+                source: "V1".to_string(),
+                args: vec![
+                    ParamExpr::Number(0.0),
+                    ParamExpr::Number(f64::NAN),
+                    ParamExpr::Number(1.0),
+                ],
+            },
+            Span::detached(),
+        )];
         assert!(build_from_cards(cards).is_err());
     }
 
@@ -768,10 +879,10 @@ mod tests {
     fn undefined_param_in_param_list_keeps_precise_variant_through_flatten() {
         // The flatten-layer lift must also preserve UndefinedParam (previously
         // it flattened every EvalError into Syntax).
-        let cards = vec![RawCard::Param(vec![(
-            "a".to_string(),
-            ParamExpr::Ref("missing".to_string()),
-        )])];
+        let cards = vec![RawCard::Param(
+            vec![("a".to_string(), ParamExpr::Ref("missing".to_string()))],
+            Span::detached(),
+        )];
         let err = build_from_cards(cards).unwrap_err();
         assert!(
             matches!(err, SpiceParseError::UndefinedParam { .. }),
@@ -783,7 +894,10 @@ mod tests {
     fn passive_value_uses_param_expression() {
         // .param r=2k; R1 a 0 {r}
         let cards = vec![
-            RawCard::Param(vec![("r".to_string(), ParamExpr::Number(2000.0))]),
+            RawCard::Param(
+                vec![("r".to_string(), ParamExpr::Number(2000.0))],
+                Span::detached(),
+            ),
             RawCard::Element(RawElement {
                 id: "R1".to_string(),
                 prefix: 'r',
@@ -803,17 +917,34 @@ mod tests {
 
     #[test]
     fn dc_analysis_param_expression_evaluates() {
-        // .param vcc=12; .dc V1 0 {vcc} 1
+        // .param vcc=12; V1 a 0 0; .dc V1 0 {vcc} 1
         let cards = vec![
-            RawCard::Param(vec![("vcc".to_string(), ParamExpr::Number(12.0))]),
-            RawCard::Analysis(RawAnalysis::Dc {
-                source: "V1".to_string(),
-                args: vec![
-                    ParamExpr::Number(0.0),
-                    ParamExpr::Ref("vcc".to_string()),
-                    ParamExpr::Number(1.0),
-                ],
+            RawCard::Element(RawElement {
+                id: "V1".to_string(),
+                prefix: 'v',
+                nodes: vec!["a".to_string(), "0".to_string()],
+                body: RawElementBody::Source {
+                    kind: SourceKind::Voltage,
+                    dc: Some(ParamExpr::Number(0.0)),
+                    waveform: None,
+                },
+                span: span(),
             }),
+            RawCard::Param(
+                vec![("vcc".to_string(), ParamExpr::Number(12.0))],
+                Span::detached(),
+            ),
+            RawCard::Analysis(
+                RawAnalysis::Dc {
+                    source: "V1".to_string(),
+                    args: vec![
+                        ParamExpr::Number(0.0),
+                        ParamExpr::Ref("vcc".to_string()),
+                        ParamExpr::Number(1.0),
+                    ],
+                },
+                Span::detached(),
+            ),
         ];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.analyses[0] {

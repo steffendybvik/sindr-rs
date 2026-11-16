@@ -47,7 +47,10 @@
 //!
 //! - **Voltages and currents** are in SI units (V, A).
 //! - **Temperature** is in kelvin. Default is 300.15 K (≈ 27 °C, the SPICE
-//!   default).
+//!   default). A junction's `vt()` is the thermal voltage kT/q at its own
+//!   `temperature` ([`diode::thermal_voltage`]); its `is` is used as given,
+//!   so scale it with [`diode::temperature_scale_is`] away from
+//!   [`diode::T_NOM`].
 //! - **Sign convention** for two-terminal companions: `v_applied` is the
 //!   voltage from `nodes[0]` to `nodes[1]`, and `i_eq` is the current
 //!   flowing into `nodes[0]`.
@@ -56,6 +59,8 @@
 //!   directly.
 
 #![deny(missing_docs)]
+#![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
+#![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
 pub mod bjt;
 pub mod diode;
@@ -69,3 +74,8 @@ pub mod schottky;
 pub mod thermistor;
 pub mod varactor;
 pub mod zener;
+
+// Compiles and runs the README's code blocks as doctests so they stay current.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

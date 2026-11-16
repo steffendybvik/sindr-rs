@@ -36,6 +36,14 @@ pub struct JfetCompanion {
 /// Compute JFET companion at operating point (vgs, vds).
 /// Nodes order: [gate, drain, source] — same as MOSFET convention.
 /// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0.
+///
+/// In the ohmic region `gm = 2·Idss·Vds/Vp²` keeps its sign, so it is
+/// negative when the drain is below the source.
+///
+/// P-channel is evaluated in the mirrored N-channel frame (`-vgs`, `-vds`,
+/// `-|vp|`): `gm` and `gds` carry over to the physical device unchanged, but
+/// `i_eq` is the mirrored frame's, so the physical Norton current is
+/// `-i_eq`.
 pub fn jfet_companion(vgs: f64, vds: f64, kind: JfetKind, idss: f64, vp: f64) -> JfetCompanion {
     let (vgs, vds, idss, vp) = match kind {
         JfetKind::NChannel => (vgs, vds, idss, vp),
@@ -68,8 +76,10 @@ pub fn jfet_companion(vgs: f64, vds: f64, kind: JfetKind, idss: f64, vp: f64) ->
         // Triode (ohmic) region: Id = Idss/Vp² * (2*(Vgs-Vp)*Vds - Vds²)
         let vp_sq = vp * vp;
         let id = idss / vp_sq * (2.0 * (vgs - vp) * vds - vds * vds);
-        // gm = dId/dVgs = 2*Idss*Vds/Vp²
-        let gm = (2.0 * idss * vds / vp_sq).abs().max(GMIN);
+        // gm = dId/dVgs = 2*Idss*Vds/Vp², negative when the drain is below
+        // the source. Not floored: gm is off the diagonal, so a GMIN floor
+        // would only make it disagree with Id.
+        let gm = 2.0 * idss * vds / vp_sq;
         // gds = dId/dVds = 2*Idss*(Vgs-Vp-Vds)/Vp²
         let gds = (2.0 * idss * (vgs - vp - vds) / vp_sq).max(GMIN);
         let i_eq = id - gm * vgs - gds * vds;
@@ -93,6 +103,21 @@ mod tests {
             "Id at Vgs=0 should be ~Idss=10mA, got {}",
             id_approx
         );
+    }
+
+    /// In the ohmic region with the drain below the source, raising Vgs
+    /// makes Id more negative: gm matches the central difference of Id.
+    #[test]
+    fn triode_gm_follows_id_with_the_drain_below_the_source() {
+        let id = |vgs: f64, vds: f64| {
+            let c = jfet_companion(vgs, vds, JfetKind::NChannel, 10e-3, -2.0);
+            c.i_eq + c.gm * vgs + c.gds * vds
+        };
+        let (vgs, vds, h) = (-0.5, -0.5, 1e-6);
+        let c = jfet_companion(vgs, vds, JfetKind::NChannel, 10e-3, -2.0);
+        let fd = (id(vgs + h, vds) - id(vgs - h, vds)) / (2.0 * h);
+        assert!(c.gm < 0.0, "gm {}", c.gm);
+        assert!((c.gm - fd).abs() < 1e-9, "gm {} vs {fd}", c.gm);
     }
 
     #[test]

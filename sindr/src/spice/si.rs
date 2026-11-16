@@ -27,6 +27,7 @@ const SUFFIXES: &[(&str, f64)] = &[
     ("n", 1e-9),
     ("p", 1e-12),
     ("f", 1e-15),
+    ("a", 1e-18),
 ];
 
 /// Returns `(multiplier, suffix_len_in_bytes)`.
@@ -200,5 +201,55 @@ mod tests {
         assert_eq!(match_si_suffix("m"), (1e-3, 1));
         assert_eq!(match_si_suffix(""), (1.0, 0));
         assert_eq!(match_si_suffix("xyz"), (1.0, 0));
+    }
+
+    mod props {
+        use super::super::*;
+        use proptest::prelude::*;
+
+        /// Unit decorations seen in real decks. None starts with `e` or `i`,
+        /// which would turn an `m` suffix into `meg` / `mil`.
+        const DECORATIONS: &[&str] = &["", "F", "H", "V", "A", "ohm", "Hz", "s"];
+
+        fn suffix() -> impl Strategy<Value = (String, f64)> {
+            (prop::sample::select(SUFFIXES.to_vec()), any::<bool>()).prop_map(
+                |((suffix, mult), upper)| {
+                    let s = if upper {
+                        suffix.to_ascii_uppercase()
+                    } else {
+                        suffix.to_string()
+                    };
+                    (s, mult)
+                },
+            )
+        }
+
+        proptest! {
+            #[test]
+            fn suffix_scales_the_mantissa(
+                mantissa in 0.001f64..1000.0,
+                (suffix, mult) in suffix(),
+                decoration in prop::sample::select(DECORATIONS.to_vec()),
+                negative in any::<bool>(),
+            ) {
+                let signed = if negative { -mantissa } else { mantissa };
+                let text = format!("{signed}{suffix}{decoration}");
+                let (value, consumed) = parse_number(&text).unwrap();
+                prop_assert_eq!(consumed, text.len(), "{} not fully consumed", text);
+                let want = signed * mult;
+                prop_assert!((value - want).abs() <= 1e-12 * want.abs(), "{} = {}, want {}", text, value, want);
+            }
+
+            #[test]
+            fn plain_numbers_round_trip(x in -1e9f64..1e9) {
+                let text = x.to_string();
+                prop_assert_eq!(parse_number(&text), Some((x, text.len())));
+            }
+
+            #[test]
+            fn never_panics(text in "\\PC{0,12}") {
+                let _ = parse_number(&text);
+            }
+        }
     }
 }

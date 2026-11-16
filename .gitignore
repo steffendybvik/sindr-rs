@@ -44,3 +44,6 @@ desktop.ini
 # Misc local
 /tmp/
 /scratch/
+
+# ngspice scratch decks/logs left by a failed sindr/tests/golden/regen.sh
+sindr/tests/golden/.regen-*

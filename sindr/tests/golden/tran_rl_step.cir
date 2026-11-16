@@ -1,0 +1,5 @@
+tran: RL current rise, tau = L/R = 1 ms
+V1 in 0 1
+R1 in a 10
+L1 a 0 10m
+.end

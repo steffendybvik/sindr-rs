@@ -1,8 +1,8 @@
 //! IGBT (Insulated Gate Bipolar Transistor) simplified model.
 //!
 //! An IGBT combines MOSFET gate control with BJT output characteristics.
-//! This educational model uses MOSFET Level-1 gate control plus an on-state
-//! voltage drop (VCE_sat) and output conductance g_ce = Ic / VCE_sat.
+//! This educational model uses the MOSFET Level-1 square law for the
+//! collector current, and blocks reverse collector-emitter voltage.
 //!
 //! Nodes: [gate, collector, emitter] — same ordering convention as BJT.
 //! Gate controls current like a MOSFET; collector/emitter behave like BJT.
@@ -19,6 +19,9 @@ pub struct IgbtParams {
     /// Transconductance parameter (A/V²). Typical: 5.0.
     pub k: f64,
     /// On-state collector-emitter saturation voltage (V). Typical: 2.0.
+    ///
+    /// Not used by the current I–V model: the collector current follows the
+    /// square law alone. Kept so existing circuits still deserialize.
     pub vce_sat: f64,
 }
 
@@ -34,72 +37,52 @@ impl Default for IgbtParams {
 
 /// IGBT companion model output.
 pub struct IgbtCompanion {
-    /// Channel conductance (transconductance linearised around operating point).
+    /// Transconductance ∂Ids/∂Vge (S).
     pub gm: f64,
-    /// Output conductance between collector and emitter (g_ce = ids / vce_sat).
+    /// Output conductance ∂Ids/∂Vce (S): zero in saturation and cutoff.
     pub g_ce: f64,
     /// Drain/collector current at operating point.
     pub ids: f64,
-    /// Companion current source value for MNA stamping.
+    /// Companion current source value for MNA stamping:
+    /// `ids − gm·vge − g_ce·vce`.
     pub i_eq: f64,
 }
 
 /// Evaluate IGBT companion model at gate-emitter voltage `vge` and
 /// collector-emitter voltage `vce`.
 ///
-/// Gate control: MOSFET Level-1 (square-law) saturation model.
-/// Output: BJT-like g_ce = ids / vce_sat (finite output impedance).
+/// Collector current (MOSFET Level-1), with `vov = vge − vth`:
+/// - cutoff (`vov ≤ 0`) or reverse (`vce ≤ 0`): 0
+/// - saturation (`vce ≥ vov`): `K/2 · vov²`
+/// - triode (`0 < vce < vov`): `K · (vov − vce/2) · vce`
 ///
-/// Returns companion model for MNA stamping. The stamp adds:
-/// - gm between C and E (as conductance)
-/// - g_ce between C and E (output conductance)
-/// - i_eq as current source from E to C
+/// `gm` and `g_ce` are the exact partial derivatives of that current, so the
+/// linearisation `Ic ≈ gm·vge + g_ce·vce + i_eq` is a Newton step. The stamp
+/// puts `gm` in as a gate-controlled current source and `g_ce` as a C–E
+/// conductance.
 pub fn igbt_companion(vge: f64, vce: f64, params: &IgbtParams) -> IgbtCompanion {
-    let vgs_eff = vge - params.vth;
+    let vov = vge - params.vth;
 
-    if vgs_eff <= 0.0 {
-        // Cutoff: gate not driven, no collector current
-        return IgbtCompanion {
-            gm: 0.0,
-            g_ce: 0.0,
-            ids: 0.0,
-            i_eq: 0.0,
-        };
-    }
-
-    // MOSFET Level-1 saturation (VCE_sat is the saturation boundary)
-    let ids = if vce >= vgs_eff {
-        // Saturation region: Ids = K/2 * (Vge - Vth)^2
-        0.5 * params.k * vgs_eff * vgs_eff
+    let (ids, gm, g_ce) = if vov <= 0.0 || vce <= 0.0 {
+        // Cutoff, or reverse-biased C–E: no collector current
+        (0.0, 0.0, 0.0)
+    } else if vce >= vov {
+        // Saturation: Ids = K/2 * vov^2
+        (0.5 * params.k * vov * vov, params.k * vov, 0.0)
     } else {
-        // Triode region: Ids = K * (Vge - Vth - Vce/2) * Vce
-        params.k * (vgs_eff - vce / 2.0) * vce
+        // Triode: Ids = K * (vov - vce/2) * vce
+        (
+            params.k * (vov - vce / 2.0) * vce,
+            params.k * vce,
+            params.k * (vov - vce),
+        )
     };
-    let ids = ids.max(0.0);
-
-    // Linearised transconductance gm = dIds/dVge
-    let gm = if vce >= vgs_eff {
-        params.k * vgs_eff // saturation: gm = K * (Vge - Vth)
-    } else {
-        params.k * vce // triode: gm = K * Vce
-    };
-    let gm = gm.max(0.0);
-
-    // Output conductance: g_ce = Ids / VCE_sat (BJT-like finite output impedance)
-    let g_ce = if params.vce_sat > 0.0 && ids > 0.0 {
-        ids / params.vce_sat
-    } else {
-        0.0
-    };
-
-    // Companion current source: I_eq = Ids - gm * vge - g_ce * vce
-    let i_eq = ids - gm * vge - g_ce * vce;
 
     IgbtCompanion {
         gm,
         g_ce,
         ids,
-        i_eq,
+        i_eq: ids - gm * vge - g_ce * vce,
     }
 }
 
@@ -172,17 +155,39 @@ mod tests {
         );
     }
 
+    /// gm and g_ce must be the derivatives of ids, and i_eq must make the
+    /// linearisation reproduce ids at its own operating point.
     #[test]
-    fn igbt_g_ce_is_ids_over_vce_sat() {
-        let params = IgbtParams::default(); // vce_sat=2.0
-                                            // Saturation: vge=10, vce=8
-        let c = igbt_companion(10.0, 8.0, &params);
-        let expected_g_ce = c.ids / params.vce_sat;
-        assert!(
-            (c.g_ce - expected_g_ce).abs() < 1e-9,
-            "g_ce={} expected ids/vce_sat={}",
-            c.g_ce,
-            expected_g_ce
-        );
+    fn igbt_companion_matches_finite_difference() {
+        let params = IgbtParams::default(); // vth=5, k=5
+        let ids = |vge: f64, vce: f64| igbt_companion(vge, vce, &params).ids;
+        let h = 1e-6;
+        // Cutoff, reverse, triode, saturation.
+        for (vge, vce) in [
+            (3.0, 10.0),
+            (10.0, -2.0),
+            (10.0, 2.0),
+            (8.0, 1.0),
+            (10.0, 8.0),
+        ] {
+            let c = igbt_companion(vge, vce, &params);
+            let fd_gm = (ids(vge + h, vce) - ids(vge - h, vce)) / (2.0 * h);
+            let fd_gce = (ids(vge, vce + h) - ids(vge, vce - h)) / (2.0 * h);
+            assert!(
+                (c.gm - fd_gm).abs() <= 1e-6 * fd_gm.abs() + 1e-9,
+                "gm at ({vge}, {vce}): {} vs {fd_gm}",
+                c.gm
+            );
+            assert!(
+                (c.g_ce - fd_gce).abs() <= 1e-6 * fd_gce.abs() + 1e-9,
+                "g_ce at ({vge}, {vce}): {} vs {fd_gce}",
+                c.g_ce
+            );
+            let i_lin = c.gm * vge + c.g_ce * vce + c.i_eq;
+            assert!(
+                (i_lin - c.ids).abs() <= 1e-9 * c.ids.abs() + 1e-12,
+                "companion at ({vge}, {vce})"
+            );
+        }
     }
 }

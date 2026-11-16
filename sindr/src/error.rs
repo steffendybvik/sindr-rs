@@ -4,9 +4,12 @@ use thiserror::Error;
 
 /// Anything that can go wrong while validating or solving a circuit.
 ///
-/// Returned by [`solve_circuit`](crate::solve_circuit), [`dc_sweep`](fn@crate::dc_sweep),
-/// [`temperature_sweep`](crate::temperature_sweep), and the AC analysis
-/// entry point.
+/// Returned by [`solve_circuit`](crate::solve_circuit),
+/// [`solve_transient`](crate::solve_transient),
+/// [`solve_ac`](crate::ac_analysis::solve_ac), [`solve_tf`](crate::solve_tf),
+/// [`solve_sensitivity`](crate::solve_sensitivity),
+/// [`dc_sweep`](fn@crate::dc_sweep) and
+/// [`temperature_sweep`](crate::temperature_sweep).
 ///
 /// Variants split into three groups:
 ///
@@ -18,8 +21,8 @@ use thiserror::Error;
 ///   [`ConvergenceFailed`](Self::ConvergenceFailed)) — the matrix has no
 ///   unique solution or Newton–Raphson failed to converge.
 /// - **Configuration errors** ([`InvalidComponent`](Self::InvalidComponent),
-///   [`InvalidResistance`](Self::InvalidResistance)) — a component value
-///   that the solver explicitly rejects.
+///   [`InvalidResistance`](Self::InvalidResistance)) — a component value or
+///   analysis setting that the solver explicitly rejects.
 #[derive(Debug, Error)]
 pub enum SimError {
     /// No ground node was defined. Every circuit needs a reference node.
@@ -60,8 +63,12 @@ pub enum SimError {
     )]
     InvalidSolution,
 
-    /// A component definition is malformed (wrong number of terminals,
-    /// unknown id, etc.). Carries a human-readable description.
+    /// A component definition or analysis setting is malformed: a device
+    /// `temperature` or BJT `bf` that isn't positive and finite, an id that
+    /// names no suitable source or component, a non-finite or out-of-range
+    /// sweep or transient setting, a transient of more than 10⁷ steps or a
+    /// sweep of more than 10⁷ points, a bad initial condition. Carries a
+    /// human-readable description naming the offending id or field.
     #[error("Invalid component: {0}")]
     InvalidComponent(String),
 
@@ -71,7 +78,8 @@ pub enum SimError {
     )]
     InvalidResistance(String),
 
-    /// Newton–Raphson exhausted its iteration budget without converging.
+    /// Newton–Raphson exhausted its iteration budget without converging,
+    /// in DC after the gmin- and source-stepping fallbacks failed too.
     ///
     /// Carries the iteration count reached and the largest per-node voltage
     /// step `max_i |Vᵢ_new − Vᵢ_prev|` (V) at the final iteration. A step

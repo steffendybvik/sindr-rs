@@ -1,0 +1,7 @@
+op: Schottky diode (built in Rust on the sindr side)
+V1 in 0 5
+R1 in out 1k
+D1 out 0 dsch
+* sindr SchottkyParams::standard()
+.model dsch D(IS=1e-8 N=1)
+.end

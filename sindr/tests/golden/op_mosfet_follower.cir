@@ -1,0 +1,8 @@
+op: NMOS source follower, body tied to source (built in Rust on the sindr side)
+VDD vdd 0 10
+VG g 0 5
+M1 vdd g s s nmos1 W=1 L=1
+RS s 0 10k
+* sindr default_nmos: KP=2e-4 VTO=0.7 LAMBDA=0.02 GAMMA=0.4 PHI=0.6
+.model nmos1 NMOS(LEVEL=1 KP=2e-4 VTO=0.7 LAMBDA=0.02 GAMMA=0.4 PHI=0.6)
+.end

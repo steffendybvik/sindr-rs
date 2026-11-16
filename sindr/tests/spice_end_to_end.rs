@@ -286,3 +286,30 @@ fn nodeset_round_trip_with_parsed_netlist() {
     let result = sindr::solve_circuit_with_initial_voltages(&nl.circuit, &hint).expect("solve");
     assert_relative_eq!(result.node_voltages["n1"], 2.5, epsilon = 1e-6);
 }
+
+/// A one-shot PULSE (period 0) fires once: the source is high during the
+/// pulse and back at v1 after it.
+#[test]
+fn one_shot_pulse_fires_in_a_parsed_transient() {
+    let src = "* one-shot pulse\n\
+               V1 in 0 PULSE(0 1 10u 1n 1n 20u 0)\n\
+               R1 in 0 1k\n\
+               .tran 1u 50u\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let config = nl.analyses[0].transient_config().expect(".tran config");
+    let tran = sindr::solve_transient(&nl.circuit, &config)
+        .expect("solve")
+        .transient
+        .expect("transient data");
+    let v_at = |t: f64| {
+        tran.timesteps
+            .iter()
+            .min_by(|a, b| (a.time - t).abs().total_cmp(&(b.time - t).abs()))
+            .unwrap()
+            .node_voltages["in"]
+    };
+    assert_eq!(v_at(5e-6), 0.0);
+    assert_relative_eq!(v_at(20e-6), 1.0, epsilon = 1e-9);
+    assert_eq!(v_at(45e-6), 0.0);
+}

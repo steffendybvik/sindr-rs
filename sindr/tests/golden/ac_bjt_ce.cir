@@ -1,0 +1,9 @@
+ac: NPN common-emitter small-signal gain, AC-coupled input
+VCC vcc 0 10
+VIN in 0 0
+CIN in b 10u
+RB vcc b 470k
+RC vcc c 1k
+Q1 c b 0 qn
+.model qn NPN(IS=1e-14 BF=100 BR=1)
+.end

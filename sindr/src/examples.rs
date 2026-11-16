@@ -472,3 +472,114 @@ mod meta {
 
 #[cfg(feature = "examples")]
 pub use meta::{get_examples, ExampleCircuit};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::solve_circuit;
+
+    fn all() -> Vec<(&'static str, Circuit)> {
+        vec![
+            ("voltage_divider", voltage_divider()),
+            ("current_divider", current_divider()),
+            ("series_resistors", series_resistors()),
+            ("led_circuit", led_circuit()),
+            ("fuse_protection", fuse_protection()),
+            ("mixed_sources", mixed_sources()),
+            ("wheatstone_bridge", wheatstone_bridge()),
+            ("sine_wave_source", sine_wave_source()),
+            ("rc_lowpass_filter", rc_lowpass_filter()),
+            ("transformer_stepdown", transformer_stepdown()),
+            ("npn_common_emitter", npn_common_emitter()),
+            ("npn_switch", npn_switch()),
+        ]
+    }
+
+    #[test]
+    fn every_example_solves_to_finite_values() {
+        for (name, circuit) in all() {
+            let result = solve_circuit(&circuit).unwrap_or_else(|e| panic!("{name}: {e}"));
+            for (node, v) in &result.node_voltages {
+                assert!(v.is_finite(), "{name}: V({node}) = {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn voltage_divider_matches_closed_form() {
+        let result = solve_circuit(&voltage_divider()).unwrap();
+        assert!((result.node_voltages["n2"] - 10.0 * 2000.0 / 3000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn current_divider_splits_inversely_to_resistance() {
+        let result = solve_circuit(&current_divider()).unwrap();
+        let current = |id: &str| {
+            result
+                .component_results
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .current_through
+                .abs()
+        };
+        assert!((current("R1") - 12.0 / 3000.0).abs() < 1e-12);
+        assert!((current("R2") - 12.0 / 6000.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bjt_examples_sit_in_their_intended_regions() {
+        let region = |circuit: Circuit| {
+            let result = solve_circuit(&circuit).unwrap();
+            result.bjt_results[0].region.clone()
+        };
+        assert_eq!(region(npn_common_emitter()), "active");
+        assert_eq!(region(npn_switch()), "saturation");
+    }
+
+    #[test]
+    fn reactive_and_waveform_examples_take_the_transient_path() {
+        for circuit in [
+            sine_wave_source(),
+            rc_lowpass_filter(),
+            transformer_stepdown(),
+        ] {
+            let result = solve_circuit(&circuit).unwrap();
+            assert!(result.transient.is_some());
+        }
+        assert!(solve_circuit(&voltage_divider())
+            .unwrap()
+            .transient
+            .is_none());
+    }
+
+    #[cfg(feature = "examples")]
+    #[test]
+    fn get_examples_lists_every_circuit_with_unique_kebab_ids() {
+        let examples = get_examples();
+        assert_eq!(examples.len(), all().len());
+
+        let mut ids: Vec<&str> = examples.iter().map(|e| e.id.as_str()).collect();
+        for id in &ids {
+            assert!(
+                id.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "id {id:?} is not kebab-case"
+            );
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), examples.len(), "duplicate example ids");
+
+        for example in &examples {
+            assert!(!example.name.is_empty() && !example.description.is_empty());
+            let fn_name = example.id.replace('-', "_");
+            let (_, circuit) = all().into_iter().find(|(n, _)| *n == fn_name).unwrap();
+            assert_eq!(
+                serde_json::to_string(&example.circuit).unwrap(),
+                serde_json::to_string(&circuit).unwrap(),
+                "{} doesn't return {fn_name}()",
+                example.id
+            );
+        }
+    }
+}

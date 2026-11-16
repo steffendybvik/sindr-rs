@@ -18,7 +18,10 @@ use thiserror::Error;
 ///
 /// Every variant that points at a location in source carries both the
 /// [`NamedSource`] and a [`SourceSpan`] so it renders nicely under
-/// `miette`'s fancy reporter.
+/// `miette`'s fancy reporter. That includes errors found after parsing
+/// (undefined models and parameters, parameter cycles, bad analysis-card
+/// values): they point at the offending line, inside the `.include`d file
+/// when that is where it is.
 #[derive(Error, Debug, Diagnostic)]
 pub enum SpiceParseError {
     /// First character of an element line was not a recognised device prefix.
@@ -199,7 +202,10 @@ pub enum SpiceParseError {
         bad_span: SourceSpan,
     },
 
-    /// Generic grammar failure (catch-all from the winnow parser).
+    /// Generic grammar failure (catch-all from the winnow parser), and the
+    /// errors raised while evaluating cards: a value that isn't finite, an
+    /// expression nested more than 256 levels deep, an out-of-range analysis
+    /// card.
     #[error("syntax error: {message}")]
     #[diagnostic(code(sindr::spice::syntax))]
     Syntax {
@@ -270,6 +276,39 @@ pub enum SpiceParseError {
         #[label("missing section")]
         bad_span: SourceSpan,
     },
+}
+
+impl SpiceParseError {
+    /// Point an error that was raised without source text (after parsing,
+    /// from flattening or building) at `span`. Errors that already carry
+    /// their source are returned unchanged.
+    pub(crate) fn locate(mut self, span: &crate::spice::ast::Span) -> Self {
+        use SpiceParseError::*;
+        match &mut self {
+            UnknownDevice { src, bad_span, .. }
+            | UnknownCard { src, bad_span, .. }
+            | UnsupportedDevice { src, bad_span, .. }
+            | UnsupportedModelType { src, bad_span, .. }
+            | UndefinedSubckt { src, bad_span, .. }
+            | UndefinedModel { src, bad_span, .. }
+            | UndefinedParam { src, bad_span, .. }
+            | CircularParam { src, bad_span, .. }
+            | ArityMismatch { src, bad_span, .. }
+            | BadNumber { src, bad_span, .. }
+            | BadSiSuffix { src, bad_span, .. }
+            | Syntax { src, bad_span, .. }
+            | IncludeNotFound { src, bad_span, .. }
+            | RelativeIncludeInString { src, bad_span, .. }
+            | LibSectionNotFound { src, bad_span, .. } => {
+                if src.inner().is_empty() && !span.src.is_empty() {
+                    *src = NamedSource::new(&*span.file, (*span.src).clone());
+                    *bad_span = (span.start, span.end - span.start).into();
+                }
+            }
+            IncludeIo { .. } => {}
+        }
+        self
+    }
 }
 
 /// Non-fatal warning collected when [`crate::spice::ParseOptions::strict`] is `false`.
