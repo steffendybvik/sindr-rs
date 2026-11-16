@@ -215,6 +215,10 @@
 //! See the [`spice`] module for a runnable example, the supported subset and
 //! strictness options.
 //!
+//! # Minimum supported Rust version
+//!
+//! Rust 1.89. Raising it is a breaking change, noted in the changelog.
+//!
 //! # Where to look next
 //!
 //! - [`Circuit`] / [`CircuitElement`] — the input format
@@ -222,6 +226,8 @@
 //! - [`SimulationResult`] — what you get back
 //! - [`Waveform`] — time-varying source shapes
 //! - [`SimError`] — what can go wrong
+//! - [`nalgebra`] — the linear-algebra crate behind [`MnaSystem`], re-exported
+//!   so your `DVector`/`DMatrix` match the version sindr was built with
 
 #![deny(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
@@ -269,6 +275,12 @@ pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
 pub use transient::{solve_transient, IntegrationMethod, TransientConfig};
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
+
+/// The `nalgebra` version sindr is built on. [`MnaSystem::b`],
+/// [`MnaSystem::solve`] and [`mna::MnaMatrix::to_dense`] use its `DVector`
+/// and `DMatrix`; reach them through `sindr::nalgebra` to stay on the same
+/// version without adding nalgebra to your own manifest.
+pub use nalgebra;
 
 // Device physics re-exports from sindr-devices — convenience for callers
 // constructing CircuitElement variants without an extra crate import.

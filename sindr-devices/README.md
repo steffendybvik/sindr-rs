@@ -30,6 +30,8 @@ Add to your `Cargo.toml`:
 sindr-devices = "0.1.0-alpha.7"
 ```
 
+Needs Rust 1.89 or newer.
+
 Two-terminal companions return `(g_eq, i_eq)`: the linearised conductance (S)
 and the Norton current source (A) at the operating point. Multi-terminal
 devices return a companion struct.

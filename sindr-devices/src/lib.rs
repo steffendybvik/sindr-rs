@@ -54,6 +54,10 @@
 //! - **Companion form**: each `*_companion` function returns the linearised
 //!   `(g_eq, i_eq)` at the operating point — the form Newton–Raphson stamps
 //!   directly.
+//!
+//! # Minimum supported Rust version
+//!
+//! Rust 1.89. Raising it is a breaking change, noted in the changelog.
 
 #![deny(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]

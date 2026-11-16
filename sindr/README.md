@@ -13,6 +13,8 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 sindr = "0.1.0-alpha.7"
 ```
 
+Needs Rust 1.89 or newer. The linear algebra is [`nalgebra`](https://crates.io/crates/nalgebra) 0.35, re-exported as `sindr::nalgebra`.
+
 Serde support is on by default. To disable:
 
 ```toml

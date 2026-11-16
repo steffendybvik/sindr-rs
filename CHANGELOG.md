@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `sindr::nalgebra` re-exports the nalgebra crate, so callers using
+  `MnaSystem`'s `DVector`/`DMatrix` stay on the version sindr was built with.
 - Transfer-function analysis, SPICE's `.tf`: `solve_tf` with a `TfConfig`
   returns the DC small-signal gain from a voltage or current source to a
   node voltage or a voltage source's current, with the input and output

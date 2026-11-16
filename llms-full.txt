@@ -127,6 +127,8 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 sindr = "0.1.0-alpha.7"
 ```
 
+Needs Rust 1.89 or newer. The linear algebra is [`nalgebra`](https://crates.io/crates/nalgebra) 0.35, re-exported as `sindr::nalgebra`.
+
 Serde support is on by default. To disable:
 
 ```toml
@@ -649,6 +651,8 @@ Add to your `Cargo.toml`:
 [dependencies]
 sindr-devices = "0.1.0-alpha.7"
 ```
+
+Needs Rust 1.89 or newer.
 
 Two-terminal companions return `(g_eq, i_eq)`: the linearised conductance (S)
 and the Norton current source (A) at the operating point. Multi-terminal
@@ -2114,6 +2118,10 @@ let result = sindr::solve_circuit(&netlist.circuit)?;
 See the [`spice`] module for a runnable example, the supported subset and
 strictness options.
 
+### Minimum supported Rust version
+
+Rust 1.89. Raising it is a breaking change, noted in the changelog.
+
 ### Where to look next
 
 - [`Circuit`] / [`CircuitElement`] — the input format
@@ -2121,6 +2129,8 @@ strictness options.
 - [`SimulationResult`] — what you get back
 - [`Waveform`] — time-varying source shapes
 - [`SimError`] — what can go wrong
+- [`nalgebra`] — the linear-algebra crate behind [`MnaSystem`], re-exported
+  so your `DVector`/`DMatrix` match the version sindr was built with
 
 ```rust
 pub mod examples;
@@ -2182,6 +2192,12 @@ pub use transient::{solve_transient, IntegrationMethod, TransientConfig};
 pub use validation::validate_circuit;
 
 pub use waveform::Waveform;
+
+/// The `nalgebra` version sindr is built on. [`MnaSystem::b`],
+/// [`MnaSystem::solve`] and [`mna::MnaMatrix::to_dense`] use its `DVector`
+/// and `DMatrix`; reach them through `sindr::nalgebra` to stay on the same
+/// version without adding nalgebra to your own manifest.
+pub use nalgebra;
 
 pub use sindr_devices::bjt::BjtKind;
 
@@ -4929,6 +4945,10 @@ assert!(g_eq > 0.0);
 - **Companion form**: each `*_companion` function returns the linearised
   `(g_eq, i_eq)` at the operating point — the form Newton–Raphson stamps
   directly.
+
+### Minimum supported Rust version
+
+Rust 1.89. Raising it is a breaking change, noted in the changelog.
 
 ```rust
 pub mod bjt;
