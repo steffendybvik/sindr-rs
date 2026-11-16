@@ -70,6 +70,8 @@ let result = sindr::solve_circuit(&netlist.circuit)?;
 
 It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattens hierarchy with `.`-separated node naming, and returns a `SourceMap` to recover original instance paths. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
+`sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs and `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
+
 A runnable walkthrough (parse → solve → dispatch directives → render a diagnostic) lives in [`sindr/examples/parse_netlist.rs`](./sindr/examples/parse_netlist.rs):
 
 ```bash

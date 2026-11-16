@@ -1,0 +1,8 @@
+ac_exported_transformer: written by sindr::spice::to_netlist
+v1 in 0 DC 0
+r1 in p 50
+Lt1_p p 0 0.001
+Lt1_s s 0 0.004
+Kt1 Lt1_p Lt1_s 0.99
+rl s 0 1000
+.end

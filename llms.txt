@@ -9,7 +9,7 @@ Key facts for generating code:
 - Node order: BJT `[base, collector, emitter]`, MOSFET and JFET `[gate, drain, source]`, IGBT `[gate, collector, emitter]`, op-amp `[in_plus, in_minus, out]`. Voltage source `nodes[0]` is the positive terminal.
 - Every node needs a DC path to ground, and one node must equal `Circuit::ground_node`.
 - SI units throughout (V, A, Ω, F, H, s, K). Junction temperatures are in kelvin; 300.15 K is nominal.
-- Device models: Shockley diodes, Ebers–Moll BJT, Level-1 MOSFET, square-law JFET and IGBT. No BSIM or Gummel–Poon. `.model` cards fill diode IS/N/RS and BJT IS/BF/BR/NF/NR/VAF (`DiodeModel`, `BjtModel`); other parameters are rejected (strict) or warned about. SPICE input (feature `spice`) reads R, L, C, V, I, D, Q, X elements only, plus `.ic`/`.nodeset` into `ParsedNetlist::{initial_conditions, nodesets}`.
+- Device models: Shockley diodes, Ebers–Moll BJT, Level-1 MOSFET, square-law JFET and IGBT. No BSIM or Gummel–Poon. `.model` cards fill diode IS/N/RS and BJT IS/BF/BR/NF/NR/VAF (`DiodeModel`, `BjtModel`); other parameters are rejected (strict) or warned about. SPICE input (feature `spice`) reads R, L, C, V, I, D, Q, X elements only, plus `.ic`/`.nodeset` into `ParsedNetlist::{initial_conditions, nodesets}`. `spice::to_netlist(&Circuit, title)` writes a deck back out (R, L, C, V, I, D, Q, E/G/F/H, K and exact R/D equivalents; other elements are an `ExportError`).
 
 ## Docs
 

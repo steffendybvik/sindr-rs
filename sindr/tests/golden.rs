@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
-use sindr::spice::parse_file;
+use sindr::spice::{parse_file, to_netlist};
 use sindr::{
     dc_sweep, solve_circuit, temperature_sweep, Circuit, CircuitElement, JfetKind, MosfetKind,
     SimulationResult,
@@ -446,6 +446,7 @@ const AC_LINEAR: Tol = Tol {
 /// and compares `mag(v(node))` and, when the golden has it, phase in degrees.
 fn check_ac(
     case: &'static str,
+    circuit: &Circuit,
     source: &str,
     node: &str,
     per_decade: usize,
@@ -462,7 +463,7 @@ fn check_ac(
         source_id: source.into(),
         ac_magnitude: 1.0,
     };
-    let result = solve_ac(&parse(case), &config).unwrap_or_else(|e| panic!("{case}: {e}"));
+    let result = solve_ac(circuit, &config).unwrap_or_else(|e| panic!("{case}: {e}"));
     let freqs: Vec<f64> = result.points.iter().map(|p| p.frequency).collect();
     let phasors: Vec<_> = result
         .points
@@ -502,13 +503,22 @@ fn check_ac(
 
 #[test]
 fn ac_rc_lowpass() {
-    check_ac("ac_rc_lowpass", "v1", "out", 10, (1.0, 100e3), AC_LINEAR);
+    check_ac(
+        "ac_rc_lowpass",
+        &parse("ac_rc_lowpass"),
+        "v1",
+        "out",
+        10,
+        (1.0, 100e3),
+        AC_LINEAR,
+    );
 }
 
 #[test]
 fn ac_rlc_bandpass() {
     check_ac(
         "ac_rlc_bandpass",
+        &parse("ac_rlc_bandpass"),
         "v1",
         "out",
         20,
@@ -519,7 +529,145 @@ fn ac_rlc_bandpass() {
 
 #[test]
 fn ac_bjt_ce() {
-    check_ac("ac_bjt_ce", "vin", "c", 5, (10.0, 100e3), OP_V);
+    check_ac(
+        "ac_bjt_ce",
+        &parse("ac_bjt_ce"),
+        "vin",
+        "c",
+        5,
+        (10.0, 100e3),
+        OP_V,
+    );
+}
+
+// ------------------------------------------------------- exported decks
+
+/// Checks that `<case>.cir` is the deck `to_netlist` writes for `circuit`,
+/// so the golden is ngspice's answer for exactly this circuit. With
+/// `SINDR_WRITE_DECKS=1` it writes the deck instead; then run
+/// `regen.sh <case>`.
+fn exported<'a>(case: &str, circuit: &'a Circuit) -> &'a Circuit {
+    let deck = to_netlist(
+        circuit,
+        &format!("{case}: written by sindr::spice::to_netlist"),
+    )
+    .unwrap_or_else(|e| panic!("{case}: {e}"));
+    let path = case_path(case, "cir");
+    if std::env::var_os("SINDR_WRITE_DECKS").is_some() {
+        std::fs::write(&path, &deck).unwrap();
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    assert_eq!(
+        committed, deck,
+        "{case}.cir isn't what to_netlist writes: rerun with SINDR_WRITE_DECKS=1, then regen.sh {case}"
+    );
+    circuit
+}
+
+fn with_names(id: &str, nodes: [&str; 2]) -> (String, [String; 2]) {
+    (id.into(), [nodes[0].into(), nodes[1].into()])
+}
+
+/// E, G, H and F sources, a current source, a potentiometer and a switch, written by
+/// `to_netlist`: their signs and equivalents against ngspice's.
+#[test]
+fn op_exported_controlled() {
+    let (r, two) = (resistor, with_names);
+    let mut components = vec![
+        vsource("v1", "in", "0", 2.0),
+        r("r1", "in", "a", 1e3),
+        r("r2", "a", "0", 2e3),
+        r("re", "e", "0", 1e3),
+        r("rg", "g", "0", 1e3),
+        r("rh", "h", "0", 1e3),
+        r("rf", "f", "0", 1e3),
+        r("rx", "x", "0", 1e3),
+        r("ri", "i", "0", 1e3),
+        CircuitElement::CurrentSource {
+            id: "i1".into(),
+            nodes: ["i".into(), "0".into()],
+            current: 1e-3,
+            waveform: None,
+        },
+        CircuitElement::Potentiometer {
+            id: "rpot".into(),
+            nodes: ["in".into(), "w".into(), "0".into()],
+            resistance: 10e3,
+            position: 0.3,
+        },
+        CircuitElement::Switch {
+            id: "sw1".into(),
+            nodes: ["w".into(), "x".into()],
+            closed: true,
+        },
+    ];
+    let (id, nodes) = two("e1", ["e", "0"]);
+    components.push(CircuitElement::Vcvs {
+        id,
+        nodes,
+        control_nodes: ["a".into(), "0".into()],
+        gain: 3.0,
+    });
+    let (id, nodes) = two("g1", ["g", "0"]);
+    components.push(CircuitElement::Vccs {
+        id,
+        nodes,
+        control_nodes: ["a".into(), "0".into()],
+        gm: 1e-3,
+    });
+    let (id, nodes) = two("h1", ["h", "0"]);
+    components.push(CircuitElement::Ccvs {
+        id,
+        nodes,
+        control_source: "v1".into(),
+        rm: 100.0,
+    });
+    let (id, nodes) = two("f1", ["f", "0"]);
+    components.push(CircuitElement::Cccs {
+        id,
+        nodes,
+        control_source: "v1".into(),
+        alpha: 2.0,
+    });
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components,
+    };
+    check_op(
+        "op_exported_controlled",
+        exported("op_exported_controlled", &circuit),
+        (OP_V, OP_I),
+    );
+}
+
+/// A transformer, written by `to_netlist` as two L and a K: its dot
+/// convention and coupling against ngspice's.
+#[test]
+fn ac_exported_transformer() {
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            vsource("v1", "in", "0", 0.0),
+            resistor("r1", "in", "p", 50.0),
+            CircuitElement::Transformer {
+                id: "t1".into(),
+                nodes: ["p".into(), "0".into(), "s".into(), "0".into()],
+                l1: 1e-3,
+                l2: 4e-3,
+                k: 0.99,
+            },
+            resistor("rl", "s", "0", 1e3),
+        ],
+    };
+    check_ac(
+        "ac_exported_transformer",
+        exported("ac_exported_transformer", &circuit),
+        "v1",
+        "s",
+        10,
+        (10.0, 1e6),
+        AC_LINEAR,
+    );
 }
 
 // ---------------------------------------------------------------- .tran

@@ -35,6 +35,20 @@ LED, Schottky and photodiode have no SPICE card in sindr, so those tests
 build the `Circuit` in Rust, element for element, and the `.cir` is read
 only by ngspice.
 
+### Decks written by `to_netlist`
+
+`op_exported_controlled` and `ac_exported_transformer` build their circuit in
+Rust, and their `.cir` is what `sindr::spice::to_netlist` writes for it. The
+test checks that the committed `.cir` still matches, so the golden is
+ngspice's answer for the very deck sindr exports. They pin the signs of E, G,
+F, H and I sources and the transformer's dot convention. After changing the
+exporter or one of these circuits:
+
+```bash
+SINDR_WRITE_DECKS=1 cargo test -p sindr --all-features --test golden exported
+sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
+```
+
 ## Adding a case
 
 1. Write `<case>.cir` (and `.include` files next to it) plus `<case>.ctl`.
@@ -61,9 +75,9 @@ only by ngspice.
 
 | Analysis | Cases |
 |---|---|
-| Operating point | `op_resistive`, `op_diode`, `op_diode_series`, `op_bjt_ce`, `op_bjt_card`, `op_mosfet_cs`, `op_mosfet_follower`, `op_pmos_highside`, `op_jfet`, `op_led`, `op_schottky`, `op_photodiode`, `op_subckt_param` (`.param`, nested `.subckt`, `.include`) |
+| Operating point | `op_resistive`, `op_diode`, `op_diode_series`, `op_bjt_ce`, `op_bjt_card`, `op_exported_controlled` (E, G, F, H, I, potentiometer, switch), `op_mosfet_cs`, `op_mosfet_follower`, `op_pmos_highside`, `op_jfet`, `op_led`, `op_schottky`, `op_photodiode`, `op_subckt_param` (`.param`, nested `.subckt`, `.include`) |
 | DC sweep | `dc_diode_iv`, `dc_diode_1n4148` |
-| AC | `ac_rc_lowpass`, `ac_rlc_bandpass`, `ac_bjt_ce` |
+| AC | `ac_rc_lowpass`, `ac_rlc_bandpass`, `ac_bjt_ce`, `ac_exported_transformer` |
 | Transient | `tran_rc_step`, `tran_rl_step` |
 | Temperature | `temp_diode` |
 

@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DC, AC, transient, `.tf`, `.sens` and results all use them, so a diode's
   series resistance can now be set from a `Circuit`. Validation rejects
   non-positive IS, N, BR, NF, NR and negative RS or VAF.
+- SPICE netlist export: `sindr::spice::to_netlist(&circuit, title)` writes a
+  `Circuit` as a SPICE3 deck that ngspice runs and `parse_str` reads back,
+  with `ExportError` for what it can't express. Covers R, L, C, V/I
+  (square, triangle and PWM as the equivalent `PULSE`), D and Q with
+  `.model` cards, E/G/F/H, transformers as two L and a K, and exact
+  equivalents for switches, pushbuttons, fuses, potentiometers,
+  photoresistors, thermistors, LEDs and Schottky diodes. Every built-in
+  example it can write round-trips to the same solution, and ngspice
+  goldens generated from exported decks (`op_exported_controlled`,
+  `ac_exported_transformer`) pin the controlled-source signs.
 - ngspice goldens `dc_diode_1n4148` (a 1N4148 card with `RS`) and
   `op_bjt_card`.
 

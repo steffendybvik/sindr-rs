@@ -149,6 +149,12 @@
 //! }
 //! ```
 //!
+//! # Export
+//!
+//! [`to_netlist`] writes a [`Circuit`](crate::Circuit) as a SPICE deck that
+//! ngspice runs and [`parse_str`] reads back; its docs list what each element
+//! is written as.
+//!
 //! Known gaps against full SPICE3 are listed in the repository's
 //! [`LIMITATIONS.md`](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
 
@@ -162,6 +168,7 @@ mod analysis;
 mod ast;
 mod build;
 mod error;
+mod export;
 mod flatten;
 mod param_eval;
 mod parser;
@@ -171,6 +178,7 @@ mod source_map;
 
 pub use analysis::{AcSweep, AnalysisRequest};
 pub use error::{ParseWarning, SpiceParseError};
+pub use export::{to_netlist, ExportError};
 pub use source_map::{HierarchyPath, SourceMap};
 
 use std::collections::HashMap;
