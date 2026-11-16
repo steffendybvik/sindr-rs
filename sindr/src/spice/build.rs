@@ -11,9 +11,11 @@
 //!   is dropped with a warning in lenient mode and an error in strict mode
 //!   when non-zero.
 //! * **D** — look up `.model`; kind must be `D`. Other kinds raise
-//!   `UnsupportedModelType`. `IS`/`N` parameters are silently dropped
-//!   today — `crate::CircuitElement::Diode` does not yet expose them.
-//! * **Q** — look up `.model`; kind must be `NPN` or `PNP`. **SPICE node
+//!   `UnsupportedModelType`. `IS`, `N` and `RS` fill a `DiodeModel`.
+//! * **Q** — look up `.model`; kind must be `NPN` or `PNP`. `BF` sets `bf`;
+//!   `IS`, `BR`, `NF`, `NR` and `VAF` (alias `VA`) fill a `BjtModel`.
+//!   Any other D or Q card parameter is a warning in lenient mode and an
+//!   error in strict mode, naming it. **SPICE node
 //!   order on the Q line is `[c, b, e]`; sindr's `Bjt::nodes` is
 //!   `[b, c, e]`** — transpose at this layer.
 //! * **X** — should not appear in `flat.elements` (the flattener already
@@ -23,7 +25,7 @@
 
 use std::collections::HashMap;
 
-use crate::circuit::BjtParasiticCaps;
+use crate::circuit::{BjtModel, BjtParasiticCaps, DiodeModel};
 use crate::{BjtKind, Circuit, CircuitElement, Waveform};
 use miette::NamedSource;
 
@@ -172,15 +174,24 @@ fn build_element(
                     bad_span: span_of(raw),
                 });
             }
-            // IS / N parameters in the .model are silently dropped today —
-            // crate::CircuitElement::Diode exposes only `temperature`.
-            // A future warning could surface here once the public API
-            // grows the relevant fields.
+            let params = model_params(m, DIODE_KEYS, &scope, strict, warnings)?;
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
+            let model = (!params.is_empty()).then(|| {
+                let mut model = DiodeModel::default();
+                for (key, value) in params {
+                    match key {
+                        "is" => model.is = value,
+                        "n" => model.n = value,
+                        _ => model.rs = value,
+                    }
+                }
+                model
+            });
             Ok(CircuitElement::Diode {
                 id: raw.id.clone(),
                 nodes,
                 temperature: 300.15,
+                model,
             })
         }
 
@@ -225,13 +236,23 @@ fn build_element(
                 /* collector */ raw.nodes[0].clone(),
                 /* emitter */ raw.nodes[2].clone(),
             ];
-            let bf = m
-                .params
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("bf"))
-                .map(|(_, e)| eval_or_lift(e, &scope))
-                .transpose()?
-                .unwrap_or(100.0);
+            let params = model_params(m, BJT_KEYS, &scope, strict, warnings)?;
+            let mut bf = 100.0;
+            let mut model = None::<BjtModel>;
+            for (key, value) in params {
+                if key == "bf" {
+                    bf = value;
+                    continue;
+                }
+                let model = model.get_or_insert_with(BjtModel::default);
+                match key {
+                    "is" => model.is = value,
+                    "br" => model.br = value,
+                    "nf" => model.nf = value,
+                    "nr" => model.nr = value,
+                    _ => model.vaf = value,
+                }
+            }
             Ok(CircuitElement::Bjt {
                 id: raw.id.clone(),
                 nodes,
@@ -239,6 +260,7 @@ fn build_element(
                 bf,
                 temperature: 300.15,
                 parasitic_caps: None::<BjtParasiticCaps>,
+                model,
             })
         }
 
@@ -354,6 +376,71 @@ fn translate_waveform(
 }
 
 /// A syntax error with no span of its own: the caller locates it on the card.
+/// `.model D` parameters sindr's diode uses.
+const DIODE_KEYS: &[&str] = &["is", "n", "rs"];
+
+/// `.model NPN`/`PNP` parameters sindr's Ebers–Moll transistor uses.
+const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf"];
+
+/// `.model` parameters that describe the part rather than its behaviour
+/// (LTspice and vendor libraries add them). They are dropped without a word,
+/// even in strict mode, as SPICE simulators drop them.
+const ANNOTATION_KEYS: &[&str] = &["mfg", "type", "vceo", "icrating", "iave", "vpk"];
+
+/// The parameters of card `m` that `known` lists, as `(key, value)` in card
+/// order, so a repeated key's last value wins when applied in turn. Keys are
+/// lowercased and SPICE's `VA` alias read as `VAF`.
+///
+/// Any other parameter can't be honoured: an error naming it in strict mode,
+/// otherwise one warning per card listing them all.
+fn model_params(
+    m: &RawModel,
+    known: &[&'static str],
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<Vec<(&'static str, f64)>, SpiceParseError> {
+    let mut params = Vec::new();
+    let mut ignored = Vec::new();
+    for (key, expr) in &m.params {
+        let lower = key.to_ascii_lowercase();
+        let lower = if lower == "va" {
+            "vaf".to_string()
+        } else {
+            lower
+        };
+        match known.iter().find(|k| **k == lower) {
+            Some(k) => params.push((*k, eval_or_lift(expr, scope)?)),
+            None if ANNOTATION_KEYS.contains(&lower.as_str()) => {}
+            None => ignored.push(key.to_ascii_uppercase()),
+        }
+    }
+    if ignored.is_empty() {
+        return Ok(params);
+    }
+    let what = format!(
+        "`.model {}` parameter{} {}",
+        m.name,
+        if ignored.len() == 1 { "" } else { "s" },
+        ignored.join(", ")
+    );
+    if strict {
+        return Err(card_error(format!(
+            "{what} not supported by sindr's {} model",
+            m.kind.to_ascii_uppercase()
+        )));
+    }
+    let message = format!("{what} ignored (sindr's model doesn't use them)");
+    if !warnings.iter().any(|w| w.message == message) {
+        warnings.push(ParseWarning {
+            message,
+            span: None,
+            file: Some(m.span.file.to_string()),
+        });
+    }
+    Ok(params)
+}
+
 fn card_error(message: String) -> SpiceParseError {
     SpiceParseError::Syntax {
         message,
@@ -1115,5 +1202,181 @@ mod tests {
             CircuitElement::Resistor { resistance, .. } => assert_eq!(*resistance, 1500.0),
             other => panic!("expected Resistor, got {other:?}"),
         }
+    }
+
+    fn build_lenient(cards: Vec<RawCard>) -> (ParsedNetlist, Vec<ParseWarning>) {
+        let mut warnings = Vec::new();
+        let flat = flatten(cards, false, &mut warnings).unwrap();
+        let netlist = build_netlist(flat, "test".to_string(), false, &mut warnings).unwrap();
+        (netlist, warnings)
+    }
+
+    fn model_card(name: &str, kind: &str, params: &[(&str, f64)]) -> RawCard {
+        RawCard::Model(RawModel {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), ParamExpr::Number(*v)))
+                .collect(),
+            span: span(),
+        })
+    }
+
+    fn diode_card(id: &str, model: &str) -> RawCard {
+        RawCard::Element(RawElement {
+            id: id.to_string(),
+            prefix: 'd',
+            nodes: vec!["a".to_string(), "0".to_string()],
+            body: RawElementBody::Diode {
+                model: model.to_string(),
+            },
+            span: span(),
+        })
+    }
+
+    fn bjt_card(model: &str) -> RawCard {
+        RawCard::Element(RawElement {
+            id: "Q1".to_string(),
+            prefix: 'q',
+            nodes: vec!["c".to_string(), "b".to_string(), "e".to_string()],
+            body: RawElementBody::Bjt {
+                model: model.to_string(),
+                substrate: None,
+            },
+            span: span(),
+        })
+    }
+
+    #[test]
+    fn diode_card_fills_the_model() {
+        let cards = vec![
+            model_card(
+                "d1n4148",
+                "D",
+                &[("IS", 2.52e-9), ("n", 1.752), ("Rs", 0.568)],
+            ),
+            diode_card("D1", "d1n4148"),
+        ];
+        let netlist = build_from_cards(cards).unwrap();
+        match &netlist.circuit.components[0] {
+            CircuitElement::Diode { model, .. } => assert_eq!(
+                *model,
+                Some(DiodeModel {
+                    is: 2.52e-9,
+                    n: 1.752,
+                    rs: 0.568
+                })
+            ),
+            other => panic!("expected Diode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn card_without_parameters_keeps_the_built_in_model() {
+        let cards = vec![model_card("dsi", "D", &[]), diode_card("D1", "dsi")];
+        let netlist = build_from_cards(cards).unwrap();
+        assert!(matches!(
+            &netlist.circuit.components[0],
+            CircuitElement::Diode { model: None, .. }
+        ));
+    }
+
+    #[test]
+    fn bjt_card_fills_bf_and_the_model() {
+        let cards = vec![
+            model_card(
+                "q",
+                "PNP",
+                &[
+                    ("IS", 1e-15),
+                    ("BF", 250.0),
+                    ("BR", 3.0),
+                    ("NF", 1.1),
+                    ("NR", 1.2),
+                    ("VA", 80.0),
+                ],
+            ),
+            bjt_card("q"),
+        ];
+        let netlist = build_from_cards(cards).unwrap();
+        match &netlist.circuit.components[0] {
+            CircuitElement::Bjt {
+                bf, kind, model, ..
+            } => {
+                assert_eq!(*bf, 250.0);
+                assert!(matches!(kind, BjtKind::Pnp));
+                assert_eq!(
+                    *model,
+                    Some(BjtModel {
+                        is: 1e-15,
+                        br: 3.0,
+                        nf: 1.1,
+                        nr: 1.2,
+                        vaf: 80.0
+                    })
+                );
+            }
+            other => panic!("expected Bjt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bf_alone_leaves_the_bjt_model_unset() {
+        let cards = vec![model_card("q", "NPN", &[("BF", 50.0)]), bjt_card("q")];
+        let netlist = build_from_cards(cards).unwrap();
+        assert!(matches!(
+            &netlist.circuit.components[0],
+            CircuitElement::Bjt { bf, model: None, .. } if *bf == 50.0
+        ));
+    }
+
+    #[test]
+    fn unused_parameters_are_an_error_in_strict_mode() {
+        for (kind, element) in [("D", diode_card("D1", "m")), ("NPN", bjt_card("m"))] {
+            let cards = vec![
+                model_card("m", kind, &[("IS", 1e-14), ("CJO", 4e-12), ("VAR", 10.0)]),
+                element,
+            ];
+            let err = build_from_cards(cards).unwrap_err().to_string();
+            assert!(
+                err.contains("CJO, VAR") && err.contains("m"),
+                "{kind}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn unused_parameters_warn_once_per_card_in_lenient_mode() {
+        let cards = vec![
+            model_card("m", "D", &[("IS", 1e-12), ("TT", 4e-9), ("BV", 100.0)]),
+            diode_card("D1", "m"),
+            diode_card("D2", "m"),
+        ];
+        let (netlist, warnings) = build_lenient(cards);
+        let about_card: Vec<_> = warnings
+            .iter()
+            .filter(|w| w.message.contains(".model m"))
+            .collect();
+        assert_eq!(about_card.len(), 1, "{warnings:?}");
+        assert!(about_card[0].message.contains("TT, BV"), "{warnings:?}");
+        // What is used still applies.
+        assert!(matches!(
+            &netlist.circuit.components[1],
+            CircuitElement::Diode { model: Some(m), .. } if m.is == 1e-12
+        ));
+    }
+
+    #[test]
+    fn part_annotations_are_dropped_silently() {
+        let cards = vec![
+            model_card(
+                "q",
+                "NPN",
+                &[("BF", 300.0), ("Vceo", 40.0), ("Icrating", 0.2)],
+            ),
+            bjt_card("q"),
+        ];
+        assert!(build_from_cards(cards).is_ok());
     }
 }

@@ -30,6 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "D1".into(),
                 nodes: ["out".into(), "0".into()],
                 temperature: 300.15, // overridden at each sweep point
+                model: None,
             },
         ],
     };

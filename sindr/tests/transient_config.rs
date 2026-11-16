@@ -207,6 +207,7 @@ fn nonlinear_transient_honours_the_config() {
                 id: "D1".into(),
                 nodes: ["in".into(), "out".into()],
                 temperature: 300.15,
+                model: None,
             },
             resistor("RL", "out", "0", 10e3),
             CircuitElement::Capacitor {
@@ -263,6 +264,7 @@ fn transient_ignores_component_order() {
             id: "D1".into(),
             nodes: ["s".into(), "out".into()],
             temperature: 300.15,
+            model: None,
         },
         resistor("RL", "out", "0", 100.0),
     ];

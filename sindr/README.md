@@ -107,14 +107,14 @@ Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 ### Diodes
 
 ```rust
-CircuitElement::Diode         { id, nodes: [String; 2] }            // silicon, Vf ≈ 0.7 V
+CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless model sets IS, N, RS
 CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"green"|"blue"|"yellow"|"white"
 CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage
 CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
+All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` (`DiodeModel { is, n, rs }`, defaults `1e-14`, `1`, `0`) is what a SPICE `.model D` card fills in. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 ### Varactor diode
 
@@ -139,6 +139,7 @@ CircuitElement::Bjt {
     bf: f64,                                // forward beta, default 100
     temperature: f64,                       // junction temp (K), default 300.15 K
     parasitic_caps: Option<BjtParasiticCaps>, // { cbe, cbc } in Farads; None = disabled
+    model: Option<BjtModel>,                // IS, BR, NF, NR, VAF; None = built-in defaults
 }
 
 // MOSFET — nodes: [gate, drain, source]; body tied to source
@@ -195,6 +196,7 @@ let circuit = Circuit {
             bf: 100.0,
             temperature: 300.15,
             parasitic_caps: None,
+            model: None,
         },
     ],
 };

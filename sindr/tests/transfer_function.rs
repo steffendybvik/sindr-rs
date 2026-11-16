@@ -229,6 +229,7 @@ fn diode_matches_finite_differences() {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
+            model: None,
         },
     ]);
     for v0 in [0.3, 0.7, 5.0] {
@@ -265,6 +266,7 @@ fn common_emitter_stage_matches_finite_differences() {
             bf: 100.0,
             temperature: 300.15,
             parasitic_caps: None,
+            model: None,
         },
     ]);
     let r = tf(&c, v_out("c"), "V1");

@@ -191,6 +191,7 @@ fn ac_bias_point_takes_a_nodeset() {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             },
         ],
     };

@@ -1,0 +1,6 @@
+dc: 1N4148 I-V through 10 ohm, from its .model card
+V1 a 0 0
+R1 a b 10
+D1 b 0 d1n4148
+.model d1n4148 D(IS=2.52n N=1.752 RS=0.568)
+.end

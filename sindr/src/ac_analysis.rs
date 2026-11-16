@@ -121,7 +121,10 @@ pub(crate) fn linearize_at_dc(
     for component in &circuit.components {
         match component {
             CircuitElement::Diode {
-                nodes, temperature, ..
+                model,
+                nodes,
+                temperature,
+                ..
             } => {
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
@@ -129,7 +132,7 @@ pub(crate) fn linearize_at_dc(
                 let vq = q.map_or(0.0, |i| dc_solution[i]);
                 let v_d = vp - vq;
 
-                let params = device_params::diode(*temperature);
+                let params = device_params::diode(model.as_ref(), *temperature);
                 let (g_d, _) = diode::diode_companion(v_d, &params);
 
                 models.push(SmallSignalModel {
@@ -156,6 +159,7 @@ pub(crate) fn linearize_at_dc(
                 });
             }
             CircuitElement::Bjt {
+                model,
                 nodes,
                 kind,
                 bf,
@@ -179,7 +183,7 @@ pub(crate) fn linearize_at_dc(
 
                 // Same params as the DC solve (stamp.rs), so the linearisation
                 // is taken of the model the operating point was solved with.
-                let params = device_params::bjt(*bf, *temperature);
+                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
 
                 // Full terminal Jacobian ∂(Ib, Ic, Ie)/∂(Vb, Vc, Ve): carries
                 // gπ, gm, gμ and g_o in every region. The entries are the
@@ -1265,6 +1269,7 @@ mod tests {
                     bf: 100.0,
                     temperature,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
         }
@@ -1510,6 +1515,7 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15,
                     parasitic_caps: None,
+                    model: None,
                 },
             ];
             if reactive {

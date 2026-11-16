@@ -1,0 +1,7 @@
+op: NPN common-emitter bias, Ebers-Moll card with non-default parameters
+VCC vcc 0 10
+RC vcc c 2.2k
+RB vcc b 1Meg
+Q1 c b 0 qcard
+.model qcard NPN(IS=6.734f BF=416.4 BR=0.7371 NF=1.05 NR=1.1)
+.end

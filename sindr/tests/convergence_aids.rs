@@ -28,6 +28,7 @@ fn npn(id: &str, b: &str, c: &str, e: &str) -> CircuitElement {
         bf: 100.0,
         temperature: 300.15,
         parasitic_caps: None,
+        model: None,
     }
 }
 
@@ -91,6 +92,7 @@ fn easy_circuit_reports_no_aid() {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
     };

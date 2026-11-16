@@ -5,6 +5,7 @@
 //! parameters here, so they all see the same temperature-scaled model as the
 //! operating point that was solved.
 
+use crate::circuit::{BjtModel, DiodeModel};
 use sindr_devices::bjt::BjtParams;
 use sindr_devices::diode::{temperature_scale_is, DiodeParams, T_NOM};
 use sindr_devices::led::led_params_from_str;
@@ -28,9 +29,18 @@ fn scale_is(is: f64, temperature: f64, n: f64) -> f64 {
     }
 }
 
-/// Silicon diode at `temperature` (K).
-pub(crate) fn diode(temperature: f64) -> DiodeParams {
-    with_temperature(DiodeParams::silicon(), temperature)
+/// Diode with `model` (the built-in silicon diode if `None`) at `temperature` (K).
+pub(crate) fn diode(model: Option<&DiodeModel>, temperature: f64) -> DiodeParams {
+    let model = model.copied().unwrap_or_default();
+    with_temperature(
+        DiodeParams {
+            is: model.is,
+            n: model.n,
+            rs: model.rs,
+            temperature: T_NOM,
+        },
+        temperature,
+    )
 }
 
 /// LED of colour `color` at `temperature` (K).
@@ -80,10 +90,16 @@ pub(crate) fn photodiode_dark(temperature: f64) -> DiodeParams {
     }
 }
 
-/// BJT with forward gain `bf` at `temperature` (K).
-pub(crate) fn bjt(bf: f64, temperature: f64) -> BjtParams {
+/// BJT with forward gain `bf` and `model` (the built-in transistor if
+/// `None`) at `temperature` (K).
+pub(crate) fn bjt(bf: f64, model: Option<&BjtModel>, temperature: f64) -> BjtParams {
+    let model = model.copied().unwrap_or_default();
     let mut params = BjtParams::new(bf);
-    params.is = scale_is(params.is, temperature, 1.0);
+    params.br = model.br;
+    params.nf = model.nf;
+    params.nr = model.nr;
+    params.vaf = model.vaf;
+    params.is = scale_is(model.is, temperature, 1.0);
     params.temperature = temperature;
     params
 }

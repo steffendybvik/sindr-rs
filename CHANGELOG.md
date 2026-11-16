@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-alpha.8] - Unreleased
 
+### Added
+
+- SPICE `.model` cards now set device parameters: `IS`, `N`, `RS` on `D`
+  cards, and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` (alias `VA`) on `NPN`/`PNP`
+  cards. Any other card parameter is an error in strict mode and a warning
+  per card in lenient mode, naming it; before, every parameter but `BF`
+  was dropped silently, even in strict mode.
+- `DiodeModel` (IS, N, RS) and `BjtModel` (IS, BR, NF, NR, VAF), as the
+  optional `model` field of `CircuitElement::Diode` and `CircuitElement::Bjt`.
+  DC, AC, transient, `.tf`, `.sens` and results all use them, so a diode's
+  series resistance can now be set from a `Circuit`. Validation rejects
+  non-positive IS, N, BR, NF, NR and negative RS or VAF.
+- ngspice goldens `dc_diode_1n4148` (a 1N4148 card with `RS`) and
+  `op_bjt_card`.
+
+### Changed
+
+- **Breaking:** `CircuitElement::Diode` and `CircuitElement::Bjt` have a new
+  `model` field; struct literals need `model: None` for the old behaviour.
+  JSON without it still loads.
+
 ## [0.1.0-alpha.7] - 2026-11-16
 
 ### Added

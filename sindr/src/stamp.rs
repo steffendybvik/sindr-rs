@@ -112,10 +112,13 @@ pub fn stamp_circuit(
             CircuitElement::Capacitor { .. } => {}
             CircuitElement::Inductor { .. } => {}
             CircuitElement::Diode {
-                nodes, temperature, ..
+                model,
+                nodes,
+                temperature,
+                ..
             } => {
                 if let Some(vp) = v_prev {
-                    let params = device_params::diode(*temperature);
+                    let params = device_params::diode(model.as_ref(), *temperature);
                     stamp_diode_companion(system, node_map, nodes, vp, &params);
                 }
             }
@@ -131,6 +134,7 @@ pub fn stamp_circuit(
                 }
             }
             CircuitElement::Bjt {
+                model,
                 nodes,
                 kind,
                 bf,
@@ -138,7 +142,7 @@ pub fn stamp_circuit(
                 ..
             } => {
                 if let Some(vp) = v_prev {
-                    let params = device_params::bjt(*bf, *temperature);
+                    let params = device_params::bjt(*bf, model.as_ref(), *temperature);
                     stamp_bjt_companion(system, node_map, nodes, vp, &params, *kind);
                 }
             }
@@ -1375,6 +1379,7 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
         };
@@ -1484,6 +1489,7 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
         };
@@ -1592,6 +1598,7 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
         };
@@ -1679,6 +1686,7 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
         };
@@ -1983,6 +1991,7 @@ mod tests {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             }],
         };
         let node_map = NodeMap::from_circuit(&circuit);

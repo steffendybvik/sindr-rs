@@ -248,9 +248,12 @@ fn stamp_circuit_transient(
                 ind_index += 1;
             }
             CircuitElement::Diode {
-                nodes, temperature, ..
+                model,
+                nodes,
+                temperature,
+                ..
             } => {
-                let params = device_params::diode(*temperature);
+                let params = device_params::diode(model.as_ref(), *temperature);
                 stamp_diode_companion(system, node_map, nodes, v_prev, &params);
             }
             CircuitElement::Led {
@@ -263,6 +266,7 @@ fn stamp_circuit_transient(
                 stamp_diode_companion(system, node_map, nodes, v_prev, &params);
             }
             CircuitElement::Bjt {
+                model,
                 id,
                 nodes,
                 kind,
@@ -270,7 +274,7 @@ fn stamp_circuit_transient(
                 temperature,
                 parasitic_caps,
             } => {
-                let params = device_params::bjt(*bf, *temperature);
+                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
                 stamp_bjt_companion(system, node_map, nodes, v_prev, &params, *kind);
                 if let Some(pc) = parasitic_caps {
                     for (junction, c, a, b) in bjt_parasitics(nodes, pc) {
@@ -664,6 +668,7 @@ fn extract_timestep_results(
                 ind_index += 1;
             }
             CircuitElement::Diode {
+                model,
                 id,
                 nodes,
                 temperature,
@@ -671,7 +676,7 @@ fn extract_timestep_results(
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let params = device_params::diode(*temperature);
+                let params = device_params::diode(model.as_ref(), *temperature);
                 let i_through = sindr_devices::diode::diode_current(v_across, &params);
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -700,6 +705,7 @@ fn extract_timestep_results(
                 });
             }
             CircuitElement::Bjt {
+                model,
                 id,
                 nodes,
                 kind,
@@ -716,7 +722,7 @@ fn extract_timestep_results(
                 };
                 let vbe_eff = sign * (vb - ve);
                 let vbc_eff = sign * (vb - vc);
-                let params = device_params::bjt(*bf, *temperature);
+                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
                 let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
                 let ic = sign * comp.ic;
                 let vce = vc - ve;
@@ -1132,6 +1138,7 @@ fn extract_bjt_results_from_snapshot(
 
     for component in &circuit.components {
         if let CircuitElement::Bjt {
+            model,
             id,
             nodes,
             kind,
@@ -1163,7 +1170,7 @@ fn extract_bjt_results_from_snapshot(
             let vbe_eff = sign * (vb - ve);
             let vbc_eff = sign * (vb - vc);
 
-            let params = device_params::bjt(*bf, *temperature);
+            let params = device_params::bjt(*bf, model.as_ref(), *temperature);
             let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
             let region = bjt::detect_region(vbe_eff, vbc_eff);
 
@@ -2367,6 +2374,7 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     temperature: 300.15,
+                    model: None,
                 },
                 CircuitElement::Resistor {
                     id: "R1".into(),
@@ -2580,6 +2588,7 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["n2".into(), "0".into()],
                     temperature: 300.15,
+                    model: None,
                 },
             ],
         };
@@ -2627,6 +2636,7 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["n1".into(), "n2".into()], // series diode
                     temperature: 300.15,
+                    model: None,
                 },
                 CircuitElement::Resistor {
                     id: "R1".into(),
@@ -2685,6 +2695,7 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     temperature: 300.15,
+                    model: None,
                 },
                 CircuitElement::Resistor {
                     id: "R1".into(),
@@ -2757,6 +2768,7 @@ mod tests {
                         cbe: 10e-12,
                         cbc: 2e-12,
                     }),
+                    model: None,
                 },
             ],
         };
@@ -2824,6 +2836,7 @@ mod tests {
                     } else {
                         None
                     },
+                    model: None,
                 },
             ],
         };

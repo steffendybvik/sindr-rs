@@ -221,14 +221,14 @@ Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 #### Diodes
 
 ```rust
-CircuitElement::Diode         { id, nodes: [String; 2] }            // silicon, Vf ≈ 0.7 V
+CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless model sets IS, N, RS
 CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"green"|"blue"|"yellow"|"white"
 CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage
 CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
+All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` (`DiodeModel { is, n, rs }`, defaults `1e-14`, `1`, `0`) is what a SPICE `.model D` card fills in. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 #### Varactor diode
 
@@ -253,6 +253,7 @@ CircuitElement::Bjt {
     bf: f64,                                // forward beta, default 100
     temperature: f64,                       // junction temp (K), default 300.15 K
     parasitic_caps: Option<BjtParasiticCaps>, // { cbe, cbc } in Farads; None = disabled
+    model: Option<BjtModel>,                // IS, BR, NF, NR, VAF; None = built-in defaults
 }
 
 // MOSFET — nodes: [gate, drain, source]; body tied to source
@@ -309,6 +310,7 @@ let circuit = Circuit {
             bf: 100.0,
             temperature: 300.15,
             parasitic_caps: None,
+            model: None,
         },
     ],
 };
@@ -801,10 +803,10 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage, behavioural (`B`) sources, and most `.model` parameters are **not** implemented. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage and behavioural (`B`) sources are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` on BJTs. Anything else (junction capacitance, transit time, breakdown, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **No SPICE netlist export.** Cannot hand a circuit off to ngspice / LTspice / Xyce.
 - **No hierarchical data model.** The `spice` parser *flattens* `.subckt` hierarchy (parameter-passing instances, `.`-separated hierarchical node naming) when importing a deck. But the core `Circuit` API itself is a flat `Vec<CircuitElement>` — there is no hierarchical block or instance type exposed programmatically.
-- **No model cards.** Devices take parameters as Rust structs, not BSIM / Gummel-Poon / VBIC / HICUM cards. There is no way to point at a manufacturer model and get matching behaviour.
+- **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
 - **No Verilog-A / behavioural device language.** Adding a new device means writing a Rust companion model.
 
 #### Analyses
@@ -1081,6 +1083,44 @@ pub struct BjtParasiticCaps {
     pub cbc: f64,
 }
 
+/// Shockley parameters of a [`CircuitElement::Diode`], as a SPICE `.model D`
+/// card gives them. Values are at the nominal 27 °C; the element's
+/// `temperature` scales `is` from there.
+///
+/// The default is sindr's built-in silicon diode. With serde, a missing field
+/// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
+pub struct DiodeModel {
+    /// Saturation current IS (A), positive. Default 1e-14.
+    pub is: f64,
+    /// Emission coefficient N, positive. Default 1.
+    pub n: f64,
+    /// Series resistance RS (Ω), zero or positive. Default 0.
+    pub rs: f64,
+}
+
+/// Ebers–Moll parameters of a [`CircuitElement::Bjt`], as a SPICE
+/// `.model NPN`/`PNP` card gives them. The forward gain is the element's own
+/// `bf`. Values are at the nominal 27 °C; the element's `temperature` scales
+/// `is` from there.
+///
+/// The default is sindr's built-in transistor. With serde, a missing field
+/// takes its default.
+pub struct BjtModel {
+    /// Transport saturation current IS (A), positive. Default 1e-14.
+    pub is: f64,
+    /// Reverse current gain BR, positive. Default 1.
+    pub br: f64,
+    /// Forward emission coefficient NF, positive. Default 1.
+    pub nf: f64,
+    /// Reverse emission coefficient NR, positive. Default 1.
+    pub nr: f64,
+    /// Forward Early voltage VAF (V), zero or positive; 0 turns the Early
+    /// effect off. Default 0. sindr applies it as `ic·(1 + vce/VAF)`, not
+    /// through SPICE's Gummel–Poon base charge, so results differ slightly
+    /// from SPICE's when it is set.
+    pub vaf: f64,
+}
+
 /// MOSFET gate parasitic capacitances. All values in Farads.
 pub struct MosfetParasiticCaps {
     /// Gate-Source capacitance (F). Typical: 100–500 pF for power MOSFETs.
@@ -1200,9 +1240,9 @@ pub enum CircuitElement {
         inductance: f64,
     },
 
-    /// Diode (silicon Shockley model). `nodes: [anode, cathode]`.
-    /// Forward current flows from anode → cathode; positive
-    /// `voltage_across` corresponds to forward bias.
+    /// Diode (Shockley model, silicon unless `model` says otherwise).
+    /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
+    /// positive `voltage_across` corresponds to forward bias.
     #[cfg_attr(feature = "serde", serde(rename = "diode"))]
     Diode {
         /// Unique component identifier.
@@ -1213,6 +1253,13 @@ pub enum CircuitElement {
         /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
+        /// Model parameters (IS, N, RS). `None` is the built-in silicon diode,
+        /// the same as `Some(DiodeModel::default())`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<DiodeModel>,
     },
 
     /// LED. `nodes: [anode, cathode]`. Forward voltage drop depends on
@@ -1254,6 +1301,13 @@ pub enum CircuitElement {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         parasitic_caps: Option<BjtParasiticCaps>,
+        /// Ebers–Moll parameters besides `bf` (IS, BR, NF, NR, VAF). `None`
+        /// is the built-in transistor, the same as `Some(BjtModel::default())`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<BjtModel>,
     },
 
     /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
@@ -2190,7 +2244,7 @@ pub mod validation;
 
 pub mod waveform;
 
-pub use circuit::{Circuit, CircuitElement};
+pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel};
 
 pub use dc_sweep::{dc_sweep, DcSweepResult};
 
@@ -2316,6 +2370,7 @@ pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> { 
 ///             id: "D1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             temperature: 300.15,
+///             model: None,
 ///         },
 ///     ],
 /// };
@@ -3083,9 +3138,11 @@ Per-element mapping rules:
   is dropped with a warning in lenient mode and an error in strict mode
   when non-zero.
 * **D** — look up `.model`; kind must be `D`. Other kinds raise
-  `UnsupportedModelType`. `IS`/`N` parameters are silently dropped
-  today — `crate::CircuitElement::Diode` does not yet expose them.
-* **Q** — look up `.model`; kind must be `NPN` or `PNP`. **SPICE node
+  `UnsupportedModelType`. `IS`, `N` and `RS` fill a `DiodeModel`.
+* **Q** — look up `.model`; kind must be `NPN` or `PNP`. `BF` sets `bf`;
+  `IS`, `BR`, `NF`, `NR` and `VAF` (alias `VA`) fill a `BjtModel`.
+  Any other D or Q card parameter is a warning in lenient mode and an
+  error in strict mode, naming it. **SPICE node
   order on the Q line is `[c, b, e]`; sindr's `Bjt::nodes` is
   `[b, c, e]`** — transpose at this layer.
 * **X** — should not appear in `flat.elements` (the flattener already
@@ -3498,6 +3555,23 @@ for analysis in &netlist.analyses {
     }
 }
 ```
+
+### Model cards
+
+A `.model` card's parameters are read where sindr's models have them:
+
+| Card | Parameters | Into |
+|---|---|---|
+| `D` | `IS`, `N`, `RS` | [`DiodeModel`](crate::DiodeModel) |
+| `NPN`, `PNP` | `BF` | the element's `bf` |
+| `NPN`, `PNP` | `IS`, `BR`, `NF`, `NR`, `VAF` (or `VA`) | [`BjtModel`](crate::BjtModel) |
+
+sindr's BJT is Ebers–Moll, so its Early effect isn't SPICE's
+Gummel–Poon base charge: with `VAF` set, results differ slightly from
+SPICE's. Any other parameter (`CJO`, `TT`, `BV`, `VAR`, `IKF`, …) is an
+error in strict mode and a warning per card in lenient mode, naming them.
+Part annotations that don't affect the simulation (`MFG`, `TYPE`,
+`VCEO`, `ICRATING`, `IAVE`, `VPK`) are dropped without a word.
 
 ### Values
 
@@ -4072,6 +4146,7 @@ pub struct TempSweepResult {
 ///             id: "D1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             temperature: 300.15,
+///             model: None,
 ///         },
 ///     ],
 /// };
@@ -5509,6 +5584,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()], // anode: n2, cathode: GND
                 temperature: 300.15,
+                model: None,
             },
         ],
     };
@@ -5562,11 +5638,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "D1".into(),
                 nodes: ["top".into(), "mid".into()],
                 temperature: 300.15,
+                model: None,
             },
             CircuitElement::Diode {
                 id: "D2".into(),
                 nodes: ["mid".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
     };
@@ -5844,6 +5922,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "D1".into(),
                 nodes: ["out".into(), "0".into()],
                 temperature: 300.15, // overridden at each sweep point
+                model: None,
             },
         ],
     };

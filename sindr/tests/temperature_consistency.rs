@@ -41,6 +41,7 @@ fn devices(t: f64) -> Vec<CircuitElement> {
             id: "D1".into(),
             nodes: fwd(),
             temperature: t,
+            model: None,
         },
         CircuitElement::Led {
             id: "D1".into(),
@@ -193,6 +194,7 @@ fn ac_diode_conductance_matches_dc_model_off_nominal_temperature() {
                     id: "D1".into(),
                     nodes: ["n2".into(), "0".into()],
                     temperature: t,
+                    model: None,
                 },
             ],
         };
@@ -255,6 +257,7 @@ fn ac_bjt_transconductance_matches_dc_model_off_nominal_temperature() {
                     bf,
                     temperature: t,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
         };

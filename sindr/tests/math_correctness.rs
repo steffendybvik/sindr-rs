@@ -84,6 +84,7 @@ fn diode_resistor(vsource: f64, r_ohms: f64) -> Circuit {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
     }
@@ -500,6 +501,7 @@ fn reverse_biased_diode_carries_negligible_current() {
                 id: "D1".into(),
                 nodes: ["0".into(), "n2".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
     };
@@ -553,11 +555,13 @@ fn two_diodes_in_parallel_split_current_and_obey_shockley() {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
             CircuitElement::Diode {
                 id: "D2".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
     };

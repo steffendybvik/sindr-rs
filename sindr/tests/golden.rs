@@ -205,6 +205,11 @@ fn op_bjt_ce() {
 }
 
 #[test]
+fn op_bjt_card() {
+    check_op("op_bjt_card", &parse("op_bjt_card"), (OP_V, OP_I));
+}
+
+#[test]
 fn op_diode_series() {
     check_op("op_diode_series", &parse("op_diode_series"), (OP_V, OP_I));
 }
@@ -397,6 +402,29 @@ fn dc_diode_iv() {
         .collect();
 
     let mut check = Check::new("dc_diode_iv");
+    check.series("v-sweep", &scale, &sweep_values(&sweep), &scale, OP_V);
+    check.series("v(b)", &scale, &vb, &golden.column("v(b)"), OP_V);
+    check.series("i(v1)", &scale, &i, &golden.column("i(v1)"), OP_I);
+    check.finish();
+}
+
+#[test]
+fn dc_diode_1n4148() {
+    let golden = Golden::load("dc_diode_1n4148");
+    let sweep = dc_sweep(&parse("dc_diode_1n4148"), "v1", 0.0, 2.0, 21).unwrap();
+    let scale = golden.scale();
+    let vb: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["b"])
+        .collect();
+    let i: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| source_current(&p.result, "v1"))
+        .collect();
+
+    let mut check = Check::new("dc_diode_1n4148");
     check.series("v-sweep", &scale, &sweep_values(&sweep), &scale, OP_V);
     check.series("v(b)", &scale, &vb, &golden.column("v(b)"), OP_V);
     check.series("i(v1)", &scale, &i, &golden.column("i(v1)"), OP_I);

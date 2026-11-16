@@ -26,11 +26,14 @@ regenerated `.golden` files.
 `regen.sh` splices the `.ctl` into a `.control` block (sindr's parser doesn't
 accept `.control`) and runs ngspice in batch mode at its default 27 °C.
 
-`.model` cards spell out the parameters sindr's built-in models use, because
-sindr's SPICE builder ignores most of them (diodes always use `IS=1e-14 N=1`,
-BJTs honour only `BF`). MOSFET, JFET, LED, Schottky and photodiode have no
-SPICE card in sindr, so those tests build the `Circuit` in Rust, element for
-element, and the `.cir` is read only by ngspice.
+Diode and BJT cases are SPICE decks that both simulators read, `.model` card
+included. sindr reads `IS`, `N`, `RS` from a `D` card and `IS`, `BF`, `BR`,
+`NF`, `NR`, `VAF` from an `NPN`/`PNP` card, and rejects any other parameter
+(the goldens parse in strict mode), so a card here can't quietly lose one.
+`dc_diode_1n4148` and `op_bjt_card` use non-default values. MOSFET, JFET,
+LED, Schottky and photodiode have no SPICE card in sindr, so those tests
+build the `Circuit` in Rust, element for element, and the `.cir` is read
+only by ngspice.
 
 ## Adding a case
 
@@ -58,8 +61,8 @@ element, and the `.cir` is read only by ngspice.
 
 | Analysis | Cases |
 |---|---|
-| Operating point | `op_resistive`, `op_diode`, `op_diode_series`, `op_bjt_ce`, `op_mosfet_cs`, `op_mosfet_follower`, `op_pmos_highside`, `op_jfet`, `op_led`, `op_schottky`, `op_photodiode`, `op_subckt_param` (`.param`, nested `.subckt`, `.include`) |
-| DC sweep | `dc_diode_iv` |
+| Operating point | `op_resistive`, `op_diode`, `op_diode_series`, `op_bjt_ce`, `op_bjt_card`, `op_mosfet_cs`, `op_mosfet_follower`, `op_pmos_highside`, `op_jfet`, `op_led`, `op_schottky`, `op_photodiode`, `op_subckt_param` (`.param`, nested `.subckt`, `.include`) |
+| DC sweep | `dc_diode_iv`, `dc_diode_1n4148` |
 | AC | `ac_rc_lowpass`, `ac_rlc_bandpass`, `ac_bjt_ce` |
 | Transient | `tran_rc_step`, `tran_rl_step` |
 | Temperature | `temp_diode` |

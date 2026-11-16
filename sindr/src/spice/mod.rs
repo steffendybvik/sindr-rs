@@ -81,6 +81,23 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! # Model cards
+//!
+//! A `.model` card's parameters are read where sindr's models have them:
+//!
+//! | Card | Parameters | Into |
+//! |---|---|---|
+//! | `D` | `IS`, `N`, `RS` | [`DiodeModel`](crate::DiodeModel) |
+//! | `NPN`, `PNP` | `BF` | the element's `bf` |
+//! | `NPN`, `PNP` | `IS`, `BR`, `NF`, `NR`, `VAF` (or `VA`) | [`BjtModel`](crate::BjtModel) |
+//!
+//! sindr's BJT is Ebers–Moll, so its Early effect isn't SPICE's
+//! Gummel–Poon base charge: with `VAF` set, results differ slightly from
+//! SPICE's. Any other parameter (`CJO`, `TT`, `BV`, `VAR`, `IKF`, …) is an
+//! error in strict mode and a warning per card in lenient mode, naming them.
+//! Part annotations that don't affect the simulation (`MFG`, `TYPE`,
+//! `VCEO`, `ICRATING`, `IAVE`, `VPK`) are dropped without a word.
+//!
 //! # Values
 //!
 //! Numbers take SPICE's case-insensitive suffixes: `t` (1e12), `g` (1e9),

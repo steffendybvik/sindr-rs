@@ -10,7 +10,10 @@
 
 use num_complex::Complex64;
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
-use sindr::{solve_circuit, BjtKind, Circuit, CircuitElement, IgbtParams, JfetKind, MosfetKind};
+use sindr::{
+    solve_circuit, BjtKind, BjtModel, Circuit, CircuitElement, DiodeModel, IgbtParams, JfetKind,
+    MosfetKind,
+};
 use sindr_devices::mosfet::MosfetParams;
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
@@ -98,8 +101,32 @@ fn diode_ac_matches_dc() {
             id: "D1".into(),
             nodes: ["n2".into(), "0".into()],
             temperature: t,
+            model: None,
         });
         assert_ac_matches_dc(&format!("diode at {t} K"), &circuit, &[-2.0, 0.3, 0.7, 5.0]);
+    }
+}
+
+/// A 1N4148 card: the series resistance has to reach AC as well as DC.
+#[test]
+fn diode_model_ac_matches_dc() {
+    let model = DiodeModel {
+        is: 2.52e-9,
+        n: 1.752,
+        rs: 0.568,
+    };
+    for t in [T_NOM, 350.0] {
+        let circuit = two_terminal(CircuitElement::Diode {
+            id: "D1".into(),
+            nodes: ["n2".into(), "0".into()],
+            temperature: t,
+            model: Some(model),
+        });
+        assert_ac_matches_dc(
+            &format!("1N4148 at {t} K"),
+            &circuit,
+            &[-2.0, 0.3, 0.7, 5.0],
+        );
     }
 }
 
@@ -166,6 +193,10 @@ fn photodiode_ac_matches_dc() {
 /// Emitter-degenerated stage driven at the base through RB. For the PNP
 /// every voltage is mirrored: the supply is −5 V.
 fn bjt_stage(kind: BjtKind, temperature: f64) -> Circuit {
+    bjt_stage_with(kind, temperature, None)
+}
+
+fn bjt_stage_with(kind: BjtKind, temperature: f64, model: Option<BjtModel>) -> Circuit {
     let vcc = match kind {
         BjtKind::Npn => 5.0,
         BjtKind::Pnp => -5.0,
@@ -185,6 +216,7 @@ fn bjt_stage(kind: BjtKind, temperature: f64) -> Circuit {
                 bf: 100.0,
                 temperature,
                 parasitic_caps: None,
+                model,
             },
         ],
     }
@@ -198,6 +230,28 @@ fn npn_ac_matches_dc() {
             &format!("NPN at {t} K"),
             &bjt_stage(BjtKind::Npn, t),
             &[0.3, 0.9, 1.5, 6.0],
+        );
+    }
+}
+
+/// Every `BjtModel` field away from its default, Early effect included.
+#[test]
+fn bjt_model_ac_matches_dc() {
+    let model = BjtModel {
+        is: 6.734e-15,
+        br: 0.7371,
+        nf: 1.05,
+        nr: 1.1,
+        vaf: 74.03,
+    };
+    for (kind, biases) in [
+        (BjtKind::Npn, [0.3, 0.9, 1.5, 6.0]),
+        (BjtKind::Pnp, [-0.3, -0.9, -1.5, -6.0]),
+    ] {
+        assert_ac_matches_dc(
+            &format!("{kind:?} with a model"),
+            &bjt_stage_with(kind, 350.0, Some(model)),
+            &biases,
         );
     }
 }

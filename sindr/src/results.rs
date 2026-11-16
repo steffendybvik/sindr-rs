@@ -365,6 +365,7 @@ pub fn extract_results(
                 });
             }
             CircuitElement::Diode {
+                model,
                 id,
                 nodes,
                 temperature,
@@ -372,7 +373,7 @@ pub fn extract_results(
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let params = device_params::diode(*temperature);
+                let params = device_params::diode(model.as_ref(), *temperature);
                 let i_through = diode::diode_current(v_across, &params);
                 let power = v_across * i_through;
                 component_results.push(ComponentResult {
@@ -412,6 +413,7 @@ pub fn extract_results(
                 });
             }
             CircuitElement::Bjt {
+                model,
                 id,
                 nodes,
                 kind,
@@ -430,7 +432,7 @@ pub fn extract_results(
                 let vbe_eff = sign * (vb - ve);
                 let vbc_eff = sign * (vb - vc);
 
-                let params = device_params::bjt(*bf, *temperature);
+                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
                 let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
                 let region = bjt::detect_region(vbe_eff, vbc_eff);
 
