@@ -356,3 +356,54 @@ fn transformer_windings_are_shorts() {
         r.output_resistance
     );
 }
+
+/// A misspelt port is named even when the bias point can't be solved: the
+/// ports are checked first.
+#[test]
+fn bad_port_is_reported_before_the_dc_solve() {
+    // Two sources fighting over one node: the DC system is singular.
+    let c = circuit(vec![
+        vsource("V1", "in", "0", 1.0),
+        vsource("V2", "in", "0", 2.0),
+        resistor("R1", "in", "0", 1e3),
+    ]);
+    for (output, input) in [
+        (v_out("in"), "nope"),
+        (v_out("nowhere"), "V1"),
+        (
+            TfOutput::Current {
+                source_id: "R1".into(),
+            },
+            "V1",
+        ),
+    ] {
+        let err = solve_tf(
+            &c,
+            &TfConfig {
+                output,
+                input_source: input.into(),
+            },
+        );
+        assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
+    }
+}
+
+/// A node between two varactors has only their DC leak to hold it. `.tf`
+/// used to stamp just their capacitance at ω = 0, which left it singular.
+#[test]
+fn node_between_varactors_is_not_singular() {
+    let varactor = |id: &str, a: &str, b: &str| CircuitElement::Varactor {
+        id: id.into(),
+        nodes: [a.into(), b.into()],
+        params: Default::default(),
+    };
+    let c = circuit(vec![
+        vsource("V1", "in", "0", 1.0),
+        resistor("R1", "in", "a", 1e3),
+        varactor("D1", "mid", "a"),
+        varactor("D2", "0", "mid"),
+    ]);
+    let r = tf(&c, v_out("mid"), "V1");
+    // Two equal 1 TΩ leaks in series below 1 kΩ: half the input reaches mid.
+    assert_relative_eq!(r.gain, 0.5, max_relative = 1e-6);
+}

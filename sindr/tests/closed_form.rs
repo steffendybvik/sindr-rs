@@ -698,3 +698,65 @@ fn transient_lc_error_falls_with_each_methods_order() {
         );
     }
 }
+
+/// A relay's coil is its winding resistance in series with its inductance:
+/// step for step, it matches a resistor and an inductor in series, under every
+/// method. It used to be stamped with the two in parallel, which shorted the
+/// coil once the inductor's current had built up.
+#[test]
+fn relay_coil_matches_series_resistor_and_inductor() {
+    let drive = || {
+        vec![
+            vsource("v1", "n1", "0", 12.0),
+            resistor("r1", "n1", "coil", 100.0),
+        ]
+    };
+    let mut relay = drive();
+    relay.extend([
+        CircuitElement::Relay {
+            id: "k1".into(),
+            nodes: ["coil".into(), "0".into(), "c1".into(), "c2".into()],
+            coil_resistance: 500.0,
+            pickup_voltage: 5.0,
+            inductance: 0.1,
+        },
+        resistor("rc1", "c1", "0", 1e3),
+        resistor("rc2", "c2", "0", 1e3),
+    ]);
+    let relay = circuit(relay);
+    let mut series = drive();
+    series.extend([
+        resistor("rcoil", "coil", "mid", 500.0),
+        inductor("l1", "mid", "0", 0.1),
+    ]);
+    let series = circuit(series);
+
+    for method in METHODS {
+        let config = TransientConfig::auto(&relay)
+            .with_method(method)
+            .with_fixed_step();
+        let a = solve_transient(&relay, &config).unwrap().transient.unwrap();
+        let b = solve_transient(&series, &config)
+            .unwrap()
+            .transient
+            .unwrap();
+        assert_eq!(a.timesteps.len(), b.timesteps.len(), "{method:?}");
+        for (sa, sb) in a.timesteps.iter().zip(&b.timesteps) {
+            let (va, vb) = (sa.node_voltages["coil"], sb.node_voltages["coil"]);
+            assert!(
+                (va - vb).abs() <= 1e-9 * vb.abs().max(1e-3),
+                "{method:?} t={}: coil {va} V vs {vb} V",
+                sa.time
+            );
+            let (ia, ib) = (current(sa, "k1"), current(sb, "l1"));
+            assert!(
+                (ia - ib).abs() <= 1e-9 * ib.abs().max(1e-6),
+                "{method:?} t={}: coil {ia} A vs {ib} A",
+                sa.time
+            );
+        }
+        // Settled, the coil drops 500/600 of the 12 V; shorted, it drops none.
+        let last = a.timesteps.last().unwrap();
+        assert!(last.node_voltages["coil"] > 9.5, "{method:?}");
+    }
+}

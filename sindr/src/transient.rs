@@ -31,9 +31,14 @@ use crate::stamp::{
 
 /// Calculate simulation duration and timestep from circuit time constants.
 ///
-/// Returns (duration, dt) where:
-/// - duration = 5 * tau_max (5 time constants for ~99% settling)
-/// - dt = tau_max / 50 (floored at 1 microsecond)
+/// Returns `(duration, dt)` in seconds, from the longest RC/RL time
+/// constant τ (1 ms if the circuit has none):
+/// - duration = 5·τ (about 99 % settling)
+/// - dt = τ/50, floored at 1 µs
+///
+/// With periodic waveform sources, the longest period T also counts:
+/// duration is at least 3·T and dt at most T/100 (also floored at 1 µs).
+/// Without RC/RL time constants, those alone set it.
 pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) {
     // Collect R, C, L values
     let mut resistances: Vec<f64> = Vec::new();
@@ -147,6 +152,15 @@ pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) {
     let dt = (tau_max / 50.0).max(1e-6); // floor at 1 microsecond
 
     (duration, dt)
+}
+
+/// A companion `i = g·v + i_hist` in series with a resistance `r`, as one
+/// companion across both: from `v = r·i + v_L` and `i = g·v_L + i_hist`,
+/// `i = g/(1 + g·r)·v + i_hist/(1 + g·r)`. A relay coil is its winding's
+/// resistance in series with its inductance.
+fn series_resistance(g: f64, i_hist: f64, r: f64) -> (f64, f64) {
+    let k = 1.0 + g * r;
+    (g / k, i_hist / k)
 }
 
 /// Stamp all circuit components for one transient step ending at time `t`.
@@ -370,11 +384,13 @@ fn stamp_circuit_transient(
                 ..
             } => {
                 let coil_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
-                stamp_resistor(system, node_map, &coil_nodes, *coil_resistance);
                 if *inductance > 0.0 {
                     let (g, i_hist) = integ.inductor(*inductance, &inds[ind_index]);
+                    let (g, i_hist) = series_resistance(g, i_hist, *coil_resistance);
                     stamp_companion(system, node_map, &coil_nodes, g, i_hist);
                     ind_index += 1;
+                } else {
+                    stamp_resistor(system, node_map, &coil_nodes, *coil_resistance);
                 }
                 let vc_pos = node_map.index(&nodes[0]).map_or(0.0, |i| v_prev[i]);
                 let vc_neg = node_map.index(&nodes[1]).map_or(0.0, |i| v_prev[i]);
@@ -842,14 +858,20 @@ fn extract_timestep_results(
                 let vc_pos = node_voltage(&nodes[0], node_map, solution);
                 let vc_neg = node_voltage(&nodes[1], node_map, solution);
                 let coil_voltage = vc_pos - vc_neg;
-                // If relay has inductance, update the inductor current state
-                if *inductance > 0.0 {
+                // With inductance, the coil current is the inductor's, and
+                // the inductor sees the coil voltage less the resistive drop.
+                let coil_current = if *inductance > 0.0 {
                     let history = inds_prev[ind_index];
                     let (g, i_hist) = integ.inductor(*inductance, &history);
-                    new_inds.push(history.push(g * coil_voltage + i_hist, coil_voltage));
+                    let (g_s, i_s) = series_resistance(g, i_hist, *coil_resistance);
+                    let current = g_s * coil_voltage + i_s;
+                    let v_inductor = coil_voltage - coil_resistance * current;
+                    new_inds.push(history.push(current, v_inductor));
                     ind_index += 1;
-                }
-                let coil_current = coil_voltage / coil_resistance;
+                    current
+                } else {
+                    coil_voltage / coil_resistance
+                };
                 let contact_closed = coil_voltage.abs() >= *pickup_voltage;
                 let contact_r = if contact_closed {
                     SWITCH_R_CLOSED
@@ -1252,8 +1274,9 @@ fn extract_mosfet_results_from_snapshot(
 pub struct TransientConfig {
     /// End time (s). The run starts at 0 and its last snapshot is at `tstop`.
     pub tstop: f64,
-    /// Time step (s): snapshots fall on multiples of it, except where a
-    /// failed Newton solve forces smaller steps.
+    /// Time step (s): the output grid, and the longest step unless `tmax`
+    /// says otherwise. Truncation-error control, breakpoints and failed
+    /// Newton solves add shorter steps in between.
     pub tstep: f64,
     /// Largest step allowed (s), as SPICE's TMAX. `None` means `tstep`.
     pub tmax: Option<f64>,
@@ -1355,8 +1378,9 @@ impl TransientConfig {
     }
 
     /// The config [`solve_circuit`](crate::solve_circuit) uses: `tstop` = 5·τ
-    /// and `tstep` = τ/50 for the circuit's longest time constant τ (see
-    /// [`calculate_duration`]).
+    /// and `tstep` = τ/50 for the circuit's longest time constant τ,
+    /// stretched to cover 3 periods of a periodic source at 100 steps per
+    /// period (see [`calculate_duration`]).
     pub fn auto(circuit: &Circuit) -> Self {
         let (duration, dt) = calculate_duration(circuit);
         Self::new(duration, dt.min(duration))
@@ -1401,9 +1425,11 @@ impl TransientConfig {
 /// Integrates with `config.method` from 0 to `config.tstop`, starting from
 /// uncharged capacitors (0 V) and inductors at rest (0 A), with sources at
 /// their value at each step's end time. Each step that contains nonlinear
-/// devices is solved by Newton–Raphson, warm-started from the previous step;
-/// if Newton fails the step is halved and retried, then grows back to
-/// `tstep`. [`SimulationResult::transient`] holds one snapshot per step,
+/// devices is solved by Newton–Raphson, warm-started from the previous step.
+/// Steps are at most `tstep` (or `tmax`, if smaller), shortened where the
+/// truncation error is too large (unless `config.adaptive` is off), cut to
+/// land on every source-waveform breakpoint, and halved and retried when
+/// Newton fails. [`SimulationResult::transient`] holds one snapshot per step,
 /// the last at `tstop`; the other fields hold the final instant.
 ///
 /// # Errors
