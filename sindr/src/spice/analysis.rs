@@ -3,7 +3,7 @@
 //! These are returned in [`crate::spice::ParsedNetlist::analyses`]. They map 1-to-1
 //! onto the analyses that `sindr` knows how to run.
 
-/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`).
+/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnalysisRequest {
     /// `.op` — DC operating-point analysis.
@@ -46,6 +46,11 @@ pub enum AnalysisRequest {
         output: crate::TfOutput,
         /// Input source id.
         input: String,
+    },
+    /// `.sens v(node[,ref])` or `.sens i(vsource)` — DC sensitivity.
+    Sens {
+        /// The output whose sensitivities are wanted.
+        output: crate::TfOutput,
     },
 }
 
@@ -96,6 +101,29 @@ impl AnalysisRequest {
             AnalysisRequest::Tf { output, input } => Some(crate::TfConfig {
                 output: output.clone(),
                 input_source: input.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// The [`SensConfig`](crate::SensConfig) for a `.sens` request, to pass
+    /// to [`solve_sensitivity`](crate::solve_sensitivity); `None` for any
+    /// other analysis.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* divider\nV1 in 0 4\nR1 in out 1k\nR2 out 0 3k\n.sens v(out)\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].sens_config().unwrap();
+    /// let sens = sindr::solve_sensitivity(&netlist.circuit, &config)?;
+    /// assert!((sens.get("v1").unwrap().sensitivity - 0.75).abs() < 1e-12);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn sens_config(&self) -> Option<crate::SensConfig> {
+        match self {
+            AnalysisRequest::Sens { output } => Some(crate::SensConfig {
+                output: output.clone(),
             }),
             _ => None,
         }
@@ -204,6 +232,42 @@ mod tests {
     }
 
     #[test]
+    fn sens_outputs() {
+        use crate::TfOutput;
+        assert_eq!(
+            analyses(".sens V(in)\n.sens v(in,0)\n.sens I(V1)"),
+            vec![
+                AnalysisRequest::Sens {
+                    output: TfOutput::Voltage {
+                        node: "in".into(),
+                        reference: None
+                    }
+                },
+                AnalysisRequest::Sens {
+                    output: TfOutput::Voltage {
+                        node: "in".into(),
+                        reference: Some("0".into())
+                    }
+                },
+                AnalysisRequest::Sens {
+                    output: TfOutput::Current {
+                        source_id: "v1".into()
+                    }
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_sens_is_an_error() {
+        // AC sensitivity's form isn't supported, so it must not parse as DC.
+        for card in [".sens", ".sens in", ".sens v(in) ac dec 10 1 1k"] {
+            let deck = format!("* sens\nV1 in 0 1\nR1 in 0 1k\n{card}\n.end\n");
+            assert!(parse_str(&deck).is_err(), "{card}");
+        }
+    }
+
+    #[test]
     fn malformed_tf_is_an_error() {
         for card in [
             ".tf v(in)",
@@ -226,6 +290,7 @@ mod tests {
                 AnalysisRequest::Dc { .. } => "dc",
                 AnalysisRequest::Ac { .. } => "ac",
                 AnalysisRequest::Tf { .. } => "tf",
+                AnalysisRequest::Sens { .. } => "sens",
             })
             .collect();
         assert_eq!(kinds, ["ac", "op", "tran", "dc"]);

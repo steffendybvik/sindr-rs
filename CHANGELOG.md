@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   node voltage or a voltage source's current, with the input and output
   resistance. `sindr::spice` reads `.tf v(out[,ref]) src` and
   `.tf i(vsrc) src` into `AnalysisRequest::Tf` (`tf_config()`).
+- DC sensitivity analysis, SPICE's `.sens`: `solve_sensitivity` with a
+  `SensConfig` returns the derivative of one output with respect to each
+  resistance, source value, VCVS gain and VCCS gm, by one adjoint solve.
+  `sindr::spice` reads `.sens v(out[,ref])` and `.sens i(vsrc)` into
+  `AnalysisRequest::Sens` (`sens_config()`).
+- `MnaMatrix::transpose`.
 
 - Sparse MNA solve: systems above 100 unknowns are stored sparsely and
   factorised with `faer`'s sparse LU, reusing the symbolic analysis while the
@@ -67,8 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** nalgebra 0.35. `MnaMatrix::to_dense`, `MnaSystem::b` and
   `MnaSystem::solve` use its `DMatrix`/`DVector`, so callers on nalgebra
   0.34 need to upgrade too.
-- **Breaking:** `spice::AnalysisRequest` has a `Tf` variant, so a `match`
-  over it needs an arm for it.
+- **Breaking:** `spice::AnalysisRequest` has `Tf` and `Sens` variants, so a
+  `match` over it needs arms for them.
 - **Breaking:** new public fields `SimulationResult::convergence_aid`,
   `TransientData::stats` and `ParsedNetlist::{initial_conditions, nodesets}`
   mean code that builds these structs with a literal must set them.
@@ -157,6 +163,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transient initial conditions that name no node or inductor (a typo), sit
   on a transformer or aren't finite were ignored or failed later as
   `InvalidSolution`. They're now `InvalidComponent` naming the key.
+- Every transient and sweep is bounded. `solve_circuit` and
+  `solve_circuit_with_initial_voltages` now check their automatic transient
+  config like `solve_transient` does, so a circuit whose time constants ask
+  for 5·10⁸ steps errors instead of running out of memory. Waveform
+  breakpoints count against the 10⁷-step cap, and a source with more
+  breakpoints than are kept is an error naming it instead of being stepped
+  over. An AC, DC or temperature sweep of more than 10⁷ points returns
+  `InvalidComponent` instead of panicking with "capacity overflow".
 - JFETs in the ohmic region with the drain below the source had the wrong
   sign of `gm`: `JfetCompanion::gm` took the absolute value of
   `2·IDSS·Vds/Vp²`. DC still converged, but on the wrong Jacobian, and AC

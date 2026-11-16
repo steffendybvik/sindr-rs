@@ -12,6 +12,8 @@
 //! - **AC small-signal** — sinusoidal-steady-state via [`ac_analysis::solve_ac`].
 //! - **Transfer function** — DC small-signal gain, input and output
 //!   resistance (SPICE's `.tf`) via [`solve_tf`].
+//! - **DC sensitivity** — derivative of an output with respect to each
+//!   component parameter (SPICE's `.sens`) via [`solve_sensitivity`].
 //! - **DC sweep** — operating point at each value of a swept voltage source,
 //!   via [`fn@dc_sweep`].
 //! - **Temperature sweep** — operating-point sweep over junction temperature
@@ -69,12 +71,13 @@
 //! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
+//! | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
 //! | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
-//! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`] | Seeds Newton for the DC, AC or `.tf` bias point |
+//! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
 //!
-//! Not available: noise, distortion, pole-zero, sensitivity, Monte Carlo,
+//! Not available: noise, distortion, pole-zero, AC sensitivity, Monte Carlo,
 //! periodic steady state, S-parameters, variable-order integration.
 //!
 //! ## Device models
@@ -106,8 +109,8 @@
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
 //! and X elements; `.subckt`, `.model`, `.param`, `.include`, `.lib`,
-//! `.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac`, `.tf`
-//! and `.tran`. Not supported: MOSFET (M)
+//! `.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac`, `.tf`,
+//! `.sens` and `.tran`. Not supported: MOSFET (M)
 //! and JFET (J) elements, controlled sources (E, F, G, H), coupled inductors
 //! (K), `B` sources, most `.model` parameters (diodes always use IS = 1e-14,
 //! N = 1; BJTs honour only BF), and netlist export.
@@ -240,6 +243,7 @@ pub mod mna;
 pub mod newton_raphson;
 pub mod node_map;
 pub mod results;
+pub mod sensitivity;
 #[cfg(feature = "spice")]
 #[cfg_attr(docsrs, doc(cfg(feature = "spice")))]
 pub mod spice;
@@ -259,6 +263,7 @@ pub use results::{
     BjtResult, ComponentResult, ConvergenceAid, McuResult, MosfetResult, OpAmpResult, RelayResult,
     SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
+pub use sensitivity::{solve_sensitivity, SensConfig, SensEntry, SensParameter, SensResult};
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
 pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
 pub use transient::{solve_transient, IntegrationMethod, TransientConfig};
@@ -274,6 +279,21 @@ pub use sindr_devices::mosfet::MosfetKind;
 pub use sindr_devices::varactor::VaractorParams;
 
 use node_map::NodeMap as NM;
+
+/// The automatic transient config [`solve_circuit`] runs, checked like a
+/// user's: a circuit whose time constants and waveforms ask for more than
+/// 10⁷ steps gets an error naming them, not a run that never ends.
+fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError> {
+    let config = TransientConfig::auto(circuit);
+    config.validate().map_err(|e| match e {
+        SimError::InvalidComponent(msg) => SimError::InvalidComponent(format!(
+            "{msg} (automatic span {} s and step {} s; set them with solve_transient)",
+            config.tstop, config.tstep
+        )),
+        other => other,
+    })?;
+    Ok(config)
+}
 
 /// Solves a circuit end-to-end and returns voltages, currents, and power for
 /// every component.
@@ -296,7 +316,9 @@ use node_map::NodeMap as NM;
 /// Returns [`SimError`] if the circuit fails validation (no ground node,
 /// floating nodes, invalid component values, etc.) or if the solver itself
 /// fails to converge or produces a singular matrix. See [`SimError`] for the
-/// full list.
+/// full list. A transient whose automatic span and step would take more than
+/// 10⁷ steps is [`SimError::InvalidComponent`]; run it with
+/// [`solve_transient`] and a coarser [`TransientConfig`].
 ///
 /// # Example
 ///
@@ -333,7 +355,7 @@ pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     let num_vsources = circuit.count_voltage_sources();
 
     if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
-        let config = TransientConfig::auto(circuit);
+        let config = auto_transient_config(circuit)?;
         return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
     }
 
@@ -497,7 +519,7 @@ pub fn solve_circuit_with_initial_voltages(
 
     if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
         // The transient path doesn't consume the seed.
-        let config = TransientConfig::auto(circuit);
+        let config = auto_transient_config(circuit)?;
         return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
     }
 

@@ -441,6 +441,9 @@ fn build_analysis(
                 step,
             })
         }
+        RawAnalysis::Sens { output } => Ok(AnalysisRequest::Sens {
+            output: output.clone(),
+        }),
         RawAnalysis::Tf { output, input } => Ok(AnalysisRequest::Tf {
             output: output.clone(),
             input: input.clone(),
