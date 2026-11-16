@@ -137,7 +137,8 @@ pub enum CircuitElement {
 
     /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
     /// solves DC as a single algebraic step, not as t→∞ of a transient);
-    /// integrates `dI/dt` properly during transient. `voltage_across` is
+    /// integrates `dI/dt` properly during transient. The DC bias point that
+    /// AC, `.tf` and `.sens` linearise around shorts it instead. `voltage_across` is
     /// reported as `nodes[0] − nodes[1]`, `current_through` flows
     /// `nodes[0] → nodes[1]`. To get steady-state current, run a
     /// transient long enough to settle.
@@ -160,7 +161,8 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
@@ -175,12 +177,14 @@ pub enum CircuitElement {
         nodes: [String; 2],
         /// Emission colour (e.g. `"red"`, `"blue"`); sets the forward voltage drop.
         color: String,
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
 
-    /// BJT transistor (3 terminals). Stub for DC analysis.
+    /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
+    /// DC, transient and AC.
     #[cfg_attr(feature = "serde", serde(rename = "bjt"))]
     Bjt {
         /// Unique component identifier.
@@ -189,10 +193,11 @@ pub enum CircuitElement {
         nodes: [String; 3], // [base, collector, emitter]
         /// Polarity (NPN or PNP).
         kind: BjtKind,
-        /// Forward current gain β (unitless). Default 100.
+        /// Forward current gain β (unitless), positive and finite. Default 100.
         #[cfg_attr(feature = "serde", serde(default = "default_bf"))]
         bf: f64,
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
         /// Optional parasitic capacitances (Cbe, Cbc). None = no parasitic caps (default).
@@ -312,7 +317,8 @@ pub enum CircuitElement {
 
     /// Relay: 4-terminal component with a coil and a contact pair.
     /// nodes: [coil+, coil-, contact1, contact2]
-    /// Contact closes when |V_coil| >= pickup_voltage.
+    /// Contact closes when |V_coil| >= pickup_voltage. AC and `.tf` take the
+    /// contact as open or closed at the DC bias point.
     #[cfg_attr(feature = "serde", serde(rename = "relay"))]
     Relay {
         /// Unique component identifier.
@@ -324,7 +330,8 @@ pub enum CircuitElement {
         coil_resistance: f64,
         /// Coil voltage magnitude at which the contact closes (V).
         pickup_voltage: f64,
-        /// Coil inductance in Henry. 0.0 = purely resistive coil (backward compatible).
+        /// Coil inductance in Henry, in series with `coil_resistance` in
+        /// transient. 0.0 = purely resistive coil.
         #[cfg_attr(feature = "serde", serde(default))]
         inductance: f64,
     },
@@ -367,7 +374,8 @@ pub enum CircuitElement {
         nodes: [String; 2],
         /// Reverse breakdown (Zener) voltage (V).
         vz: f64,
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
@@ -412,7 +420,8 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
@@ -425,7 +434,7 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[n1, n2]`.
         nodes: [String; 2],
-        /// Temperature in Kelvin. Default: 298.15 K (25°C).
+        /// Temperature in Kelvin, positive and finite. Default: 298.15 K (25°C).
         #[cfg_attr(feature = "serde", serde(default = "default_temperature"))]
         temperature: f64,
     },
@@ -442,13 +451,15 @@ pub enum CircuitElement {
         /// 0.0 = dark, 0.1 = ~50mA photocurrent with default responsivity.
         #[cfg_attr(feature = "serde", serde(default))]
         irradiance: f64,
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
 
     /// Varactor diode: voltage-dependent junction capacitance.
-    /// Open circuit in DC; voltage-dependent capacitor in transient.
+    /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
+    /// transient; in AC, its capacitance at the DC bias point.
     /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "varactor"))]
     Varactor {
@@ -484,8 +495,12 @@ pub enum CircuitElement {
     /// Coupling: M = k * sqrt(L1 * L2) where k ∈ [0, 1).
     /// k=1 is ideal (no leakage), but mathematically singular — use k<=0.999.
     ///
-    /// In DC analysis: both windings stamped as short circuits (zero resistance).
-    /// In transient: coupled-inductor companion with 2 branch current unknowns.
+    /// In DC analysis: both windings stamped as short circuits; the bias point
+    /// for AC, `.tf` and `.sens` shorts each with a 0 V source.
+    /// In AC: the coupled pair `V = jω·[[L1, M], [M, L2]]·I`.
+    /// In transient: coupled-inductor companion with 2 branch current unknowns,
+    /// each winding `V = L·dI/dt` plus the mutual term. The windings start at
+    /// 0 A; an initial current on a transformer is rejected.
     #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
     Transformer {
         /// Unique component identifier.

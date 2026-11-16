@@ -66,9 +66,11 @@ pub struct TfResult {
 ///
 /// # Algorithm
 ///
-/// 1. Solve the DC operating point of `circuit` (capacitors open,
-///    inductors shorted).
-/// 2. Linearise every nonlinear element at that operating point.
+/// 1. Solve the DC operating point of `circuit` (capacitors and varactors
+///    open, inductors and transformer windings shorted).
+/// 2. Linearise every nonlinear element at that operating point, as
+///    [`solve_ac`](crate::ac_analysis::solve_ac) does at ω = 0. A relay's
+///    contact is open or closed as the bias point leaves it.
 /// 3. Excite the input source with a unit signal, everything else zero,
 ///    and read the output: that is the gain. The input source's own
 ///    response gives the input resistance.
@@ -80,7 +82,9 @@ pub struct TfResult {
 ///
 /// - [`SimError::InvalidComponent`] if the input is not an independent
 ///   voltage or current source, the output node is not in the circuit, or
-///   a current output does not name an independent voltage source
+///   a current output does not name an independent voltage source. These
+///   are checked before the DC solve, so a misspelt name isn't hidden by a
+///   DC failure
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///

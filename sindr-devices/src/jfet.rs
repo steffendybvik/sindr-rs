@@ -36,6 +36,14 @@ pub struct JfetCompanion {
 /// Compute JFET companion at operating point (vgs, vds).
 /// Nodes order: [gate, drain, source] — same as MOSFET convention.
 /// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0.
+///
+/// In the ohmic region `gm = 2·Idss·Vds/Vp²` keeps its sign, so it is
+/// negative when the drain is below the source.
+///
+/// P-channel is evaluated in the mirrored N-channel frame (`-vgs`, `-vds`,
+/// `-|vp|`): `gm` and `gds` carry over to the physical device unchanged, but
+/// `i_eq` is the mirrored frame's, so the physical Norton current is
+/// `-i_eq`.
 pub fn jfet_companion(vgs: f64, vds: f64, kind: JfetKind, idss: f64, vp: f64) -> JfetCompanion {
     let (vgs, vds, idss, vp) = match kind {
         JfetKind::NChannel => (vgs, vds, idss, vp),

@@ -3,7 +3,11 @@
 //! Each waveform variant implements `evaluate(t)` returning the instantaneous
 //! value at time `t`. When attached to a VoltageSource or CurrentSource via
 //! `waveform: Some(w)`, the source value at each transient timestep becomes
-//! `dc_offset + w.evaluate(t)` (where dc_offset is the existing `voltage`/`current` field).
+//! `dc_offset + w.evaluate(t)` (where dc_offset is the existing `voltage`/`current` field),
+//! evaluated at the step's end time. Transient snapshots report that value as
+//! the source's voltage or current. A step that ends on a jump (a square, PWM
+//! or zero-rise pulse edge) sees the value just before it; the next step
+//! starts from the value after.
 
 use std::f64::consts::PI;
 
@@ -43,7 +47,8 @@ pub enum Waveform {
         fall_time: f64, // fall time (s)
         /// Width of the high portion of the pulse (s).
         pulse_width: f64, // pulse width (s)
-        /// Repetition period (s).
+        /// Repetition period (s). Zero, negative or non-finite means a
+        /// single pulse, as SPICE reads a zero period.
         period: f64, // period (s)
     },
 
@@ -308,7 +313,9 @@ impl Waveform {
         (out, capped)
     }
 
-    /// Return the period of this waveform in seconds, if periodic.
+    /// Return the period of this waveform in seconds, if periodic. `None`
+    /// for a single pulse (period zero, negative or non-finite), PWL, and a
+    /// frequency that isn't positive.
     pub fn period(&self) -> Option<f64> {
         match self {
             Waveform::Sine { frequency, .. } => {

@@ -18,6 +18,10 @@ pub enum AnalysisRequest {
         tstart: Option<f64>,
     },
     /// `.dc <source> start stop step` — DC sweep over a single source.
+    ///
+    /// The parser checks that `source` is a voltage or current source in the
+    /// deck, and that `step` is non-zero and points from `start` towards
+    /// `stop` (any step when they are equal).
     Dc {
         /// Source id being swept.
         source: String,
@@ -29,6 +33,9 @@ pub enum AnalysisRequest {
         step: f64,
     },
     /// `.ac <sweep> points fstart fstop` — small-signal AC sweep.
+    ///
+    /// The parser checks that `points` is in 1..=10⁷, `fstart <= fstop`, and
+    /// `fstart` is above 0 for `dec`/`oct` (at least 0 for `lin`).
     Ac {
         /// Sweep style (decade / octave / linear).
         sweep: AcSweep,

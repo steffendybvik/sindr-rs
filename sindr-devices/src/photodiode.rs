@@ -1,6 +1,7 @@
 //! Photodiode companion model.
 //!
-//! Model: I = IS*(exp(Vd/VT)-1) - I_photo
+//! Model: I = IS*(exp(Vd/(N*VT))-1) - I_photo, with VT = kT/q at the
+//! junction `temperature`
 //! I_photo = responsivity * irradiance (photocurrent, flows in reverse direction)
 //!
 //! In dark (irradiance=0), behaves identically to a silicon diode.
@@ -19,7 +20,8 @@ pub struct PhotodiodeParams {
     /// Responsivity (A/W). Converts irradiance to photocurrent.
     /// Typical silicon photodiode: 0.4–0.7 A/W.
     pub responsivity: f64,
-    /// Junction temperature (K). Default 300.15 K = 27°C.
+    /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
+    /// voltage [`PhotodiodeParams::vt`]; `is` is used as given.
     pub temperature: f64,
 }
 

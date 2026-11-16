@@ -3,6 +3,10 @@
 //! Implements NMOS and PMOS transistors with three operating regions:
 //! cutoff, triode (linear), and saturation. The companion model linearizes
 //! the device at each NR iteration for MNA stamping.
+//!
+//! `sindr` treats every MOSFET as a three-terminal part with its body tied
+//! to its source (Vbs = 0), so the body effect never applies there; the
+//! model keeps it for callers that drive the body separately.
 
 /// MOSFET type (NMOS or PMOS).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -127,7 +131,8 @@ pub struct MosfetCompanion {
     pub gm: f64,
     /// Output conductance: dId/dVds.
     pub gds: f64,
-    /// Body transconductance: dId/dVbs (from body effect).
+    /// Body transconductance: dId/dVbs (from body effect). Zero when
+    /// Vbs >= PHI, where the threshold stops depending on Vbs.
     pub gmb: f64,
     /// Operating region.
     pub region: MosfetRegion,
@@ -139,8 +144,12 @@ pub struct MosfetCompanion {
 ///
 /// Vth = VTO + GAMMA * (sqrt(PHI - Vbs) - sqrt(PHI))
 ///
-/// For NMOS with Vbs <= 0: Vth increases (harder to turn on).
-/// For PMOS, caller passes sign-adjusted Vbs.
+/// For NMOS with Vbs <= 0: Vth increases (harder to turn on). Once the body
+/// is forward-biased past PHI (Vbs >= PHI) the sqrt term is clamped to 0
+/// and Vth no longer depends on Vbs.
+/// For PMOS, caller passes sign-adjusted Vbs and
+/// [`MosfetParams::in_nmos_frame`] parameters. With the body tied to the
+/// source, as in sindr, Vbs = 0 and Vth = VTO.
 pub fn threshold_voltage(vbs: f64, params: &MosfetParams) -> f64 {
     let phi_minus_vbs = params.phi - vbs;
     // Clamp to prevent sqrt of negative (shouldn't happen physically)
@@ -154,11 +163,13 @@ pub fn threshold_voltage(vbs: f64, params: &MosfetParams) -> f64 {
 
 /// Evaluate the Level 1 MOSFET model at a given operating point.
 ///
-/// All voltages should be sign-adjusted by the caller for PMOS
-/// (i.e., pass |Vgs|, |Vds|, |Vbs| with appropriate polarity handling).
+/// Works in the N-channel frame. For NMOS: Vgs, Vds, Vbs are used directly.
+/// For PMOS: pass the mirrored voltages (Vsg, Vsd, Vsb; see
+/// [`MosfetKind::nmos_frame`]) and [`MosfetParams::in_nmos_frame`]
+/// parameters, so the equations work identically.
 ///
-/// For NMOS: Vgs, Vds, Vbs are used directly.
-/// For PMOS: caller negates terminal voltages so the equations work identically.
+/// `gmb` is zero once the body is forward-biased past PHI, matching
+/// [`threshold_voltage`].
 pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> MosfetCompanion {
     let vth = threshold_voltage(vbs, params);
     let vov = vgs - vth; // overdrive voltage

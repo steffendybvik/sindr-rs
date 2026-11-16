@@ -133,7 +133,8 @@ pub struct TimestepSnapshot {
     pub time: f64,
     /// Node voltages at this instant (V).
     pub node_voltages: HashMap<String, f64>,
-    /// Per-component voltage/current/power at this instant.
+    /// Per-component voltage/current/power at this instant. A source with a
+    /// waveform reports its value at this time, not its DC term.
     pub component_results: Vec<ComponentResult>,
 }
 

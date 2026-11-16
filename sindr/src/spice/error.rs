@@ -18,7 +18,10 @@ use thiserror::Error;
 ///
 /// Every variant that points at a location in source carries both the
 /// [`NamedSource`] and a [`SourceSpan`] so it renders nicely under
-/// `miette`'s fancy reporter.
+/// `miette`'s fancy reporter. That includes errors found after parsing
+/// (undefined models and parameters, parameter cycles, bad analysis-card
+/// values): they point at the offending line, inside the `.include`d file
+/// when that is where it is.
 #[derive(Error, Debug, Diagnostic)]
 pub enum SpiceParseError {
     /// First character of an element line was not a recognised device prefix.
@@ -199,7 +202,10 @@ pub enum SpiceParseError {
         bad_span: SourceSpan,
     },
 
-    /// Generic grammar failure (catch-all from the winnow parser).
+    /// Generic grammar failure (catch-all from the winnow parser), and the
+    /// errors raised while evaluating cards: a value that isn't finite, an
+    /// expression nested more than 256 levels deep, an out-of-range analysis
+    /// card.
     #[error("syntax error: {message}")]
     #[diagnostic(code(sindr::spice::syntax))]
     Syntax {

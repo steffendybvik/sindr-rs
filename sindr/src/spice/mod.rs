@@ -81,6 +81,20 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! # Values
+//!
+//! Numbers take SPICE's case-insensitive suffixes: `t` (1e12), `g` (1e9),
+//! `meg` (1e6), `k` (1e3), `m` (1e-3), `mil` (25.4e-6), `u` (1e-6),
+//! `n` (1e-9), `p` (1e-12), `f` (1e-15) and `a` (1e-18). Letters after the
+//! suffix are ignored, so `4.7uF` is 4.7e-6. `{…}` expressions may nest
+//! at most 256 levels deep. A value that evaluates to NaN or ±∞ (`1e400`,
+//! `{1/0}`) is an error at its line.
+//!
+//! Analysis cards are checked as they are read: a `.dc` must sweep a
+//! voltage or current source the deck defines, with a non-zero step that
+//! moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
+//! `fstart > 0` for `dec`/`oct`.
+//!
 //! # Strictness and warnings
 //!
 //! By default the parser runs in **strict** mode: any unsupported card,
@@ -154,7 +168,8 @@ use std::path::Path;
 pub struct ParsedNetlist {
     /// Flattened circuit ready for the sindr solver.
     pub circuit: crate::Circuit,
-    /// Analysis directives declared in the netlist (`.tran`, `.dc`, `.ac`, `.op`).
+    /// Analysis directives declared in the netlist (`.op`, `.tran`, `.dc`,
+    /// `.ac`, `.tf`, `.sens`).
     ///
     /// Order matches declaration order in the source.
     pub analyses: Vec<AnalysisRequest>,
@@ -165,8 +180,10 @@ pub struct ParsedNetlist {
     pub initial_conditions: HashMap<String, f64>,
     /// `.nodeset` node voltages (V), keyed by node name: a starting guess for
     /// the DC operating point. Pass them to
-    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages)
-    /// or [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages).
+    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages),
+    /// [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages),
+    /// [`solve_tf_with_initial_voltages`](crate::transfer_function::solve_tf_with_initial_voltages)
+    /// or [`solve_sensitivity_with_initial_voltages`](crate::sensitivity::solve_sensitivity_with_initial_voltages).
     /// Only top-level cards are read.
     pub nodesets: HashMap<String, f64>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
