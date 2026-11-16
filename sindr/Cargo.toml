@@ -18,7 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 sindr-devices = { workspace = true }
-nalgebra = "0.34"
+nalgebra = "0.35"
 # Sparse LU for large MNA systems.
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
 num-complex = "0.4"

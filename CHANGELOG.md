@@ -64,6 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** nalgebra 0.35. `MnaMatrix::to_dense`, `MnaSystem::b` and
+  `MnaSystem::solve` use its `DMatrix`/`DVector`, so callers on nalgebra
+  0.34 need to upgrade too.
 - **Breaking:** `spice::AnalysisRequest` has a `Tf` variant, so a `match`
   over it needs an arm for it.
 - **Breaking:** new public fields `SimulationResult::convergence_aid`,
