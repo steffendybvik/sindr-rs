@@ -344,6 +344,7 @@ fn validate_config(config: &AcConfig) -> Result<(), SimError> {
     if config.num_points == 0 {
         return invalid("num_points must be at least 1".into());
     }
+    crate::validation::check_sweep_points("AC sweep", "num_points", config.num_points)?;
     for (name, value) in [
         ("f_start", config.f_start),
         ("f_stop", config.f_stop),
