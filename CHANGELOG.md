@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.8] - Unreleased
+
 ## [0.1.0-alpha.7] - 2026-11-16
 
 ### Added
@@ -412,7 +414,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semiconductor models (diode, BJT, MOSFET, JFET, IGBT, varactor, zener,
   Schottky, LED, photodiode, photoresistor, thermistor).
 
-[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.7...HEAD
+[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.8...HEAD
+[0.1.0-alpha.8]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.7...v0.1.0-alpha.8
 [0.1.0-alpha.7]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.6...v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.5

@@ -60,7 +60,7 @@ A SPICE3 netlist parser ships inside `sindr` behind the optional, default-off `s
 
 ```toml
 [dependencies]
-sindr = { version = "0.1.0-alpha.7", features = ["spice"] }
+sindr = { version = "0.1.0-alpha.8", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -78,7 +78,7 @@ cargo run --example parse_netlist --features spice
 
 ## Status
 
-Pre-release alpha (`0.1.0-alpha.7`), [published on crates.io](https://crates.io/crates/sindr). API is liable to change.
+Pre-release alpha (`0.1.0-alpha.8`), [published on crates.io](https://crates.io/crates/sindr). API is liable to change.
 
 ## Scope & limitations
 

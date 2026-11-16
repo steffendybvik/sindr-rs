@@ -1240,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "sindr"
-version = "0.1.0-alpha.7"
+version = "0.1.0-alpha.8"
 dependencies = [
  "approx",
  "criterion",
@@ -1258,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "sindr-devices"
-version = "0.1.0-alpha.7"
+version = "0.1.0-alpha.8"
 dependencies = [
  "approx",
  "serde",
