@@ -77,6 +77,8 @@ let result = sindr::solve_circuit(&netlist.circuit)?;
 
 It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattens hierarchy with `.`-separated node naming, and returns a `SourceMap` to recover original instance paths. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
+`sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs and `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
+
 A runnable walkthrough (parse → solve → dispatch directives → render a diagnostic) lives in [`sindr/examples/parse_netlist.rs`](./sindr/examples/parse_netlist.rs):
 
 ```bash
@@ -149,6 +151,8 @@ It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, 
 ```bash
 cargo run --example parse_netlist --features spice
 ```
+
+`sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs and `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 
 ### Quick start
 
@@ -804,7 +808,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 #### Netlist & ecosystem
 
 - **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage and behavioural (`B`) sources are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` on BJTs. Anything else (junction capacitance, transit time, breakdown, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
-- **No SPICE netlist export.** Cannot hand a circuit off to ngspice / LTspice / Xyce.
+- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards are written. sindr's parser reads back only the R, L, C, V, I, D, Q part.
 - **No hierarchical data model.** The `spice` parser *flattens* `.subckt` hierarchy (parameter-passing instances, `.`-separated hierarchical node naming) when importing a deck. But the core `Circuit` API itself is a flat `Vec<CircuitElement>` — there is no hierarchical block or instance type exposed programmatically.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
 - **No Verilog-A / behavioural device language.** Adding a new device means writing a Rust companion model.
@@ -3438,6 +3442,120 @@ pub struct ParseWarning {
 }
 ```
 
+## `sindr/src/spice/export.rs`
+
+Write a [`Circuit`] as a SPICE deck: [`to_netlist`].
+
+```rust
+/// Why [`to_netlist`] couldn't write a circuit.
+pub enum ExportError {
+    /// The element has no SPICE equivalent that sindr can express.
+    #[error("`{id}` can't be written as SPICE: {reason}")]
+    Unsupported {
+        /// The element's id.
+        id: String,
+        /// What has no SPICE equivalent.
+        reason: String,
+    },
+    /// A node or element name a SPICE deck can't hold, or two names that
+    /// SPICE, being case-insensitive, would merge.
+    #[error("{what} `{name}` can't be written as SPICE: {reason}")]
+    BadName {
+        /// `"node"` or `"element"`.
+        what: &'static str,
+        /// The name as the circuit has it.
+        name: String,
+        /// What is wrong with it.
+        reason: String,
+    },
+    /// A value that is NaN or infinite.
+    #[error("`{id}`: {field} is {value}, not a finite number")]
+    NonFinite {
+        /// The element's id.
+        id: String,
+        /// The field holding the value.
+        field: &'static str,
+        /// The value.
+        value: f64,
+    },
+}
+
+/// Writes `circuit` as a SPICE deck titled `title`: element lines, then one
+/// `.model` card per distinct diode or transistor model, then `.end`. No
+/// analysis cards are written.
+///
+/// The deck is SPICE3, so ngspice reads it, and [`parse_str`](super::parse_str)
+/// reads back every element it can parse (R, L, C, V, I, D, Q) into a circuit
+/// that solves the same.
+///
+/// # What is written
+///
+/// | Element | As |
+/// |---|---|
+/// | `Resistor`, `Capacitor`, `Inductor` | `R`, `C`, `L` |
+/// | `VoltageSource`, `CurrentSource` | `V`, `I`, with `DC` or a waveform |
+/// | `Diode`, `Bjt` | `D`, `Q`, with a `.model` card |
+/// | `Vcvs`, `Vccs`, `Ccvs`, `Cccs` | `E`, `G`, `H`, `F` |
+/// | `Transformer` | two `L` and a `K` |
+/// | `Switch`, `Pushbutton`, `Fuse` | `R` at the resistance sindr stamps |
+/// | `Potentiometer` | two `R`, top–wiper and wiper–bottom |
+/// | `Photoresistor`, `Thermistor` | `R` at their resistance |
+/// | `Led`, `SchottkyDiode` | `D` with their Shockley parameters |
+///
+/// A source's waveform and its static value are written as one waveform:
+/// SPICE ignores a `DC` value during a transient, where sindr adds it.
+/// Square, triangle and PWM waves become the `PULSE` that traces the same
+/// wave; a sine's phase becomes `SIN`'s delay.
+///
+/// sindr's parser reads only R, L, C, V, I, D, Q, so a deck with E, G, F, H
+/// or K is for other simulators.
+///
+/// # Names
+///
+/// The ground node is written as `0`. An element keeps its id when the id
+/// starts with its SPICE letter (`R1` for a resistor); otherwise the letter
+/// is put in front (`load` becomes `Rload`). Elements written as two lines
+/// add `_top`/`_bottom` (potentiometer) or `_p`/`_s` (transformer windings).
+/// SPICE folds case, and sindr's parser reads everything as lowercase.
+///
+/// # Errors
+///
+/// [`ExportError::Unsupported`] for an element with no SPICE equivalent:
+/// MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode,
+/// varactor, voltage regulator, a BJT with parasitic capacitances, a junction
+/// away from 27 °C (sindr reads no temperature from a deck), or a phased sine
+/// of zero frequency. [`ExportError::BadName`] for a name holding whitespace
+/// or SPICE punctuation, a node other than ground named `0` or `gnd`, two
+/// names that differ only in case, or an F/H source whose controlling source
+/// isn't a voltage source. [`ExportError::NonFinite`] for a NaN or infinite
+/// value.
+///
+/// ```
+/// use sindr::{Circuit, CircuitElement};
+///
+/// let circuit = Circuit {
+///     ground_node: "gnd".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["in".into(), "gnd".into()],
+///             voltage: 5.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "load".into(),
+///             nodes: ["in".into(), "gnd".into()],
+///             resistance: 1e3,
+///         },
+///     ],
+/// };
+/// let deck = sindr::spice::to_netlist(&circuit, "divider")?;
+/// assert_eq!(deck, "divider\nV1 in 0 DC 5\nRload in 0 1000\n.end\n");
+/// # Ok::<(), sindr::spice::ExportError>(())
+/// ```
+pub fn to_netlist(circuit: &Circuit, title: &str) -> Result<String, ExportError> { … }
+```
+
 ## `sindr/src/spice/flatten.rs`
 
 Subcircuit flattener.
@@ -3622,6 +3740,12 @@ match sindr::spice::parse_file("bad.cir") {
 }
 ```
 
+### Export
+
+[`to_netlist`] writes a [`Circuit`](crate::Circuit) as a SPICE deck that
+ngspice runs and [`parse_str`] reads back; its docs list what each element
+is written as.
+
 Known gaps against full SPICE3 are listed in the repository's
 [`LIMITATIONS.md`](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
 
@@ -3629,6 +3753,8 @@ Known gaps against full SPICE3 are listed in the repository's
 pub use analysis::{AcSweep, AnalysisRequest};
 
 pub use error::{ParseWarning, SpiceParseError};
+
+pub use export::{to_netlist, ExportError};
 
 pub use source_map::{HierarchyPath, SourceMap};
 

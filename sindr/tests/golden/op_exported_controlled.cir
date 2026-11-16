@@ -1,0 +1,19 @@
+op_exported_controlled: written by sindr::spice::to_netlist
+v1 in 0 DC 2
+r1 in a 1000
+r2 a 0 2000
+re e 0 1000
+rg g 0 1000
+rh h 0 1000
+rf f 0 1000
+rx x 0 1000
+ri i 0 1000
+i1 i 0 DC 0.001
+rpot_top in w 3000
+rpot_bottom w 0 7000
+Rsw1 w x 0.01
+e1 e 0 a 0 3
+g1 0 g a 0 0.001
+h1 h 0 v1 100
+f1 0 f v1 2
+.end

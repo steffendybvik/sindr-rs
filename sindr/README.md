@@ -36,6 +36,8 @@ It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, 
 cargo run --example parse_netlist --features spice
 ```
 
+`sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs and `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
+
 ## Quick start
 
 ```rust
