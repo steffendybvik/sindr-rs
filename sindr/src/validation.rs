@@ -130,7 +130,7 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     Ok(())
 }
 
-/// Rejects a device temperature or BJT gain the models can't use, naming the
+/// Rejects a device temperature, BJT gain or model parameter the models can't use, naming the
 /// component, field and value. Left alone, a 0 K junction divides by zero and
 /// fails much later as a bare [`SimError::InvalidSolution`], and β ≤ 0 as
 /// that or a convergence failure.
@@ -145,7 +145,27 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             )))
         }
     };
+    let non_negative = |field: &str, value: f64, unit: &str| {
+        if value.is_finite() && value >= 0.0 {
+            Ok(())
+        } else {
+            Err(SimError::InvalidComponent(format!(
+                "`{}`: {field} {value}{unit} must be zero or a positive, finite number",
+                comp.id()
+            )))
+        }
+    };
     match comp {
+        CircuitElement::Diode {
+            temperature,
+            model: Some(model),
+            ..
+        } => {
+            positive("temperature", *temperature, " K")?;
+            positive("model.is", model.is, " A")?;
+            positive("model.n", model.n, "")?;
+            non_negative("model.rs", model.rs, " Ω")
+        }
         CircuitElement::Diode { temperature, .. }
         | CircuitElement::Led { temperature, .. }
         | CircuitElement::ZenerDiode { temperature, .. }
@@ -155,10 +175,21 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             positive("temperature", *temperature, " K")
         }
         CircuitElement::Bjt {
-            bf, temperature, ..
+            bf,
+            temperature,
+            model,
+            ..
         } => {
             positive("temperature", *temperature, " K")?;
-            positive("bf", *bf, "")
+            positive("bf", *bf, "")?;
+            if let Some(model) = model {
+                positive("model.is", model.is, " A")?;
+                positive("model.br", model.br, "")?;
+                positive("model.nf", model.nf, "")?;
+                positive("model.nr", model.nr, "")?;
+                non_negative("model.vaf", model.vaf, " V")?;
+            }
+            Ok(())
         }
         _ => Ok(()),
     }
@@ -170,6 +201,66 @@ mod tests {
     use crate::circuit::{Circuit, CircuitElement};
     use crate::error::SimError;
     use crate::solve_circuit;
+
+    #[test]
+    fn bad_model_parameters_name_the_field() {
+        let with = |component: CircuitElement| Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["a".into(), "0".into()],
+                    voltage: 5.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["a".into(), "b".into()],
+                    resistance: 1e3,
+                },
+                component,
+            ],
+        };
+        let diode = |model: crate::DiodeModel| {
+            with(CircuitElement::Diode {
+                id: "D1".into(),
+                nodes: ["b".into(), "0".into()],
+                temperature: 300.15,
+                model: Some(model),
+            })
+        };
+        let bjt = |model: crate::BjtModel| {
+            with(CircuitElement::Bjt {
+                id: "Q1".into(),
+                nodes: ["b".into(), "a".into(), "0".into()],
+                kind: crate::BjtKind::Npn,
+                bf: 100.0,
+                temperature: 300.15,
+                parasitic_caps: None,
+                model: Some(model),
+            })
+        };
+        let d = crate::DiodeModel::default();
+        let q = crate::BjtModel::default();
+        let bad = [
+            (diode(crate::DiodeModel { n: 0.0, ..d }), "model.n"),
+            (diode(crate::DiodeModel { is: -1.0, ..d }), "model.is"),
+            (diode(crate::DiodeModel { rs: -10.0, ..d }), "model.rs"),
+            (diode(crate::DiodeModel { rs: f64::NAN, ..d }), "model.rs"),
+            (bjt(crate::BjtModel { br: 0.0, ..q }), "model.br"),
+            (bjt(crate::BjtModel { nf: -1.0, ..q }), "model.nf"),
+            (bjt(crate::BjtModel { nr: 0.0, ..q }), "model.nr"),
+            (bjt(crate::BjtModel { vaf: -5.0, ..q }), "model.vaf"),
+        ];
+        for (circuit, field) in bad {
+            match validate_circuit(&circuit) {
+                Err(SimError::InvalidComponent(msg)) => assert!(msg.contains(field), "{msg}"),
+                other => panic!("{field}: {other:?}"),
+            }
+        }
+        assert!(validate_circuit(&diode(crate::DiodeModel { rs: 1e9, ..d })).is_ok());
+        assert!(validate_circuit(&bjt(crate::BjtModel { vaf: 0.0, ..q })).is_ok());
+    }
 
     #[test]
     fn bad_device_temperature_or_gain_names_the_field() {
@@ -191,6 +282,7 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["b".into(), "0".into()],
                     temperature,
+                    model: None,
                 },
             ],
         };
@@ -212,6 +304,7 @@ mod tests {
             bf: 0.0,
             temperature: 300.15,
             parasitic_caps: None,
+            model: None,
         };
         match validate_circuit(&bjt) {
             Err(SimError::InvalidComponent(msg)) => {

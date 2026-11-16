@@ -364,9 +364,12 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
     for component in &circuit.components {
         match component {
             CircuitElement::Diode {
-                nodes, temperature, ..
+                model,
+                nodes,
+                temperature,
+                ..
             } => {
-                let params = device_params::diode(*temperature);
+                let params = device_params::diode(model.as_ref(), *temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
@@ -450,13 +453,14 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 });
             }
             CircuitElement::Bjt {
+                model,
                 nodes,
                 kind,
                 bf,
                 temperature,
                 ..
             } => {
-                let params = device_params::bjt(*bf, *temperature);
+                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
 
                 // B-E junction: standard diode limiting (splits between anode/cathode
                 // or full delta to non-ground node). This allows the B-E limiter
@@ -887,6 +891,7 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["n2".into(), "0".into()],
                     temperature: 300.15,
+                    model: None,
                 },
             ],
         }
@@ -1061,6 +1066,7 @@ mod tests {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
+            model: None,
         });
         circuit.components.extend([
             CircuitElement::Resistor {
@@ -1080,6 +1086,7 @@ mod tests {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             },
         ]);
         let result = crate::solve_circuit(&circuit).unwrap();
@@ -1125,6 +1132,7 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["a".into(), "k".into()],
                     temperature: 300.15,
+                    model: None,
                 },
                 resistor("R2", "k", "0", 1_000.0),
             ],
@@ -1159,6 +1167,7 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
         }
@@ -1240,6 +1249,7 @@ mod tests {
             id: id.into(),
             nodes: [a.into(), k.into()],
             temperature: 300.15,
+            model: None,
         }
     }
 

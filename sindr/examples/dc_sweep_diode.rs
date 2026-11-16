@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()], // anode: n2, cathode: GND
                 temperature: 300.15,
+                model: None,
             },
         ],
     };

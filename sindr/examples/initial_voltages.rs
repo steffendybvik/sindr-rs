@@ -32,11 +32,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "D1".into(),
                 nodes: ["top".into(), "mid".into()],
                 temperature: 300.15,
+                model: None,
             },
             CircuitElement::Diode {
                 id: "D2".into(),
                 nodes: ["mid".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
     };

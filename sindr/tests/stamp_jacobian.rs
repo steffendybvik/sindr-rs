@@ -129,6 +129,7 @@ fn diode_stamp_is_newton_consistent() {
             id: "D1".into(),
             nodes: ["a".into(), "k".into()],
             temperature,
+            model: None,
         });
         assert_consistent(circuit, &as_slices(&two_terminal(DIODE_BIASES)));
     }
@@ -199,6 +200,7 @@ fn bjt(kind: BjtKind, temperature: f64) -> Circuit {
         bf: 100.0,
         temperature,
         parasitic_caps: None,
+        model: None,
     })
 }
 

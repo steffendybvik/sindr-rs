@@ -78,6 +78,7 @@ pub struct TempSweepResult {
 ///             id: "D1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             temperature: 300.15,
+///             model: None,
 ///         },
 ///     ],
 /// };
@@ -229,6 +230,7 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15, // will be overridden in sweep
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
         };

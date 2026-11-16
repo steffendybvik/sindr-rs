@@ -256,7 +256,7 @@ pub mod transient;
 pub mod validation;
 pub mod waveform;
 
-pub use circuit::{Circuit, CircuitElement};
+pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel};
 pub use dc_sweep::{dc_sweep, DcSweepResult};
 pub use error::SimError;
 pub use mna::MnaSystem;
@@ -500,6 +500,7 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
 ///             id: "D1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             temperature: 300.15,
+///             model: None,
 ///         },
 ///     ],
 /// };

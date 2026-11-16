@@ -28,6 +28,72 @@ pub struct BjtParasiticCaps {
     pub cbc: f64,
 }
 
+/// Shockley parameters of a [`CircuitElement::Diode`], as a SPICE `.model D`
+/// card gives them. Values are at the nominal 27 °C; the element's
+/// `temperature` scales `is` from there.
+///
+/// The default is sindr's built-in silicon diode. With serde, a missing field
+/// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiodeModel {
+    /// Saturation current IS (A), positive. Default 1e-14.
+    pub is: f64,
+    /// Emission coefficient N, positive. Default 1.
+    pub n: f64,
+    /// Series resistance RS (Ω), zero or positive. Default 0.
+    pub rs: f64,
+}
+
+impl Default for DiodeModel {
+    fn default() -> Self {
+        Self {
+            is: 1e-14,
+            n: 1.0,
+            rs: 0.0,
+        }
+    }
+}
+
+/// Ebers–Moll parameters of a [`CircuitElement::Bjt`], as a SPICE
+/// `.model NPN`/`PNP` card gives them. The forward gain is the element's own
+/// `bf`. Values are at the nominal 27 °C; the element's `temperature` scales
+/// `is` from there.
+///
+/// The default is sindr's built-in transistor. With serde, a missing field
+/// takes its default.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BjtModel {
+    /// Transport saturation current IS (A), positive. Default 1e-14.
+    pub is: f64,
+    /// Reverse current gain BR, positive. Default 1.
+    pub br: f64,
+    /// Forward emission coefficient NF, positive. Default 1.
+    pub nf: f64,
+    /// Reverse emission coefficient NR, positive. Default 1.
+    pub nr: f64,
+    /// Forward Early voltage VAF (V), zero or positive; 0 turns the Early
+    /// effect off. Default 0. sindr applies it as `ic·(1 + vce/VAF)`, not
+    /// through SPICE's Gummel–Poon base charge, so results differ slightly
+    /// from SPICE's when it is set.
+    pub vaf: f64,
+}
+
+impl Default for BjtModel {
+    fn default() -> Self {
+        Self {
+            is: 1e-14,
+            br: 1.0,
+            nf: 1.0,
+            nr: 1.0,
+            vaf: 0.0,
+        }
+    }
+}
+
 /// MOSFET gate parasitic capacitances. All values in Farads.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default)]
@@ -152,9 +218,9 @@ pub enum CircuitElement {
         inductance: f64,
     },
 
-    /// Diode (silicon Shockley model). `nodes: [anode, cathode]`.
-    /// Forward current flows from anode → cathode; positive
-    /// `voltage_across` corresponds to forward bias.
+    /// Diode (Shockley model, silicon unless `model` says otherwise).
+    /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
+    /// positive `voltage_across` corresponds to forward bias.
     #[cfg_attr(feature = "serde", serde(rename = "diode"))]
     Diode {
         /// Unique component identifier.
@@ -165,6 +231,13 @@ pub enum CircuitElement {
         /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
+        /// Model parameters (IS, N, RS). `None` is the built-in silicon diode,
+        /// the same as `Some(DiodeModel::default())`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<DiodeModel>,
     },
 
     /// LED. `nodes: [anode, cathode]`. Forward voltage drop depends on
@@ -206,6 +279,13 @@ pub enum CircuitElement {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         parasitic_caps: Option<BjtParasiticCaps>,
+        /// Ebers–Moll parameters besides `bf` (IS, BR, NF, NR, VAF). `None`
+        /// is the built-in transistor, the same as `Some(BjtModel::default())`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<BjtModel>,
     },
 
     /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
@@ -885,6 +965,7 @@ mod tests {
                     cbe: 10e-12,
                     cbc: 0.0,
                 }),
+                model: None,
             }],
         };
         assert!(
@@ -904,6 +985,7 @@ mod tests {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             }],
         };
         // BJT without parasitic caps is not reactive (nonlinear, but not reactive)
@@ -972,6 +1054,49 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn device_models_are_optional_and_partial_in_json() {
+        let json = r#"{
+            "components": [
+                {"type": "diode", "id": "D0", "nodes": ["a", "0"]},
+                {"type": "diode", "id": "D1", "nodes": ["a", "0"], "model": {"rs": 0.5}},
+                {"type": "bjt", "id": "Q1", "nodes": ["b", "c", "e"], "kind": "pnp",
+                 "model": {"is": 1e-15, "vaf": 50}}
+            ],
+            "ground_node": "0"
+        }"#;
+        let circuit: Circuit = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            &circuit.components[0],
+            CircuitElement::Diode { model: None, .. }
+        ));
+        match &circuit.components[1] {
+            CircuitElement::Diode { model, .. } => assert_eq!(
+                *model,
+                Some(DiodeModel {
+                    rs: 0.5,
+                    ..DiodeModel::default()
+                })
+            ),
+            other => panic!("expected Diode, got {other:?}"),
+        }
+        match &circuit.components[2] {
+            CircuitElement::Bjt { model, .. } => assert_eq!(
+                *model,
+                Some(BjtModel {
+                    is: 1e-15,
+                    vaf: 50.0,
+                    ..BjtModel::default()
+                })
+            ),
+            other => panic!("expected Bjt, got {other:?}"),
+        }
+
+        let out = serde_json::to_string(&circuit.components[0]).unwrap();
+        assert!(!out.contains("model"), "{out}");
+    }
+
     #[test]
     fn has_nonlinear_elements_true_with_bjt() {
         let circuit = Circuit {
@@ -983,6 +1108,7 @@ mod tests {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             }],
         };
         assert!(circuit.has_nonlinear_elements());

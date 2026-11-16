@@ -100,6 +100,7 @@ fn dc_sweep_diode_matches_shockley_root() {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
+            model: None,
         },
     ]);
     let sweep = dc_sweep(&network, "V1", -2.0, 10.0, 25).unwrap();

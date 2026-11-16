@@ -329,6 +329,7 @@ pub fn npn_common_emitter() -> Circuit {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             },
         ],
     }
@@ -362,6 +363,7 @@ pub fn npn_switch() -> Circuit {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             },
         ],
     }

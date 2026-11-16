@@ -48,6 +48,7 @@ fn diode_resistor(vsource: f64) -> Circuit {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
     }
