@@ -1,7 +1,7 @@
 //! Newton-Raphson nonlinear solver.
 //!
 //! Orchestrates iterative solving for circuits containing nonlinear
-//! elements (diodes, LEDs). Each iteration builds a fresh MNA system
+//! elements (diodes, BJTs, MOSFETs, JFETs, IGBTs, ...). Each iteration builds a fresh MNA system
 //! with companion models evaluated at the current operating point,
 //! solves it, applies voltage limiting, and checks convergence.
 
@@ -35,10 +35,17 @@ pub const RELTOL: f64 = 1e-3;
 ///
 /// # Algorithm
 ///
-/// 1. Start with all node voltages at zero.
+/// 1. Start from the linear part of the circuit solved with the nonlinear
+///    devices left out, then move each BJT base to a typical Vbe and cap each
+///    forward-biased diode junction at its critical voltage, as SPICE does.
 /// 2. Each iteration: stamp all components (with companion models at v_prev),
 ///    add Gmin shunts, solve, apply voltage limiting, check convergence.
-/// 3. Return results when converged, or error after MAX_NR_ITERATIONS.
+///    When limiting one junction pushes a neighbour sharing its node past
+///    its own limit (diodes in series), take a damped step that keeps every
+///    junction within its limit instead.
+/// 3. Converged when every node voltage has settled within
+///    `V_ABSTOL + RELTOL·|V|` and every diode, LED and BJT junction voltage
+///    within `V_ABSTOL + RELTOL·n·V_T`; error after [`MAX_NR_ITERATIONS`].
 ///
 /// When plain Newton–Raphson fails, retries with gmin stepping and then
 /// source stepping; [`SimulationResult::convergence_aid`] says which one

@@ -93,7 +93,7 @@ CircuitElement::CurrentSource { id, nodes: [String; 2], current: f64, waveform: 
 
 `nodes[0]` is the positive terminal for voltage sources; current flows from `nodes[0]` toward `nodes[1]` for current sources.
 
-A `Waveform` (sine, square, sawtooth, pulse) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
+A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
 
 ### Switches
 
@@ -126,7 +126,7 @@ CircuitElement::Varactor {
 }
 ```
 
-Varactors are purely reactive — treated as open circuit in DC, and stamped as a voltage-dependent capacitor `C_j(V) = cj0 / (1 - V/phi)^m` each transient timestep. Always triggers transient analysis.
+Varactors are purely reactive — treated as open circuit in DC, as their junction capacitance at the bias point in AC, and stamped as a voltage-dependent capacitor `C_j(V) = cj0 / (1 - V/phi)^m` each transient timestep. Always triggers transient analysis.
 
 ### Transistors
 

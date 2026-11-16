@@ -87,10 +87,10 @@
 //! | Diode, LED, Schottky, photodiode | Shockley; IS and V_T = kT/q follow each device's `temperature` (SPICE IS(T), XTI = 3) |
 //! | Zener | Shockley forward, linear breakdown at `vz` |
 //! | BJT (NPN/PNP) | Ebers–Moll with Early voltage; not Gummel–Poon |
-//! | MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges); no BSIM |
+//! | MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges), body tied to source, SPICE-signed VTO (negative for an enhancement PMOS); no BSIM |
 //! | JFET (N/P) | Shichman–Hodges square law |
 //! | IGBT | MOSFET-like gate control, square-law collector current |
-//! | Varactor | Voltage-dependent junction capacitance (transient) |
+//! | Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
 //! | Op-amp, comparator | Saturating VCVS, gain 1e5; no GBW or slew rate |
 //! | Transformer | Linear coupled inductors |
 //!
@@ -98,8 +98,10 @@
 //!
 //! ## Convergence aids
 //!
-//! Junction voltage limiting and Newton damping on every nonlinear solve.
-//! When plain Newton–Raphson fails, the DC solve retries with gmin stepping
+//! Junction voltage limiting and Newton damping on every nonlinear solve,
+//! with junctions starting at their critical voltage, as in SPICE. Newton
+//! converges only once node voltages and every diode, LED and BJT junction
+//! voltage have settled. When plain Newton–Raphson fails, the DC solve retries with gmin stepping
 //! (1e-2 S down to 1e-12 S), then with source stepping (every source ramped
 //! up from zero); [`SimulationResult::convergence_aid`] says which one was
 //! needed. A transient step whose Newton solve fails is retried at half the

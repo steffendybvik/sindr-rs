@@ -14,7 +14,8 @@ pub struct ZenerParams {
     pub rz: f64,
     /// Saturation current for the forward diode region.
     pub is: f64,
-    /// Junction temperature (K). Default 300.15 K = 27°C.
+    /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
+    /// voltage [`ZenerParams::vt`]; `is` is used as given.
     pub temperature: f64,
 }
 

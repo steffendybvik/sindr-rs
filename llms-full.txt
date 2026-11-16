@@ -207,7 +207,7 @@ CircuitElement::CurrentSource { id, nodes: [String; 2], current: f64, waveform: 
 
 `nodes[0]` is the positive terminal for voltage sources; current flows from `nodes[0]` toward `nodes[1]` for current sources.
 
-A `Waveform` (sine, square, sawtooth, pulse) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
+A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
 
 #### Switches
 
@@ -240,7 +240,7 @@ CircuitElement::Varactor {
 }
 ```
 
-Varactors are purely reactive — treated as open circuit in DC, and stamped as a voltage-dependent capacitor `C_j(V) = cj0 / (1 - V/phi)^m` each transient timestep. Always triggers transient analysis.
+Varactors are purely reactive — treated as open circuit in DC, as their junction capacitance at the bias point in AC, and stamped as a voltage-dependent capacitor `C_j(V) = cj0 / (1 - V/phi)^m` each transient timestep. Always triggers transient analysis.
 
 #### Transistors
 
@@ -850,7 +850,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
 - **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation.
 - **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
-- **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the AC bias point (`solve_ac_with_initial_voltages`).
+- **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the bias point of AC, `.tf` and `.sens` (`solve_ac_with_initial_voltages`, `solve_tf_with_initial_voltages`, `solve_sensitivity_with_initial_voltages`).
 - **`.ic` is always `UIC`:** transients never compute a DC operating point first; they start from the initial conditions (`TransientConfig::with_initial_voltages`, `with_initial_current`) or from all-zero. Transformer windings always start at 0 A, and inductor `IC=` on SPICE element lines isn't parsed.
 - **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), not per charge or flux, and the tolerances can't be changed yet. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
 - **No checkpointing / restart** of long transient runs.
@@ -901,7 +901,7 @@ If a missing capability is blocking real work, open an issue describing the **ci
 AC small-signal analysis module.
 
 Performs frequency-domain analysis by:
-1. Finding the DC operating point
+1. Finding the DC operating point (capacitors open, inductors shorted)
 2. Linearizing all nonlinear elements at that point
 3. Building a complex-valued MNA system at each frequency
 4. Solving for node voltages as complex phasors
@@ -972,18 +972,24 @@ impl AcResult {
 ///
 /// # Algorithm
 ///
-/// 1. Solve the DC operating point of `circuit`.
-/// 2. Linearise every nonlinear element at that operating point.
+/// 1. Solve the DC operating point of `circuit`, with capacitors and
+///    varactors open and inductors and transformer windings shorted.
+/// 2. Linearise every nonlinear element at that operating point: diodes,
+///    LEDs, Zener, Schottky and photodiodes, BJTs (full terminal Jacobian,
+///    junction temperature included), MOSFETs, JFETs, IGBTs, and varactors
+///    (their capacitance at the bias). A relay's contact is open or closed
+///    as the bias point leaves it.
 /// 3. At each frequency, build a complex-valued MNA system (capacitors and
-///    inductors become `jωC` / `jωL` admittances), solve it, and store the
-///    complex node voltage phasors.
+///    inductors become `jωC` / `jωL` admittances, a transformer the coupled
+///    pair `V = jω·[[L1, M], [M, L2]]·I`), solve it, and store the complex
+///    node voltage phasors.
 ///
 /// # Errors
 ///
 /// - [`SimError::InvalidComponent`] if `config` is invalid: zero points,
 ///   non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic
-///   spacing, or `f_start < 0` with linear spacing; or if `source_id` isn't
-///   the id of a voltage source in `circuit`
+///   spacing, `f_start < 0` with linear spacing, or more than 10⁷ points;
+///   or if `source_id` isn't the id of a voltage source in `circuit`
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised AC system is singular
 ///   at any frequency
@@ -1179,7 +1185,8 @@ pub enum CircuitElement {
 
     /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
     /// solves DC as a single algebraic step, not as t→∞ of a transient);
-    /// integrates `dI/dt` properly during transient. `voltage_across` is
+    /// integrates `dI/dt` properly during transient. The DC bias point that
+    /// AC, `.tf` and `.sens` linearise around shorts it instead. `voltage_across` is
     /// reported as `nodes[0] − nodes[1]`, `current_through` flows
     /// `nodes[0] → nodes[1]`. To get steady-state current, run a
     /// transient long enough to settle.
@@ -1202,7 +1209,8 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
@@ -1217,12 +1225,14 @@ pub enum CircuitElement {
         nodes: [String; 2],
         /// Emission colour (e.g. `"red"`, `"blue"`); sets the forward voltage drop.
         color: String,
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
 
-    /// BJT transistor (3 terminals). Stub for DC analysis.
+    /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
+    /// DC, transient and AC.
     #[cfg_attr(feature = "serde", serde(rename = "bjt"))]
     Bjt {
         /// Unique component identifier.
@@ -1231,10 +1241,11 @@ pub enum CircuitElement {
         nodes: [String; 3], // [base, collector, emitter]
         /// Polarity (NPN or PNP).
         kind: BjtKind,
-        /// Forward current gain β (unitless). Default 100.
+        /// Forward current gain β (unitless), positive and finite. Default 100.
         #[cfg_attr(feature = "serde", serde(default = "default_bf"))]
         bf: f64,
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
         /// Optional parasitic capacitances (Cbe, Cbc). None = no parasitic caps (default).
@@ -1354,7 +1365,8 @@ pub enum CircuitElement {
 
     /// Relay: 4-terminal component with a coil and a contact pair.
     /// nodes: [coil+, coil-, contact1, contact2]
-    /// Contact closes when |V_coil| >= pickup_voltage.
+    /// Contact closes when |V_coil| >= pickup_voltage. AC and `.tf` take the
+    /// contact as open or closed at the DC bias point.
     #[cfg_attr(feature = "serde", serde(rename = "relay"))]
     Relay {
         /// Unique component identifier.
@@ -1366,7 +1378,8 @@ pub enum CircuitElement {
         coil_resistance: f64,
         /// Coil voltage magnitude at which the contact closes (V).
         pickup_voltage: f64,
-        /// Coil inductance in Henry. 0.0 = purely resistive coil (backward compatible).
+        /// Coil inductance in Henry, in series with `coil_resistance` in
+        /// transient. 0.0 = purely resistive coil.
         #[cfg_attr(feature = "serde", serde(default))]
         inductance: f64,
     },
@@ -1409,7 +1422,8 @@ pub enum CircuitElement {
         nodes: [String; 2],
         /// Reverse breakdown (Zener) voltage (V).
         vz: f64,
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
@@ -1454,7 +1468,8 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
@@ -1467,7 +1482,7 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[n1, n2]`.
         nodes: [String; 2],
-        /// Temperature in Kelvin. Default: 298.15 K (25°C).
+        /// Temperature in Kelvin, positive and finite. Default: 298.15 K (25°C).
         #[cfg_attr(feature = "serde", serde(default = "default_temperature"))]
         temperature: f64,
     },
@@ -1484,13 +1499,15 @@ pub enum CircuitElement {
         /// 0.0 = dark, 0.1 = ~50mA photocurrent with default responsivity.
         #[cfg_attr(feature = "serde", serde(default))]
         irradiance: f64,
-        /// Junction temperature (K). Default 300.15 K. Used for IS temperature scaling.
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
         #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
         temperature: f64,
     },
 
     /// Varactor diode: voltage-dependent junction capacitance.
-    /// Open circuit in DC; voltage-dependent capacitor in transient.
+    /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
+    /// transient; in AC, its capacitance at the DC bias point.
     /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "varactor"))]
     Varactor {
@@ -1526,8 +1543,12 @@ pub enum CircuitElement {
     /// Coupling: M = k * sqrt(L1 * L2) where k ∈ [0, 1).
     /// k=1 is ideal (no leakage), but mathematically singular — use k<=0.999.
     ///
-    /// In DC analysis: both windings stamped as short circuits (zero resistance).
-    /// In transient: coupled-inductor companion with 2 branch current unknowns.
+    /// In DC analysis: both windings stamped as short circuits; the bias point
+    /// for AC, `.tf` and `.sens` shorts each with a 0 V source.
+    /// In AC: the coupled pair `V = jω·[[L1, M], [M, L2]]·I`.
+    /// In transient: coupled-inductor companion with 2 branch current unknowns,
+    /// each winding `V = L·dI/dt` plus the mutual term. The windings start at
+    /// 0 A; an initial current on a transformer is rejected.
     #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
     Transformer {
         /// Unique component identifier.
@@ -1756,9 +1777,12 @@ Error type returned by the solver.
 ```rust
 /// Anything that can go wrong while validating or solving a circuit.
 ///
-/// Returned by [`solve_circuit`](crate::solve_circuit), [`dc_sweep`](fn@crate::dc_sweep),
-/// [`temperature_sweep`](crate::temperature_sweep), and the AC analysis
-/// entry point.
+/// Returned by [`solve_circuit`](crate::solve_circuit),
+/// [`solve_transient`](crate::solve_transient),
+/// [`solve_ac`](crate::ac_analysis::solve_ac), [`solve_tf`](crate::solve_tf),
+/// [`solve_sensitivity`](crate::solve_sensitivity),
+/// [`dc_sweep`](fn@crate::dc_sweep) and
+/// [`temperature_sweep`](crate::temperature_sweep).
 ///
 /// Variants split into three groups:
 ///
@@ -1770,8 +1794,8 @@ Error type returned by the solver.
 ///   [`ConvergenceFailed`](Self::ConvergenceFailed)) — the matrix has no
 ///   unique solution or Newton–Raphson failed to converge.
 /// - **Configuration errors** ([`InvalidComponent`](Self::InvalidComponent),
-///   [`InvalidResistance`](Self::InvalidResistance)) — a component value
-///   that the solver explicitly rejects.
+///   [`InvalidResistance`](Self::InvalidResistance)) — a component value or
+///   analysis setting that the solver explicitly rejects.
 pub enum SimError {
     /// No ground node was defined. Every circuit needs a reference node.
     #[error(
@@ -1811,8 +1835,12 @@ pub enum SimError {
     )]
     InvalidSolution,
 
-    /// A component definition is malformed (wrong number of terminals,
-    /// unknown id, etc.). Carries a human-readable description.
+    /// A component definition or analysis setting is malformed: a device
+    /// `temperature` or BJT `bf` that isn't positive and finite, an id that
+    /// names no suitable source or component, a non-finite or out-of-range
+    /// sweep or transient setting, a transient of more than 10⁷ steps or a
+    /// sweep of more than 10⁷ points, a bad initial condition. Carries a
+    /// human-readable description naming the offending id or field.
     #[error("Invalid component: {0}")]
     InvalidComponent(String),
 
@@ -1822,7 +1850,8 @@ pub enum SimError {
     )]
     InvalidResistance(String),
 
-    /// Newton–Raphson exhausted its iteration budget without converging.
+    /// Newton–Raphson exhausted its iteration budget without converging,
+    /// in DC after the gmin- and source-stepping fallbacks failed too.
     ///
     /// Carries the iteration count reached and the largest per-node voltage
     /// step `max_i |Vᵢ_new − Vᵢ_prev|` (V) at the final iteration. A step
@@ -1992,10 +2021,10 @@ periodic steady state, S-parameters, variable-order integration.
 | Diode, LED, Schottky, photodiode | Shockley; IS and V_T = kT/q follow each device's `temperature` (SPICE IS(T), XTI = 3) |
 | Zener | Shockley forward, linear breakdown at `vz` |
 | BJT (NPN/PNP) | Ebers–Moll with Early voltage; not Gummel–Poon |
-| MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges); no BSIM |
+| MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges), body tied to source, SPICE-signed VTO (negative for an enhancement PMOS); no BSIM |
 | JFET (N/P) | Shichman–Hodges square law |
 | IGBT | MOSFET-like gate control, square-law collector current |
-| Varactor | Voltage-dependent junction capacitance (transient) |
+| Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
 | Op-amp, comparator | Saturating VCVS, gain 1e5; no GBW or slew rate |
 | Transformer | Linear coupled inductors |
 
@@ -2003,8 +2032,10 @@ Parameters are Rust structs, not SPICE `.model` cards.
 
 #### Convergence aids
 
-Junction voltage limiting and Newton damping on every nonlinear solve.
-When plain Newton–Raphson fails, the DC solve retries with gmin stepping
+Junction voltage limiting and Newton damping on every nonlinear solve,
+with junctions starting at their critical voltage, as in SPICE. Newton
+converges only once node voltages and every diode, LED and BJT junction
+voltage have settled. When plain Newton–Raphson fails, the DC solve retries with gmin stepping
 (1e-2 S down to 1e-12 S), then with source stepping (every source ramped
 up from zero); [`SimulationResult::convergence_aid`] says which one was
 needed. A transient step whose Newton solve fails is retried at half the
@@ -2416,7 +2447,7 @@ impl MnaSystem {
 Newton-Raphson nonlinear solver.
 
 Orchestrates iterative solving for circuits containing nonlinear
-elements (diodes, LEDs). Each iteration builds a fresh MNA system
+elements (diodes, BJTs, MOSFETs, JFETs, IGBTs, ...). Each iteration builds a fresh MNA system
 with companion models evaluated at the current operating point,
 solves it, applies voltage limiting, and checks convergence.
 
@@ -2437,10 +2468,17 @@ pub const RELTOL: f64 = 1e-3;
 ///
 /// # Algorithm
 ///
-/// 1. Start with all node voltages at zero.
+/// 1. Start from the linear part of the circuit solved with the nonlinear
+///    devices left out, then move each BJT base to a typical Vbe and cap each
+///    forward-biased diode junction at its critical voltage, as SPICE does.
 /// 2. Each iteration: stamp all components (with companion models at v_prev),
 ///    add Gmin shunts, solve, apply voltage limiting, check convergence.
-/// 3. Return results when converged, or error after MAX_NR_ITERATIONS.
+///    When limiting one junction pushes a neighbour sharing its node past
+///    its own limit (diodes in series), take a damped step that keeps every
+///    junction within its limit instead.
+/// 3. Converged when every node voltage has settled within
+///    `V_ABSTOL + RELTOL·|V|` and every diode, LED and BJT junction voltage
+///    within `V_ABSTOL + RELTOL·n·V_T`; error after [`MAX_NR_ITERATIONS`].
 ///
 /// When plain Newton–Raphson fails, retries with gmin stepping and then
 /// source stepping; [`SimulationResult::convergence_aid`] says which one
@@ -2632,7 +2670,8 @@ pub struct TimestepSnapshot {
     pub time: f64,
     /// Node voltages at this instant (V).
     pub node_voltages: HashMap<String, f64>,
-    /// Per-component voltage/current/power at this instant.
+    /// Per-component voltage/current/power at this instant. A source with a
+    /// waveform reports its value at this time, not its DC term.
     pub component_results: Vec<ComponentResult>,
 }
 
@@ -2911,6 +2950,10 @@ pub enum AnalysisRequest {
         tstart: Option<f64>,
     },
     /// `.dc <source> start stop step` — DC sweep over a single source.
+    ///
+    /// The parser checks that `source` is a voltage or current source in the
+    /// deck, and that `step` is non-zero and points from `start` towards
+    /// `stop` (any step when they are equal).
     Dc {
         /// Source id being swept.
         source: String,
@@ -2922,6 +2965,9 @@ pub enum AnalysisRequest {
         step: f64,
     },
     /// `.ac <sweep> points fstart fstop` — small-signal AC sweep.
+    ///
+    /// The parser checks that `points` is in 1..=10⁷, `fstart <= fstop`, and
+    /// `fstart` is above 0 for `dec`/`oct` (at least 0 for `lin`).
     Ac {
         /// Sweep style (decade / octave / linear).
         sweep: AcSweep,
@@ -3062,7 +3108,10 @@ per field that fires the lint for every variant.
 ///
 /// Every variant that points at a location in source carries both the
 /// [`NamedSource`] and a [`SourceSpan`] so it renders nicely under
-/// `miette`'s fancy reporter.
+/// `miette`'s fancy reporter. That includes errors found after parsing
+/// (undefined models and parameters, parameter cycles, bad analysis-card
+/// values): they point at the offending line, inside the `.include`d file
+/// when that is where it is.
 pub enum SpiceParseError {
     /// First character of an element line was not a recognised device prefix.
     #[error("unknown device prefix '{prefix}'")]
@@ -3242,7 +3291,10 @@ pub enum SpiceParseError {
         bad_span: SourceSpan,
     },
 
-    /// Generic grammar failure (catch-all from the winnow parser).
+    /// Generic grammar failure (catch-all from the winnow parser), and the
+    /// errors raised while evaluating cards: a value that isn't finite, an
+    /// expression nested more than 256 levels deep, an out-of-range analysis
+    /// card.
     #[error("syntax error: {message}")]
     #[diagnostic(code(sindr::spice::syntax))]
     Syntax {
@@ -3447,6 +3499,20 @@ for analysis in &netlist.analyses {
 }
 ```
 
+### Values
+
+Numbers take SPICE's case-insensitive suffixes: `t` (1e12), `g` (1e9),
+`meg` (1e6), `k` (1e3), `m` (1e-3), `mil` (25.4e-6), `u` (1e-6),
+`n` (1e-9), `p` (1e-12), `f` (1e-15) and `a` (1e-18). Letters after the
+suffix are ignored, so `4.7uF` is 4.7e-6. `{…}` expressions may nest
+at most 256 levels deep. A value that evaluates to NaN or ±∞ (`1e400`,
+`{1/0}`) is an error at its line.
+
+Analysis cards are checked as they are read: a `.dc` must sweep a
+voltage or current source the deck defines, with a non-zero step that
+moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
+`fstart > 0` for `dec`/`oct`.
+
 ### Strictness and warnings
 
 By default the parser runs in **strict** mode: any unsupported card,
@@ -3500,7 +3566,8 @@ pub use source_map::{HierarchyPath, SourceMap};
 pub struct ParsedNetlist {
     /// Flattened circuit ready for the sindr solver.
     pub circuit: crate::Circuit,
-    /// Analysis directives declared in the netlist (`.tran`, `.dc`, `.ac`, `.op`).
+    /// Analysis directives declared in the netlist (`.op`, `.tran`, `.dc`,
+    /// `.ac`, `.tf`, `.sens`).
     ///
     /// Order matches declaration order in the source.
     pub analyses: Vec<AnalysisRequest>,
@@ -3511,8 +3578,10 @@ pub struct ParsedNetlist {
     pub initial_conditions: HashMap<String, f64>,
     /// `.nodeset` node voltages (V), keyed by node name: a starting guess for
     /// the DC operating point. Pass them to
-    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages)
-    /// or [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages).
+    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages),
+    /// [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages),
+    /// [`solve_tf_with_initial_voltages`](crate::transfer_function::solve_tf_with_initial_voltages)
+    /// or [`solve_sensitivity_with_initial_voltages`](crate::sensitivity::solve_sensitivity_with_initial_voltages).
     /// Only top-level cards are read.
     pub nodesets: HashMap<String, f64>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
@@ -3757,8 +3826,9 @@ pub fn ldr_resistance(light_level: f64) -> f64 { … }
 /// stamping function. Voltage sources are numbered sequentially
 /// (0, 1, 2, ...) in the order they appear in the component list.
 ///
-/// When `v_prev` is `Some`, nonlinear components (Diode, Led, BJT, MOSFET) are stamped
-/// using their companion model evaluated at the given operating point.
+/// When `v_prev` is `Some`, nonlinear components (diodes, LEDs, BJTs, MOSFETs,
+/// JFETs, IGBTs, ...) are stamped using their companion model evaluated at the
+/// given operating point.
 /// When `v_prev` is `None`, nonlinear components are skipped (linear solve).
 ///
 /// # Errors
@@ -3820,6 +3890,10 @@ pub fn stamp_current_source(
 
 /// Stamp a capacitor companion model (Backward Euler) into the MNA system.
 ///
+/// The transient stepper builds its companions from the configured
+/// [`IntegrationMethod`](crate::IntegrationMethod) (Gear-2 by default)
+/// instead; this is the backward-Euler form on its own.
+///
 /// Converts a capacitor into a conductance + current source pair:
 /// ```text
 ///   G_eq = C / dt
@@ -3841,6 +3915,10 @@ pub fn stamp_capacitor_companion(
 ) { … }
 
 /// Stamp an inductor companion model (Backward Euler) into the MNA system.
+///
+/// The transient stepper builds its companions from the configured
+/// [`IntegrationMethod`](crate::IntegrationMethod) (Gear-2 by default)
+/// instead; this is the backward-Euler form on its own.
 ///
 /// Converts an inductor into a conductance + current source pair:
 /// ```text
@@ -4068,9 +4146,11 @@ pub struct TfResult {
 ///
 /// # Algorithm
 ///
-/// 1. Solve the DC operating point of `circuit` (capacitors open,
-///    inductors shorted).
-/// 2. Linearise every nonlinear element at that operating point.
+/// 1. Solve the DC operating point of `circuit` (capacitors and varactors
+///    open, inductors and transformer windings shorted).
+/// 2. Linearise every nonlinear element at that operating point, as
+///    [`solve_ac`](crate::ac_analysis::solve_ac) does at ω = 0. A relay's
+///    contact is open or closed as the bias point leaves it.
 /// 3. Excite the input source with a unit signal, everything else zero,
 ///    and read the output: that is the gain. The input source's own
 ///    response gives the input resistance.
@@ -4082,7 +4162,9 @@ pub struct TfResult {
 ///
 /// - [`SimError::InvalidComponent`] if the input is not an independent
 ///   voltage or current source, the output node is not in the circuit, or
-///   a current output does not name an independent voltage source
+///   a current output does not name an independent voltage source. These
+///   are checked before the DC solve, so a misspelt name isn't hidden by a
+///   DC failure
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -4285,8 +4367,11 @@ impl TransientConfig {
 ///
 /// [`SimError::InvalidComponent`] for an invalid config (a non-finite or
 /// non-positive time, `tstep > tstop`, or more than 10⁷ steps counting one
-/// for each waveform breakpoint) or an initial condition that names no node
-/// or inductor in the circuit or isn't finite, any
+/// for each waveform breakpoint), a source with more than
+/// [`MAX_BREAKPOINTS`](crate::waveform::MAX_BREAKPOINTS) breakpoints before
+/// `tstop`, or an initial condition that names no node or inductor in the
+/// circuit, sits on a transformer, sets the ground node to a nonzero voltage
+/// or isn't finite, any
 /// validation error from [`validate_circuit`](crate::validate_circuit),
 /// [`SimError::ConvergenceFailed`] if Newton–Raphson fails even at a step a
 /// million times smaller than `tstep`, and [`SimError::SingularMatrix`] or
@@ -4340,8 +4425,10 @@ pub fn solve_transient(
 Pre-solve circuit validation.
 
 Catches obvious topology mistakes (no ground, disconnected subgraphs,
-floating nodes) before they reach the matrix solver, where the failure
-mode would be a less helpful "singular matrix" error. Run automatically
+floating nodes) and device values the models can't use (a junction
+temperature at or below 0 K, a BJT `bf` at or below 0) before they reach
+the solver, where the failure mode would be a less helpful "singular
+matrix" or "invalid solution" error. Run automatically
 by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 [`validate_circuit`].
 
@@ -4352,6 +4439,8 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 /// 1. Ground node exists (at least one component touches it)
 /// 2. All nodes reachable from ground (BFS connectivity)
 /// 3. No floating nodes (every non-ground node has degree >= 2)
+/// 4. Device values the models can use: every `temperature` field positive
+///    and finite (K), and a BJT's `bf` positive and finite
 ///
 /// # Errors
 ///
@@ -4363,6 +4452,10 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 ///
 /// Returns [`SimError::FloatingNode`] naming the first node with fewer than
 /// 2 connections.
+///
+/// Returns [`SimError::InvalidComponent`] naming the component, field and
+/// value for a `temperature` that is zero, negative or not finite, or a BJT
+/// `bf` that isn't positive and finite.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> { … }
 ```
 
@@ -4373,7 +4466,11 @@ Time-varying waveform definitions for voltage/current sources.
 Each waveform variant implements `evaluate(t)` returning the instantaneous
 value at time `t`. When attached to a VoltageSource or CurrentSource via
 `waveform: Some(w)`, the source value at each transient timestep becomes
-`dc_offset + w.evaluate(t)` (where dc_offset is the existing `voltage`/`current` field).
+`dc_offset + w.evaluate(t)` (where dc_offset is the existing `voltage`/`current` field),
+evaluated at the step's end time. Transient snapshots report that value as
+the source's voltage or current. A step that ends on a jump (a square, PWM
+or zero-rise pulse edge) sees the value just before it; the next step
+starts from the value after.
 
 ```rust
 /// A time-varying waveform.
@@ -4409,7 +4506,8 @@ pub enum Waveform {
         fall_time: f64, // fall time (s)
         /// Width of the high portion of the pulse (s).
         pulse_width: f64, // pulse width (s)
-        /// Repetition period (s).
+        /// Repetition period (s). Zero, negative or non-finite means a
+        /// single pulse, as SPICE reads a zero period.
         period: f64, // period (s)
     },
 
@@ -4491,7 +4589,9 @@ impl Waveform {
     /// ```
     pub fn breakpoints(&self, t_end: f64) -> Vec<f64> { … }
 
-    /// Return the period of this waveform in seconds, if periodic.
+    /// Return the period of this waveform in seconds, if periodic. `None`
+    /// for a single pulse (period zero, negative or non-finite), PWL, and a
+    /// frequency that isn't positive.
     pub fn period(&self) -> Option<f64> { … }
 }
 ```
@@ -4553,7 +4653,8 @@ pub struct BjtParams {
     pub vaf: f64, // Forward Early voltage (V). 0.0 = infinite (no Early effect).
     /// Reverse Early voltage (V). 0.0 = infinite.
     pub var: f64, // Reverse Early voltage (V). 0.0 = infinite.
-    /// Junction temperature (K). Default 300.15 K = 27°C.
+    /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
+    /// voltage [`BjtParams::vt`]; `is` is used as given.
     pub temperature: f64, // Junction temperature (K). Default 300.15 K = 27°C.
 }
 
@@ -4587,6 +4688,11 @@ pub struct BjtCompanion {
 /// Evaluate the Ebers–Moll transport model at junction voltages `vbe`/`vbc`
 /// (V, sign-adjusted for PNP by the caller), returning the linearised
 /// [`BjtCompanion`] for MNA stamping.
+///
+/// `g_be` and `g_bc` are the exact slopes of the junction currents, with no
+/// cap: overshoot is left to the solver's junction voltage limiting. For the
+/// full terminal Jacobian, Early effect included, use
+/// [`bjt_terminal_jacobian`].
 pub fn bjt_companion(vbe: f64, vbc: f64, params: &BjtParams) -> BjtCompanion { … }
 
 /// Base and collector currents `(ib, ic)` (A) at junction voltages
@@ -4665,7 +4771,9 @@ pub struct DiodeParams {
     pub n: f64,
     /// Series resistance (Ω). Default 0.0 — no effect on existing models.
     pub rs: f64,
-    /// Junction temperature (K). Default 300.15 K = 27°C.
+    /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
+    /// voltage [`DiodeParams::vt`]; `is` is used as given, so scale it with
+    /// [`temperature_scale_is`] for a junction away from [`T_NOM`].
     pub temperature: f64,
 }
 
@@ -4706,8 +4814,12 @@ pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64, n: f
 /// Compute the companion model (linearised) at operating point `v_d`.
 ///
 /// Returns `(g_d, i_eq)` where:
-/// - `g_d` is the companion conductance (dI/dV at v_d)
+/// - `g_d` is the companion conductance (dI/dV at v_d), floored at [`GMIN`]
 /// - `i_eq` is the companion current source (I_d - g_d * v_d)
+///
+/// `i_eq` is built from the same floored `g_d`, so `g_d * v_d + i_eq` is
+/// always the diode current: the floor shapes the Newton steps in deep
+/// reverse bias without adding a GMIN leakage to the converged current.
 ///
 /// These stamp into MNA exactly like a resistor (g_d) and current source (i_eq).
 ///
@@ -4830,6 +4942,14 @@ pub struct JfetCompanion {
 /// Compute JFET companion at operating point (vgs, vds).
 /// Nodes order: [gate, drain, source] — same as MOSFET convention.
 /// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0.
+///
+/// In the ohmic region `gm = 2·Idss·Vds/Vp²` keeps its sign, so it is
+/// negative when the drain is below the source.
+///
+/// P-channel is evaluated in the mirrored N-channel frame (`-vgs`, `-vds`,
+/// `-|vp|`): `gm` and `gds` carry over to the physical device unchanged, but
+/// `i_eq` is the mirrored frame's, so the physical Norton current is
+/// `-i_eq`.
 pub fn jfet_companion(vgs: f64, vds: f64, kind: JfetKind, idss: f64, vp: f64) -> JfetCompanion { … }
 ```
 
@@ -4922,7 +5042,10 @@ assert!(g_eq > 0.0);
 
 - **Voltages and currents** are in SI units (V, A).
 - **Temperature** is in kelvin. Default is 300.15 K (≈ 27 °C, the SPICE
-  default).
+  default). A junction's `vt()` is the thermal voltage kT/q at its own
+  `temperature` ([`diode::thermal_voltage`]); its `is` is used as given,
+  so scale it with [`diode::temperature_scale_is`] away from
+  [`diode::T_NOM`].
 - **Sign convention** for two-terminal companions: `v_applied` is the
   voltage from `nodes[0]` to `nodes[1]`, and `i_eq` is the current
   flowing into `nodes[0]`.
@@ -4963,6 +5086,10 @@ MOSFET Level 1 (Shichman-Hodges) model with body effect.
 Implements NMOS and PMOS transistors with three operating regions:
 cutoff, triode (linear), and saturation. The companion model linearizes
 the device at each NR iteration for MNA stamping.
+
+`sindr` treats every MOSFET as a three-terminal part with its body tied
+to its source (Vbs = 0), so the body effect never applies there; the
+model keeps it for callers that drive the body separately.
 
 ```rust
 /// MOSFET type (NMOS or PMOS).
@@ -5039,7 +5166,8 @@ pub struct MosfetCompanion {
     pub gm: f64,
     /// Output conductance: dId/dVds.
     pub gds: f64,
-    /// Body transconductance: dId/dVbs (from body effect).
+    /// Body transconductance: dId/dVbs (from body effect). Zero when
+    /// Vbs >= PHI, where the threshold stops depending on Vbs.
     pub gmb: f64,
     /// Operating region.
     pub region: MosfetRegion,
@@ -5051,17 +5179,23 @@ pub struct MosfetCompanion {
 ///
 /// Vth = VTO + GAMMA * (sqrt(PHI - Vbs) - sqrt(PHI))
 ///
-/// For NMOS with Vbs <= 0: Vth increases (harder to turn on).
-/// For PMOS, caller passes sign-adjusted Vbs.
+/// For NMOS with Vbs <= 0: Vth increases (harder to turn on). Once the body
+/// is forward-biased past PHI (Vbs >= PHI) the sqrt term is clamped to 0
+/// and Vth no longer depends on Vbs.
+/// For PMOS, caller passes sign-adjusted Vbs and
+/// [`MosfetParams::in_nmos_frame`] parameters. With the body tied to the
+/// source, as in sindr, Vbs = 0 and Vth = VTO.
 pub fn threshold_voltage(vbs: f64, params: &MosfetParams) -> f64 { … }
 
 /// Evaluate the Level 1 MOSFET model at a given operating point.
 ///
-/// All voltages should be sign-adjusted by the caller for PMOS
-/// (i.e., pass |Vgs|, |Vds|, |Vbs| with appropriate polarity handling).
+/// Works in the N-channel frame. For NMOS: Vgs, Vds, Vbs are used directly.
+/// For PMOS: pass the mirrored voltages (Vsg, Vsd, Vsb; see
+/// [`MosfetKind::nmos_frame`]) and [`MosfetParams::in_nmos_frame`]
+/// parameters, so the equations work identically.
 ///
-/// For NMOS: Vgs, Vds, Vbs are used directly.
-/// For PMOS: caller negates terminal voltages so the equations work identically.
+/// `gmb` is zero once the body is forward-biased past PHI, matching
+/// [`threshold_voltage`].
 pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> MosfetCompanion { … }
 
 /// Detect MOSFET operating region from terminal voltages.
@@ -5072,7 +5206,8 @@ pub fn detect_region(vgs: f64, vds: f64, vth: f64) -> MosfetRegion { … }
 
 Photodiode companion model.
 
-Model: I = IS*(exp(Vd/VT)-1) - I_photo
+Model: I = IS*(exp(Vd/(N*VT))-1) - I_photo, with VT = kT/q at the
+junction `temperature`
 I_photo = responsivity * irradiance (photocurrent, flows in reverse direction)
 
 In dark (irradiance=0), behaves identically to a silicon diode.
@@ -5088,7 +5223,8 @@ pub struct PhotodiodeParams {
     /// Responsivity (A/W). Converts irradiance to photocurrent.
     /// Typical silicon photodiode: 0.4–0.7 A/W.
     pub responsivity: f64,
-    /// Junction temperature (K). Default 300.15 K = 27°C.
+    /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
+    /// voltage [`PhotodiodeParams::vt`]; `is` is used as given.
     pub temperature: f64,
 }
 
@@ -5202,6 +5338,7 @@ Varactor diode model: voltage-dependent junction capacitance.
 A varactor is a reverse-biased diode whose junction capacitance varies with
 applied voltage. In DC analysis it is an open circuit. In transient analysis
 the capacitance is evaluated at the previous timestep voltage (freeze-and-stamp).
+In AC analysis it is the capacitance at the DC bias point.
 
 ```rust
 /// Varactor diode parameters.
@@ -5227,7 +5364,10 @@ pub fn junction_capacitance(v: f64, params: &VaractorParams) -> f64 { … }
 ///
 /// Returns `(g_eq, i_eq)` where:
 /// - g_eq = C_j(v_prev) / dt  (backward Euler capacitor conductance)
-/// - i_eq = -g_eq * v_prev    (capacitor history current — note sign convention)
+/// - i_eq = -g_eq * v_prev    (capacitor history current)
+///
+/// The current from anode to cathode is `g_eq * v + i_eq`, the same
+/// convention as [`diode_companion`](crate::diode::diode_companion).
 ///
 /// In DC analysis, stamp as open circuit: return (0.0, 0.0).
 /// Caller passes dt = 0.0 to signal DC, returning open circuit.
@@ -5250,7 +5390,8 @@ pub struct ZenerParams {
     pub rz: f64,
     /// Saturation current for the forward diode region.
     pub is: f64,
-    /// Junction temperature (K). Default 300.15 K = 27°C.
+    /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
+    /// voltage [`ZenerParams::vt`]; `is` is used as given.
     pub temperature: f64,
 }
 

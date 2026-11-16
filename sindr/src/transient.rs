@@ -1436,8 +1436,11 @@ impl TransientConfig {
 ///
 /// [`SimError::InvalidComponent`] for an invalid config (a non-finite or
 /// non-positive time, `tstep > tstop`, or more than 10⁷ steps counting one
-/// for each waveform breakpoint) or an initial condition that names no node
-/// or inductor in the circuit or isn't finite, any
+/// for each waveform breakpoint), a source with more than
+/// [`MAX_BREAKPOINTS`](crate::waveform::MAX_BREAKPOINTS) breakpoints before
+/// `tstop`, or an initial condition that names no node or inductor in the
+/// circuit, sits on a transformer, sets the ground node to a nonzero voltage
+/// or isn't finite, any
 /// validation error from [`validate_circuit`](crate::validate_circuit),
 /// [`SimError::ConvergenceFailed`] if Newton–Raphson fails even at a step a
 /// million times smaller than `tstep`, and [`SimError::SingularMatrix`] or

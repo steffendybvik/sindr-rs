@@ -3,6 +3,7 @@
 //! A varactor is a reverse-biased diode whose junction capacitance varies with
 //! applied voltage. In DC analysis it is an open circuit. In transient analysis
 //! the capacitance is evaluated at the previous timestep voltage (freeze-and-stamp).
+//! In AC analysis it is the capacitance at the DC bias point.
 
 /// Varactor diode parameters.
 #[derive(Debug, Clone)]
@@ -43,7 +44,10 @@ pub fn junction_capacitance(v: f64, params: &VaractorParams) -> f64 {
 ///
 /// Returns `(g_eq, i_eq)` where:
 /// - g_eq = C_j(v_prev) / dt  (backward Euler capacitor conductance)
-/// - i_eq = -g_eq * v_prev    (capacitor history current — note sign convention)
+/// - i_eq = -g_eq * v_prev    (capacitor history current)
+///
+/// The current from anode to cathode is `g_eq * v + i_eq`, the same
+/// convention as [`diode_companion`](crate::diode::diode_companion).
 ///
 /// In DC analysis, stamp as open circuit: return (0.0, 0.0).
 /// Caller passes dt = 0.0 to signal DC, returning open circuit.

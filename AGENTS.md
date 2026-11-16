@@ -24,7 +24,7 @@ sindr-rs/
 │   │   ├── sensitivity.rs      # .sens: DC adjoint sensitivity
 │   │   ├── dc_sweep.rs         # parameter sweep
 │   │   ├── temp_sweep.rs       # temperature sweep
-│   │   ├── waveform.rs         # Waveform enum (sine, square, pulse, sawtooth)
+│   │   ├── waveform.rs         # Waveform enum (sine, pulse, square, triangle, PWM, PWL)
 │   │   ├── results.rs          # SimulationResult, ComponentResult, etc.
 │   │   ├── node_map.rs         # node-name → matrix-index mapping
 │   │   ├── validation.rs       # circuit pre-flight checks

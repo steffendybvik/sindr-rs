@@ -62,8 +62,9 @@ pub fn ldr_resistance(light_level: f64) -> f64 {
 /// stamping function. Voltage sources are numbered sequentially
 /// (0, 1, 2, ...) in the order they appear in the component list.
 ///
-/// When `v_prev` is `Some`, nonlinear components (Diode, Led, BJT, MOSFET) are stamped
-/// using their companion model evaluated at the given operating point.
+/// When `v_prev` is `Some`, nonlinear components (diodes, LEDs, BJTs, MOSFETs,
+/// JFETs, IGBTs, ...) are stamped using their companion model evaluated at the
+/// given operating point.
 /// When `v_prev` is `None`, nonlinear components are skipped (linear solve).
 ///
 /// # Errors
@@ -554,6 +555,10 @@ pub(crate) fn stamp_zener_companion(
 
 /// Stamp a capacitor companion model (Backward Euler) into the MNA system.
 ///
+/// The transient stepper builds its companions from the configured
+/// [`IntegrationMethod`](crate::IntegrationMethod) (Gear-2 by default)
+/// instead; this is the backward-Euler form on its own.
+///
 /// Converts a capacitor into a conductance + current source pair:
 /// ```text
 ///   G_eq = C / dt
@@ -601,6 +606,10 @@ pub fn stamp_capacitor_companion(
 }
 
 /// Stamp an inductor companion model (Backward Euler) into the MNA system.
+///
+/// The transient stepper builds its companions from the configured
+/// [`IntegrationMethod`](crate::IntegrationMethod) (Gear-2 by default)
+/// instead; this is the backward-Euler form on its own.
 ///
 /// Converts an inductor into a conductance + current source pair:
 /// ```text
@@ -651,8 +660,9 @@ pub fn stamp_inductor_companion(
 
 /// Stamp a BJT Ebers-Moll companion model into the MNA system.
 ///
-/// Evaluates the companion model at the current operating point (from v_prev)
-/// and stamps the resulting 9 G-matrix entries + 3 RHS entries.
+/// The exact Newton linearisation at the current operating point (from
+/// v_prev): the 3×3 terminal Jacobian from `bjt_terminal_jacobian` (Early
+/// effect included) plus 3 RHS entries.
 ///
 /// nodes: [base, collector, emitter].
 /// PNP is handled via polarity multiplier on junction voltages and output currents.
@@ -845,7 +855,8 @@ pub(crate) fn stamp_igbt_companion(
 ///
 /// Linearizes the Shockley square-law JFET model at the current operating point.
 /// nodes: [gate, drain, source].
-/// P-channel is handled via sign flip inside jfet_companion().
+/// P-channel: `jfet_companion` works in the mirrored N-channel frame, and the
+/// Norton current is flipped back to the physical one here.
 pub(crate) fn stamp_jfet_companion(
     system: &mut MnaSystem,
     node_map: &NodeMap,

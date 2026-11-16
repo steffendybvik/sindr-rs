@@ -62,7 +62,8 @@ pub struct BjtParams {
     pub vaf: f64, // Forward Early voltage (V). 0.0 = infinite (no Early effect).
     /// Reverse Early voltage (V). 0.0 = infinite.
     pub var: f64, // Reverse Early voltage (V). 0.0 = infinite.
-    /// Junction temperature (K). Default 300.15 K = 27°C.
+    /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
+    /// voltage [`BjtParams::vt`]; `is` is used as given.
     pub temperature: f64, // Junction temperature (K). Default 300.15 K = 27°C.
 }
 
@@ -118,6 +119,11 @@ const V_MAX_EXP: f64 = 40.0 * V_T; // ~1.034V
 /// Evaluate the Ebers–Moll transport model at junction voltages `vbe`/`vbc`
 /// (V, sign-adjusted for PNP by the caller), returning the linearised
 /// [`BjtCompanion`] for MNA stamping.
+///
+/// `g_be` and `g_bc` are the exact slopes of the junction currents, with no
+/// cap: overshoot is left to the solver's junction voltage limiting. For the
+/// full terminal Jacobian, Early effect included, use
+/// [`bjt_terminal_jacobian`].
 pub fn bjt_companion(vbe: f64, vbc: f64, params: &BjtParams) -> BjtCompanion {
     // Above V_MAX_EXP the exponentials are extrapolated linearly; the
     // conductances are the slopes of exactly those curves, so the companion

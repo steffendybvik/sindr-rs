@@ -30,7 +30,9 @@ pub struct DiodeParams {
     pub n: f64,
     /// Series resistance (Ω). Default 0.0 — no effect on existing models.
     pub rs: f64,
-    /// Junction temperature (K). Default 300.15 K = 27°C.
+    /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
+    /// voltage [`DiodeParams::vt`]; `is` is used as given, so scale it with
+    /// [`temperature_scale_is`] for a junction away from [`T_NOM`].
     pub temperature: f64,
 }
 
@@ -102,8 +104,12 @@ pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64, n: f
 /// Compute the companion model (linearised) at operating point `v_d`.
 ///
 /// Returns `(g_d, i_eq)` where:
-/// - `g_d` is the companion conductance (dI/dV at v_d)
+/// - `g_d` is the companion conductance (dI/dV at v_d), floored at [`GMIN`]
 /// - `i_eq` is the companion current source (I_d - g_d * v_d)
+///
+/// `i_eq` is built from the same floored `g_d`, so `g_d * v_d + i_eq` is
+/// always the diode current: the floor shapes the Newton steps in deep
+/// reverse bias without adding a GMIN leakage to the converged current.
 ///
 /// These stamp into MNA exactly like a resistor (g_d) and current source (i_eq).
 ///

@@ -1,8 +1,10 @@
 //! Pre-solve circuit validation.
 //!
 //! Catches obvious topology mistakes (no ground, disconnected subgraphs,
-//! floating nodes) before they reach the matrix solver, where the failure
-//! mode would be a less helpful "singular matrix" error. Run automatically
+//! floating nodes) and device values the models can't use (a junction
+//! temperature at or below 0 K, a BJT `bf` at or below 0) before they reach
+//! the solver, where the failure mode would be a less helpful "singular
+//! matrix" or "invalid solution" error. Run automatically
 //! by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 //! [`validate_circuit`].
 
@@ -32,6 +34,8 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 /// 1. Ground node exists (at least one component touches it)
 /// 2. All nodes reachable from ground (BFS connectivity)
 /// 3. No floating nodes (every non-ground node has degree >= 2)
+/// 4. Device values the models can use: every `temperature` field positive
+///    and finite (K), and a BJT's `bf` positive and finite
 ///
 /// # Errors
 ///
@@ -43,6 +47,10 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 ///
 /// Returns [`SimError::FloatingNode`] naming the first node with fewer than
 /// 2 connections.
+///
+/// Returns [`SimError::InvalidComponent`] naming the component, field and
+/// value for a `temperature` that is zero, negative or not finite, or a BJT
+/// `bf` that isn't positive and finite.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     // ------------------------------------------------------------------
     // Check 1: Ground node exists

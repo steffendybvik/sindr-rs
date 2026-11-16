@@ -1,7 +1,7 @@
 //! AC small-signal analysis module.
 //!
 //! Performs frequency-domain analysis by:
-//! 1. Finding the DC operating point
+//! 1. Finding the DC operating point (capacitors open, inductors shorted)
 //! 2. Linearizing all nonlinear elements at that point
 //! 3. Building a complex-valued MNA system at each frequency
 //! 4. Solving for node voltages as complex phasors
@@ -888,18 +888,24 @@ pub(crate) fn small_signal_system(
 ///
 /// # Algorithm
 ///
-/// 1. Solve the DC operating point of `circuit`.
-/// 2. Linearise every nonlinear element at that operating point.
+/// 1. Solve the DC operating point of `circuit`, with capacitors and
+///    varactors open and inductors and transformer windings shorted.
+/// 2. Linearise every nonlinear element at that operating point: diodes,
+///    LEDs, Zener, Schottky and photodiodes, BJTs (full terminal Jacobian,
+///    junction temperature included), MOSFETs, JFETs, IGBTs, and varactors
+///    (their capacitance at the bias). A relay's contact is open or closed
+///    as the bias point leaves it.
 /// 3. At each frequency, build a complex-valued MNA system (capacitors and
-///    inductors become `jωC` / `jωL` admittances), solve it, and store the
-///    complex node voltage phasors.
+///    inductors become `jωC` / `jωL` admittances, a transformer the coupled
+///    pair `V = jω·[[L1, M], [M, L2]]·I`), solve it, and store the complex
+///    node voltage phasors.
 ///
 /// # Errors
 ///
 /// - [`SimError::InvalidComponent`] if `config` is invalid: zero points,
 ///   non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic
-///   spacing, or `f_start < 0` with linear spacing; or if `source_id` isn't
-///   the id of a voltage source in `circuit`
+///   spacing, `f_start < 0` with linear spacing, or more than 10⁷ points;
+///   or if `source_id` isn't the id of a voltage source in `circuit`
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised AC system is singular
 ///   at any frequency
