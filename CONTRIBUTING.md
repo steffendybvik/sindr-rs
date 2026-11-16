@@ -6,8 +6,8 @@ architecture, how to add a circuit element or device model, and conventions.
 
 ## Toolchain
 
-- **MSRV is Rust 1.87** (`rust-version` in both crate manifests). CI tests on
-  1.87 and on stable, so don't use std or language features newer than 1.87.
+- **MSRV is Rust 1.89** (`rust-version` in both crate manifests). CI tests on
+  1.89 and on stable, so don't use std or language features newer than 1.89.
 - Edition 2021. No `unsafe`, and no `unwrap()`/`expect()` outside tests:
   return a `SimError`.
 

@@ -375,8 +375,10 @@ fn parse_waveform(input: &mut Input<'_>) -> ModalResult<Option<RawWaveform>> {
             return Err(ErrMode::from_input(input));
         }
         let pairs = args
-            .chunks_exact(2)
-            .map(|c| (c[0].clone(), c[1].clone()))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[a, b]| (a.clone(), b.clone()))
             .collect();
         return Ok(Some(RawWaveform::Pwl(pairs)));
     }
