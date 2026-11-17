@@ -148,6 +148,7 @@ fn voltage_regulator_holds_output_independent_of_input() {
                 id: "U1".into(),
                 nodes: ["in".into(), "out".into(), "0".into()],
                 voltage: 5.0,
+                model: None,
             },
             resistor("Rload", "out", "0", 1_000.0),
         ],

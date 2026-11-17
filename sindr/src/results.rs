@@ -27,8 +27,9 @@ use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 /// dissipating energy. Components with more terminals report one port:
 /// BJTs and IGBTs give Vce and Ic, MOSFETs and JFETs give Vds and Id, with
 /// `power` as the magnitude `|V·I|` (their full results are in
-/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, and a
-/// transformer its primary.
+/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, a
+/// transformer its primary, and a voltage regulator its pass element
+/// (`Vin − Vout`, the output current, and its dissipation).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ComponentResult {
@@ -282,6 +283,27 @@ fn node_voltage(node: &str, node_map: &NodeMap, solution: &DVector<f64>) -> f64 
     match node_map.index(node) {
         Some(idx) => solution[idx],
         None => 0.0, // ground
+    }
+}
+
+/// A regulator's result: its pass element, input to output. `Vin − Vout`,
+/// the output current, and the power it dissipates, quiescent included.
+pub(crate) fn regulator_result(
+    id: &str,
+    nodes: &[String; 3],
+    model: &Option<sindr_devices::regulator::RegulatorParams>,
+    node_map: &NodeMap,
+    solution: &DVector<f64>,
+    branch: usize,
+) -> ComponentResult {
+    let (vin, vout, iout) =
+        crate::stamp::regulator_state(node_map, nodes, branch, Some(solution)).unwrap_or_default();
+    let params = model.unwrap_or_default();
+    ComponentResult {
+        id: id.to_string(),
+        voltage_across: vin - vout,
+        current_through: iout,
+        power: sindr_devices::regulator::regulator_dissipation(&params, vin, vout, iout),
     }
 }
 
@@ -811,21 +833,14 @@ pub fn extract_results(
                     power,
                 });
             }
-            CircuitElement::VoltageRegulator { id, nodes, voltage } => {
-                // Stamped as ideal voltage source between nodes[1] (output) and nodes[2] (gnd).
-                // Report voltage at output relative to the regulator's gnd node.
-                let vout = node_voltage(&nodes[1], node_map, solution);
-                let vgnd = node_voltage(&nodes[2], node_map, solution);
-                let v_across = vout - vgnd;
-                let i_through = solution[num_nodes + vsource_index];
-                let power = voltage * i_through;
-                branch_currents.insert(id.clone(), i_through);
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power,
-                });
+            CircuitElement::VoltageRegulator {
+                id, nodes, model, ..
+            } => {
+                let branch = num_nodes + vsource_index;
+                branch_currents.insert(id.clone(), solution[branch]);
+                component_results.push(regulator_result(
+                    id, nodes, model, node_map, solution, branch,
+                ));
                 vsource_index += 1;
             }
             CircuitElement::OpAmp { id, nodes, .. }

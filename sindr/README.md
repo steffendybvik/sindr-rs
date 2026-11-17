@@ -282,10 +282,12 @@ CircuitElement::Relay {
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
 }
 CircuitElement::Fuse             { id, nodes: [String; 2], rating: f64, blown: bool } // 1 mΩ intact, 1 GΩ blown; rating is display-only
-CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64 }   // ideal source from output to gnd
+CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> }
 ```
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
+
+`VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin; without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
 
 ## Reading results
 

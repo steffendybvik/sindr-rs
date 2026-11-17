@@ -400,10 +400,12 @@ CircuitElement::Relay {
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
 }
 CircuitElement::Fuse             { id, nodes: [String; 2], rating: f64, blown: bool } // 1 mΩ intact, 1 GΩ blown; rating is display-only
-CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64 }   // ideal source from output to gnd
+CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> }
 ```
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
+
+`VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin; without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
 
 ### Reading results
 
@@ -785,6 +787,7 @@ Pure electronics device physics companion models for MNA circuit simulation.
 | `schottky` | Schottky diode | Shockley with Schottky IS/N (~0.3 V forward) |
 | `varactor` | Varactor diode | Voltage-dependent junction capacitance C_j(V) |
 | `thermistor` | NTC thermistor | Beta model R(T) = R₀·exp(β·(1/T − 1/T₀)) |
+| `regulator` | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation; LM7805 and AMS1117 presets |
 | `photodiode` | Photodiode | Diode + photocurrent offset |
 | `photoresistor` | Photoresistor (LDR) | Light-level-dependent resistance |
 
@@ -921,7 +924,7 @@ Status: pre-release alpha (`0.1.0-alpha.8`). Anything below may change.
 - DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
-- Thermistor, photoresistor, potentiometer, relay, fuse, ideal fixed-output voltage regulator
+- Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation)
 - Programmatic Rust API + serde JSON for circuits and results
 
 If your problem is "given an analog topology built in Rust, what are the node voltages and branch currents (possibly over time, frequency, or temperature)?", sindr is in scope.
@@ -978,7 +981,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 #### Device models
 
 - **Op-amp macromodel: single pole.** `OpAmpModel` gives open-loop gain, a dominant pole from GBW, slew rate, output resistance, input offset and bias current, and a rail clamp. There is no second pole or phase margin, no output current limit, no supply current, no input common-mode range, no noise and no CMRR/PSRR. Vendor op-amp models can't be loaded. Without a `model` the op-amp is a gain-1e5 VCVS with no rail clamp.
-- **No real regulator / reference / DC-DC controller models.** `VoltageRegulator` is an ideal voltage source on the output: no dropout, line/load regulation, quiescent current or current limit.
+- **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. No references, adjustable regulators (LM317 with its divider) or DC-DC controllers.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
@@ -1602,6 +1605,7 @@ periodic steady state, S-parameters, variable-order integration.
 | Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
 | Comparator | VCVS of gain 1e5; no GBW or slew rate |
 | Transformer | Linear coupled inductors |
+| Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
 
 Parameters are Rust structs, not SPICE `.model` cards.
 
@@ -1805,6 +1809,11 @@ pub use sindr_devices::igbt::IgbtParams;
 pub use sindr_devices::jfet::JfetKind;
 
 pub use sindr_devices::mosfet::MosfetKind;
+
+/// Linear regulator parameters and presets, for [`CircuitElement::VoltageRegulator`]'s `model`.
+pub use sindr_devices::regulator;
+
+pub use sindr_devices::regulator::RegulatorParams;
 
 pub use sindr_devices::varactor::VaractorParams;
 
@@ -2174,6 +2183,7 @@ or not. A needed rating that isn't set comes back
 | BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
 | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+| voltage regulator | `voltage` (input, from its ground pin), `current` (output), `power` |
 
 A part with [`Thermal`](crate::Thermal) data also needs `tj_max`, checked
 against the junction temperature self-heating reports. Without thermal
@@ -2336,8 +2346,9 @@ appear in the circuit.
 /// dissipating energy. Components with more terminals report one port:
 /// BJTs and IGBTs give Vce and Ic, MOSFETs and JFETs give Vds and Id, with
 /// `power` as the magnitude `|V·I|` (their full results are in
-/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, and a
-/// transformer its primary.
+/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, a
+/// transformer its primary, and a voltage regulator its pass element
+/// (`Vin − Vout`, the output current, and its dissipation).
 pub struct ComponentResult {
     /// Component id (matches the id on the source [`CircuitElement`]).
     pub id: String,
@@ -5023,10 +5034,17 @@ pub enum CircuitElement {
         blown: bool,
     },
 
-    /// Ideal linear voltage regulator — holds output node at a fixed regulated voltage.
+    /// Linear voltage regulator: holds the output at `voltage` above its
+    /// ground pin while it has headroom, and draws its output current plus
+    /// its quiescent current from the input.
     ///
-    /// Modelled as an ideal voltage source between output (`nodes[1]`) and gnd (`nodes[2]`).
-    /// The input node (`nodes[0]`) is wiring-only; it is not stamped into MNA.
+    /// Piecewise linear (see `sindr_devices::regulator`): out of headroom
+    /// the output follows the input down by the dropout; past the current
+    /// limit it holds the current. `model` sets dropout, quiescent current,
+    /// current limit and line and load regulation;
+    /// `RegulatorParams::lm7805()` and `::ams1117()` are datasheet presets.
+    /// Its result is the pass element: `Vin − Vout`, the output current,
+    /// and the power it dissipates.
     ///
     /// `nodes: [input, output, gnd]`
     #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
@@ -5037,6 +5055,13 @@ pub enum CircuitElement {
         nodes: [String; 3], // [input, output, gnd]
         /// Regulated output voltage (V). E.g. 5.0 for a 7805.
         voltage: f64,
+        /// Dropout, quiescent current, limit and regulation. `None` is an
+        /// ideal regulator that still can't put out more than it gets in.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<sindr_devices::regulator::RegulatorParams>,
     },
 }
 
@@ -6104,6 +6129,8 @@ pub mod photodiode;
 
 pub mod photoresistor;
 
+pub mod regulator;
+
 pub mod schottky;
 
 pub mod thermistor;
@@ -6301,6 +6328,106 @@ pub struct PhotoresistorParams {
 ///
 /// Interpolation is logarithmic: `R = r_dark * (r_bright / r_dark) ^ light_level`
 pub fn ldr_resistance(light_level: f64, params: &PhotoresistorParams) -> f64 { … }
+```
+
+## `sindr-devices/src/regulator.rs`
+
+Linear voltage regulator: dropout, quiescent current, current limit,
+line and load regulation.
+
+The output is a piecewise-linear function of the input voltage and the
+output current, both measured from the regulator's ground pin:
+
+```text
+regulating: Vout = V + line·(Vin − (V + Vdo)) − Rout·Iout
+dropout:    Vout = Vin − Vdo − Rdo·Iout
+```
+
+whichever is lower. Past the current limit the output falls steeply, so
+the current stays within 1 % of the limit into any load, short circuits
+included. The input draws `Iout + Iq`.
+
+```rust
+/// Regulator parameters. [`Default`] is ideal: no dropout, no quiescent
+/// current, no limit, perfect regulation, but never more out than in.
+pub struct RegulatorParams {
+    /// Dropout voltage at no load (V): the least `Vin − Vout` it regulates
+    /// with.
+    pub dropout: f64,
+    /// Rise in dropout per ampere of output current (Ω), for a dropout that
+    /// grows with load.
+    pub dropout_resistance: f64,
+    /// Quiescent (ground-pin) current (A), drawn from the input on top of
+    /// the output current.
+    pub quiescent_current: f64,
+    /// Output current limit (A). `None` is unlimited.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current_limit: Option<f64>,
+    /// Line regulation: change in output per volt of input (V/V), around
+    /// the input where it just leaves dropout.
+    pub line_regulation: f64,
+    /// Load regulation as an output resistance (Ω): the output falls this
+    /// much per ampere drawn.
+    pub output_resistance: f64,
+}
+
+impl RegulatorParams {
+    /// An LM7805-class 5 V regulator, from the ST L78 and Fairchild LM78xx
+    /// datasheets at 25 °C: 2 V dropout (typical, 1 A), 4.3 mA quiescent
+    /// (typical), 2.2 A peak current, line regulation 3 mV over 7–25 V
+    /// (typical), load regulation 100 mV over 5 mA–1.5 A (maximum; no
+    /// typical is given). Short-circuit foldback (0.23 A at 35 V in) is not
+    /// modelled.
+    pub fn lm7805() -> Self { … }
+
+    /// An AMS1117-class low-dropout regulator, from its datasheet: 1.1 V
+    /// dropout at 0.8 A (typical), 5 mA quiescent (typical), 1.1 A current
+    /// limit (typical), line regulation 0.2 % and load regulation 0.4 %
+    /// (maxima) of a 3.3 V output, over 4.75–12 V in and 0–0.8 A out.
+    pub fn ams1117() -> Self { … }
+}
+
+/// Which part of its characteristic a regulator is on.
+pub enum RegulatorRegion {
+    /// Holding its set voltage (less line and load regulation).
+    Regulating,
+    /// Out of headroom: the output follows the input down.
+    Dropout,
+}
+
+/// The regulator's output on one linear piece:
+/// `Vout = offset + d_vin·Vin + d_iout·Iout`, all from the ground pin.
+pub struct RegulatorLinear {
+    /// Constant term (V).
+    pub offset: f64,
+    /// ∂Vout/∂Vin (V/V).
+    pub d_vin: f64,
+    /// ∂Vout/∂Iout (Ω), negative.
+    pub d_iout: f64,
+    /// Regulating or in dropout.
+    pub region: RegulatorRegion,
+    /// `true` when past the current limit.
+    pub limiting: bool,
+}
+
+impl RegulatorLinear {
+    /// The output voltage this piece gives at `vin`, `iout`.
+    pub fn vout(&self, vin: f64, iout: f64) -> f64 { … }
+}
+
+/// The piece of a regulator set to `voltage` that applies at input `vin`
+/// (V, from the ground pin) and output current `iout` (A, out of the output
+/// pin).
+pub fn regulator_piece(
+    params: &RegulatorParams,
+    voltage: f64,
+    vin: f64,
+    iout: f64,
+) -> RegulatorLinear { … }
+
+/// Power the regulator dissipates (W): `(Vin − Vout)·Iout + Vin·Iq`, with
+/// voltages from the ground pin.
+pub fn regulator_dissipation(params: &RegulatorParams, vin: f64, vout: f64, iout: f64) -> f64 { … }
 ```
 
 ## `sindr-devices/src/schottky.rs`

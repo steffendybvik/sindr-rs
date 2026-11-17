@@ -108,6 +108,7 @@
 //! | Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
 //! | Comparator | VCVS of gain 1e5; no GBW or slew rate |
 //! | Transformer | Linear coupled inductors |
+//! | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
 //!
 //! Parameters are Rust structs, not SPICE `.model` cards.
 //!
@@ -300,6 +301,9 @@ pub use sindr_devices::bjt::BjtKind;
 pub use sindr_devices::igbt::IgbtParams;
 pub use sindr_devices::jfet::JfetKind;
 pub use sindr_devices::mosfet::MosfetKind;
+/// Linear regulator parameters and presets, for [`CircuitElement::VoltageRegulator`]'s `model`.
+pub use sindr_devices::regulator;
+pub use sindr_devices::regulator::RegulatorParams;
 pub use sindr_devices::varactor::VaractorParams;
 
 use node_map::NodeMap as NM;

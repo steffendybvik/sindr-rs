@@ -18,6 +18,7 @@ Pure electronics device physics companion models for MNA circuit simulation.
 | `schottky` | Schottky diode | Shockley with Schottky IS/N (~0.3 V forward) |
 | `varactor` | Varactor diode | Voltage-dependent junction capacitance C_j(V) |
 | `thermistor` | NTC thermistor | Beta model R(T) = R₀·exp(β·(1/T − 1/T₀)) |
+| `regulator` | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation; LM7805 and AMS1117 presets |
 | `photodiode` | Photodiode | Diode + photocurrent offset |
 | `photoresistor` | Photoresistor (LDR) | Light-level-dependent resistance |
 

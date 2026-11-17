@@ -23,6 +23,7 @@
 //! | BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
 //! | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 //! | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+//! | voltage regulator | `voltage` (input, from its ground pin), `current` (output), `power` |
 //!
 //! A part with [`Thermal`](crate::Thermal) data also needs `tj_max`, checked
 //! against the junction temperature self-heating reports. Without thermal
@@ -247,6 +248,7 @@ fn needed(element: &CircuitElement) -> &'static [RatingKind] {
         CircuitElement::Bjt { .. } => &[Vce, Vcb, Veb, Ic, Power],
         CircuitElement::Mosfet { .. } | CircuitElement::Jfet { .. } => &[Vds, Vgs, Id, Power],
         CircuitElement::Igbt { .. } => &[Vce, Vgs, Ic, Power],
+        CircuitElement::VoltageRegulator { .. } => &[Voltage, Current, Power],
         _ => &[],
     }
 }
@@ -277,6 +279,8 @@ fn measure(
     let value = match (kind, element) {
         (RatingKind::Tj, e) => *sample.junction_temperatures.get(e.id())?,
         (RatingKind::Power, _) => port?.power.max(0.0),
+        // A regulator's voltage rating is its maximum input.
+        (RatingKind::Voltage, CircuitElement::VoltageRegulator { .. }) => between(0, 2)?,
         (RatingKind::Voltage, _) => port?.voltage_across.abs(),
         (RatingKind::Current, _) => port?.current_through.abs(),
         (RatingKind::ReverseVoltage, e) if is_diode(e) => (-port?.voltage_across).max(0.0),
