@@ -97,9 +97,10 @@ pub struct BjtCompanion {
     pub g_bc: f64, // B-C reverse junction conductance
     /// Early-voltage output conductance between C and E (S).
     pub g_ce: f64, // Early voltage output conductance between C and E
-    /// Collector current at the operating point (A).
+    /// Collector current at the operating point (A), into the collector, in
+    /// the NPN frame: a PNP caller negates it for the physical current.
     pub ic: f64, // collector current at operating point
-    /// Base current at the operating point (A).
+    /// Base current at the operating point (A), into the base, NPN frame.
     pub ib: f64, // base current at operating point
     /// B–E junction voltage at the operating point (V), for RHS computation.
     pub vbe: f64, // junction voltage (for RHS computation)
@@ -182,9 +183,11 @@ fn early_enabled(params: &BjtParams) -> bool {
     params.vaf > 0.0 && params.vaf.is_finite()
 }
 
-/// Base and collector currents `(ib, ic)` (A) at junction voltages
-/// `vbe`/`vbc` (V, sign-adjusted for PNP), including the Early effect the DC
-/// solve applies: `ic = i_tr + |i_tr|/VAF · vce` with `vce = vbe − vbc`.
+/// Base and collector currents `(ib, ic)` (A), each into its terminal, at
+/// junction voltages `vbe`/`vbc` (V). Both are in the NPN frame: for a PNP,
+/// pass the negated junction voltages and negate the currents. Includes the
+/// Early effect the DC solve applies: `ic = i_tr + |i_tr|/VAF · vce` with
+/// `vce = vbe − vbc`.
 ///
 /// This is the large-signal model that [`bjt_terminal_jacobian`]
 /// differentiates. The emitter current is `−(ib + ic)`.

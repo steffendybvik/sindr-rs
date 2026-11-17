@@ -30,7 +30,8 @@ pub struct DcSweepResult {
 }
 
 impl DcSweepResult {
-    /// Extract a vector of (sweep_value, node_voltage) pairs for a given node.
+    /// `(sweep value in V, node voltage in V)` pairs for a node, one per
+    /// point.
     pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()
@@ -43,7 +44,12 @@ impl DcSweepResult {
             .collect()
     }
 
-    /// Extract a vector of (sweep_value, current) pairs for a given component.
+    /// `(sweep value in V, current in A)` pairs for a component, one per
+    /// point. The current is its [`ComponentResult::current_through`]: from
+    /// `nodes[0]` to `nodes[1]` for a two-terminal part (the collector or
+    /// drain current for a transistor).
+    ///
+    /// [`ComponentResult::current_through`]: crate::ComponentResult::current_through
     pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()

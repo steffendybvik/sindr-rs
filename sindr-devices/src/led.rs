@@ -22,7 +22,7 @@ pub enum LedColor {
 }
 
 impl LedColor {
-    /// Typical forward voltage at 20 mA for this colour.
+    /// Typical forward voltage (V) at 20 mA for this colour.
     pub fn forward_voltage(self) -> f64 {
         match self {
             LedColor::Red => 1.8,

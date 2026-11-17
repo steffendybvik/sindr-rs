@@ -1062,7 +1062,8 @@ Performs frequency-domain analysis by:
 ```rust
 /// Frequency sweep spacing.
 pub enum FrequencySpacing {
-    /// Logarithmic spacing (decade-based).
+    /// Logarithmic spacing: `num_points` in total, evenly spaced in
+    /// log10(f) from `f_start` to `f_stop`. Not points per decade.
     Logarithmic,
     /// Linear spacing.
     Linear,
@@ -1081,7 +1082,8 @@ pub struct AcConfig {
     pub spacing: FrequencySpacing,
     /// ID of the AC source (voltage source with AC stimulus).
     pub source_id: String,
-    /// AC magnitude of the source.
+    /// AC amplitude of the source: volts, linear (not dB), at 0° phase.
+    /// Results scale with it; 1 V makes node voltages read as gain.
     pub ac_magnitude: f64,
 }
 
@@ -1094,10 +1096,15 @@ pub struct AcPoint {
 }
 
 impl AcPoint {
-    /// Get gain in dB for a node relative to AC source magnitude.
+    /// Gain in dB for a node: `20·log10(|V(node)| / source_magnitude)`, a
+    /// voltage ratio. `source_magnitude` is in volts, normally
+    /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
+    /// circuit.
     pub fn gain_db(&self, node: &str, source_magnitude: f64) -> Option<f64> { … }
 
-    /// Get phase in degrees for a node.
+    /// Phase of a node's voltage in degrees, in (−180°, 180°], relative to
+    /// the source (which is at 0°). `None` when the node isn't in the
+    /// circuit.
     pub fn phase_deg(&self, node: &str) -> Option<f64> { … }
 }
 
@@ -1110,10 +1117,12 @@ pub struct AcResult {
 }
 
 impl AcResult {
-    /// Extract gain (dB) curve for a node.
+    /// The gain curve for a node as `(frequency in Hz, gain in dB)` pairs,
+    /// one per point, using [`AcConfig::ac_magnitude`].
     pub fn gain_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
 
-    /// Extract phase (degrees) curve for a node.
+    /// The phase curve for a node as `(frequency in Hz, phase in degrees)`
+    /// pairs, one per point; see [`AcPoint::phase_deg`].
     pub fn phase_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
 }
 
@@ -1239,10 +1248,16 @@ pub struct DcSweepResult {
 }
 
 impl DcSweepResult {
-    /// Extract a vector of (sweep_value, node_voltage) pairs for a given node.
+    /// `(sweep value in V, node voltage in V)` pairs for a node, one per
+    /// point.
     pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
 
-    /// Extract a vector of (sweep_value, current) pairs for a given component.
+    /// `(sweep value in V, current in A)` pairs for a component, one per
+    /// point. The current is its [`ComponentResult::current_through`]: from
+    /// `nodes[0]` to `nodes[1]` for a two-terminal part (the collector or
+    /// drain current for a transistor).
+    ///
+    /// [`ComponentResult::current_through`]: crate::ComponentResult::current_through
     pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> { … }
 }
 
@@ -2369,11 +2384,14 @@ pub struct BjtResult {
     pub vbe: f64,
     /// Collector–emitter voltage (V).
     pub vce: f64,
-    /// Base current (A).
+    /// Base current (A), into the base: positive for a conducting NPN,
+    /// negative for a PNP.
     pub ib: f64,
-    /// Collector current (A).
+    /// Collector current (A), into the collector: positive for a
+    /// conducting NPN, negative for a PNP.
     pub ic: f64,
-    /// Emitter current (A).
+    /// Emitter current (A), into the emitter: `−(ic + ib)` by KCL, so
+    /// negative for a conducting NPN and positive for a PNP.
     pub ie: f64,
     /// Collector dissipation `|Ic·Vce|` (W). The base's `Ib·Vbe` is left
     /// out.
@@ -2390,7 +2408,8 @@ pub struct MosfetResult {
     pub vgs: f64,
     /// Drain–source voltage (V).
     pub vds: f64,
-    /// Drain current (A).
+    /// Drain current (A), into the drain: positive for a conducting NMOS,
+    /// negative for a PMOS.
     pub id_current: f64,
     /// Total dissipation (W).
     pub power: f64,
@@ -2416,13 +2435,16 @@ pub struct OpAmpResult {
 pub struct RelayResult {
     /// Component id.
     pub id: String,
-    /// Voltage across the coil terminals (V).
+    /// Coil voltage, `coil+ − coil−` (`nodes[0] − nodes[1]`) (V).
     pub coil_voltage: f64,
     /// `true` when coil voltage exceeds the pickup threshold.
     pub contact_closed: bool,
 }
 
 /// Per-microcontroller results: per-pin GPIO output currents.
+///
+/// Never filled: sindr has no microcontroller element, so
+/// [`SimulationResult::mcu_results`] is always empty.
 pub struct McuResult {
     /// Component id.
     pub id: String,
@@ -2504,6 +2526,15 @@ pub struct SimulationResult {
     pub node_voltages: HashMap<String, f64>,
     /// Branch currents (A) for components that introduce a current unknown
     /// — voltage sources, op-amps, transformers, etc. Keyed by component id.
+    ///
+    /// The MNA convention: the current entering the element at `nodes[0]`
+    /// and leaving at `nodes[1]`, through the element. A source delivering
+    /// power reads **negative**: a 5 V supply feeding 5 mA into a load is
+    /// `-0.005`. For a VCVS, CCVS, op-amp or comparator it is the current
+    /// into the output node (`nodes[0]`, or the op-amp's `out`), so an
+    /// output sourcing current is negative too. For a voltage regulator it
+    /// is the current into its output pin (negative when it sources); its
+    /// [`ComponentResult`] has the output current as a positive number.
     pub branch_currents: HashMap<String, f64>,
     /// Per-component voltage, current, and power for every two-terminal
     /// component.
@@ -4270,7 +4301,9 @@ impl TransientConfig {
     /// ```
     pub fn with_initial_voltages(mut self, voltages: HashMap<String, f64>) -> Self { … }
 
-    /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A.
+    /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A,
+    /// flowing from its first node to its second (`nodes[0] → nodes[1]`),
+    /// as [`initial_currents`](Self::initial_currents) says.
     /// An id that isn't an inductor or a relay with coil inductance (a
     /// transformer, for now) makes the run fail with
     /// [`SimError::InvalidComponent`].
@@ -5614,7 +5647,8 @@ pub enum Waveform {
     /// evaluates to `0.0` everywhere.
     #[cfg_attr(feature = "serde", serde(rename = "pwl"))]
     Pwl {
-        /// Breakpoints as `(time_s, value)` pairs sorted by time.
+        /// Breakpoints as `(time in s, value)` pairs sorted by time. The
+        /// value is V or A, matching the source it drives.
         points: Vec<(f64, f64)>,
     },
 }
@@ -5623,7 +5657,8 @@ pub enum Waveform {
 pub const MAX_BREAKPOINTS: usize = 10_000_000;
 
 impl Waveform {
-    /// Evaluate the waveform at time `t` (seconds).
+    /// The waveform's value at time `t` (s): volts on a voltage source,
+    /// amperes on a current source.
     pub fn evaluate(&self, t: f64) -> f64 { … }
 
     /// Times in `(0, t_end)` (s) where this waveform has a corner or a jump:
@@ -5734,9 +5769,10 @@ pub struct BjtCompanion {
     pub g_bc: f64, // B-C reverse junction conductance
     /// Early-voltage output conductance between C and E (S).
     pub g_ce: f64, // Early voltage output conductance between C and E
-    /// Collector current at the operating point (A).
+    /// Collector current at the operating point (A), into the collector, in
+    /// the NPN frame: a PNP caller negates it for the physical current.
     pub ic: f64, // collector current at operating point
-    /// Base current at the operating point (A).
+    /// Base current at the operating point (A), into the base, NPN frame.
     pub ib: f64, // base current at operating point
     /// B–E junction voltage at the operating point (V), for RHS computation.
     pub vbe: f64, // junction voltage (for RHS computation)
@@ -5754,9 +5790,11 @@ pub struct BjtCompanion {
 /// [`bjt_terminal_jacobian`].
 pub fn bjt_companion(vbe: f64, vbc: f64, params: &BjtParams) -> BjtCompanion { … }
 
-/// Base and collector currents `(ib, ic)` (A) at junction voltages
-/// `vbe`/`vbc` (V, sign-adjusted for PNP), including the Early effect the DC
-/// solve applies: `ic = i_tr + |i_tr|/VAF · vce` with `vce = vbe − vbc`.
+/// Base and collector currents `(ib, ic)` (A), each into its terminal, at
+/// junction voltages `vbe`/`vbc` (V). Both are in the NPN frame: for a PNP,
+/// pass the negated junction voltages and negate the currents. Includes the
+/// Early effect the DC solve applies: `ic = i_tr + |i_tr|/VAF · vce` with
+/// `vce = vbe − vbc`.
 ///
 /// This is the large-signal model that [`bjt_terminal_jacobian`]
 /// differentiates. The emitter current is `−(ib + ic)`.
@@ -5843,7 +5881,7 @@ impl DiodeParams {
     /// Standard silicon diode: IS = 1e-14 A, N = 1.0.
     pub fn silicon() -> Self { … }
 
-    /// LED with a given forward voltage at 20 mA.
+    /// LED with a given forward voltage (V) at 20 mA.
     ///
     /// IS is derived from the Shockley equation: IS = 0.020 / (exp(Vf / (N * VT)) - 1)
     /// with N = 2.0 (typical LED emission coefficient).
@@ -5887,10 +5925,13 @@ pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64, n: f
 /// `I = IS * (exp((v_d - I*RS) / (N*V_T)) - 1)`, with V_T at
 /// `params.temperature`, and the terminal conductance `g_j / (1 + RS*g_j)`
 /// is returned, so `g_d * v_d + i_eq` is the terminal current at `v_d`.
+///
+/// Units and signs: `v_d` is anode − cathode (V), `g_d` is in S and `i_eq`
+/// in A, both for current flowing anode → cathode.
 pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) { … }
 
-/// Compute the diode current at terminal voltage `v_d`, including the drop
-/// across `params.rs`.
+/// Compute the diode current (A, anode → cathode) at terminal voltage
+/// `v_d` (V, anode − cathode), including the drop across `params.rs`.
 pub fn diode_current(v_d: f64, params: &DiodeParams) -> f64 { … }
 
 /// Critical voltage for voltage limiting.
@@ -5942,10 +5983,10 @@ pub struct IgbtCompanion {
     pub gm: f64,
     /// Output conductance ∂Ids/∂Vce (S): zero in saturation and cutoff.
     pub g_ce: f64,
-    /// Drain/collector current at operating point.
+    /// Collector current at the operating point (A), collector → emitter.
     pub ids: f64,
-    /// Companion current source value for MNA stamping:
-    /// `ids − gm·vge − g_ce·vce`.
+    /// Companion current source value for MNA stamping (A), collector →
+    /// emitter: `ids − gm·vge − g_ce·vce`.
     pub i_eq: f64,
 }
 
@@ -5994,13 +6035,15 @@ pub struct JfetCompanion {
     pub gm: f64,
     /// Drain–source conductance `∂Id/∂Vds` (S).
     pub gds: f64,
-    /// Equivalent current source for the MNA right-hand side (A).
+    /// Equivalent Norton current for the MNA right-hand side (A), drain →
+    /// source, in the N-channel frame (a P-channel caller negates it).
     pub i_eq: f64,
 }
 
 /// Compute JFET companion at operating point (vgs, vds).
 /// Nodes order: [gate, drain, source] — same as MOSFET convention.
-/// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0.
+/// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0 (A). `vgs`, `vds` and
+/// `vp` are in V.
 ///
 /// In the ohmic region `gm = 2·Idss·Vds/Vp²` keeps its sign, so it is
 /// negative when the drain is below the source.
@@ -6036,7 +6079,7 @@ pub enum LedColor {
 }
 
 impl LedColor {
-    /// Typical forward voltage at 20 mA for this colour.
+    /// Typical forward voltage (V) at 20 mA for this colour.
     pub fn forward_voltage(self) -> f64 { … }
 
     /// Parse from a lowercase string. Unknown strings default to `Red`.
@@ -6221,18 +6264,19 @@ impl MosfetParams {
 
 /// Companion model output for MNA stamping.
 pub struct MosfetCompanion {
-    /// Drain current at operating point.
+    /// Drain current at the operating point (A), drain → source, in the
+    /// NMOS frame: callers mirror a PMOS (negate) to get its physical current.
     pub id: f64,
-    /// Transconductance: dId/dVgs.
+    /// Transconductance ∂Id/∂Vgs (S).
     pub gm: f64,
-    /// Output conductance: dId/dVds.
+    /// Output conductance ∂Id/∂Vds (S).
     pub gds: f64,
-    /// Body transconductance: dId/dVbs (from body effect). Zero when
+    /// Body transconductance ∂Id/∂Vbs (S), from the body effect. Zero when
     /// Vbs >= PHI, where the threshold stops depending on Vbs.
     pub gmb: f64,
     /// Operating region.
     pub region: MosfetRegion,
-    /// Effective threshold voltage (after body effect).
+    /// Effective threshold voltage after the body effect (V), NMOS frame.
     pub vth: f64,
 }
 
@@ -6299,8 +6343,10 @@ impl PhotodiodeParams {
 
 /// Linearized companion model for a photodiode at operating point v_d.
 ///
-/// Returns (g_d, i_eq) where i_eq includes the photocurrent offset.
-/// Photocurrent flows in reverse direction (opposite to diode forward current).
+/// Returns `(g_d, i_eq)`: conductance (S) and Norton current (A) for current
+/// flowing anode → cathode, at `v_d` = anode − cathode (V). `irradiance` is
+/// incident optical power in W (not W/m²). `i_eq` includes the
+/// photocurrent, which flows cathode → anode, opposite to forward current.
 pub fn photodiode_companion(v_d: f64, irradiance: f64, params: &PhotodiodeParams) -> (f64, f64) { … }
 ```
 
@@ -6443,7 +6489,8 @@ voltage (~0.3V vs ~0.6V silicon). Reuses diode_companion().
 pub struct SchottkyParams {
     /// Saturation current (A). Higher than silicon due to lower barrier.
     pub is: f64,
-    /// Emission coefficient. ~1.0 for Schottky (more ideal than silicon).
+    /// Emission coefficient (dimensionless). ~1.0 for Schottky (more ideal
+    /// than silicon).
     pub n: f64,
 }
 
@@ -6454,7 +6501,8 @@ impl SchottkyParams {
 
 /// Linearized companion model for a Schottky diode at operating point v_d.
 ///
-/// Returns (g_d, i_eq): conductance and equivalent Norton current.
+/// Returns `(g_d, i_eq)`: conductance (S) and equivalent Norton current (A)
+/// for current flowing anode → cathode, at `v_d` = anode − cathode (V).
 /// Delegates to diode_companion with Schottky parameters.
 pub fn schottky_companion(v_d: f64, params: &SchottkyParams) -> (f64, f64) { … }
 ```
@@ -6512,7 +6560,8 @@ pub struct VaractorParams {
     pub m: f64,
 }
 
-/// Compute junction capacitance at voltage `v`.
+/// Junction capacitance (F) at `v` = anode − cathode (V); reverse bias is
+/// negative.
 ///
 /// C_j(V) = C_j0 / (1 - V/phi)^m
 ///
@@ -6521,9 +6570,10 @@ pub struct VaractorParams {
 /// For forward bias (V approaching phi), capacitance would diverge — clamp.
 pub fn junction_capacitance(v: f64, params: &VaractorParams) -> f64 { … }
 
-/// Compute the transient companion model for the varactor at `v_prev`.
+/// Compute the transient companion model for the varactor at `v_prev`
+/// (V, anode − cathode) over a step of `dt` seconds.
 ///
-/// Returns `(g_eq, i_eq)` where:
+/// Returns `(g_eq, i_eq)`, in S and A, where:
 /// - g_eq = C_j(v_prev) / dt  (backward Euler capacitor conductance)
 /// - i_eq = -g_eq * v_prev    (capacitor history current)
 ///
@@ -6545,11 +6595,11 @@ Reverse breakdown: linearised clamp at -Vz.
 ```rust
 /// Zener diode parameters.
 pub struct ZenerParams {
-    /// Breakdown voltage (positive, e.g. 5.1 for a BZX55C5V1).
+    /// Breakdown voltage (V), positive: 5.1 for a BZX55C5V1.
     pub vz: f64,
     /// Breakdown region dynamic resistance (Ω). Smaller = sharper knee.
     pub rz: f64,
-    /// Saturation current for the forward diode region.
+    /// Saturation current for the forward diode region (A).
     pub is: f64,
     /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
     /// voltage [`ZenerParams::vt`]; `is` is used as given.
@@ -6564,7 +6614,9 @@ impl ZenerParams {
     pub fn vt(&self) -> f64 { … }
 }
 
-/// Piecewise Zener companion model. Returns `(g_eq, i_eq)` for MNA stamping.
+/// Piecewise Zener companion model. Returns `(g_eq, i_eq)` for MNA stamping:
+/// `g_eq` in S and `i_eq` in A, for current flowing anode → cathode, at
+/// `v_d` = anode − cathode (V). Breakdown is `v_d ≤ −vz`.
 ///
 /// - `v_d > -vz`: standard Shockley companion (clamped to avoid overflow).
 /// - `v_d <= -vz`: linearised 1/rz clamp driving the junction to -Vz.

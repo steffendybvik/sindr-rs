@@ -27,7 +27,8 @@ impl Default for VaractorParams {
     }
 }
 
-/// Compute junction capacitance at voltage `v`.
+/// Junction capacitance (F) at `v` = anode − cathode (V); reverse bias is
+/// negative.
 ///
 /// C_j(V) = C_j0 / (1 - V/phi)^m
 ///
@@ -40,9 +41,10 @@ pub fn junction_capacitance(v: f64, params: &VaractorParams) -> f64 {
     params.cj0 / denom.max(1e-6) // prevent division by near-zero
 }
 
-/// Compute the transient companion model for the varactor at `v_prev`.
+/// Compute the transient companion model for the varactor at `v_prev`
+/// (V, anode − cathode) over a step of `dt` seconds.
 ///
-/// Returns `(g_eq, i_eq)` where:
+/// Returns `(g_eq, i_eq)`, in S and A, where:
 /// - g_eq = C_j(v_prev) / dt  (backward Euler capacitor conductance)
 /// - i_eq = -g_eq * v_prev    (capacitor history current)
 ///
