@@ -193,6 +193,47 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
+        CircuitElement::OpAmp {
+            v_pos,
+            v_neg,
+            model: Some(model),
+            ..
+        } => {
+            let finite = |field: &str, value: f64, unit: &str| {
+                if value.is_finite() {
+                    Ok(())
+                } else {
+                    Err(SimError::InvalidComponent(format!(
+                        "`{}`: {field} {value}{unit} must be a finite number",
+                        comp.id()
+                    )))
+                }
+            };
+            finite("v_pos", *v_pos, " V")?;
+            finite("v_neg", *v_neg, " V")?;
+            if v_pos <= v_neg {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: v_pos {v_pos} V must be above v_neg {v_neg} V",
+                    comp.id()
+                )));
+            }
+            positive("model.gain", model.gain, "")?;
+            if let Some(gbw) = model.gbw {
+                positive("model.gbw", gbw, " Hz")?;
+            }
+            if let Some(sr) = model.slew_rate {
+                positive("model.slew_rate", sr, " V/s")?;
+                if model.gbw.is_none() {
+                    return Err(SimError::InvalidComponent(format!(
+                        "`{}`: model.slew_rate needs model.gbw: the slew limit acts on the gain stage's pole",
+                        comp.id()
+                    )));
+                }
+            }
+            non_negative("model.r_out", model.r_out, " Ω")?;
+            finite("model.offset_voltage", model.offset_voltage, " V")?;
+            finite("model.bias_current", model.bias_current, " A")
+        }
         _ => Ok(()),
     }
 }

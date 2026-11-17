@@ -701,6 +701,45 @@ pub(crate) fn small_signal_system(
                 }
                 vsource_index += 2;
             }
+            // Modelled op-amp, linearised at the bias point: see `op_amp`.
+            CircuitElement::OpAmp {
+                nodes,
+                v_pos,
+                v_neg,
+                model: Some(model),
+                ..
+            } => {
+                let op = crate::op_amp::OpAmpStamp {
+                    model,
+                    nodes,
+                    ground: &circuit.ground_node,
+                    v_pos: *v_pos,
+                    v_neg: *v_neg,
+                    branch: num_nodes + vsource_index,
+                };
+                let br = op.branch;
+                let x = br + 1;
+                let one = Complex64::new(1.0, 0.0);
+                if let Some(o) = node_map.index(&nodes[2]) {
+                    a[(o, br)] += one;
+                    a[(br, o)] += one;
+                }
+                if let Some(g) = node_map.index(&circuit.ground_node) {
+                    a[(g, br)] -= one;
+                    a[(br, g)] -= one;
+                }
+                let (tau, c_x, c_u, slope) = op.small_signal(node_map, dc_solution);
+                a[(br, x)] -= Complex64::new(slope, 0.0);
+                a[(br, br)] -= Complex64::new(model.r_out, 0.0);
+                a[(x, x)] += Complex64::new(c_x, 0.0) + j_omega * tau;
+                if let Some(p) = node_map.index(&nodes[0]) {
+                    a[(x, p)] -= Complex64::new(c_u, 0.0);
+                }
+                if let Some(m) = node_map.index(&nodes[1]) {
+                    a[(x, m)] += Complex64::new(c_u, 0.0);
+                }
+                vsource_index += 2;
+            }
             // OpAmp/Comparator: high-gain VCVS (gain=1e5) — linear, stamp properly in AC
             CircuitElement::OpAmp { nodes, .. } | CircuitElement::Comparator { nodes, .. } => {
                 let branch = num_nodes + vsource_index;

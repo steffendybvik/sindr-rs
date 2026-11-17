@@ -261,6 +261,24 @@ pub fn stamp_circuit(
                     stamp_zener_companion(system, node_map, nodes, vp, &zparams);
                 }
             }
+            CircuitElement::OpAmp {
+                nodes,
+                v_pos,
+                v_neg,
+                model: Some(model),
+                ..
+            } => {
+                let op = crate::op_amp::OpAmpStamp {
+                    model,
+                    nodes,
+                    ground: &circuit.ground_node,
+                    v_pos: *v_pos,
+                    v_neg: *v_neg,
+                    branch: num_nodes + vsource_index,
+                };
+                op.stamp_dc(system, node_map, v_prev);
+                vsource_index += 2;
+            }
             // OpAmp: ideal high-gain VCVS (gain=1e5). OUT is relative to circuit ground.
             CircuitElement::OpAmp { nodes, .. } => {
                 let branch = num_nodes + vsource_index;

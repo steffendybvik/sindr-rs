@@ -366,11 +366,25 @@ CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, al
 
 ```rust
 // nodes: [in_plus, in_minus, out]
-CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // supply rails, default ±15 V
+CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> } // rails, default ±15 V
 CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // default 5 V / 0 V
 ```
 
-Both are modeled as a high-gain VCVS (gain = 1×10⁵) that saturates at the supply rails.
+With `model: None` both are a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
+
+```rust
+use sindr::{CircuitElement, OpAmpModel};
+
+let u1 = CircuitElement::OpAmp {
+    id: "U1".into(),
+    nodes: ["in".into(), "fb".into(), "out".into()],
+    v_pos: 12.0,
+    v_neg: -12.0,
+    model: Some(OpAmpModel { gbw: Some(3e6), slew_rate: Some(13e6), r_out: 50.0, ..OpAmpModel::default() }),
+};
+```
+
+The pole and slew limit act in transient and AC runs. An op-amp doesn't count as reactive, so `solve_circuit` still runs DC for a circuit whose only dynamics are op-amps; call `solve_transient` to see them.
 
 #### Sensors / misc
 
@@ -904,7 +918,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Device models
 
-- **No op-amp macromodel beyond ideal-with-rails.** No GBW, slew rate, input bias current, offset, output impedance, current limiting, or supply current. Real op-amp models from vendors cannot be loaded.
+- **Op-amp macromodel: single pole.** `OpAmpModel` gives open-loop gain, a dominant pole from GBW, slew rate, output resistance, input offset and bias current, and a rail clamp. There is no second pole or phase margin, no output current limit, no supply current, no input common-mode range, no noise and no CMRR/PSRR. Vendor op-amp models can't be loaded. Without a `model` the op-amp is a gain-1e5 VCVS with no rail clamp.
 - **No real regulator / reference / DC-DC controller models.** `VoltageRegulator` is an ideal voltage source on the output: no dropout, line/load regulation, quiescent current or current limit.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
@@ -952,7 +966,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - Transformer coupling `k = 1.0` is mathematically singular — clamp to `≤ 0.999`.
 - Switches are modelled as `0.01 Ω` / `1 GΩ` resistors — they are not ideal, and very high-impedance circuits may need explicit values.
-- The op-amp / comparator macromodel is a saturating VCVS with gain `1e5` — it has no frequency response, so AC and transient closed-loop bandwidth predictions are not realistic.
+- An op-amp without a `model`, and every comparator, is a VCVS with gain `1e5` and no frequency response or rail clamp, so its closed-loop bandwidth isn't realistic. Give the op-amp an `OpAmpModel` for GBW and slew rate. Its stage starts from 0 V at t = 0, like the capacitors, so a transient opens with a short settle unless you seed it.
 - For accurate ringing amplitude in a resonant circuit, use `IntegrationMethod::Trapezoidal` with a step well below the period: Gear-2 and especially backward Euler damp it.
 - Photodiode / photoresistor / thermistor "stimulus" parameters (irradiance, light level, temperature) are **constants per solve**, not time-varying inputs. There is no environmental waveform.
 
@@ -960,7 +974,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - Need a vendor BJT / MOSFET? Fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
 - Need digital control around an analog plant? Drive the analog circuit step-by-step from your own Rust loop, sampling node voltages between transient calls and updating sources / switches between them. This is not co-simulation, but it works for slow control loops.
-- Need a Bode plot of a closed loop with a real op-amp? Replace the `OpAmp` element with a manually-built VCVS + RC pole network that approximates the part you care about.
+- Need a second pole or phase margin on an op-amp? Build it from VCVS stages and RC networks around an `OpAmp` with an `OpAmpModel`.
 - Need Monte Carlo? Loop in Rust over randomised `CircuitElement` parameter values; sindr is fast enough for thousands of solves on small circuits.
 
 ### Reporting gaps
@@ -1505,7 +1519,8 @@ periodic steady state, S-parameters, variable-order integration.
 | JFET (N/P) | Shichman–Hodges square law |
 | IGBT | MOSFET-like gate control, square-law collector current |
 | Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
-| Op-amp, comparator | Saturating VCVS, gain 1e5; no GBW or slew rate |
+| Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
+| Comparator | VCVS of gain 1e5; no GBW or slew rate |
 | Transformer | Linear coupled inductors |
 
 Parameters are Rust structs, not SPICE `.model` cards.
@@ -1673,7 +1688,7 @@ pub mod validation;
 
 pub use sindr_core::waveform;
 
-pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel};
+pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
 
 pub use dc_sweep::{dc_sweep, DcSweepResult};
 
@@ -4174,6 +4189,39 @@ pub struct BjtModel {
 }
 
 /// MOSFET gate parasitic capacitances. All values in Farads.
+/// Op-amp macromodel parameters, for [`CircuitElement::OpAmp`]'s `model`.
+///
+/// The gain stage is a first-order lag towards `gain · (v₊ − v₋ + offset)`,
+/// clamped to the rails, with time constant `gain / (2π · gbw)`: open-loop
+/// gain `gain / (1 + s·τ)`, so a non-inverting stage of gain G has its
+/// −3 dB point near `gbw / G`. Its rate is limited to `slew_rate`. The
+/// output is that stage's voltage behind `r_out`.
+///
+/// The pole and the slew limit act in transient and AC analyses. At DC the
+/// stage sits at its clamped target. The op-amp's state doesn't count as
+/// reactive, so [`solve_circuit`]-style automatic routing still picks DC
+/// for a circuit whose only dynamics are op-amps; run a transient
+/// explicitly to see them. Like capacitors, the stage starts from rest
+/// (0 V) at t = 0.
+///
+/// [`solve_circuit`]: https://docs.rs/sindr/latest/sindr/fn.solve_circuit.html
+pub struct OpAmpModel {
+    /// Open-loop DC gain (V/V), positive. Default 1e5 (100 dB).
+    pub gain: f64,
+    /// Gain-bandwidth product (Hz), positive; `None` for no pole. Default
+    /// 1 MHz.
+    pub gbw: Option<f64>,
+    /// Slew rate (V/s), positive; `None` for no limit. Needs `gbw`.
+    /// Default 0.5 V/µs.
+    pub slew_rate: Option<f64>,
+    /// Output resistance (Ω), zero or positive. Default 0.
+    pub r_out: f64,
+    /// Input offset voltage (V), added to `v₊ − v₋`. Default 0.
+    pub offset_voltage: f64,
+    /// Input bias current (A) drawn by each input, to ground. Default 0.
+    pub bias_current: f64,
+}
+
 pub struct MosfetParasiticCaps {
     /// Gate-Source capacitance (F). Typical: 100–500 pF for power MOSFETs.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -4534,20 +4582,34 @@ pub enum CircuitElement {
         temperature: f64,
     },
 
-    /// Ideal op-amp (modelled as high-gain VCVS, gain=1e5).
-    /// nodes: [in_plus, in_minus, out]
+    /// Op-amp, output referred to ground.
+    ///
+    /// With `model: None` it is the near-ideal VCVS sindr has always used:
+    /// gain 1e5, no frequency response, no output resistance, and `v_pos` /
+    /// `v_neg` not enforced. With an [`OpAmpModel`] it gets a dominant pole
+    /// from the gain-bandwidth product, slew-rate limiting, output
+    /// resistance, input offset and bias current, and an output clamped to
+    /// `v_pos`/`v_neg`.
     #[cfg_attr(feature = "serde", serde(rename = "op_amp"))]
     OpAmp {
         /// Unique component identifier.
         id: String,
         /// Terminals `[in_plus, in_minus, out]`.
         nodes: [String; 3], // [in_plus, in_minus, out]
-        /// Positive supply rail / output clamp (V). Default 15.
+        /// Positive supply rail (V): the output's upper limit with a
+        /// `model`. Default 15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
         v_pos: f64,
-        /// Negative supply rail / output clamp (V). Default -15.
+        /// Negative supply rail (V): the output's lower limit with a
+        /// `model`. Default -15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
         v_neg: f64,
+        /// Macromodel parameters; `None` for the near-ideal VCVS.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<OpAmpModel>,
     },
 
     /// Ideal comparator (same VCVS stamp as OpAmp; output saturates to supply rails).
@@ -4717,6 +4779,12 @@ impl CircuitElement {
 
     /// Returns the component identifier.
     pub fn id(&self) -> &str { … }
+
+    /// Extra MNA unknowns the element adds after the node voltages: one
+    /// branch current for a voltage-type source, two for a transformer
+    /// (one per winding), and two for an op-amp with an [`OpAmpModel`]
+    /// (its output current, then its internal gain-stage voltage).
+    pub fn branch_slots(&self) -> usize { … }
 
     /// Mutable [`nodes`](Self::nodes), for renaming nets.
     pub fn nodes_mut(&mut self) -> &mut [String] { … }
