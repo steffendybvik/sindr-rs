@@ -100,7 +100,8 @@ pub enum Waveform {
     /// evaluates to `0.0` everywhere.
     #[cfg_attr(feature = "serde", serde(rename = "pwl"))]
     Pwl {
-        /// Breakpoints as `(time_s, value)` pairs sorted by time.
+        /// Breakpoints as `(time in s, value)` pairs sorted by time. The
+        /// value is V or A, matching the source it drives.
         points: Vec<(f64, f64)>,
     },
 }
@@ -113,7 +114,8 @@ fn default_duty() -> f64 {
 }
 
 impl Waveform {
-    /// Evaluate the waveform at time `t` (seconds).
+    /// The waveform's value at time `t` (s): volts on a voltage source,
+    /// amperes on a current source.
     pub fn evaluate(&self, t: f64) -> f64 {
         match self {
             Waveform::Sine {

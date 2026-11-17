@@ -50,8 +50,10 @@ impl Default for PhotodiodeParams {
 
 /// Linearized companion model for a photodiode at operating point v_d.
 ///
-/// Returns (g_d, i_eq) where i_eq includes the photocurrent offset.
-/// Photocurrent flows in reverse direction (opposite to diode forward current).
+/// Returns `(g_d, i_eq)`: conductance (S) and Norton current (A) for current
+/// flowing anode → cathode, at `v_d` = anode − cathode (V). `irradiance` is
+/// incident optical power in W (not W/m²). `i_eq` includes the
+/// photocurrent, which flows cathode → anode, opposite to forward current.
 pub fn photodiode_companion(v_d: f64, irradiance: f64, params: &PhotodiodeParams) -> (f64, f64) {
     let (g_d, i_eq_dark) = diode_companion(
         v_d,

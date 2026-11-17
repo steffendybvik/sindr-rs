@@ -125,18 +125,19 @@ impl Default for MosfetParams {
 
 /// Companion model output for MNA stamping.
 pub struct MosfetCompanion {
-    /// Drain current at operating point.
+    /// Drain current at the operating point (A), drain → source, in the
+    /// NMOS frame: callers mirror a PMOS (negate) to get its physical current.
     pub id: f64,
-    /// Transconductance: dId/dVgs.
+    /// Transconductance ∂Id/∂Vgs (S).
     pub gm: f64,
-    /// Output conductance: dId/dVds.
+    /// Output conductance ∂Id/∂Vds (S).
     pub gds: f64,
-    /// Body transconductance: dId/dVbs (from body effect). Zero when
+    /// Body transconductance ∂Id/∂Vbs (S), from the body effect. Zero when
     /// Vbs >= PHI, where the threshold stops depending on Vbs.
     pub gmb: f64,
     /// Operating region.
     pub region: MosfetRegion,
-    /// Effective threshold voltage (after body effect).
+    /// Effective threshold voltage after the body effect (V), NMOS frame.
     pub vth: f64,
 }
 
