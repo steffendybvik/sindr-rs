@@ -33,12 +33,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ac_exported_transformer`) pin the controlled-source signs.
 - ngspice goldens `dc_diode_1n4148` (a 1N4148 card with `RS`) and
   `op_bjt_card`.
+- New crate `sindr-core`: the data model (`Circuit`, `CircuitElement`,
+  `Waveform`) with no solver dependencies, so design tools can use it alone.
+  `sindr` re-exports it, so `sindr::Circuit` paths still work.
+- Design hierarchy on `Circuit`: `blocks` (`Block`: ports, components,
+  instances), `instances` (`Instance`), `globals`, and `parts` (`Part`:
+  reference, value, symbol, footprint, free-form fields, ignored by the
+  simulator). `Circuit::flatten` expands instances with `.`-joined names;
+  every analysis entry point flattens first. `Circuit::new`,
+  `Circuit::nets`, and `CircuitElement::id_mut`/`nodes_mut` for renaming.
+- SPICE import keeps `.subckt` structure as blocks and instances; a subckt
+  whose instances bind different `.param` values becomes one block per
+  distinct body (`name`, `name_2`, …). Export writes blocks as
+  `.subckt`/`.ends` and instances as `X` lines, and round-trips.
 
 ### Changed
 
 - **Breaking:** `CircuitElement::Diode` and `CircuitElement::Bjt` have a new
   `model` field; struct literals need `model: None` for the old behaviour.
   JSON without it still loads.
+- **Breaking:** `Circuit` has new fields (`instances`, `blocks`, `parts`,
+  `globals`), so struct literals need `..Default::default()` or
+  `Circuit::new`. JSON is unchanged for a flat circuit, and old JSON loads.
+- **Breaking:** `ParsedNetlist::circuit` keeps `.subckt` hierarchy instead
+  of flattening it; call `circuit.flatten()` for the flat element list.
+  `SourceMap` and the flattened names are unchanged.
+- **Breaking:** `SimError::Design` and `ExportError::Design` for a hierarchy
+  that can't be flattened.
+- `PartialEq` on `CircuitElement`, `Waveform`, `MosfetParams`,
+  `IgbtParams` and `VaractorParams`.
 
 ## [0.1.0-alpha.7] - 2026-11-16
 

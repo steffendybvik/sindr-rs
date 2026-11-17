@@ -62,6 +62,17 @@
 //! assert!((v_n2 - 6.6667).abs() < 1e-3);
 //! ```
 //!
+//! # Data model and hierarchy
+//!
+//! [`Circuit`] and everything in it comes from the [`sindr_core`] crate,
+//! re-exported here as [`circuit`], [`design`] and [`waveform`]. Design tools
+//! can depend on `sindr-core` alone. Besides its flat `components`, a
+//! circuit can place [`Block`]s through [`Instance`]s, name `globals`, and
+//! carry [`Part`] data (reference, symbol, footprint) the solver ignores.
+//! Every analysis flattens the hierarchy first ([`Circuit::flatten`]: `X1.R1`,
+//! `X1.mid`) and reports results under the flattened names. A broken
+//! hierarchy is [`SimError::Design`].
+//!
 //! # Capabilities
 //!
 //! ## Analyses
@@ -260,8 +271,8 @@ pub mod validation;
 pub use sindr_core::waveform;
 
 pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel};
-pub use design::{Block, DesignError, Instance, Part};
 pub use dc_sweep::{dc_sweep, DcSweepResult};
+pub use design::{Block, DesignError, Instance, Part};
 pub use error::SimError;
 pub use mna::MnaSystem;
 pub use node_map::NodeMap;

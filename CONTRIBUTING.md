@@ -56,17 +56,19 @@ python3 scripts/gen_llms_full.py --check
 Every PR to `main` must bump the version. The `version bumped` CI job fails
 unless:
 
-1. `version` in both `sindr/Cargo.toml` and `sindr-devices/Cargo.toml`
-   differs from `main`, and
+1. `version` in `sindr/Cargo.toml`, `sindr-core/Cargo.toml` and
+   `sindr-devices/Cargo.toml` differs from `main` (a crate new on the
+   branch is skipped), and
 2. `CHANGELOG.md` has a `## [<new version>]` section.
 
-The two crates share one version. A bump touches:
+The three crates share one version. A bump touches:
 
-- `version` in `sindr/Cargo.toml` and `sindr-devices/Cargo.toml`
-- the `sindr` / `sindr-devices` entries under `[workspace.dependencies]` in
+- `version` in `sindr/Cargo.toml`, `sindr-core/Cargo.toml` and
+  `sindr-devices/Cargo.toml`
+- the `sindr` / `sindr-core` / `sindr-devices` entries under `[workspace.dependencies]` in
   the root `Cargo.toml`, plus `Cargo.lock`
 - the version in install snippets and status lines: `README.md`,
-  `sindr/README.md`, `sindr-devices/README.md`, `LIMITATIONS.md`, `AGENTS.md`,
+  `sindr/README.md`, `sindr-core/README.md`, `sindr-devices/README.md`, `LIMITATIONS.md`, `AGENTS.md`,
   `sindr/src/lib.rs` and `sindr/src/spice/mod.rs`. Pre-release versions don't
   match a plain `"0.1"` requirement, so the snippets pin the full version.
 - `CHANGELOG.md`: move the `[Unreleased]` entries into the new section and

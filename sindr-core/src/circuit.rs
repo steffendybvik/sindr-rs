@@ -776,7 +776,8 @@ impl CircuitElement {
         }
     }
 
-    pub(crate) fn nodes_mut(&mut self) -> &mut [String] {
+    /// Mutable [`nodes`](Self::nodes), for renaming nets.
+    pub fn nodes_mut(&mut self) -> &mut [String] {
         match self {
             CircuitElement::Resistor { nodes, .. } => nodes,
             CircuitElement::VoltageSource { nodes, .. } => nodes,
@@ -811,7 +812,8 @@ impl CircuitElement {
         }
     }
 
-    pub(crate) fn id_mut(&mut self) -> &mut String {
+    /// Mutable [`id`](Self::id), for renaming.
+    pub fn id_mut(&mut self) -> &mut String {
         match self {
             CircuitElement::Resistor { id, .. } => id,
             CircuitElement::VoltageSource { id, .. } => id,
@@ -847,7 +849,7 @@ impl CircuitElement {
     }
 
     /// The control-net pair of a VCVS or VCCS.
-    pub(crate) fn control_nodes_mut(&mut self) -> Option<&mut [String; 2]> {
+    pub fn control_nodes_mut(&mut self) -> Option<&mut [String; 2]> {
         match self {
             CircuitElement::Vcvs { control_nodes, .. }
             | CircuitElement::Vccs { control_nodes, .. } => Some(control_nodes),
@@ -856,7 +858,7 @@ impl CircuitElement {
     }
 
     /// The controlling source id of a CCVS or CCCS.
-    pub(crate) fn control_source_mut(&mut self) -> Option<&mut String> {
+    pub fn control_source_mut(&mut self) -> Option<&mut String> {
         match self {
             CircuitElement::Ccvs { control_source, .. }
             | CircuitElement::Cccs { control_source, .. } => Some(control_source),

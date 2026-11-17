@@ -222,12 +222,14 @@ impl<'a> Expander<'a> {
         parent_ports: &HashMap<&str, String>,
     ) -> Result<(), DesignError> {
         let path = join(parent, &instance.id);
-        let block = self.design.blocks.get(&instance.block).ok_or_else(|| {
-            DesignError::UnknownBlock {
-                instance: path.clone(),
-                block: instance.block.clone(),
-            }
-        })?;
+        let block =
+            self.design
+                .blocks
+                .get(&instance.block)
+                .ok_or_else(|| DesignError::UnknownBlock {
+                    instance: path.clone(),
+                    block: instance.block.clone(),
+                })?;
         if block.ports.len() != instance.nodes.len() {
             return Err(DesignError::PortCount {
                 instance: path,
@@ -356,7 +358,8 @@ mod tests {
                 ..Block::default()
             },
         );
-        c.instances.push(Instance::new("X1", "stage", ["in", "out"]));
+        c.instances
+            .push(Instance::new("X1", "stage", ["in", "out"]));
         c
     }
 
@@ -404,7 +407,8 @@ mod tests {
                 ..Block::default()
             },
         );
-        c.instances.push(Instance::new("X1", "b", Vec::<String>::new()));
+        c.instances
+            .push(Instance::new("X1", "b", Vec::<String>::new()));
         let flat = c.flatten().unwrap();
         assert_eq!(flat.components[0].nodes(), ["vcc", "gnd"]);
         assert_eq!(flat.globals, ["vcc"]);
@@ -505,7 +509,8 @@ mod tests {
     #[test]
     fn a_block_used_twice_is_not_recursion() {
         let mut c = nested();
-        c.instances.push(Instance::new("X3", "stage", ["in", "out2"]));
+        c.instances
+            .push(Instance::new("X3", "stage", ["in", "out2"]));
         let flat = c.flatten().unwrap();
         assert_eq!(flat.components.len(), 7);
     }
