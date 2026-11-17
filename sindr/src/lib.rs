@@ -87,6 +87,7 @@
 //! | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
+//! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
 //! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
 //!
@@ -269,6 +270,7 @@ pub mod sensitivity;
 pub mod spice;
 pub mod stamp;
 pub mod temp_sweep;
+mod thermal;
 pub mod transfer_function;
 pub mod transient;
 pub mod validation;
@@ -276,7 +278,7 @@ pub use sindr_core::waveform;
 
 pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
 pub use dc_sweep::{dc_sweep, DcSweepResult};
-pub use design::{Block, DesignError, Instance, Part, Ratings};
+pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::SimError;
 pub use mna::MnaSystem;
 pub use node_map::NodeMap;
@@ -384,15 +386,29 @@ pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
         return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
     }
 
-    if circuit.has_nonlinear_elements() {
-        newton_raphson::solve_nonlinear(circuit, &node_map, num_nodes, num_vsources)
-    } else {
-        let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
-        let solution = system.solve()?;
-        Ok(results::extract_results(
-            circuit, &node_map, &solution, num_nodes,
-        ))
+    solve_dc_heated(circuit, |circuit| {
+        if circuit.has_nonlinear_elements() {
+            newton_raphson::solve_nonlinear(circuit, &node_map, num_nodes, num_vsources)
+        } else {
+            let mut system = MnaSystem::new(num_nodes, num_vsources);
+            stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
+            let solution = system.solve()?;
+            Ok(results::extract_results(
+                circuit, &node_map, &solution, num_nodes,
+            ))
+        }
+    })
+}
+
+/// `solve` on flat `circuit`, iterated to a self-heating balance when any
+/// part has [`Thermal`] data.
+fn solve_dc_heated(
+    circuit: &Circuit,
+    mut solve: impl FnMut(&Circuit) -> Result<SimulationResult, SimError>,
+) -> Result<SimulationResult, SimError> {
+    match thermal::Heated::from_circuit(circuit)? {
+        Some(heated) => thermal::solve_dc(circuit, &heated, solve),
+        None => solve(circuit),
     }
 }
 
@@ -553,21 +569,23 @@ pub fn solve_circuit_with_initial_voltages(
         return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
     }
 
-    if circuit.has_nonlinear_elements() {
-        newton_raphson::solve_nonlinear_with_initial_voltages(
-            circuit,
-            &node_map,
-            num_nodes,
-            num_vsources,
-            initial_voltages,
-        )
-    } else {
-        // Linear DC: initial guess has no effect on the result.
-        let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
-        let solution = system.solve()?;
-        Ok(results::extract_results(
-            circuit, &node_map, &solution, num_nodes,
-        ))
-    }
+    solve_dc_heated(circuit, |circuit| {
+        if circuit.has_nonlinear_elements() {
+            newton_raphson::solve_nonlinear_with_initial_voltages(
+                circuit,
+                &node_map,
+                num_nodes,
+                num_vsources,
+                initial_voltages,
+            )
+        } else {
+            // Linear DC: initial guess has no effect on the result.
+            let mut system = MnaSystem::new(num_nodes, num_vsources);
+            stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
+            let solution = system.solve()?;
+            Ok(results::extract_results(
+                circuit, &node_map, &solution, num_nodes,
+            ))
+        }
+    })
 }

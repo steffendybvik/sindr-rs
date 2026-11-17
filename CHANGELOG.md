@@ -60,6 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   &result)`, which reports each part's worst value, when it happened, the
   limit and the margin, at the operating point or at every transient step.
   A rating a part needs but doesn't set is unverified, never a pass.
+- Self-heating: `Part::thermal` (`Thermal`: `rth_ja`, or `rth_jc` + `rth_ca`
+  for a heatsink, optional `cth`, `ambient`). `solve_circuit` iterates the
+  DC operating point until each part's junction temperature matches
+  `ambient + P·Rθ`, and `solve_transient` carries a thermal RC per part. The
+  temperature feeds back into diodes, LEDs, Zeners, Schottkys, photodiodes,
+  BJTs and thermistors. `junction_temperatures` on `SimulationResult` and
+  `TimestepSnapshot`, `Ratings::tj_max` checked against them, and
+  `SimError::ThermalRunaway` when no balance exists. `temperature_sweep`
+  sets the ambient of self-heated parts.
 
 ### Changed
 
@@ -79,6 +88,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `SimError::Design` and `ExportError::Design` for a hierarchy
   that can't be flattened.
 - `Part` is no longer `Eq` (its ratings are `f64`).
+- **Breaking:** `SimError::ThermalRunaway` is a new variant, and
+  `SimulationResult` and `TimestepSnapshot` have a new
+  `junction_temperatures` field (struct literals need it; JSON without it
+  still loads).
 - `PartialEq` on `CircuitElement`, `Waveform`, `MosfetParams`,
   `IgbtParams` and `VaractorParams`.
 

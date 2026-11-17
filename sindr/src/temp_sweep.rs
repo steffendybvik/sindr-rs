@@ -142,6 +142,21 @@ pub fn temperature_sweep(
             }
         }
 
+        // A self-heated part sits in an ambient at the swept temperature.
+        let thermals = sweep_circuit
+            .parts
+            .values_mut()
+            .chain(
+                sweep_circuit
+                    .blocks
+                    .values_mut()
+                    .flat_map(|b| b.parts.values_mut()),
+            )
+            .filter_map(|p| p.thermal.as_mut());
+        for thermal in thermals {
+            thermal.ambient = t;
+        }
+
         let result = crate::solve_circuit(&sweep_circuit)?;
         points.push(TempSweepPoint {
             temperature_kelvin: t,

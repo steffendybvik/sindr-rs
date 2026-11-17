@@ -28,6 +28,7 @@ use crate::stamp::{
     stamp_transformer_companion, stamp_vccs, stamp_vcvs, stamp_voltage_source, SWITCH_R_CLOSED,
     SWITCH_R_OPEN,
 };
+use crate::thermal::Heated;
 
 /// Calculate simulation duration and timestep from circuit time constants.
 ///
@@ -1138,6 +1139,7 @@ fn extract_timestep_results(
         time,
         node_voltages,
         component_results,
+        junction_temperatures: HashMap::new(),
     };
 
     (snapshot, new_caps, new_inds)
@@ -1539,7 +1541,6 @@ pub(crate) fn run_transient(
     let h_max = config.step();
     // Newton failures halve the step down to this before giving up.
     let h_min = h_max * 1e-6;
-    let nonlinear = circuit.has_nonlinear_elements();
 
     check_initial_conditions(circuit, node_map, config)?;
 
@@ -1593,19 +1594,18 @@ pub(crate) fn run_transient(
     // The accepted step before this one; `None` until the first is taken.
     let mut h_prev: Option<f64> = None;
 
-    let step = StepSolver {
-        circuit,
-        node_map,
-        num_nodes,
-        num_vsources,
-        nonlinear,
-        diode_info: if nonlinear {
-            newton_raphson::collect_diode_info(circuit, node_map)
-        } else {
-            Vec::new()
-        },
-        igbt_info: newton_raphson::collect_igbt_info(circuit, node_map),
-    };
+    let fixed_step = StepSolver::new(circuit, node_map, num_nodes, num_vsources);
+
+    // Self-heating: a working copy of the circuit whose junction
+    // temperatures follow each part's thermal RC, advanced after every
+    // accepted step. The next step solves at the new temperatures.
+    let heated = Heated::from_circuit(circuit)?;
+    let mut temps = heated.as_ref().map(Heated::ambient).unwrap_or_default();
+    let mut work = heated.as_ref().map(|h| {
+        let mut work = circuit.clone();
+        h.apply(&mut work, &temps);
+        work
+    });
 
     let breakpoints = waveform_breakpoints(circuit, tstop)?;
     // Each breakpoint forces a step of its own, so they count against the
@@ -1678,6 +1678,14 @@ pub(crate) fn run_transient(
         };
 
         let integ = Integrator::for_step(config.method, dt, h_prev);
+        let heated_step;
+        let (step, stepped) = match &work {
+            Some(work) => {
+                heated_step = StepSolver::new(work, node_map, num_nodes, num_vsources);
+                (&heated_step, work)
+            }
+            None => (&fixed_step, circuit),
+        };
         let next = match step.solve(&integ, t_src, &caps, &inds, &parasitic, &solution) {
             Ok(next) => next,
             Err(e @ SimError::ConvergenceFailed { .. }) => {
@@ -1706,9 +1714,15 @@ pub(crate) fn run_transient(
             }
         }
 
-        let (snapshot, new_caps, new_inds) = extract_timestep_results(
-            circuit, node_map, &next, num_nodes, t_next, t_src, &integ, &caps, &inds,
+        let (mut snapshot, new_caps, new_inds) = extract_timestep_results(
+            stepped, node_map, &next, num_nodes, t_next, t_src, &integ, &caps, &inds,
         );
+        if let (Some(heated), Some(work)) = (&heated, &mut work) {
+            temps = heated.advance(&temps, &heated.powers(&snapshot.component_results), dt);
+            heated.check_runaway(&temps)?;
+            heated.apply(work, &temps);
+            snapshot.junction_temperatures = heated.report(&temps);
+        }
         timesteps.push(snapshot);
         stats.accepted_steps += 1;
         caps = new_caps;
@@ -1756,8 +1770,9 @@ pub(crate) fn run_transient(
         }
     }
 
-    let bjt_results = extract_bjt_results_from_snapshot(circuit, final_snapshot);
-    let mosfet_results = extract_mosfet_results_from_snapshot(circuit, final_snapshot);
+    let last = work.as_ref().unwrap_or(circuit);
+    let bjt_results = extract_bjt_results_from_snapshot(last, final_snapshot);
+    let mosfet_results = extract_mosfet_results_from_snapshot(last, final_snapshot);
 
     Ok(SimulationResult {
         node_voltages: final_snapshot.node_voltages.clone(),
@@ -1769,6 +1784,7 @@ pub(crate) fn run_transient(
         relay_results: vec![],
         mcu_results: vec![],
         convergence_aid: None,
+        junction_temperatures: final_snapshot.junction_temperatures.clone(),
         transient: Some(TransientData {
             timesteps,
             time_step: config.tstep,
@@ -1944,7 +1960,29 @@ struct StepSolver<'a> {
     igbt_info: Vec<newton_raphson::IgbtLimitInfo>,
 }
 
-impl StepSolver<'_> {
+impl<'a> StepSolver<'a> {
+    fn new(
+        circuit: &'a Circuit,
+        node_map: &'a NodeMap,
+        num_nodes: usize,
+        num_vsources: usize,
+    ) -> Self {
+        let nonlinear = circuit.has_nonlinear_elements();
+        Self {
+            circuit,
+            node_map,
+            num_nodes,
+            num_vsources,
+            nonlinear,
+            diode_info: if nonlinear {
+                newton_raphson::collect_diode_info(circuit, node_map)
+            } else {
+                Vec::new()
+            },
+            igbt_info: newton_raphson::collect_igbt_info(circuit, node_map),
+        }
+    }
+
     /// The solution at `t`, the end of a step integrated by `integ` from the
     /// histories `caps` / `inds` / `parasitic`. Newton starts from `start`,
     /// the previous step's solution.
