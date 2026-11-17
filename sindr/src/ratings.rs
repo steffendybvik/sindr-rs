@@ -24,6 +24,10 @@
 //! | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 //! | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
 //!
+//! A part with [`Thermal`](crate::Thermal) data also needs `tj_max`, checked
+//! against the junction temperature self-heating reports. Without thermal
+//! data there is no junction temperature, so a `tj_max` is unverified.
+//!
 //! Any other rating a part sets is checked as well. `power`, `voltage` and
 //! `current` work on every component, measured on the port its
 //! [`ComponentResult`] reports (Vce and Ic for a BJT). A rating the
@@ -93,10 +97,12 @@ pub enum RatingKind {
     Vgs,
     /// Drain current (A).
     Id,
+    /// Junction temperature (K), from self-heating.
+    Tj,
 }
 
 impl RatingKind {
-    const ALL: [RatingKind; 12] = [
+    const ALL: [RatingKind; 13] = [
         RatingKind::Power,
         RatingKind::Voltage,
         RatingKind::Current,
@@ -109,6 +115,7 @@ impl RatingKind {
         RatingKind::Vds,
         RatingKind::Vgs,
         RatingKind::Id,
+        RatingKind::Tj,
     ];
 
     /// The limit `ratings` sets for this kind, if any.
@@ -126,10 +133,11 @@ impl RatingKind {
             RatingKind::Vds => ratings.vds,
             RatingKind::Vgs => ratings.vgs,
             RatingKind::Id => ratings.id,
+            RatingKind::Tj => ratings.tj_max,
         }
     }
 
-    /// SI unit symbol: `"W"`, `"V"` or `"A"`.
+    /// SI unit symbol: `"W"`, `"V"`, `"A"` or `"K"`.
     pub fn unit(self) -> &'static str {
         match self {
             RatingKind::Power => "W",
@@ -143,6 +151,7 @@ impl RatingKind {
             RatingKind::Current | RatingKind::ForwardCurrent | RatingKind::Ic | RatingKind::Id => {
                 "A"
             }
+            RatingKind::Tj => "K",
         }
     }
 }
@@ -260,11 +269,13 @@ fn measure(
     element: &CircuitElement,
     kind: RatingKind,
     port: Option<&ComponentResult>,
-    voltages: &HashMap<String, f64>,
+    sample: &Sample<'_>,
 ) -> Option<f64> {
+    let voltages = sample.voltages;
     let v = |i: usize| voltages.get(element.nodes().get(i)?).copied();
     let between = |a: usize, b: usize| Some((v(a)? - v(b)?).abs());
     let value = match (kind, element) {
+        (RatingKind::Tj, e) => *sample.junction_temperatures.get(e.id())?,
         (RatingKind::Power, _) => port?.power.max(0.0),
         (RatingKind::Voltage, _) => port?.voltage_across.abs(),
         (RatingKind::Current, _) => port?.current_through.abs(),
@@ -302,6 +313,7 @@ struct Sample<'a> {
     time: Option<f64>,
     voltages: &'a HashMap<String, f64>,
     ports: HashMap<&'a str, &'a ComponentResult>,
+    junction_temperatures: &'a HashMap<String, f64>,
 }
 
 impl<'a> Sample<'a> {
@@ -309,11 +321,13 @@ impl<'a> Sample<'a> {
         time: Option<f64>,
         voltages: &'a HashMap<String, f64>,
         results: &'a [ComponentResult],
+        junction_temperatures: &'a HashMap<String, f64>,
     ) -> Self {
         Self {
             time,
             voltages,
             ports: results.iter().map(|r| (r.id.as_str(), r)).collect(),
+            junction_temperatures,
         }
     }
 }
@@ -337,12 +351,20 @@ pub fn check_ratings(
         Some(tran) => tran
             .timesteps
             .iter()
-            .map(|s| Sample::new(Some(s.time), &s.node_voltages, &s.component_results))
+            .map(|s| {
+                Sample::new(
+                    Some(s.time),
+                    &s.node_voltages,
+                    &s.component_results,
+                    &s.junction_temperatures,
+                )
+            })
             .collect(),
         None => vec![Sample::new(
             None,
             &result.node_voltages,
             &result.component_results,
+            &result.junction_temperatures,
         )],
     };
 
@@ -350,17 +372,20 @@ pub fn check_ratings(
     let mut checks = Vec::new();
     for element in &flat.components {
         let id = element.id();
-        let ratings = flat.parts.get(id).map_or(&none, |p| &p.ratings);
+        let part = flat.parts.get(id);
+        let ratings = part.map_or(&none, |p| &p.ratings);
+        let heated = part.is_some_and(|p| p.thermal.is_some());
         let needs = needed(element);
         for kind in RatingKind::ALL {
             let limit = kind.limit(ratings);
-            if limit.is_none() && !needs.contains(&kind) {
+            let needed = needs.contains(&kind) || (kind == RatingKind::Tj && heated);
+            if limit.is_none() && !needed {
                 continue;
             }
             let mut worst: Option<(f64, Option<f64>)> = None;
             for sample in &samples {
                 let port = sample.ports.get(id).copied();
-                if let Some(value) = measure(element, kind, port, sample.voltages) {
+                if let Some(value) = measure(element, kind, port, sample) {
                     if worst.is_none_or(|(w, _)| value > w) {
                         worst = Some((value, sample.time));
                     }

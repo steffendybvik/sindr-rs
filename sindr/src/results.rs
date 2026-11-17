@@ -136,6 +136,13 @@ pub struct TimestepSnapshot {
     /// Per-component voltage/current/power at this instant. A source with a
     /// waveform reports its value at this time, not its DC term.
     pub component_results: Vec<ComponentResult>,
+    /// Junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data at this instant, by component id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
 }
 
 /// Time-series data from a transient simulation.
@@ -244,6 +251,14 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub convergence_aid: Option<ConvergenceAid>,
+    /// Self-heated junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data, by component id: the DC balance, or
+    /// the end of a transient. Empty when no part has thermal data.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -853,6 +868,7 @@ pub fn extract_results(
         relay_results: relay_results_vec,
         mcu_results: vec![],
         convergence_aid: None,
+        junction_temperatures: HashMap::new(),
         transient: None,
     }
 }
@@ -875,6 +891,7 @@ mod tests {
             relay_results: vec![],
             mcu_results: vec![],
             convergence_aid: None,
+            junction_temperatures: HashMap::new(),
             transient: None,
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -896,17 +913,20 @@ mod tests {
             relay_results: vec![],
             mcu_results: vec![],
             convergence_aid: None,
+            junction_temperatures: HashMap::new(),
             transient: Some(TransientData {
                 timesteps: vec![
                     TimestepSnapshot {
                         time: 0.0,
                         node_voltages: HashMap::from([("n1".into(), 0.0)]),
                         component_results: vec![],
+                        junction_temperatures: HashMap::new(),
                     },
                     TimestepSnapshot {
                         time: 0.001,
                         node_voltages: HashMap::from([("n1".into(), 3.2)]),
                         component_results: vec![],
+                        junction_temperatures: HashMap::new(),
                     },
                 ],
                 time_step: 0.001,

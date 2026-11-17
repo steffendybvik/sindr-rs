@@ -93,7 +93,7 @@ Pre-release alpha (`0.1.0-alpha.8`), [published on crates.io](https://crates.io/
 
 ### Scope & limitations
 
-sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, noise/Monte-Carlo/pole-zero analyses, BSIM-class device models, and self-heating co-simulation are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
+sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, noise/Monte-Carlo/pole-zero analyses, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
 To work on sindr itself, see [`CONTRIBUTING.md`](./CONTRIBUTING.md). AI coding agents (Claude Code, Codex, Cursor, etc.) should also read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
 
@@ -558,6 +558,26 @@ pub struct TempSweepPoint {
 
 `num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
 
+### Self-heating
+
+Give a part a thermal path and the solver heats its junction by what it dissipates, then feeds that temperature back into the device: IS and kT/q for diodes, LEDs, Zeners, Schottkys, photodiodes and BJTs, and the resistance of a thermistor. The DC solve iterates until power and temperature agree. A transient carries a thermal RC state per part (`Cθ·dT/dt = P − (T − ambient)/Rθ`), starting cold at ambient.
+
+```rust
+use sindr::{solve_circuit, Part, SimError, Thermal};
+
+// SOT-23 on its own (~500 K/W), or a TO-220 on a heatsink.
+circuit.parts.insert("Q2".into(), Part { thermal: Some(Thermal::junction_to_ambient(500.0)), ..Part::default() });
+circuit.parts.insert("Q3".into(), Part { thermal: Some(Thermal::on_heatsink(5.0, 10.0)), ..Part::default() });
+
+match solve_circuit(&circuit) {
+    Ok(result) => println!("Tj(Q2) = {:.1} K", result.junction_temperatures["Q2"]),
+    Err(SimError::ThermalRunaway { part, temperature }) => println!("{part} runs away past {temperature:.0} K"),
+    Err(e) => return Err(e),
+}
+```
+
+`Thermal` takes `rth_ja` (K/W), or `rth_jc` plus `rth_ca` for a part on a heatsink, an optional `cth` (J/K; without it a transient's junction follows its power with no lag), and `ambient` (K, default 300.15). With it, the element's own `temperature` field is ignored. `SimulationResult::junction_temperatures` and each `TimestepSnapshot`'s carry the result, and `Ratings::tj_max` is checked against them. When no balance exists (a junction past 1000 K, or the iteration never settles), the solve returns `SimError::ThermalRunaway`. MOSFETs, JFETs, IGBTs and resistors report a junction temperature, but their models don't depend on it.
+
 ### Ratings checks
 
 Check a solved circuit against each part's absolute maximum ratings, so nothing gets powered past its datasheet limits. Ratings live on the component's `Part` (`circuit.parts`, keyed by component id). `check_ratings` looks at the DC operating point, or at every step of a transient, where inrush, inductive kickback and start-up peaks show up.
@@ -593,6 +613,7 @@ Each component kind has ratings it needs, checked whether set or not; a missing 
 | BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
 | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+| anything with `Part::thermal` | also `tj_max` |
 
 Any other rating set on a part is checked too: `power`, `voltage` and `current` on any component (on the port its `ComponentResult` reports), the rest on the devices they belong to. All limits are magnitudes, so PNP and PMOS parts use the same positive numbers. Transistor power is `|V·I|` on the Vce/Ic or Vds/Id port, without base or gate dissipation.
 
@@ -972,8 +993,11 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Self-heating & thermal
 
-- Temperature is a **per-device parameter**, not a state variable. The temp-sweep analysis re-solves at each temperature; it does not couple junction power dissipation back into junction temperature within a single solve.
-- **No electro-thermal network**, no thermal RC ladders, no `T(t)` co-simulated with `V(t)`. This matters for IGBT / power-MOSFET / LED designs where self-heating shifts the operating point.
+- **Self-heating is one thermal RC per part.** A part with `Part::thermal` runs at `ambient + P·Rθ` (iterated to a balance in DC, a thermal RC state in transient). There's no thermal coupling between parts (a shared heatsink, neighbours on a board), and no multi-pole Foster/Cauer ladder for the junction-to-case path.
+- **Only junction devices and the thermistor feel their temperature:** diodes, LEDs, Zeners, Schottkys, photodiodes, BJTs and thermistors. MOSFETs, JFETs, IGBTs and resistors report a junction temperature (and so get Tj-max checks), but their models have no temperature in them, so heating doesn't move their operating point. Power-MOSFET and IGBT runaway is not predicted.
+- **LEDs scale IS with silicon's bandgap**, so a hot LED's forward voltage rises instead of falling the ~2 mV/K a real one does.
+- **Self-heating applies to `solve_circuit`, `solve_circuit_with_initial_voltages` and `solve_transient`** (and `temperature_sweep`, which sets the ambient). AC, `.tf`, `.sens` and `dc_sweep` linearise around the unheated operating point.
+- In a transient the electrical step solves at the temperature from the step before. Thermal time constants are far longer than the electrical steps, so the lag doesn't matter unless the step is coarse compared with Rθ·Cθ.
 
 #### Tooling & UX
 
@@ -1380,6 +1404,22 @@ pub enum SimError {
         /// over node indices of `|V_new[i] − V_prev[i]|`.
         max_step_volts: f64,
     },
+
+    /// Self-heating has no stable balance: a part's dissipation heats its
+    /// junction, which raises its current, faster than its thermal path can
+    /// carry the heat away. The real part would be destroyed.
+    #[error(
+        "thermal runaway in `{part}`: its junction passed {temperature:.0} K with no stable \
+         operating point. Lower its dissipation, add emitter degeneration, or give it a \
+         lower thermal resistance (heatsink)."
+    )]
+    ThermalRunaway {
+        /// The part that ran away (the hottest one whose temperature feeds
+        /// back into its model).
+        part: String,
+        /// Its junction temperature when the solve gave up (K).
+        temperature: f64,
+    },
 }
 ```
 
@@ -1527,6 +1567,7 @@ hierarchy is [`SimError::Design`].
 | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
+| Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
 | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
 
@@ -1718,7 +1759,7 @@ pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel};
 
 pub use dc_sweep::{dc_sweep, DcSweepResult};
 
-pub use design::{Block, DesignError, Instance, Part, Ratings};
+pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 
 pub use error::SimError;
 
@@ -2119,6 +2160,10 @@ or not. A needed rating that isn't set comes back
 | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
 
+A part with [`Thermal`](crate::Thermal) data also needs `tj_max`, checked
+against the junction temperature self-heating reports. Without thermal
+data there is no junction temperature, so a `tj_max` is unverified.
+
 Any other rating a part sets is checked as well. `power`, `voltage` and
 `current` work on every component, measured on the port its
 [`ComponentResult`] reports (Vce and Ic for a BJT). A rating the
@@ -2178,13 +2223,15 @@ pub enum RatingKind {
     Vgs,
     /// Drain current (A).
     Id,
+    /// Junction temperature (K), from self-heating.
+    Tj,
 }
 
 impl RatingKind {
     /// The limit `ratings` sets for this kind, if any.
     pub fn limit(self, ratings: &Ratings) -> Option<f64> { … }
 
-    /// SI unit symbol: `"W"`, `"V"` or `"A"`.
+    /// SI unit symbol: `"W"`, `"V"`, `"A"` or `"K"`.
     pub fn unit(self) -> &'static str { … }
 }
 
@@ -2369,6 +2416,13 @@ pub struct TimestepSnapshot {
     /// Per-component voltage/current/power at this instant. A source with a
     /// waveform reports its value at this time, not its DC term.
     pub component_results: Vec<ComponentResult>,
+    /// Junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data at this instant, by component id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
 }
 
 /// Time-series data from a transient simulation.
@@ -2470,6 +2524,14 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub convergence_aid: Option<ConvergenceAid>,
+    /// Self-heated junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data, by component id: the DC balance, or
+    /// the end of a transient. Empty when no part has thermal data.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -5147,6 +5209,53 @@ pub struct Part {
     /// compares a simulation against them.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Ratings::is_empty"))]
     pub ratings: Ratings,
+    /// How the part sheds heat. When set, the solver heats its junction by
+    /// the power it dissipates; see [`Thermal`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub thermal: Option<Thermal>,
+}
+
+/// A part's thermal path to ambient, for self-heating.
+///
+/// With it, the part's junction runs at `ambient + P·Rθ` in DC, or follows
+/// `Cθ·dT/dt = P − (T − ambient)/Rθ` in a transient, and the solver feeds
+/// that temperature back into the device (IS and kT/q for diodes, LEDs and
+/// BJTs; the thermistor's resistance). The element's own `temperature`
+/// field is then ignored.
+///
+/// Rθ is [`rth_jc`](Self::rth_jc) + [`rth_ca`](Self::rth_ca) when both are
+/// set (a part on a heatsink), otherwise [`rth_ja`](Self::rth_ja).
+pub struct Thermal {
+    /// Junction to ambient (K/W), the datasheet's Rθja for the part on its
+    /// own.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_ja: Option<f64>,
+    /// Junction to case (K/W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_jc: Option<f64>,
+    /// Case to ambient through what the part is mounted on: interface pad
+    /// plus heatsink (K/W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_ca: Option<f64>,
+    /// Thermal capacitance (J/K). `None` in a transient means the junction
+    /// follows its power with no lag.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub cth: Option<f64>,
+    /// Ambient temperature (K). Default 300.15 K (27 °C).
+    pub ambient: f64,
+}
+
+impl Thermal {
+    /// A free-standing part: junction to ambient `rth_ja` (K/W).
+    pub fn junction_to_ambient(rth_ja: f64) -> Self { … }
+
+    /// A part on a heatsink: junction to case `rth_jc` plus case to ambient
+    /// `rth_ca` (K/W).
+    pub fn on_heatsink(rth_jc: f64, rth_ca: f64) -> Self { … }
+
+    /// The thermal resistance from junction to ambient (K/W) the solver
+    /// uses, or `None` when neither path is set.
+    pub fn resistance(&self) -> Option<f64> { … }
 }
 
 /// Absolute maximum ratings: the datasheet limits a part must never pass.
@@ -5194,6 +5303,11 @@ pub struct Ratings {
     /// MOSFET or JFET drain current, `|Id|` (A).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub id: Option<f64>,
+    /// Maximum junction temperature (K): 423.15 K for a 150 °C part. Checked
+    /// against the junction temperature self-heating reports, so it needs
+    /// [`Part::thermal`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub tj_max: Option<f64>,
 }
 
 impl Ratings {
@@ -5302,7 +5416,7 @@ pub mod waveform;
 
 pub use circuit:: { … }
 
-pub use design::{Block, DesignError, Instance, Part, Ratings};
+pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 
 pub use waveform::Waveform;
 ```
