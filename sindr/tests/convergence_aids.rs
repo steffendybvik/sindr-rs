@@ -52,6 +52,7 @@ fn current_mirror_needs_source_stepping() {
             npn("Q2", "m", "out", "0"),
             resistor("RL", "vcc", "out", 1e6),
         ],
+        ..Default::default()
     };
     let result = solve_circuit(&mirror).unwrap();
     assert_eq!(result.convergence_aid, Some(ConvergenceAid::SourceStepping));
@@ -95,6 +96,7 @@ fn easy_circuit_reports_no_aid() {
                 model: None,
             },
         ],
+        ..Default::default()
     };
     assert_eq!(solve_circuit(&divider).unwrap().convergence_aid, None);
 }

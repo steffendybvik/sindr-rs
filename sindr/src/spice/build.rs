@@ -88,6 +88,7 @@ pub(crate) fn build_netlist(
         circuit: Circuit {
             ground_node: "0".to_string(),
             components,
+            ..Default::default()
         },
         analyses,
         initial_conditions,

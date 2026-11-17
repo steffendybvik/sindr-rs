@@ -52,6 +52,7 @@
 //!             resistance: 2_000.0,
 //!         },
 //!     ],
+//!     ..Default::default()
 //! };
 //!
 //! let result = solve_circuit(&circuit).unwrap();
@@ -178,6 +179,7 @@
 //!             capacitance: 1e-6,
 //!         },
 //!     ],
+//!     ..Default::default()
 //! };
 //!
 //! let result = solve_circuit(&circuit).unwrap();
@@ -236,7 +238,8 @@ pub mod examples;
 pub use examples::{get_examples, ExampleCircuit};
 
 pub mod ac_analysis;
-pub mod circuit;
+pub use sindr_core::circuit;
+pub use sindr_core::design;
 pub mod dc_sweep;
 mod device_params;
 pub mod error;
@@ -254,9 +257,10 @@ pub mod temp_sweep;
 pub mod transfer_function;
 pub mod transient;
 pub mod validation;
-pub mod waveform;
+pub use sindr_core::waveform;
 
 pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel};
+pub use design::{Block, DesignError, Instance, Part};
 pub use dc_sweep::{dc_sweep, DcSweepResult};
 pub use error::SimError;
 pub use mna::MnaSystem;
@@ -342,6 +346,7 @@ fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError>
 ///             resistance: 1_000.0,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// let result = solve_circuit(&circuit).unwrap();
@@ -350,6 +355,8 @@ fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError>
 /// assert!((r1.current_through.abs() - 0.005).abs() < 1e-9);
 /// ```
 pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     validation::validate_circuit(circuit)?;
 
     let node_map = NM::from_circuit(circuit);
@@ -459,6 +466,7 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
                 }]
             })
             .collect(),
+        ..Default::default()
     }
 }
 
@@ -503,6 +511,7 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
 ///             model: None,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// let mut nodeset = HashMap::new();
@@ -514,6 +523,8 @@ pub fn solve_circuit_with_initial_voltages(
     circuit: &Circuit,
     initial_voltages: &std::collections::HashMap<String, f64>,
 ) -> Result<SimulationResult, SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     validation::validate_circuit(circuit)?;
 
     let node_map = NM::from_circuit(circuit);

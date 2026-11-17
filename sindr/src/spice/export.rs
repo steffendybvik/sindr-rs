@@ -115,6 +115,7 @@ pub enum ExportError {
 ///             resistance: 1e3,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 /// let deck = sindr::spice::to_netlist(&circuit, "divider")?;
 /// assert_eq!(deck, "divider\nV1 in 0 DC 5\nRload in 0 1000\n.end\n");

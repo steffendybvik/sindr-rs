@@ -39,6 +39,7 @@ fn rc() -> Circuit {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -155,6 +156,7 @@ fn sources_are_sampled_at_the_end_of_each_step() {
             resistor("R1", "in", "out", 1e3),
             resistor("R2", "out", "0", 3e3),
         ],
+        ..Default::default()
     };
     if let CircuitElement::VoltageSource { waveform, .. } = &mut divider.components[0] {
         *waveform = Some(Waveform::Sine {
@@ -216,6 +218,7 @@ fn nonlinear_transient_honours_the_config() {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     };
     if let CircuitElement::VoltageSource { waveform, .. } = &mut circuit.components[0] {
         *waveform = Some(Waveform::Sine {
@@ -271,6 +274,7 @@ fn transient_ignores_component_order() {
     let mut forward = Circuit {
         ground_node: "0".into(),
         components,
+        ..Default::default()
     };
     if let CircuitElement::VoltageSource { waveform, .. } = &mut forward.components[3] {
         *waveform = Some(Waveform::Sine {

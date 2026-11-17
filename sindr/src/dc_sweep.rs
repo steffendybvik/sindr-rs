@@ -102,6 +102,7 @@ impl DcSweepResult {
 ///             resistance: 1_000.0,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// // Sweep V1 from 0 V to 10 V in 11 steps.
@@ -119,6 +120,8 @@ pub fn dc_sweep(
     stop: f64,
     num_points: usize,
 ) -> Result<DcSweepResult, SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     if num_points < 2 {
         return Err(SimError::InvalidComponent(
             "DC sweep requires at least 2 points".to_string(),
@@ -197,6 +200,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
 
         let result = dc_sweep(&circuit, "V1", 0.0, 10.0, 11).unwrap();
@@ -234,6 +238,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
 
         let result = dc_sweep(&circuit, "V1", -1.0, 1.0, 21).unwrap();
@@ -269,6 +274,7 @@ mod tests {
                 nodes: ["n1".into(), "0".into()],
                 resistance: 1000.0,
             }],
+            ..Default::default()
         };
 
         let result = dc_sweep(&circuit, "V_nonexistent", 0.0, 10.0, 11);
@@ -285,6 +291,7 @@ mod tests {
                 voltage: 0.0,
                 waveform: None,
             }],
+            ..Default::default()
         };
 
         let result = dc_sweep(&circuit, "V1", 0.0, 10.0, 1);
@@ -308,6 +315,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
 
         let result = dc_sweep(&circuit, "V1", 0.0, 5.0, 6).unwrap();

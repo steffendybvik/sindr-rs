@@ -41,6 +41,7 @@ fn relay_divider(v_coil: f64) -> Circuit {
             resistor("R1", "in", "a", 1e3),
             resistor("RL", "out", "0", 1e3),
         ],
+        ..Default::default()
     }
 }
 

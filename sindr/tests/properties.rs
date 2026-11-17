@@ -121,6 +121,7 @@ fn circuit(components: Vec<CircuitElement>) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components,
+        ..Default::default()
     }
 }
 

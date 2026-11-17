@@ -73,6 +73,7 @@ fn solve_circuit_rejects_an_automatic_config_over_the_step_cap() {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     };
     assert_invalid(solve_circuit(&circuit), "automatic span");
 }
@@ -87,6 +88,7 @@ fn breakpoints_count_against_the_step_cap() {
             vsource("V1", "in", "0", Some(pulse(0.0, 1e-9))),
             resistor("R1", "in", "0", 1e3),
         ],
+        ..Default::default()
     };
     let config = TransientConfig::new(1e-3, 1.1e-10);
     assert_invalid(solve_transient(&circuit, &config), "waveform breakpoints");
@@ -102,6 +104,7 @@ fn a_source_with_too_many_breakpoints_is_named() {
             vsource("VFAST", "in", "0", Some(pulse(0.0, 1e-9))),
             resistor("R1", "in", "0", 1e3),
         ],
+        ..Default::default()
     };
     let config = TransientConfig::new(3e-3, 1e-5);
     assert_invalid(solve_transient(&circuit, &config), "'VFAST'");
@@ -120,6 +123,7 @@ fn divider() -> Circuit {
             resistor("R1", "in", "out", 1e3),
             resistor("R2", "out", "0", 1e3),
         ],
+        ..Default::default()
     }
 }
 

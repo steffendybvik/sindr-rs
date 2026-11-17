@@ -34,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 model: None,
             },
         ],
+        ..Default::default()
     };
 
     // Sweep V1 from -1 V to +1 V in 101 points

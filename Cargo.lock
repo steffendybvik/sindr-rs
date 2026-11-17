@@ -1251,9 +1251,21 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sindr-core",
  "sindr-devices",
  "thiserror 2.0.21",
  "winnow",
+]
+
+[[package]]
+name = "sindr-core"
+version = "0.1.0-alpha.8"
+dependencies = [
+ "approx",
+ "serde",
+ "serde_json",
+ "sindr-devices",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

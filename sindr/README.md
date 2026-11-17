@@ -63,6 +63,7 @@ let circuit = Circuit {
             resistance: 2_000.0,
         },
     ],
+    ..Default::default()
 };
 
 let result = solve_circuit(&circuit)?;
@@ -201,6 +202,7 @@ let circuit = Circuit {
             model: None,
         },
     ],
+    ..Default::default()
 };
 
 let result = solve_circuit(&circuit)?;

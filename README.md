@@ -44,6 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 resistance: 2_000.0,
             },
         ],
+        ..Default::default()
     };
 
     let result = solve_circuit(&circuit)?;

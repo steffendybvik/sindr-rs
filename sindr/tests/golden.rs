@@ -243,6 +243,7 @@ fn circuit(components: Vec<CircuitElement>) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components,
+        ..Default::default()
     }
 }
 
@@ -632,6 +633,7 @@ fn op_exported_controlled() {
     let circuit = Circuit {
         ground_node: "0".into(),
         components,
+        ..Default::default()
     };
     check_op(
         "op_exported_controlled",
@@ -658,6 +660,7 @@ fn ac_exported_transformer() {
             },
             resistor("rl", "s", "0", 1e3),
         ],
+        ..Default::default()
     };
     check_ac(
         "ac_exported_transformer",

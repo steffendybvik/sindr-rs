@@ -41,6 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 model: None,
             },
         ],
+        ..Default::default()
     };
 
     let plain = solve_circuit(&circuit)?;

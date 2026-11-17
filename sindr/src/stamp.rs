@@ -1120,6 +1120,7 @@ mod tests {
                 nodes: ["n1".into(), "0".into()],
                 resistance: 1000.0,
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let mut system = MnaSystem::new(node_map.num_nodes(), 0);
@@ -1141,6 +1142,7 @@ mod tests {
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 1000.0,
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let mut system = MnaSystem::new(node_map.num_nodes(), 0);
@@ -1167,6 +1169,7 @@ mod tests {
                 voltage: 10.0,
                 waveform: None,
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let mut system = MnaSystem::new(node_map.num_nodes(), circuit.count_voltage_sources());
@@ -1191,6 +1194,7 @@ mod tests {
                 current: 0.002,
                 waveform: None,
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let mut system = MnaSystem::new(node_map.num_nodes(), 0);
@@ -1212,6 +1216,7 @@ mod tests {
                 nodes: ["n1".into(), "0".into()],
                 capacitance: 100e-6,
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let mut system = MnaSystem::new(node_map.num_nodes(), 0);
@@ -1243,6 +1248,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let mut system = MnaSystem::new(node_map.num_nodes(), 0);
@@ -1276,6 +1282,7 @@ mod tests {
                 nodes: ["n1".into(), "0".into()],
                 inductance: 10e-3,
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let mut system = MnaSystem::new(node_map.num_nodes(), 0);
@@ -1307,6 +1314,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let mut system = MnaSystem::new(node_map.num_nodes(), 0);
@@ -1337,6 +1345,7 @@ mod tests {
                 nodes: ["n1".into(), "0".into()],
                 resistance: 0.0,
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let mut system = MnaSystem::new(node_map.num_nodes(), 0);
@@ -1382,6 +1391,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let n_nodes = node_map.num_nodes();
@@ -1492,6 +1502,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let n_nodes = node_map.num_nodes();
@@ -1601,6 +1612,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let n_nodes = node_map.num_nodes();
@@ -1689,6 +1701,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let n_nodes = node_map.num_nodes();
@@ -1779,6 +1792,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
 
         let result = solve_circuit(&circuit);
@@ -1827,6 +1841,7 @@ mod tests {
                     params: sindr_devices::varactor::VaractorParams::default(),
                 },
             ],
+            ..Default::default()
         };
 
         let result = solve_circuit(&circuit);
@@ -1887,6 +1902,7 @@ mod tests {
                     params: sindr_devices::igbt::IgbtParams::default(), // vth=5.0
                 },
             ],
+            ..Default::default()
         };
 
         let result = solve_circuit(&circuit);
@@ -1939,6 +1955,7 @@ mod tests {
                     params: sindr_devices::igbt::IgbtParams::default(), // vth=5, k=5
                 },
             ],
+            ..Default::default()
         };
 
         let result = solve_circuit(&circuit);
@@ -1993,6 +2010,7 @@ mod tests {
                 parasitic_caps: None,
                 model: None,
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let idx: Vec<usize> = nodes.iter().map(|n| node_map.index(n).unwrap()).collect();
@@ -2085,6 +2103,7 @@ mod tests {
                 idss: 10e-3,
                 vp: -2.0,
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let idx = |n: &str| node_map.index(n).unwrap();
@@ -2176,6 +2195,7 @@ mod tests {
                     params: params.clone(),
                     parasitic_caps: None,
                 }],
+                ..Default::default()
             };
             let node_map = NodeMap::from_circuit(&circuit);
             let n = node_map.num_nodes();
@@ -2248,6 +2268,7 @@ mod tests {
                 nodes: nodes.clone(),
                 params: params.clone(),
             }],
+            ..Default::default()
         };
         let node_map = NodeMap::from_circuit(&circuit);
         let n = node_map.num_nodes();

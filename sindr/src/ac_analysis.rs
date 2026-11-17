@@ -941,6 +941,7 @@ pub(crate) fn small_signal_system(
 ///             capacitance: 1e-6,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// let config = AcConfig {
@@ -960,6 +961,8 @@ pub(crate) fn small_signal_system(
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     solve_ac_with_initial_voltages(circuit, config, &HashMap::new())
 }
 
@@ -976,6 +979,8 @@ pub fn solve_ac_with_initial_voltages(
     config: &AcConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<AcResult, SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     validate_config(config)?;
     let drives_a_voltage_source = circuit
         .components
@@ -1057,6 +1062,7 @@ mod tests {
                     capacitance: 1e-6,
                 },
             ],
+            ..Default::default()
         };
 
         let config = AcConfig {
@@ -1126,6 +1132,7 @@ mod tests {
                     capacitance: 1e-6,
                 },
             ],
+            ..Default::default()
         };
 
         let config = AcConfig {
@@ -1167,6 +1174,7 @@ mod tests {
                     capacitance: 1e-6,
                 },
             ],
+            ..Default::default()
         };
 
         let config = AcConfig {
@@ -1272,6 +1280,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -1385,6 +1394,7 @@ mod tests {
         Circuit {
             ground_node: "0".into(),
             components,
+            ..Default::default()
         }
     }
 

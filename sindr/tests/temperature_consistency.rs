@@ -124,6 +124,7 @@ fn dc_reported_device_current_obeys_kcl_off_nominal_temperature() {
             let circuit = Circuit {
                 ground_node: "0".into(),
                 components: vec![source(5.0), resistor(), device.clone()],
+                ..Default::default()
             };
             let result =
                 solve_circuit(&circuit).unwrap_or_else(|e| panic!("DC solve {device:?}: {e:?}"));
@@ -154,6 +155,7 @@ fn transient_reported_device_current_obeys_kcl_off_nominal_temperature() {
                     resistor(),
                     device.clone(),
                 ],
+                ..Default::default()
             };
             let result: SimulationResult = solve_circuit(&circuit).expect("transient solve");
             let transient = result.transient.as_ref().expect("transient result");
@@ -197,6 +199,7 @@ fn ac_diode_conductance_matches_dc_model_off_nominal_temperature() {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
         let v_d = solve_circuit(&circuit).unwrap().node_voltages["n2"];
 
@@ -260,6 +263,7 @@ fn ac_bjt_transconductance_matches_dc_model_off_nominal_temperature() {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
         let vc = solve_circuit(&circuit).unwrap().node_voltages["c"];
         let vbc = vbe - vc;

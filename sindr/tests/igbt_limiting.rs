@@ -44,6 +44,7 @@ fn reverse_igbt(vs: f64) -> Circuit {
             resistor("RE", "e", "0", 1e-3),
         ],
         ground_node: "0".into(),
+        ..Default::default()
     }
 }
 

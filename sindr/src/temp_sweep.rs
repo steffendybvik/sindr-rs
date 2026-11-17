@@ -81,6 +81,7 @@ pub struct TempSweepResult {
 ///             model: None,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// // Sweep from 250 K (-23 °C) to 400 K (127 °C) in 4 steps.
@@ -93,6 +94,8 @@ pub fn temperature_sweep(
     temp_end: f64,
     num_steps: usize,
 ) -> Result<TempSweepResult, SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     if num_steps < 2 {
         return Err(SimError::InvalidComponent(
             "temperature_sweep: num_steps must be >= 2".into(),
@@ -178,6 +181,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
 
         let result = temperature_sweep(&circuit, 250.0, 350.0, 11);
@@ -233,6 +237,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
 
         let result = temperature_sweep(&circuit, 250.0, 350.0, 3);
@@ -284,6 +289,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         let result = temperature_sweep(&circuit, 300.0, 400.0, 1);
         assert!(result.is_err(), "Should error with num_steps < 2");

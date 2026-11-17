@@ -87,6 +87,7 @@ fn diode_resistor(vsource: f64, r_ohms: f64) -> Circuit {
                 model: None,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -120,6 +121,7 @@ fn three_resistor_divider() -> Circuit {
                 resistance: 3_000.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -409,6 +411,7 @@ fn two_voltage_sources_in_series_satisfy_kcl_and_power() {
                 waveform: None,
             },
         ],
+        ..Default::default()
     };
     let result = solve_circuit(&circuit).unwrap();
     let v_mid = result.node_voltages["mid"];
@@ -460,6 +463,7 @@ fn wheatstone_bridge_balances() {
                 resistance: 2_000.0,
             },
         ],
+        ..Default::default()
     };
     let result = solve_circuit(&circuit).unwrap();
     let v_a = result.node_voltages["a"];
@@ -504,6 +508,7 @@ fn reverse_biased_diode_carries_negligible_current() {
                 model: None,
             },
         ],
+        ..Default::default()
     };
     let result = solve_circuit(&circuit).unwrap();
     let diode = result
@@ -564,6 +569,7 @@ fn two_diodes_in_parallel_split_current_and_obey_shockley() {
                 model: None,
             },
         ],
+        ..Default::default()
     };
     let result = solve_circuit(&circuit).unwrap();
     // Two diodes in parallel double the small-signal conductance at the
@@ -653,6 +659,7 @@ fn capacitor_is_open_circuit_in_dc() {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     };
     // Note: Capacitor presence triggers transient mode. We can't directly
     // compare against a pure-DC solve, but at the *initial* timepoint of a

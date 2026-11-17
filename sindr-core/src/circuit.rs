@@ -1,9 +1,10 @@
 //! Circuit input format.
 //!
-//! [`Circuit`] is the root struct passed to [`solve_circuit`](crate::solve_circuit):
-//! a flat list of [`CircuitElement`]s plus the name of the ground node.
-//! Components share a node by referencing the same node-name string; there
-//! are no separate "wire" or "net" objects.
+//! [`Circuit`] is the root struct sindr's analyses take: a list of
+//! [`CircuitElement`]s plus the name of the ground node, and optionally a
+//! design hierarchy (see [`crate::design`]). Components share a node by
+//! referencing the same node-name string; there are no separate "wire" or
+//! "net" objects.
 //!
 //! [`CircuitElement`] is the open-ended enum of supported component types
 //! (resistors, sources, semiconductors, magnetics, …). Each variant carries
@@ -14,11 +15,14 @@ use sindr_devices::bjt::BjtKind;
 use sindr_devices::jfet::JfetKind;
 use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 
+use std::collections::BTreeMap;
+
+use crate::design::{Block, Instance, Part};
 use crate::waveform::Waveform;
 
 /// BJT parasitic capacitances. All values in Farads. Default 0.0 disables each cap.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BjtParasiticCaps {
     /// Base-Emitter junction capacitance (F). Typical: 5–50 pF.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -96,7 +100,7 @@ impl Default for BjtModel {
 
 /// MOSFET gate parasitic capacitances. All values in Farads.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MosfetParasiticCaps {
     /// Gate-Source capacitance (F). Typical: 100–500 pF for power MOSFETs.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -127,7 +131,7 @@ pub struct MosfetParasiticCaps {
 /// With the default `serde` feature enabled, `CircuitElement` serialises
 /// using a `type` discriminator: `{"type": "resistor", "id": "R1", ...}`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
 pub enum CircuitElement {
     /// Resistor between two nodes.
@@ -771,22 +775,113 @@ impl CircuitElement {
             CircuitElement::VoltageRegulator { id, .. } => id,
         }
     }
+
+    pub(crate) fn nodes_mut(&mut self) -> &mut [String] {
+        match self {
+            CircuitElement::Resistor { nodes, .. } => nodes,
+            CircuitElement::VoltageSource { nodes, .. } => nodes,
+            CircuitElement::CurrentSource { nodes, .. } => nodes,
+            CircuitElement::Switch { nodes, .. } => nodes,
+            CircuitElement::Capacitor { nodes, .. } => nodes,
+            CircuitElement::Inductor { nodes, .. } => nodes,
+            CircuitElement::Diode { nodes, .. } => nodes,
+            CircuitElement::Led { nodes, .. } => nodes,
+            CircuitElement::Bjt { nodes, .. } => nodes,
+            CircuitElement::Mosfet { nodes, .. } => nodes,
+            CircuitElement::Jfet { nodes, .. } => nodes,
+            CircuitElement::Vcvs { nodes, .. } => nodes,
+            CircuitElement::Vccs { nodes, .. } => nodes,
+            CircuitElement::Ccvs { nodes, .. } => nodes,
+            CircuitElement::Cccs { nodes, .. } => nodes,
+            CircuitElement::Pushbutton { nodes, .. } => nodes,
+            CircuitElement::Relay { nodes, .. } => nodes,
+            CircuitElement::Photoresistor { nodes, .. } => nodes,
+            CircuitElement::Potentiometer { nodes, .. } => nodes,
+            CircuitElement::ZenerDiode { nodes, .. } => nodes,
+            CircuitElement::OpAmp { nodes, .. } => nodes,
+            CircuitElement::Comparator { nodes, .. } => nodes,
+            CircuitElement::SchottkyDiode { nodes, .. } => nodes,
+            CircuitElement::Thermistor { nodes, .. } => nodes,
+            CircuitElement::Photodiode { nodes, .. } => nodes,
+            CircuitElement::Varactor { nodes, .. } => nodes,
+            CircuitElement::Igbt { nodes, .. } => nodes,
+            CircuitElement::Transformer { nodes, .. } => nodes,
+            CircuitElement::Fuse { nodes, .. } => nodes,
+            CircuitElement::VoltageRegulator { nodes, .. } => nodes,
+        }
+    }
+
+    pub(crate) fn id_mut(&mut self) -> &mut String {
+        match self {
+            CircuitElement::Resistor { id, .. } => id,
+            CircuitElement::VoltageSource { id, .. } => id,
+            CircuitElement::CurrentSource { id, .. } => id,
+            CircuitElement::Switch { id, .. } => id,
+            CircuitElement::Capacitor { id, .. } => id,
+            CircuitElement::Inductor { id, .. } => id,
+            CircuitElement::Diode { id, .. } => id,
+            CircuitElement::Led { id, .. } => id,
+            CircuitElement::Bjt { id, .. } => id,
+            CircuitElement::Mosfet { id, .. } => id,
+            CircuitElement::Jfet { id, .. } => id,
+            CircuitElement::Vcvs { id, .. } => id,
+            CircuitElement::Vccs { id, .. } => id,
+            CircuitElement::Ccvs { id, .. } => id,
+            CircuitElement::Cccs { id, .. } => id,
+            CircuitElement::Pushbutton { id, .. } => id,
+            CircuitElement::Relay { id, .. } => id,
+            CircuitElement::Photoresistor { id, .. } => id,
+            CircuitElement::Potentiometer { id, .. } => id,
+            CircuitElement::ZenerDiode { id, .. } => id,
+            CircuitElement::OpAmp { id, .. } => id,
+            CircuitElement::Comparator { id, .. } => id,
+            CircuitElement::SchottkyDiode { id, .. } => id,
+            CircuitElement::Thermistor { id, .. } => id,
+            CircuitElement::Photodiode { id, .. } => id,
+            CircuitElement::Varactor { id, .. } => id,
+            CircuitElement::Igbt { id, .. } => id,
+            CircuitElement::Transformer { id, .. } => id,
+            CircuitElement::Fuse { id, .. } => id,
+            CircuitElement::VoltageRegulator { id, .. } => id,
+        }
+    }
+
+    /// The control-net pair of a VCVS or VCCS.
+    pub(crate) fn control_nodes_mut(&mut self) -> Option<&mut [String; 2]> {
+        match self {
+            CircuitElement::Vcvs { control_nodes, .. }
+            | CircuitElement::Vccs { control_nodes, .. } => Some(control_nodes),
+            _ => None,
+        }
+    }
+
+    /// The controlling source id of a CCVS or CCCS.
+    pub(crate) fn control_source_mut(&mut self) -> Option<&mut String> {
+        match self {
+            CircuitElement::Ccvs { control_source, .. }
+            | CircuitElement::Cccs { control_source, .. } => Some(control_source),
+            _ => None,
+        }
+    }
 }
 
-/// A complete circuit description ready for simulation.
+/// A circuit: components, nets, and optionally a design hierarchy.
 ///
-/// A circuit is a flat list of [`CircuitElement`]s plus the name of the
-/// ground node. Components share a node simply by referencing the same
-/// node-name string. Pass to [`solve_circuit`](crate::solve_circuit) to run.
+/// The top level is a list of [`CircuitElement`]s plus the name of the
+/// ground net. Components share a net by referencing the same net-name
+/// string. A design can also place [`Block`]s through [`Instance`]s and
+/// carry [`Part`] data (reference, symbol, footprint) that the simulator
+/// ignores. [`Circuit::flatten`] expands the hierarchy; sindr's analyses
+/// do that themselves.
 ///
 /// # Example
 ///
 /// ```
-/// use sindr::{Circuit, CircuitElement};
+/// use sindr_core::{Circuit, CircuitElement};
 ///
-/// let circuit = Circuit {
-///     ground_node: "0".into(),
-///     components: vec![
+/// let circuit = Circuit::new(
+///     "0",
+///     vec![
 ///         CircuitElement::VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["n1".into(), "0".into()],
@@ -799,19 +894,81 @@ impl CircuitElement {
 ///             resistance: 1_000.0,
 ///         },
 ///     ],
-/// };
+/// );
+/// assert!(circuit.is_flat());
 /// ```
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Circuit {
-    /// All components in the circuit. Order has no semantic meaning.
+    /// Top-level components. Order has no semantic meaning.
     pub components: Vec<CircuitElement>,
-    /// Name of the reference (0 V) node. Must match the node string used by
-    /// at least one component (typically `"0"` or `"gnd"`).
+    /// Name of the reference (0 V) net. Must match the net string used by
+    /// at least one component (typically `"0"` or `"gnd"`). It is the same
+    /// net inside every block.
     pub ground_node: String,
+    /// Top-level block instances.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub instances: Vec<Instance>,
+    /// Block definitions, by name.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub blocks: BTreeMap<String, Block>,
+    /// Part data for top-level components and instances, keyed by their id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub parts: BTreeMap<String, Part>,
+    /// Nets visible inside every block under the same name (supply rails),
+    /// besides ground. Never prefixed when flattening.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub globals: Vec<String>,
 }
 
 impl Circuit {
+    /// A flat circuit: `components` referencing `ground_node`, no hierarchy.
+    pub fn new(ground_node: impl Into<String>, components: Vec<CircuitElement>) -> Self {
+        Self {
+            components,
+            ground_node: ground_node.into(),
+            ..Self::default()
+        }
+    }
+
+    /// `true` when there are no instances to expand.
+    pub fn is_flat(&self) -> bool {
+        self.instances.is_empty()
+    }
+
+    /// Every net named at the top level: component and instance nodes plus
+    /// ground, sorted and without repeats. Nets local to block instances
+    /// show up only after [`flatten`](Self::flatten).
+    pub fn nets(&self) -> Vec<&str> {
+        let mut nets: Vec<&str> = std::iter::once(self.ground_node.as_str())
+            .chain(
+                self.components
+                    .iter()
+                    .flat_map(|c| c.all_nodes().into_iter().map(String::as_str)),
+            )
+            .chain(
+                self.instances
+                    .iter()
+                    .flat_map(|i| i.nodes.iter().map(String::as_str)),
+            )
+            .collect();
+        nets.sort_unstable();
+        nets.dedup();
+        nets
+    }
+
     /// Count the number of independent voltage sources in the circuit.
     /// Also counts VCVS, CCVS, OpAmp, and Comparator which need branch currents.
     /// Transformer adds 2 branch current unknowns (one per winding).
@@ -921,6 +1078,7 @@ mod tests {
                 nodes: ["n1".into(), "0".into()],
                 capacitance: 100e-6,
             }],
+            ..Default::default()
         };
         assert!(circuit.has_reactive_elements());
     }
@@ -934,6 +1092,7 @@ mod tests {
                 nodes: ["n1".into(), "0".into()],
                 inductance: 10e-3,
             }],
+            ..Default::default()
         };
         assert!(circuit.has_reactive_elements());
     }
@@ -947,6 +1106,7 @@ mod tests {
                 nodes: ["n1".into(), "0".into()],
                 resistance: 1000.0,
             }],
+            ..Default::default()
         };
         assert!(!circuit.has_reactive_elements());
     }
@@ -967,6 +1127,7 @@ mod tests {
                 }),
                 model: None,
             }],
+            ..Default::default()
         };
         assert!(
             circuit.has_reactive_elements(),
@@ -987,6 +1148,7 @@ mod tests {
                 parasitic_caps: None,
                 model: None,
             }],
+            ..Default::default()
         };
         // BJT without parasitic caps is not reactive (nonlinear, but not reactive)
         assert!(
@@ -1009,6 +1171,7 @@ mod tests {
                     cgd: 50e-12,
                 }),
             }],
+            ..Default::default()
         };
         assert!(
             circuit.has_reactive_elements(),
@@ -1110,6 +1273,7 @@ mod tests {
                 parasitic_caps: None,
                 model: None,
             }],
+            ..Default::default()
         };
         assert!(circuit.has_nonlinear_elements());
     }
@@ -1125,6 +1289,7 @@ mod tests {
                 pickup_voltage: 5.0,
                 inductance: 0.0,
             }],
+            ..Default::default()
         };
         assert!(circuit.has_nonlinear_elements());
     }
@@ -1140,6 +1305,7 @@ mod tests {
                 pickup_voltage: 5.0,
                 inductance: 0.1,
             }],
+            ..Default::default()
         };
         assert!(circuit.has_reactive_elements());
     }
@@ -1155,6 +1321,7 @@ mod tests {
                 pickup_voltage: 5.0,
                 inductance: 0.0,
             }],
+            ..Default::default()
         };
         assert!(!circuit.has_reactive_elements());
     }
@@ -1168,6 +1335,7 @@ mod tests {
                 nodes: ["n1".into(), "0".into()],
                 closed: true,
             }],
+            ..Default::default()
         };
         assert!(!circuit.has_nonlinear_elements());
     }
@@ -1247,6 +1415,7 @@ mod tests {
                     v_neg: 0.0,
                 },
             ],
+            ..Default::default()
         };
         // Both OpAmp and Comparator count as voltage sources (VCVS branch)
         assert_eq!(circuit.count_voltage_sources(), 2);

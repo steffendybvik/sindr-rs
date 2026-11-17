@@ -101,6 +101,7 @@ fn source_with(waveform: Waveform, dc: f64) -> Circuit {
                 resistance: 1e3,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -242,6 +243,7 @@ fn models_round_trip() {
                 model: Some(diode),
             },
         ],
+        ..Default::default()
     };
     let deck = to_netlist(&circuit, "models").unwrap();
     // One card per distinct model.
@@ -289,6 +291,7 @@ fn names_get_their_spice_letter_and_ground_becomes_0() {
                 alpha: 2.0,
             },
         ],
+        ..Default::default()
     };
     let deck = to_netlist(&circuit, "names").unwrap();
     assert_eq!(
@@ -305,6 +308,7 @@ fn one_resistor(id: &str, a: &str, b: &str) -> Circuit {
             nodes: [a.into(), b.into()],
             resistance: 1.0,
         }],
+        ..Default::default()
     }
 }
 
