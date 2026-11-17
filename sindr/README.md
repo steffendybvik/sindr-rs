@@ -248,11 +248,25 @@ CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, al
 
 ```rust
 // nodes: [in_plus, in_minus, out]
-CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // supply rails, default ±15 V
+CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> } // rails, default ±15 V
 CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // default 5 V / 0 V
 ```
 
-Both are modeled as a high-gain VCVS (gain = 1×10⁵) that saturates at the supply rails.
+With `model: None` both are a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
+
+```rust
+use sindr::{CircuitElement, OpAmpModel};
+
+let u1 = CircuitElement::OpAmp {
+    id: "U1".into(),
+    nodes: ["in".into(), "fb".into(), "out".into()],
+    v_pos: 12.0,
+    v_neg: -12.0,
+    model: Some(OpAmpModel { gbw: Some(3e6), slew_rate: Some(13e6), r_out: 50.0, ..OpAmpModel::default() }),
+};
+```
+
+The pole and slew limit act in transient and AC runs. An op-amp doesn't count as reactive, so `solve_circuit` still runs DC for a circuit whose only dynamics are op-amps; call `solve_transient` to see them.
 
 ### Sensors / misc
 

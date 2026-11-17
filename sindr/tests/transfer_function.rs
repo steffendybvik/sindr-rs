@@ -38,6 +38,7 @@ fn opamp(id: &str, plus: &str, minus: &str, out: &str) -> CircuitElement {
         nodes: [plus.into(), minus.into(), out.into()],
         v_pos: 15.0,
         v_neg: -15.0,
+        model: None,
     }
 }
 

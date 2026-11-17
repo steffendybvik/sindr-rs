@@ -838,7 +838,7 @@ pub fn extract_results(
                     v_differential,
                     v_out,
                 });
-                vsource_index += 1;
+                vsource_index += component.branch_slots();
             }
         }
     }

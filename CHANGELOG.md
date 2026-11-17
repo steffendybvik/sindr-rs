@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   simulator). `Circuit::flatten` expands instances with `.`-joined names;
   every analysis entry point flattens first. `Circuit::new`,
   `Circuit::nets`, and `CircuitElement::id_mut`/`nodes_mut` for renaming.
+- Op-amp macromodel: `OpAmpModel` as the optional `model` of
+  `CircuitElement::OpAmp`. It has open-loop gain, a dominant pole from the
+  gain-bandwidth product, slew-rate limiting, output resistance, input
+  offset and bias current, and an output clamped to `v_pos`/`v_neg` with
+  anti-windup. DC, AC, transient, `.tf` and `.sens` use it; a closed-loop
+  −3 dB point lands at GBW / gain and a large step rises at the slew rate.
+  Without a model the op-amp is unchanged. `CircuitElement::branch_slots`
+  gives each element's MNA branch unknowns.
 - SPICE import keeps `.subckt` structure as blocks and instances; a subckt
   whose instances bind different `.param` values becomes one block per
   distinct body (`name`, `name_2`, …). Export writes blocks as
@@ -58,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `ParsedNetlist::circuit` keeps `.subckt` hierarchy instead
   of flattening it; call `circuit.flatten()` for the flat element list.
   `SourceMap` and the flattened names are unchanged.
+- **Breaking:** `CircuitElement::OpAmp` has a new `model` field; struct
+  literals need `model: None` for the old behaviour. JSON without it still
+  loads. The docs no longer claim the unmodelled op-amp saturates at its
+  rails: it never did.
 - **Breaking:** `SimError::Design` and `ExportError::Design` for a hierarchy
   that can't be flattened.
 - `PartialEq` on `CircuitElement`, `Waveform`, `MosfetParams`,
