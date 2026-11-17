@@ -193,6 +193,20 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
+        CircuitElement::VoltageRegulator { voltage, model, .. } => {
+            positive("voltage", *voltage, " V")?;
+            if let Some(m) = model {
+                non_negative("model.dropout", m.dropout, " V")?;
+                non_negative("model.dropout_resistance", m.dropout_resistance, " Ω")?;
+                non_negative("model.quiescent_current", m.quiescent_current, " A")?;
+                non_negative("model.line_regulation", m.line_regulation, " V/V")?;
+                non_negative("model.output_resistance", m.output_resistance, " Ω")?;
+                if let Some(limit) = m.current_limit {
+                    positive("model.current_limit", limit, " A")?;
+                }
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }

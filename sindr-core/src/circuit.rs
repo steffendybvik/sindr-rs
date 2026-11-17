@@ -621,10 +621,17 @@ pub enum CircuitElement {
         blown: bool,
     },
 
-    /// Ideal linear voltage regulator — holds output node at a fixed regulated voltage.
+    /// Linear voltage regulator: holds the output at `voltage` above its
+    /// ground pin while it has headroom, and draws its output current plus
+    /// its quiescent current from the input.
     ///
-    /// Modelled as an ideal voltage source between output (`nodes[1]`) and gnd (`nodes[2]`).
-    /// The input node (`nodes[0]`) is wiring-only; it is not stamped into MNA.
+    /// Piecewise linear (see `sindr_devices::regulator`): out of headroom
+    /// the output follows the input down by the dropout; past the current
+    /// limit it holds the current. `model` sets dropout, quiescent current,
+    /// current limit and line and load regulation;
+    /// `RegulatorParams::lm7805()` and `::ams1117()` are datasheet presets.
+    /// Its result is the pass element: `Vin − Vout`, the output current,
+    /// and the power it dissipates.
     ///
     /// `nodes: [input, output, gnd]`
     #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
@@ -635,6 +642,13 @@ pub enum CircuitElement {
         nodes: [String; 3], // [input, output, gnd]
         /// Regulated output voltage (V). E.g. 5.0 for a 7805.
         voltage: f64,
+        /// Dropout, quiescent current, limit and regulation. `None` is an
+        /// ideal regulator that still can't put out more than it gets in.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<sindr_devices::regulator::RegulatorParams>,
     },
 }
 
@@ -1004,8 +1018,9 @@ impl Circuit {
                     | CircuitElement::SchottkyDiode { .. }
                     | CircuitElement::Photodiode { .. }
                     | CircuitElement::Igbt { .. }
-                    | CircuitElement::Jfet { .. } // Thermistor is passive (temperature-dependent resistance, no NR)
-                                                  // Varactor is passive in DC (open circuit), no NR needed
+                    | CircuitElement::Jfet { .. }
+                    | CircuitElement::VoltageRegulator { .. } // Thermistor is passive (temperature-dependent resistance, no NR)
+                                                              // Varactor is passive in DC (open circuit), no NR needed
             )
         })
     }

@@ -437,6 +437,17 @@ pub(crate) fn bias_point(
             dc_solution[i] = v;
         }
     }
+    // A regulator's piece depends on its output current, its branch row.
+    for element in &circuit.components {
+        if let CircuitElement::VoltageRegulator { id, .. } = element {
+            if let (Some(k), Some(&i)) = (
+                circuit.vsource_branch_index(id),
+                dc_result.branch_currents.get(id),
+            ) {
+                dc_solution[num_nodes + k] = i;
+            }
+        }
+    }
     Ok((node_map, dc_solution))
 }
 
@@ -851,22 +862,41 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
             }
-            // VoltageRegulator: ideal DC reference — AC small-signal = voltage source (zero AC)
-            // Stamped as ideal voltage source between nodes[1] (output) and nodes[2] (gnd).
-            CircuitElement::VoltageRegulator { nodes, .. } => {
+            // The piece of its characteristic the bias point is on: input
+            // ripple reaches the output through line regulation (or all of
+            // it in dropout), and load current through the output
+            // resistance. The quiescent current is DC only.
+            CircuitElement::VoltageRegulator {
+                nodes,
+                voltage,
+                model,
+                ..
+            } => {
                 let branch = num_nodes + vsource_index;
-                let p = node_map.index(&nodes[1]); // output
-                let q = node_map.index(&nodes[2]); // gnd
-                let one = Complex64::new(1.0, 0.0);
-                if let Some(pi) = p {
-                    a[(pi, branch)] += one;
-                    a[(branch, pi)] += one;
+                let piece = crate::stamp::regulator_piece_at(
+                    node_map,
+                    nodes,
+                    *voltage,
+                    model,
+                    branch,
+                    Some(dc_solution),
+                );
+                let c = |x: f64| Complex64::new(x, 0.0);
+                let input = node_map.index(&nodes[0]);
+                let out = node_map.index(&nodes[1]);
+                let gnd = node_map.index(&nodes[2]);
+                if let Some(o) = out {
+                    a[(o, branch)] += c(1.0);
+                    a[(branch, o)] += c(1.0);
                 }
-                if let Some(qi) = q {
-                    a[(qi, branch)] -= one;
-                    a[(branch, qi)] -= one;
+                if let Some(i) = input {
+                    a[(i, branch)] -= c(1.0);
+                    a[(branch, i)] -= c(piece.d_vin);
                 }
-                // Zero AC voltage (DC reference, not a signal source)
+                if let Some(g) = gnd {
+                    a[(branch, g)] += c(piece.d_vin - 1.0);
+                }
+                a[(branch, branch)] += c(piece.d_iout);
                 vsource_index += 1;
             }
         }

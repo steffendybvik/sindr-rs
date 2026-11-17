@@ -253,6 +253,7 @@ fn transient_ignores_component_order() {
             id: "U1".into(),
             nodes: ["in".into(), "reg".into(), "0".into()],
             voltage: 5.0,
+            model: None,
         },
         resistor("RREG", "reg", "0", 1e3),
         vsource("VAC", "p", "0", 0.0),

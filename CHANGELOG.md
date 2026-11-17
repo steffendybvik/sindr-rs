@@ -61,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TimestepSnapshot`, `Ratings::tj_max` checked against them, and
   `SimError::ThermalRunaway` when no balance exists. `temperature_sweep`
   sets the ambient of self-heated parts.
+- Linear regulator model: `VoltageRegulator` takes an optional `model`
+  (`RegulatorParams`: dropout, dropout resistance, quiescent current,
+  current limit, line regulation, output resistance), with
+  `RegulatorParams::lm7805()` and `::ams1117()` datasheet presets. AC
+  passes input ripple through line regulation. Ratings checks need its
+  input voltage, output current and power.
 
 ### Changed
 
@@ -76,6 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `SimError::Design` and `ExportError::Design` for a hierarchy
   that can't be flattened.
 - `Part` is no longer `Eq` (its ratings are `f64`).
+- **Breaking:** `VoltageRegulator` has a new `model` field (struct literals
+  need `model: None`), and is nonlinear. Even with no model it now draws its
+  output current from the input and can't put out more than its input; it
+  used to be an ideal source with the input unconnected. Its
+  `ComponentResult` is now the pass element (`Vin − Vout`, output current,
+  dissipation) instead of the output voltage and branch current.
 - **Breaking:** `SimError::ThermalRunaway` is a new variant, and
   `SimulationResult` and `TimestepSnapshot` have a new
   `junction_temperatures` field (struct literals need it; JSON without it
