@@ -8,11 +8,11 @@ use crate::diode::{thermal_voltage, T_NOM};
 /// Zener diode parameters.
 #[derive(Debug, Clone)]
 pub struct ZenerParams {
-    /// Breakdown voltage (positive, e.g. 5.1 for a BZX55C5V1).
+    /// Breakdown voltage (V), positive: 5.1 for a BZX55C5V1.
     pub vz: f64,
     /// Breakdown region dynamic resistance (Ω). Smaller = sharper knee.
     pub rz: f64,
-    /// Saturation current for the forward diode region.
+    /// Saturation current for the forward diode region (A).
     pub is: f64,
     /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
     /// voltage [`ZenerParams::vt`]; `is` is used as given.
@@ -42,7 +42,9 @@ impl Default for ZenerParams {
     }
 }
 
-/// Piecewise Zener companion model. Returns `(g_eq, i_eq)` for MNA stamping.
+/// Piecewise Zener companion model. Returns `(g_eq, i_eq)` for MNA stamping:
+/// `g_eq` in S and `i_eq` in A, for current flowing anode → cathode, at
+/// `v_d` = anode − cathode (V). Breakdown is `v_d ≤ −vz`.
 ///
 /// - `v_d > -vz`: standard Shockley companion (clamped to avoid overflow).
 /// - `v_d <= -vz`: linearised 1/rz clamp driving the junction to -Vz.

@@ -508,11 +508,22 @@ fn stamp_circuit_transient(
                 let resistance = if *blown { SWITCH_R_OPEN } else { 0.001 };
                 stamp_resistor(system, node_map, nodes, resistance);
             }
-            // VoltageRegulator: ideal voltage source between output (nodes[1]) and gnd (nodes[2])
-            CircuitElement::VoltageRegulator { nodes, voltage, .. } => {
+            CircuitElement::VoltageRegulator {
+                nodes,
+                voltage,
+                model,
+                ..
+            } => {
                 let branch = num_nodes + vsource_index;
-                let vs_nodes: [String; 2] = [nodes[1].clone(), nodes[2].clone()];
-                stamp_voltage_source(system, node_map, &vs_nodes, *voltage, branch);
+                crate::stamp::stamp_regulator(
+                    system,
+                    node_map,
+                    nodes,
+                    *voltage,
+                    model,
+                    branch,
+                    Some(v_prev),
+                );
                 vsource_index += 1;
             }
         }
@@ -1103,18 +1114,17 @@ fn extract_timestep_results(
                     power,
                 });
             }
-            CircuitElement::VoltageRegulator { id, nodes, voltage } => {
-                let vout = node_voltage(&nodes[1], node_map, solution);
-                let vgnd = node_voltage(&nodes[2], node_map, solution);
-                let v_across = vout - vgnd;
-                let i_through = solution[num_nodes + vsource_index];
-                let power = voltage * i_through;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power,
-                });
+            CircuitElement::VoltageRegulator {
+                id, nodes, model, ..
+            } => {
+                component_results.push(crate::results::regulator_result(
+                    id,
+                    nodes,
+                    model,
+                    node_map,
+                    solution,
+                    num_nodes + vsource_index,
+                ));
                 vsource_index += 1;
             }
         }
@@ -1361,7 +1371,9 @@ impl TransientConfig {
         self
     }
 
-    /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A.
+    /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A,
+    /// flowing from its first node to its second (`nodes[0] → nodes[1]`),
+    /// as [`initial_currents`](Self::initial_currents) says.
     /// An id that isn't an inductor or a relay with coil inductance (a
     /// transformer, for now) makes the run fail with
     /// [`SimError::InvalidComponent`].

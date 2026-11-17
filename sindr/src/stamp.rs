@@ -18,6 +18,7 @@ use sindr_devices::diode::{self, DiodeParams};
 use sindr_devices::jfet::JfetKind;
 use sindr_devices::mosfet::{self, MosfetKind, MosfetParams};
 use sindr_devices::photoresistor::{ldr_resistance as rs_ldr_resistance, PhotoresistorParams};
+use sindr_devices::regulator::{regulator_piece, RegulatorLinear, RegulatorParams};
 use sindr_devices::zener::{zener_companion as rs_zener_companion, ZenerParams};
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -332,12 +333,14 @@ pub fn stamp_circuit(
                     1e-9,
                 );
             }
-            // VoltageRegulator — ideal voltage source between output (nodes[1]) and gnd (nodes[2]).
-            // Input node (nodes[0]) is wiring-only and is ignored.
-            CircuitElement::VoltageRegulator { nodes, voltage, .. } => {
+            CircuitElement::VoltageRegulator {
+                nodes,
+                voltage,
+                model,
+                ..
+            } => {
                 let branch = num_nodes + vsource_index;
-                let vs_nodes: [String; 2] = [nodes[1].clone(), nodes[2].clone()];
-                stamp_voltage_source(system, node_map, &vs_nodes, *voltage, branch);
+                stamp_regulator(system, node_map, nodes, *voltage, model, branch, v_prev);
                 vsource_index += 1;
             }
             // Photodiode — diode + photocurrent offset
@@ -447,6 +450,75 @@ pub fn stamp_voltage_source(
 
     // RHS: voltage value
     system.b[branch] = voltage;
+}
+
+/// The input voltage and output current a regulator is at in `solution`
+/// (both from its ground pin), or `None` without one.
+pub(crate) fn regulator_state(
+    node_map: &NodeMap,
+    nodes: &[String; 3],
+    branch: usize,
+    solution: Option<&DVector<f64>>,
+) -> Option<(f64, f64, f64)> {
+    let x = solution?;
+    let v = |n: &String| node_map.index(n).map_or(0.0, |i| x[i]);
+    let vg = v(&nodes[2]);
+    // The branch unknown is the current into the output pin; the regulator
+    // sources the opposite.
+    Some((v(&nodes[0]) - vg, v(&nodes[1]) - vg, -x[branch]))
+}
+
+/// The linear piece of a regulator's characteristic at `solution`, or the
+/// regulating piece at no load without one.
+pub(crate) fn regulator_piece_at(
+    node_map: &NodeMap,
+    nodes: &[String; 3],
+    voltage: f64,
+    model: &Option<RegulatorParams>,
+    branch: usize,
+    solution: Option<&DVector<f64>>,
+) -> RegulatorLinear {
+    let params = model.unwrap_or_default();
+    let (vin, iout) = regulator_state(node_map, nodes, branch, solution)
+        .map_or((f64::INFINITY, 0.0), |(vin, _, iout)| (vin, iout));
+    regulator_piece(&params, voltage, vin, iout)
+}
+
+/// Stamp a linear regulator `[in, out, gnd]` on the piece of its
+/// characteristic the previous iterate `v_prev` is on.
+///
+/// Branch row: `Vout − Vg = offset + d_vin·(Vin − Vg) + d_iout·Iout`, with
+/// `Iout = −i_branch`. KCL: the output pin takes `i_branch`, the input
+/// gives `Iout + Iq`, and the quiescent current returns through ground.
+pub(crate) fn stamp_regulator(
+    system: &mut MnaSystem,
+    node_map: &NodeMap,
+    nodes: &[String; 3],
+    voltage: f64,
+    model: &Option<RegulatorParams>,
+    branch: usize,
+    v_prev: Option<&DVector<f64>>,
+) {
+    let piece = regulator_piece_at(node_map, nodes, voltage, model, branch, v_prev);
+    let iq = model.map_or(0.0, |m| m.quiescent_current);
+    let input = node_map.index(&nodes[0]);
+    let out = node_map.index(&nodes[1]);
+    let gnd = node_map.index(&nodes[2]);
+    if let Some(o) = out {
+        system.a[(o, branch)] += 1.0;
+        system.a[(branch, o)] += 1.0;
+    }
+    if let Some(i) = input {
+        system.a[(i, branch)] -= 1.0;
+        system.a[(branch, i)] -= piece.d_vin;
+        system.b[i] -= iq;
+    }
+    if let Some(g) = gnd {
+        system.a[(branch, g)] += piece.d_vin - 1.0;
+        system.b[g] += iq;
+    }
+    system.a[(branch, branch)] += piece.d_iout;
+    system.b[branch] = piece.offset;
 }
 
 /// Stamp an independent current source into the RHS vector.

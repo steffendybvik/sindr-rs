@@ -70,6 +70,7 @@ pub mod led;
 pub mod mosfet;
 pub mod photodiode;
 pub mod photoresistor;
+pub mod regulator;
 pub mod schottky;
 pub mod thermistor;
 pub mod varactor;

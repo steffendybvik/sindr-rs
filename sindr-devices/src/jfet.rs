@@ -29,13 +29,15 @@ pub struct JfetCompanion {
     pub gm: f64,
     /// Drain–source conductance `∂Id/∂Vds` (S).
     pub gds: f64,
-    /// Equivalent current source for the MNA right-hand side (A).
+    /// Equivalent Norton current for the MNA right-hand side (A), drain →
+    /// source, in the N-channel frame (a P-channel caller negates it).
     pub i_eq: f64,
 }
 
 /// Compute JFET companion at operating point (vgs, vds).
 /// Nodes order: [gate, drain, source] — same as MOSFET convention.
-/// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0.
+/// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0 (A). `vgs`, `vds` and
+/// `vp` are in V.
 ///
 /// In the ohmic region `gm = 2·Idss·Vds/Vp²` keeps its sign, so it is
 /// negative when the drain is below the source.
