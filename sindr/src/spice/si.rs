@@ -10,8 +10,6 @@
 //! example is `meg` vs `m` — without longest-match, `1Meg` would parse
 //! as 1e-3 with a leftover `eg`.
 
-#![allow(dead_code)] // some helpers are exercised only via tests
-
 /// Suffix table — longest prefixes first, case-insensitive at lookup.
 ///
 /// `mil` (25.4 µm) is a SPICE convention for thousandths of an inch and

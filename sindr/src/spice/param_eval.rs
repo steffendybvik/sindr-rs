@@ -16,8 +16,6 @@
 //!   of the dep graph. Cycles among the bindings raise
 //!   [`EvalError::Circular`].
 
-#![allow(dead_code)] // some helpers are exercised only via tests
-
 use std::collections::{HashMap, HashSet};
 
 use miette::NamedSource;
