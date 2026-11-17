@@ -95,8 +95,11 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 ### Self-heating & thermal
 
-- Temperature is a **per-device parameter**, not a state variable. The temp-sweep analysis re-solves at each temperature; it does not couple junction power dissipation back into junction temperature within a single solve.
-- **No electro-thermal network**, no thermal RC ladders, no `T(t)` co-simulated with `V(t)`. This matters for IGBT / power-MOSFET / LED designs where self-heating shifts the operating point.
+- **Self-heating is one thermal RC per part.** A part with `Part::thermal` runs at `ambient + P·Rθ` (iterated to a balance in DC, a thermal RC state in transient). There's no thermal coupling between parts (a shared heatsink, neighbours on a board), and no multi-pole Foster/Cauer ladder for the junction-to-case path.
+- **Only junction devices and the thermistor feel their temperature:** diodes, LEDs, Zeners, Schottkys, photodiodes, BJTs and thermistors. MOSFETs, JFETs, IGBTs and resistors report a junction temperature (and so get Tj-max checks), but their models have no temperature in them, so heating doesn't move their operating point. Power-MOSFET and IGBT runaway is not predicted.
+- **LEDs scale IS with silicon's bandgap**, so a hot LED's forward voltage rises instead of falling the ~2 mV/K a real one does.
+- **Self-heating applies to `solve_circuit`, `solve_circuit_with_initial_voltages` and `solve_transient`** (and `temperature_sweep`, which sets the ambient). AC, `.tf`, `.sens` and `dc_sweep` linearise around the unheated operating point.
+- In a transient the electrical step solves at the temperature from the step before. Thermal time constants are far longer than the electrical steps, so the lag doesn't matter unless the step is coarse compared with Rθ·Cθ.
 
 ### Tooling & UX
 
