@@ -395,8 +395,7 @@ impl<'a> Deck<'a> {
             CircuitElement::Thermistor {
                 nodes, temperature, ..
             } => {
-                let params = sindr_devices::thermistor::ThermistorParams::default();
-                let r = sindr_devices::thermistor::thermistor_resistance(*temperature, &params);
+                let r = crate::device_params::thermistor_resistance(*temperature);
                 self.two_terminal(&name, nodes, num(id, "resistance", r)?)
             }
             CircuitElement::Potentiometer {

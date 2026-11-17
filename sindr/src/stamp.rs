@@ -290,8 +290,7 @@ pub fn stamp_circuit(
             CircuitElement::Thermistor {
                 nodes, temperature, ..
             } => {
-                let params = sindr_devices::thermistor::ThermistorParams::default();
-                let r = sindr_devices::thermistor::thermistor_resistance(*temperature, &params);
+                let r = crate::device_params::thermistor_resistance(*temperature);
                 stamp_resistor(system, node_map, nodes, r);
             }
             // Varactor — open circuit in DC; transient handled in stamp_varactor_transient

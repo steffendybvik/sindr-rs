@@ -432,9 +432,7 @@ fn stamp_circuit_transient(
             CircuitElement::Thermistor {
                 nodes, temperature, ..
             } => {
-                let therm_params = sindr_devices::thermistor::ThermistorParams::default();
-                let r =
-                    sindr_devices::thermistor::thermistor_resistance(*temperature, &therm_params);
+                let r = crate::device_params::thermistor_resistance(*temperature);
                 stamp_resistor(system, node_map, nodes, r);
             }
             CircuitElement::Photodiode {
@@ -958,9 +956,7 @@ fn extract_timestep_results(
                 nodes,
                 temperature,
             } => {
-                let therm_params = sindr_devices::thermistor::ThermistorParams::default();
-                let r =
-                    sindr_devices::thermistor::thermistor_resistance(*temperature, &therm_params);
+                let r = crate::device_params::thermistor_resistance(*temperature);
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
