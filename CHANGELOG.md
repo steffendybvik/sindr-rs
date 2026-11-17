@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose instances bind different `.param` values becomes one block per
   distinct body (`name`, `name_2`, …). Export writes blocks as
   `.subckt`/`.ends` and instances as `X` lines, and round-trips.
+- Absolute-maximum ratings checks: `Part::ratings` (`Ratings`: power,
+  voltage, current, diode reverse voltage and forward current, BJT/IGBT
+  Vce/Vcb/Veb/Ic, MOSFET/JFET Vds/Vgs/Id), and `check_ratings(&circuit,
+  &result)`, which reports each part's worst value, when it happened, the
+  limit and the margin, at the operating point or at every transient step.
+  A rating a part needs but doesn't set is unverified, never a pass.
 
 ### Changed
 
@@ -60,6 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SourceMap` and the flattened names are unchanged.
 - **Breaking:** `SimError::Design` and `ExportError::Design` for a hierarchy
   that can't be flattened.
+- `Part` is no longer `Eq` (its ratings are `f64`).
 - `PartialEq` on `CircuitElement`, `Waveform`, `MosfetParams`,
   `IgbtParams` and `VaractorParams`.
 

@@ -27,6 +27,7 @@ sindr-rs/
 │   │   ├── temp_sweep.rs       # temperature sweep
 │   │   ├── results.rs          # SimulationResult, ComponentResult, etc.
 │   │   ├── node_map.rs         # node-name → matrix-index mapping
+│   │   ├── ratings.rs          # check_ratings: absolute-maximum ratings vs. a result
 │   │   ├── validation.rs       # circuit pre-flight checks
 │   │   ├── error.rs            # SimError variants
 │   │   ├── examples.rs         # named example circuits, runnable from list_examples / run_example
@@ -119,6 +120,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Junction `temperature` fields are kelvin** (300.15 K = 27 °C, the nominal). IS and the thermal voltage kT/q both follow it.
 - **PMOS `vto` is SPICE-signed:** negative for an enhancement PMOS, as `MosfetParams::default_pmos()` has it.
 - **The default integrator is Gear-2:** second order, no ringing, slightly dissipative over many periods. For ringing amplitude in a resonant tank use `IntegrationMethod::Trapezoidal`, but not on circuits with time constants far below the step, where it rings. `IntegrationMethod::BackwardEuler` reproduces results from before alpha.7.
+- **Check ratings before calling a design done.** `check_ratings(&circuit, &result)` compares every part with the `Ratings` on its `Part`; for anything with switching or start-up, run it on a transient, since the DC operating point misses the peaks. `report.is_safe()` is false while any needed rating is missing, so fill them in rather than ignoring unverified checks.
 - **`ConvergenceFailed { iterations, max_step_volts }`**: usually a nonlinear element with no DC path to ground, or component values orders of magnitude outside typical ranges. `max_step_volts` is the max Newton step (not a KCL residual). The solver already retries with gmin stepping (homotopy ladder `1e-2` → `1e-12`) and then source stepping before giving up; `SimulationResult::convergence_aid` says which one a solve needed. If neither rescues it, perturb the circuit or pass a starting guess via `solve_circuit_with_initial_voltages` — don't blindly retry.
 
 When in doubt, run `cargo run --example list_examples` and copy the closest existing example; the bundled circuits are known-good.

@@ -558,6 +558,44 @@ pub struct TempSweepPoint {
 
 `num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
 
+### Ratings checks
+
+Check a solved circuit against each part's absolute maximum ratings, so nothing gets powered past its datasheet limits. Ratings live on the component's `Part` (`circuit.parts`, keyed by component id). `check_ratings` looks at the DC operating point, or at every step of a transient, where inrush, inductive kickback and start-up peaks show up.
+
+```rust
+use sindr::{check_ratings, solve_transient, Part, Ratings, RatingStatus, TransientConfig};
+
+circuit.parts.insert("Q1".into(), Part {
+    ratings: Ratings { vce: Some(45.0), ic: Some(0.1), power: Some(0.5), ..Ratings::default() },
+    ..Part::default()
+});
+
+let result = solve_transient(&circuit, &TransientConfig::new(1e-3, 1e-6))?;
+let report = check_ratings(&circuit, &result)?;
+for c in report.exceeded() {
+    println!("{} {:?}: {:.3} {} at t = {:?} (limit {:?}, margin {:.0}%)",
+        c.part, c.rating, c.worst.unwrap(), c.rating.unit(), c.time, c.limit,
+        c.margin_percent.unwrap_or(f64::NAN));
+}
+assert!(report.is_safe()); // false while anything is exceeded *or* unverified
+```
+
+Each component kind has ratings it needs, checked whether set or not; a missing one is `RatingStatus::Unverified`, never a pass:
+
+| Component | Needs |
+|---|---|
+| resistor, potentiometer, thermistor, photoresistor | `power` |
+| capacitor | `voltage` |
+| inductor | `current` |
+| diode, Schottky, LED, photodiode | `reverse_voltage`, `forward_current`, `power` |
+| Zener | `power` |
+| varactor | `reverse_voltage` |
+| BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
+| MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
+| IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+
+Any other rating set on a part is checked too: `power`, `voltage` and `current` on any component (on the port its `ComponentResult` reports), the rest on the devices they belong to. All limits are magnitudes, so PNP and PMOS parts use the same positive numbers. Transistor power is `|V·I|` on the Vce/Ic or Vds/Id port, without base or gate dissipation.
+
 ### Examples
 
 One small program per capability in [`examples/`](./examples), run with `cargo run -p sindr --example <name>`:
@@ -683,7 +721,7 @@ let ids: Vec<&str> = flat.components.iter().map(|c| c.id()).collect();
 assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
 ```
 
-`Part` data is ignored by the simulator. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
+`Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `sindr::check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
 
 ### License
 
@@ -1489,6 +1527,7 @@ hierarchy is [`SimError::Design`].
 | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
+| Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
 
 Not available: noise, distortion, pole-zero, AC sensitivity, Monte Carlo,
@@ -1655,6 +1694,8 @@ pub mod newton_raphson;
 
 pub mod node_map;
 
+pub mod ratings;
+
 pub mod results;
 
 pub mod sensitivity;
@@ -1677,13 +1718,15 @@ pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel};
 
 pub use dc_sweep::{dc_sweep, DcSweepResult};
 
-pub use design::{Block, DesignError, Instance, Part};
+pub use design::{Block, DesignError, Instance, Part, Ratings};
 
 pub use error::SimError;
 
 pub use mna::MnaSystem;
 
 pub use node_map::NodeMap;
+
+pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 
 pub use results:: { … }
 
@@ -2046,6 +2089,171 @@ impl NodeMap {
     /// Reverse lookup: get the node name for a given matrix index.
     pub fn node_name(&self, index: usize) -> Option<&str> { … }
 }
+```
+
+## `sindr/src/ratings.rs`
+
+Absolute-maximum ratings checks: did any part go past its datasheet
+limits?
+
+[`check_ratings`] compares a [`SimulationResult`] against the
+[`Ratings`] on each component's [`Part`](crate::Part) (looked up by
+component id in [`Circuit::parts`]). It looks at the DC operating point,
+or at every step of a transient, since peaks (inrush, inductive
+kickback, start-up) are what kill parts. For each part and rating it
+reports the worst value, when it happened, the limit and the margin left.
+
+Each component kind has ratings it needs, which are checked whether set
+or not. A needed rating that isn't set comes back
+[`RatingStatus::Unverified`], never as a pass:
+
+| Component | Needs |
+|---|---|
+| resistor, potentiometer, thermistor, photoresistor | `power` |
+| capacitor | `voltage` |
+| inductor | `current` |
+| diode, Schottky, LED, photodiode | `reverse_voltage`, `forward_current`, `power` |
+| Zener | `power` |
+| varactor | `reverse_voltage` |
+| BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
+| MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
+| IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+
+Any other rating a part sets is checked as well. `power`, `voltage` and
+`current` work on every component, measured on the port its
+[`ComponentResult`] reports (Vce and Ic for a BJT). A rating the
+component has no way to measure, such as `vds` on a resistor, is
+unverified. Transistor power is `|V·I|` on that port, so a BJT's base
+dissipation is left out.
+
+```
+use sindr::{check_ratings, solve_circuit, Circuit, CircuitElement, Part, Ratings};
+
+let mut circuit = Circuit::new(
+    "0",
+    vec![
+        CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 12.0, waveform: None },
+        CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "0".into()], resistance: 100.0 },
+    ],
+);
+// A 1/8 W resistor across 12 V dissipates 1.44 W.
+circuit.parts.insert(
+    "R1".into(),
+    Part { ratings: Ratings { power: Some(0.125), ..Ratings::default() }, ..Part::default() },
+);
+
+let result = solve_circuit(&circuit).unwrap();
+let report = check_ratings(&circuit, &result).unwrap();
+let r1 = &report.exceeded()[0];
+assert_eq!(r1.part, "R1");
+assert!((r1.worst.unwrap() - 1.44).abs() < 1e-9);
+assert!(!report.is_safe());
+```
+
+```rust
+/// One absolute-maximum rating. Each is a magnitude; see [`Ratings`] for
+/// what it measures.
+pub enum RatingKind {
+    /// Power dissipation (W).
+    Power,
+    /// Voltage across the part (V).
+    Voltage,
+    /// Current through the part (A).
+    Current,
+    /// Diode reverse voltage (V).
+    ReverseVoltage,
+    /// Diode forward current (A).
+    ForwardCurrent,
+    /// Collector–emitter voltage (V).
+    Vce,
+    /// Collector–base voltage (V).
+    Vcb,
+    /// Emitter–base voltage (V).
+    Veb,
+    /// Collector current (A).
+    Ic,
+    /// Drain–source voltage (V).
+    Vds,
+    /// Gate–source (or IGBT gate–emitter) voltage (V).
+    Vgs,
+    /// Drain current (A).
+    Id,
+}
+
+impl RatingKind {
+    /// The limit `ratings` sets for this kind, if any.
+    pub fn limit(self, ratings: &Ratings) -> Option<f64> { … }
+
+    /// SI unit symbol: `"W"`, `"V"` or `"A"`.
+    pub fn unit(self) -> &'static str { … }
+}
+
+/// How a part did against one rating.
+pub enum RatingStatus {
+    /// The worst value stayed at or under the limit.
+    Within,
+    /// The worst value went over the limit.
+    Exceeded,
+    /// Can't tell: the rating isn't set, or sindr can't measure it on this
+    /// component.
+    Unverified,
+}
+
+/// One part checked against one rating.
+pub struct RatingCheck {
+    /// Component id, flattened (`X1.Q1`).
+    pub part: String,
+    /// Which rating.
+    pub rating: RatingKind,
+    /// The limit, in the rating's unit. `None` when the part doesn't set it.
+    pub limit: Option<f64>,
+    /// The worst (largest) value the part saw, in the rating's unit. `None`
+    /// when sindr can't measure it on this component.
+    pub worst: Option<f64>,
+    /// When the worst value happened (s). `None` for a DC operating point.
+    pub time: Option<f64>,
+    /// Margin left, as a percentage of the limit: `100·(limit − worst)/limit`.
+    /// Negative when exceeded; `None` when unverified.
+    pub margin_percent: Option<f64>,
+    /// Within, exceeded or unverified.
+    pub status: RatingStatus,
+}
+
+/// Every rating checked on every part, in circuit order.
+pub struct RatingsReport {
+    /// One entry per part and rating.
+    pub checks: Vec<RatingCheck>,
+}
+
+impl RatingsReport {
+    /// Checks whose worst value went over the limit.
+    pub fn exceeded(&self) -> Vec<&RatingCheck> { … }
+
+    /// Checks that couldn't be verified.
+    pub fn unverified(&self) -> Vec<&RatingCheck> { … }
+
+    /// `true` only when every check is within its limit: nothing exceeded
+    /// and nothing unverified.
+    pub fn is_safe(&self) -> bool { … }
+
+    /// The checks for one part.
+    pub fn for_part<'a>(&'a self, part: &'a str) -> impl Iterator<Item = &'a RatingCheck> + 'a { … }
+}
+
+/// Check every component of `circuit` against the [`Ratings`] on its
+/// [`Part`](crate::Part), using `result` from any solve of that circuit.
+///
+/// With a transient in `result`, every timestep is checked (the first is
+/// the starting operating point); otherwise the DC operating point is. See
+/// the [module docs](self) for which ratings each component needs.
+///
+/// # Errors
+///
+/// [`SimError::Design`] when the circuit's hierarchy can't be flattened.
+pub fn check_ratings(
+    circuit: &Circuit,
+    result: &SimulationResult,
+) -> Result<RatingsReport, SimError> { … }
 ```
 
 ## `sindr/src/results.rs`
@@ -4935,6 +5143,62 @@ pub struct Part {
     /// Any other fields: manufacturer, MPN, tolerance, …
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
     pub fields: BTreeMap<String, String>,
+    /// Absolute maximum ratings from the datasheet. `sindr::check_ratings`
+    /// compares a simulation against them.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Ratings::is_empty"))]
+    pub ratings: Ratings,
+}
+
+/// Absolute maximum ratings: the datasheet limits a part must never pass.
+///
+/// Every limit is a magnitude in SI units and `None` when unknown. A rating
+/// a part needs but doesn't have is reported as unverified, never as a
+/// pass. Which ratings a component needs depends on its kind; see
+/// `sindr::ratings`.
+pub struct Ratings {
+    /// Power dissipation (W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub power: Option<f64>,
+    /// Voltage across the part (V): a capacitor's rated voltage, a
+    /// resistor's working voltage.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub voltage: Option<f64>,
+    /// Current through the part (A): an inductor's saturation current.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current: Option<f64>,
+    /// Diode reverse voltage, cathode above anode (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub reverse_voltage: Option<f64>,
+    /// Diode forward current, anode to cathode (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub forward_current: Option<f64>,
+    /// BJT or IGBT collector–emitter voltage, `|Vce|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vce: Option<f64>,
+    /// BJT collector–base voltage, `|Vcb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vcb: Option<f64>,
+    /// BJT emitter–base voltage, `|Veb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub veb: Option<f64>,
+    /// BJT or IGBT collector current, `|Ic|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub ic: Option<f64>,
+    /// MOSFET or JFET drain–source voltage, `|Vds|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vds: Option<f64>,
+    /// MOSFET or JFET gate–source voltage, `|Vgs|`; an IGBT's gate–emitter
+    /// voltage (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vgs: Option<f64>,
+    /// MOSFET or JFET drain current, `|Id|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub id: Option<f64>,
+}
+
+impl Ratings {
+    /// `true` when no limit is set.
+    pub fn is_empty(&self) -> bool { … }
 }
 
 /// Why a design can't be flattened.
@@ -5038,7 +5302,7 @@ pub mod waveform;
 
 pub use circuit:: { … }
 
-pub use design::{Block, DesignError, Instance, Part};
+pub use design::{Block, DesignError, Instance, Part, Ratings};
 
 pub use waveform::Waveform;
 ```

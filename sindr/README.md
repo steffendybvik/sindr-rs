@@ -440,6 +440,44 @@ pub struct TempSweepPoint {
 
 `num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
 
+## Ratings checks
+
+Check a solved circuit against each part's absolute maximum ratings, so nothing gets powered past its datasheet limits. Ratings live on the component's `Part` (`circuit.parts`, keyed by component id). `check_ratings` looks at the DC operating point, or at every step of a transient, where inrush, inductive kickback and start-up peaks show up.
+
+```rust
+use sindr::{check_ratings, solve_transient, Part, Ratings, RatingStatus, TransientConfig};
+
+circuit.parts.insert("Q1".into(), Part {
+    ratings: Ratings { vce: Some(45.0), ic: Some(0.1), power: Some(0.5), ..Ratings::default() },
+    ..Part::default()
+});
+
+let result = solve_transient(&circuit, &TransientConfig::new(1e-3, 1e-6))?;
+let report = check_ratings(&circuit, &result)?;
+for c in report.exceeded() {
+    println!("{} {:?}: {:.3} {} at t = {:?} (limit {:?}, margin {:.0}%)",
+        c.part, c.rating, c.worst.unwrap(), c.rating.unit(), c.time, c.limit,
+        c.margin_percent.unwrap_or(f64::NAN));
+}
+assert!(report.is_safe()); // false while anything is exceeded *or* unverified
+```
+
+Each component kind has ratings it needs, checked whether set or not; a missing one is `RatingStatus::Unverified`, never a pass:
+
+| Component | Needs |
+|---|---|
+| resistor, potentiometer, thermistor, photoresistor | `power` |
+| capacitor | `voltage` |
+| inductor | `current` |
+| diode, Schottky, LED, photodiode | `reverse_voltage`, `forward_current`, `power` |
+| Zener | `power` |
+| varactor | `reverse_voltage` |
+| BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
+| MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
+| IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+
+Any other rating set on a part is checked too: `power`, `voltage` and `current` on any component (on the port its `ComponentResult` reports), the rest on the devices they belong to. All limits are magnitudes, so PNP and PMOS parts use the same positive numbers. Transistor power is `|V·I|` on the Vce/Ic or Vds/Id port, without base or gate dissipation.
+
 ## Examples
 
 One small program per capability in [`examples/`](./examples), run with `cargo run -p sindr --example <name>`:
