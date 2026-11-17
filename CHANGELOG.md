@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PartialEq` on `CircuitElement`, `Waveform`, `MosfetParams`,
   `IgbtParams` and `VaractorParams`.
 
+### Removed
+
+- **Breaking:** `newton_raphson::I_ABSTOL`, which nothing read. Newton
+  converges on node voltages (`V_ABSTOL`, `RELTOL`).
+
 ## [0.1.0-alpha.7] - 2026-11-16
 
 ### Added

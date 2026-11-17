@@ -15,8 +15,6 @@
 //! - **`.lib file section`**: two-argument `.lib` only splices the lines
 //!   between `.lib <section>` and `.endl` markers in the included file.
 
-#![allow(dead_code)] // some helpers are exercised only via tests
-
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,8 +34,6 @@ use crate::spice::error::{ParseWarning, SpiceParseError};
 pub(crate) struct LogicalLine {
     /// Joined, comment-stripped, case-folded text.
     pub text: String,
-    /// 1-based line number of the *start* of this logical line in `file`.
-    pub start_line: usize,
     /// Source filename (for diagnostic rendering).
     pub file: Arc<str>,
     /// Original source text of the file this line came from.
@@ -223,7 +219,6 @@ fn preprocess_inner(
 
         current = Some(PendingLine {
             text: folded,
-            start_line: phys.line_number,
             byte_range: phys.range.clone(),
         });
     }
@@ -238,7 +233,6 @@ fn preprocess_inner(
 /// In-flight logical line under construction (continuations may extend it).
 struct PendingLine {
     text: String,
-    start_line: usize,
     byte_range: std::ops::Range<usize>,
 }
 
@@ -246,7 +240,6 @@ impl PendingLine {
     fn finish(self, file: Arc<str>, src: Arc<String>) -> LogicalLine {
         LogicalLine {
             text: self.text,
-            start_line: self.start_line,
             file,
             src,
             byte_range: self.byte_range,
@@ -256,8 +249,6 @@ impl PendingLine {
 
 /// One physical line of input after comment-handling.
 struct PhysicalLine {
-    /// 1-based line number in the file.
-    line_number: usize,
     /// Original raw line text (without trailing newline).
     raw: String,
     /// Body after `;`-trimming. Whole-line `*` comments yield body = "".
@@ -271,7 +262,6 @@ struct PhysicalLine {
 
 fn collect_physical_lines(src: &str) -> Vec<PhysicalLine> {
     let mut out = Vec::new();
-    let mut line_no = 1usize;
     let mut cursor = 0usize;
     let bytes = src.as_bytes();
 
@@ -292,7 +282,6 @@ fn collect_physical_lines(src: &str) -> Vec<PhysicalLine> {
         let body = strip_comments(&raw);
 
         out.push(PhysicalLine {
-            line_number: line_no,
             raw,
             body,
             is_blank,
@@ -303,7 +292,6 @@ fn collect_physical_lines(src: &str) -> Vec<PhysicalLine> {
             break;
         }
         cursor = end + 1;
-        line_no += 1;
     }
 
     out
@@ -608,7 +596,8 @@ mod tests {
         let p = pp("title\nR1 a b\n+ 1k\n");
         assert_eq!(p.lines.len(), 1);
         assert_eq!(p.lines[0].text, "r1 a b 1k");
-        assert_eq!(p.lines[0].start_line, 2);
+        // It starts where the first physical line does, after "title\n".
+        assert_eq!(p.lines[0].byte_range.start, 6);
     }
 
     #[test]

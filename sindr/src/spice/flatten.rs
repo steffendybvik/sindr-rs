@@ -31,8 +31,6 @@
 //! Recursion into the same subckt name on the active expansion stack
 //! raises [`SpiceParseError::Syntax`].
 
-#![allow(dead_code)] // some helpers are exercised only via tests
-
 use std::collections::{HashMap, HashSet};
 
 use miette::NamedSource;
@@ -128,15 +126,6 @@ pub(crate) fn flatten(
             RawCard::Analysis(a, span) => top_analyses.push((a, span)),
             RawCard::NodeValues(kind, values, span) => top_node_values.push((kind, values, span)),
             RawCard::Element(e) => top_elements.push(e),
-            RawCard::Include(_) | RawCard::Lib { .. } => {
-                // The preprocessor resolves these; if one survives this far
-                // it is a parser/preprocessor bug. Skip with a warning.
-                warnings.push(ParseWarning {
-                    message: "stray .include/.lib in flattener input".to_string(),
-                    span: None,
-                    file: None,
-                });
-            }
             RawCard::Ends(_) => {
                 // The parser collects `.ends` into its parent subckt; an
                 // `.ends` reaching this point would have already errored
@@ -351,11 +340,7 @@ fn expand_instance(
                 // definitions even if we cannot use them.
                 // No-op for now.
             }
-            RawCard::Analysis(..)
-            | RawCard::NodeValues(..)
-            | RawCard::Include(_)
-            | RawCard::Lib { .. }
-            | RawCard::Ends(_) => {
+            RawCard::Analysis(..) | RawCard::NodeValues(..) | RawCard::Ends(_) => {
                 // Ignore inside subckt bodies.
             }
         }
@@ -497,7 +482,6 @@ mod tests {
             ports: ports.iter().map(|s| s.to_string()).collect(),
             defaults: vec![],
             body,
-            span: span(),
         }
     }
 
@@ -512,7 +496,6 @@ mod tests {
             ports: ports.iter().map(|s| s.to_string()).collect(),
             defaults,
             body,
-            span: span(),
         }
     }
 

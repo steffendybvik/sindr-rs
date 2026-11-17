@@ -6,9 +6,6 @@
 //! good error messages on unsupported constructs rather than failing the
 //! grammar.
 
-#![allow(dead_code)] // some AST fields are not yet read by the lowering pass
-
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Byte-offset span attached to AST nodes. Converted to [`miette::SourceSpan`]
@@ -46,11 +43,6 @@ pub(crate) enum RawCard {
     Subckt(RawSubckt),
     /// `.param` bindings and the card's source line.
     Param(Vec<(String, ParamExpr)>, Span),
-    Include(PathBuf),
-    Lib {
-        file: PathBuf,
-        section: Option<String>,
-    },
     /// An analysis directive and its source line.
     Analysis(RawAnalysis, Span),
     /// `.ic` / `.nodeset`: `V(node)=value` pairs and the card's source line.
@@ -126,7 +118,6 @@ pub(crate) struct RawSubckt {
     pub ports: Vec<String>,
     pub defaults: Vec<(String, ParamExpr)>,
     pub body: Vec<RawCard>,
-    pub span: Span,
 }
 
 /// Which card a [`RawCard::NodeValues`] came from.
