@@ -24,10 +24,6 @@ pub const MAX_NR_ITERATIONS: usize = 100;
 /// Absolute voltage tolerance (V).
 pub const V_ABSTOL: f64 = 1e-6;
 
-/// Absolute current tolerance (A).
-#[allow(dead_code)]
-pub const I_ABSTOL: f64 = 1e-12;
-
 /// Relative tolerance (dimensionless).
 pub const RELTOL: f64 = 1e-3;
 

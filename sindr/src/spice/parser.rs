@@ -20,8 +20,6 @@
 //! ([`parse`]) translates them to absolute spans inside the original source
 //! file via `LogicalLine::byte_range.start`.
 
-#![allow(dead_code)] // many helpers are exercised via tests only
-
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -76,16 +74,6 @@ fn anchor_to_line(card: RawCard, line: &LogicalLine) -> RawCard {
         RawCard::Analysis(analysis, _) => RawCard::Analysis(analysis, line_span(line)),
         RawCard::NodeValues(kind, values, _) => RawCard::NodeValues(kind, values, line_span(line)),
         other => other,
-    }
-}
-
-/// Convert a `Range<usize>` produced by `with_span` into a [`Span`] tied to `file`.
-fn span_from(range: Range<usize>, file: &Arc<str>) -> Span {
-    Span {
-        start: range.start,
-        end: range.end,
-        file: file.clone(),
-        src: Arc::default(),
     }
 }
 
@@ -561,7 +549,7 @@ fn dot_card_kind(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
 /// Parse `.subckt NAME [ports...] [param=default ...]`.
 fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
-    let (name, name_span) = ident(input)?;
+    let (name, _) = ident(input)?;
     let mut ports: Vec<String> = Vec::new();
     let mut defaults: Vec<(String, ParamExpr)> = Vec::new();
     loop {
@@ -585,12 +573,6 @@ fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
         ports,
         defaults,
         body: Vec::new(),
-        span: Span {
-            start: name_span.start,
-            end: name_span.end,
-            file: Arc::from(""),
-            src: Arc::default(),
-        },
     }))
 }
 
@@ -823,14 +805,6 @@ fn parse_card_op(input: &mut Input<'_>) -> ModalResult<RawCard> {
 // Per-line dispatch
 // ---------------------------------------------------------------------------
 
-/// Outcome of dispatching a single logical line. The driver uses this to
-/// build the final `Vec<RawCard>` and to handle subckt body collection.
-#[derive(Debug)]
-enum LineOutcome {
-    /// A normal card (element, model, .param, .tran, .dc, .ac, .tf, .sens, .op, .subckt header, .ends).
-    Card(RawCard),
-}
-
 /// Dispatch a single preprocessed line to the appropriate parser. Errors
 /// returned here are raw winnow errors; the driver lifts them into
 /// [`SpiceParseError`] with absolute spans.
@@ -1010,6 +984,7 @@ fn trim_offset(s: &str) -> (&str, usize) {
 
 /// Parse a [`Preprocessed`] netlist into a flat `Vec<RawCard>` in strict mode.
 /// `.subckt` bodies are collected into their parent `RawSubckt::body`.
+#[cfg(test)]
 pub(crate) fn parse(pre: &Preprocessed) -> Result<Vec<RawCard>, SpiceParseError> {
     let mut warnings = Vec::new();
     parse_with_options(pre, true, &mut warnings)
@@ -1099,7 +1074,6 @@ mod tests {
     fn line(text: &str) -> LogicalLine {
         LogicalLine {
             text: text.to_string(),
-            start_line: 1,
             file: Arc::from("test.cir"),
             src: Arc::new(text.to_string()),
             byte_range: 0..text.len(),
@@ -1112,10 +1086,9 @@ mod tests {
             ..Preprocessed::default()
         };
         let mut offset = 0usize;
-        for (i, l) in lines.iter().enumerate() {
+        for l in lines {
             out.lines.push(LogicalLine {
                 text: l.to_string(),
-                start_line: i + 1,
                 file: Arc::from("test.cir"),
                 src: Arc::new(lines.join("\n")),
                 byte_range: offset..offset + l.len(),
