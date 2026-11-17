@@ -99,13 +99,9 @@ fn parse_file_bjt_amplifier_solves() {
 #[test]
 fn parse_file_subckt_flattening() {
     let nl = parse_file(fixture_path("subckt_filter.cir")).expect("parse subckt_filter");
+    let flat = nl.circuit.flatten().expect("flatten");
 
-    let ids: Vec<String> = nl
-        .circuit
-        .components
-        .iter()
-        .map(|c| c.id().to_string())
-        .collect();
+    let ids: Vec<String> = flat.components.iter().map(|c| c.id().to_string()).collect();
     for expected in ["x1.r1", "x1.c1", "x2.r1", "x2.c1"] {
         assert!(
             ids.iter().any(|s| s == expected),
@@ -114,8 +110,8 @@ fn parse_file_subckt_flattening() {
     }
 
     // R override propagates: X1 -> 1k, X2 -> 2k.
-    assert_relative_eq!(resistor_value(find_resistor(&nl.circuit, "X1.R1")), 1_000.0);
-    assert_relative_eq!(resistor_value(find_resistor(&nl.circuit, "X2.R1")), 2_000.0);
+    assert_relative_eq!(resistor_value(find_resistor(&flat, "X1.R1")), 1_000.0);
+    assert_relative_eq!(resistor_value(find_resistor(&flat, "X2.R1")), 2_000.0);
 
     // The internal node `b` of subckt rcfilter is not a port (ports are a, b
     // are both ports actually — pick the truly internal one). The fixture
@@ -243,7 +239,10 @@ fn forward_defined_subckt() {
                .ends\n\
                .end\n";
     let nl = parse_str(src).expect("parse forward-defined subckt");
-    assert!(nl.circuit.components.iter().any(|c| c.id() == "x1.r1"));
+    assert_eq!(nl.circuit.instances.len(), 1);
+    assert_eq!(nl.circuit.blocks["mysub"].components[0].id(), "r1");
+    let flat = nl.circuit.flatten().expect("flatten");
+    assert!(flat.components.iter().any(|c| c.id() == "x1.r1"));
 }
 
 #[test]
@@ -312,4 +311,82 @@ fn one_shot_pulse_fires_in_a_parsed_transient() {
     assert_eq!(v_at(5e-6), 0.0);
     assert_relative_eq!(v_at(20e-6), 1.0, epsilon = 1e-9);
     assert_eq!(v_at(45e-6), 0.0);
+}
+
+#[test]
+fn subckt_structure_survives_parsing() {
+    let nl = parse_file(fixture_path("subckt_filter.cir")).expect("parse subckt_filter");
+    let c = &nl.circuit;
+    assert_eq!(c.components.len(), 1, "only Vin sits at the top level");
+    let placed: Vec<(&str, &str)> = c
+        .instances
+        .iter()
+        .map(|i| (i.id.as_str(), i.block.as_str()))
+        .collect();
+    // X1 and X2 bind different R, so each gets a block; first use names it.
+    assert_eq!(placed, [("x1", "rcfilter"), ("x2", "rcfilter_2")]);
+    assert_eq!(c.instances[0].nodes, ["in", "mid"]);
+    let block = &c.blocks["rcfilter"];
+    assert_eq!(block.ports, ["a", "b"]);
+    assert_eq!(block.components[0].nodes(), ["a", "b"]);
+    assert_relative_eq!(resistor_value(&block.components[0]), 1_000.0);
+    assert_relative_eq!(
+        resistor_value(&c.blocks["rcfilter_2"].components[0]),
+        2_000.0
+    );
+}
+
+#[test]
+fn identical_instances_share_one_block() {
+    let src = "* shared\n\
+               V1 in 0 1\n\
+               X1 in mid half\n\
+               X2 mid out half\n\
+               R9 out 0 1k\n\
+               .subckt half a b\n\
+               R1 a n 1k\n\
+               R2 n b 1k\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    assert_eq!(nl.circuit.blocks.len(), 1);
+    assert!(nl.circuit.instances.iter().all(|i| i.block == "half"));
+}
+
+#[test]
+fn nested_subckts_keep_their_nesting() {
+    let src = "* nested\n\
+               V1 in 0 1\n\
+               X1 in out stage\n\
+               R9 out 0 1k\n\
+               .subckt inner a b\n\
+               R1 a mid 1k\n\
+               R2 mid b 1k\n\
+               .ends\n\
+               .subckt stage p q\n\
+               X2 p n inner\n\
+               R3 n q 1k\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let stage = &nl.circuit.blocks["stage"];
+    assert_eq!(stage.instances.len(), 1);
+    assert_eq!(stage.instances[0].block, "inner");
+    assert_eq!(stage.instances[0].nodes, ["p", "n"]);
+    assert_eq!(stage.components[0].id(), "r3");
+
+    let flat = nl.circuit.flatten().expect("flatten");
+    let mut ids: Vec<&str> = flat.components.iter().map(|c| c.id()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["r9", "v1", "x1.r3", "x1.x2.r1", "x1.x2.r2"]);
+    let r1 = flat
+        .components
+        .iter()
+        .find(|c| c.id() == "x1.x2.r1")
+        .unwrap();
+    assert_eq!(r1.nodes(), ["in", "x1.x2.mid"]);
+
+    // The solver flattens on its own and sees the same divider.
+    let result = sindr::solve_circuit(&nl.circuit).expect("solve");
+    assert_relative_eq!(result.node_voltages["out"], 0.25, epsilon = 1e-9);
 }

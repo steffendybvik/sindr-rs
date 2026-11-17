@@ -23,9 +23,10 @@
 
 #![allow(dead_code)] // some helpers are exercised only via tests
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::circuit::{BjtModel, BjtParasiticCaps, DiodeModel};
+use crate::design::{Block, Instance};
 use crate::{BjtKind, Circuit, CircuitElement, Waveform};
 use miette::NamedSource;
 
@@ -35,7 +36,7 @@ use crate::spice::ast::{
     SourceKind,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
-use crate::spice::flatten::{FlatElement, Flattened};
+use crate::spice::flatten::{FlatElement, Flattened, InstanceRecord};
 use crate::spice::param_eval::{eval, eval_error_to_parse_error, ParamScope};
 use crate::spice::ParsedNetlist;
 
@@ -52,13 +53,38 @@ pub(crate) fn build_netlist(
     strict: bool,
     warnings: &mut Vec<ParseWarning>,
 ) -> Result<ParsedNetlist, SpiceParseError> {
-    let mut components: Vec<CircuitElement> = Vec::with_capacity(flat.elements.len());
-
+    // Each element is built with its nodes as its own subckt body writes
+    // them, then filed under its instance; `assemble` turns that into
+    // blocks. Building from the renamed id keeps diagnostics naming the
+    // full path (`x1.r3`).
+    let mut scopes: HashMap<&[String], Vec<CircuitElement>> = HashMap::new();
     for fe in &flat.elements {
-        let element = build_element(fe, &flat.models, strict, warnings)
+        let mut raw = fe.raw.clone();
+        raw.nodes.clone_from(&fe.local_nodes);
+        let local = FlatElement {
+            raw,
+            local_nodes: Vec::new(),
+            instance_path: Vec::new(),
+            scope_snapshot: fe.scope_snapshot.clone(),
+        };
+        let mut element = build_element(&local, &flat.models, strict, warnings)
             .map_err(|e| e.locate(&fe.raw.span))?;
-        components.push(element);
+        if !fe.instance_path.is_empty() {
+            let prefix_len = fe.instance_path.iter().map(|p| p.len() + 1).sum::<usize>();
+            let id = element.id_mut();
+            *id = id.split_off(prefix_len);
+        }
+        scopes
+            .entry(fe.instance_path.as_slice())
+            .or_default()
+            .push(element);
     }
+    let circuit = assemble(scopes, &flat.instances);
+    let components = circuit
+        .flattened()
+        .map_err(|e| card_error(format!("internal: {e}")))?
+        .into_owned()
+        .components;
 
     let mut analyses: Vec<AnalysisRequest> = Vec::with_capacity(flat.analyses.len());
     let top_scope = scope_from_snapshot(&flat.top_params);
@@ -85,11 +111,7 @@ pub(crate) fn build_netlist(
     }
 
     Ok(ParsedNetlist {
-        circuit: Circuit {
-            ground_node: "0".to_string(),
-            components,
-            ..Default::default()
-        },
+        circuit,
         analyses,
         initial_conditions,
         nodesets,
@@ -440,6 +462,101 @@ fn model_params(
         });
     }
     Ok(params)
+}
+
+/// Turn per-instance element lists into a [`Circuit`] with one [`Block`]
+/// per distinct subckt body. Instances that bind different `.param`
+/// values can give one subckt different bodies; each gets its own block,
+/// named `name`, `name_2`, `name_3`, ….
+fn assemble(
+    mut scopes: HashMap<&[String], Vec<CircuitElement>>,
+    records: &[InstanceRecord],
+) -> Circuit {
+    // Pass 1, bottom-up: group instances whose bodies are identical into
+    // classes. Children come after their parent in pre-order, so walking
+    // backwards classifies every child before its parent's body is built.
+    // Instances refer to their block by class index until pass 2.
+    let mut class_of: Vec<usize> = vec![0; records.len()];
+    let mut classes: Vec<(&str, Block)> = Vec::new();
+    let children = |path: &[String], class_of: &[usize]| -> Vec<Instance> {
+        records
+            .iter()
+            .zip(class_of)
+            .filter(|(r, _)| r.path.len() == path.len() + 1 && r.path.starts_with(path))
+            .map(|(r, class)| Instance {
+                id: r.path.last().cloned().unwrap_or_default(),
+                block: class.to_string(),
+                nodes: r.local_nodes.clone(),
+            })
+            .collect()
+    };
+    for (i, record) in records.iter().enumerate().rev() {
+        let block = Block {
+            ports: record.ports.clone(),
+            components: scopes.remove(record.path.as_slice()).unwrap_or_default(),
+            instances: children(&record.path, &class_of),
+            ..Block::default()
+        };
+        class_of[i] = match classes
+            .iter()
+            .position(|(name, b)| *name == record.subckt && *b == block)
+        {
+            Some(class) => class,
+            None => {
+                classes.push((&record.subckt, block));
+                classes.len() - 1
+            }
+        };
+    }
+
+    // Pass 2: name classes in order of first use: `name`, `name_2`, ….
+    let subckt_names: HashSet<&str> = records.iter().map(|r| r.subckt.as_str()).collect();
+    let mut names: Vec<Option<String>> = vec![None; classes.len()];
+    let mut taken: HashSet<String> = HashSet::new();
+    for &class in &class_of {
+        if names[class].is_some() {
+            continue;
+        }
+        let subckt = classes[class].0;
+        let mut name = subckt.to_string();
+        let mut k = 1;
+        while taken.contains(&name) || (k > 1 && subckt_names.contains(name.as_str())) {
+            k += 1;
+            name = format!("{subckt}_{k}");
+        }
+        taken.insert(name.clone());
+        names[class] = Some(name);
+    }
+    let name_of = |class: &str| -> String {
+        class
+            .parse::<usize>()
+            .ok()
+            .and_then(|c| names.get(c).cloned().flatten())
+            .unwrap_or_default()
+    };
+    let rename = |instances: &mut Vec<Instance>| {
+        for instance in instances {
+            instance.block = name_of(&instance.block);
+        }
+    };
+
+    let mut blocks = BTreeMap::new();
+    for (class, (_, mut block)) in classes.into_iter().enumerate() {
+        rename(&mut block.instances);
+        if let Some(name) = names[class].clone() {
+            blocks.insert(name, block);
+        }
+    }
+    let mut instances = children(&[], &class_of);
+    rename(&mut instances);
+
+    Circuit {
+        components: scopes.remove([].as_slice()).unwrap_or_default(),
+        ground_node: "0".to_string(),
+        instances,
+        blocks,
+        ..Circuit::default()
+    }
 }
 
 fn card_error(message: String) -> SpiceParseError {
