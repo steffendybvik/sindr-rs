@@ -25,6 +25,7 @@ fn rc_lowpass() -> Circuit {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     }
 }
 

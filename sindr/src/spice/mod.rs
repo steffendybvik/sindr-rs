@@ -4,9 +4,11 @@
 //! [`crate::Circuit`] plus structured analysis directives. The supported
 //! device set tracks what `sindr` can solve: R, L, C, V, I, D, Q (NPN/PNP),
 //! and X (subcircuit instance). Subcircuits declared with `.subckt` /
-//! `.ends` are flattened with `.`-separated hierarchical node naming, and
-//! a [`SourceMap`] is returned so callers can recover the original
-//! instance path for any flattened node.
+//! `.ends` become [`Block`](crate::Block)s and X lines
+//! [`Instance`](crate::Instance)s; the solver flattens them with
+//! `.`-separated hierarchical naming ([`Circuit::flatten`](crate::Circuit::flatten)),
+//! and a [`SourceMap`] maps each flattened node back to its instance path.
+//! [`to_netlist`] writes blocks back as `.subckt`s.
 //!
 //! `.ic` and `.nodeset` cards land in [`ParsedNetlist::initial_conditions`]
 //! and [`ParsedNetlist::nodesets`]; pass them to
@@ -36,7 +38,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! For a deck on disk, parse it, hand the flattened [`Circuit`](crate::Circuit) to the
+//! For a deck on disk, parse it, hand the [`Circuit`](crate::Circuit) to the
 //! solver, then dispatch each parsed analysis directive to the matching
 //! `sindr` routine (`no_run`: `amp.cir` doesn't exist where doctests run):
 //!
@@ -186,12 +188,18 @@ use std::path::Path;
 
 /// Successful result of parsing a SPICE netlist.
 ///
-/// All hierarchy is already flattened into [`Self::circuit`]; use
-/// [`Self::source_map`] to translate flattened node names back to their
+/// [`Self::circuit`] keeps the `.subckt` hierarchy as blocks and
+/// instances. Every analysis flattens it; use [`Self::source_map`] to
+/// translate flattened node names back to their
 /// original `(instance_path, node)` pair.
 #[derive(Debug, Clone)]
 pub struct ParsedNetlist {
-    /// Flattened circuit ready for the sindr solver.
+    /// The circuit, with each `.subckt` as a [`Block`](crate::Block) and each
+    /// X line as an [`Instance`](crate::Instance). A subckt whose instances
+    /// bind different `.param` values gives one block per distinct body,
+    /// named `name`, `name_2`, …. The solver takes it as is;
+    /// [`Circuit::flatten`](crate::Circuit::flatten) gives the flat element
+    /// list.
     pub circuit: crate::Circuit,
     /// Analysis directives declared in the netlist (`.op`, `.tran`, `.dc`,
     /// `.ac`, `.tf`, `.sens`).

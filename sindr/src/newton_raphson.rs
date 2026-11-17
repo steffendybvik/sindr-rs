@@ -894,6 +894,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -1030,6 +1031,7 @@ mod tests {
                 },
                 element,
             ],
+            ..Default::default()
         }
     }
 
@@ -1136,6 +1138,7 @@ mod tests {
                 },
                 resistor("R2", "k", "0", 1_000.0),
             ],
+            ..Default::default()
         };
         let r = crate::solve_circuit(&circuit).unwrap();
         let (va, vk) = (r.node_voltages["a"], r.node_voltages["k"]);
@@ -1170,6 +1173,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -1241,6 +1245,7 @@ mod tests {
         Circuit {
             ground_node: "0".into(),
             components,
+            ..Default::default()
         }
     }
 
@@ -1364,6 +1369,7 @@ mod tests {
                     params: params.clone(),
                 },
             ],
+            ..Default::default()
         };
         let vov = vge - params.vth;
         let b = params.k * vov + 1.0 / r;

@@ -52,6 +52,8 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 /// value for a `temperature` that is zero, negative or not finite, or a BJT
 /// `bf` that isn't positive and finite.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     // ------------------------------------------------------------------
     // Check 1: Ground node exists
     // ------------------------------------------------------------------
@@ -220,6 +222,7 @@ mod tests {
                 },
                 component,
             ],
+            ..Default::default()
         };
         let diode = |model: crate::DiodeModel| {
             with(CircuitElement::Diode {
@@ -285,6 +288,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
         for t in [0.0, -10.0, f64::NAN, f64::INFINITY] {
             match validate_circuit(&diode(t)) {
@@ -331,6 +335,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         match validate_circuit(&circuit) {
             Err(SimError::NoGround) => {} // expected
@@ -360,6 +365,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         match validate_circuit(&circuit) {
             Err(SimError::DisconnectedNodes(nodes)) => {
@@ -387,6 +393,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         match validate_circuit(&circuit) {
             Err(SimError::FloatingNode(node)) => assert_eq!(node, "n2"),
@@ -411,6 +418,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         assert!(validate_circuit(&circuit).is_ok());
     }
@@ -436,6 +444,7 @@ mod tests {
                     waveform: None,
                 },
             ],
+            ..Default::default()
         };
         // Validation itself should pass
         assert!(validate_circuit(&circuit).is_ok());

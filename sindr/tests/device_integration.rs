@@ -58,6 +58,7 @@ fn vcvs_output_is_gain_times_control_voltage() {
             },
             resistor("Rload", "out", "0", 1_000.0),
         ],
+        ..Default::default()
     };
     let r = solve_circuit(&circuit).expect("solve vcvs");
     assert_relative_eq!(node(&r, "c"), 2.0, epsilon = 1e-9);
@@ -81,6 +82,7 @@ fn vccs_load_current_is_gm_times_control_voltage() {
             },
             resistor("Rload", "out", "0", 500.0),
         ],
+        ..Default::default()
     };
     let r = solve_circuit(&circuit).expect("solve vccs");
     assert_relative_eq!(comp_current(&r, "Rload").abs(), 0.002 * 2.0, epsilon = 1e-6);
@@ -103,6 +105,7 @@ fn ccvs_output_is_rm_times_control_current() {
             },
             resistor("Rload", "out", "0", 1_000.0),
         ],
+        ..Default::default()
     };
     let r = solve_circuit(&circuit).expect("solve ccvs");
     let i_ctrl = r.branch_currents["V1"].abs();
@@ -126,6 +129,7 @@ fn cccs_output_current_is_alpha_times_control_current() {
             },
             resistor("Rload", "out", "0", 40.0),
         ],
+        ..Default::default()
     };
     let r = solve_circuit(&circuit).expect("solve cccs");
     assert_relative_eq!(comp_current(&r, "Rload").abs(), 5.0 * 0.01, epsilon = 1e-6);
@@ -147,6 +151,7 @@ fn voltage_regulator_holds_output_independent_of_input() {
             },
             resistor("Rload", "out", "0", 1_000.0),
         ],
+        ..Default::default()
     };
     for vin in [9.0, 12.0, 15.0] {
         let r = solve_circuit(&make(vin)).expect("solve regulator");
@@ -170,6 +175,7 @@ fn switch_closed_shorts_open_blocks() {
                 closed,
             },
         ],
+        ..Default::default()
     };
     let closed = solve_circuit(&make(true)).expect("closed");
     let open = solve_circuit(&make(false)).expect("open");
@@ -201,6 +207,7 @@ fn fuse_intact_conducts_blown_opens() {
                 blown,
             },
         ],
+        ..Default::default()
     };
     let intact = solve_circuit(&make(false)).expect("intact");
     let blown = solve_circuit(&make(true)).expect("blown");
@@ -237,6 +244,7 @@ fn potentiometer_loaded_wiper_divides_voltage() {
             },
             resistor("Rload", "w", "0", 750.0),
         ],
+        ..Default::default()
     };
     let r25 = solve_circuit(&make(0.25)).expect("p=0.25");
     let r50 = solve_circuit(&make(0.50)).expect("p=0.50");
@@ -263,6 +271,7 @@ fn potentiometer_unloaded_wiper_is_rejected_as_floating() {
                 position: 0.5,
             },
         ],
+        ..Default::default()
     };
     match solve_circuit(&circuit) {
         Err(SimError::FloatingNode(node)) => assert_eq!(node, "w"),
@@ -293,6 +302,7 @@ fn jfet_self_bias(kind: sindr::JfetKind) -> Circuit {
                 vp,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -362,6 +372,7 @@ fn pmos_with_default_params_is_off_at_zero_vsg() {
                 sindr_devices::mosfet::MosfetParams::default_pmos(),
             ),
         ],
+        ..Default::default()
     };
     let r = solve_circuit(&circuit).unwrap();
     assert!(node(&r, "d").abs() < 1e-6, "Vd = {}", node(&r, "d"));
@@ -386,6 +397,7 @@ fn pmos_stage_mirrors_nmos_stage() {
             },
             mosfet(kind, params),
         ],
+        ..Default::default()
     };
     let nmos = MosfetParams::default_nmos();
     let pmos = MosfetParams {

@@ -27,6 +27,7 @@ fn circuit_of(element: CircuitElement) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![element],
+        ..Default::default()
     }
 }
 

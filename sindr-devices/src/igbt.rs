@@ -11,7 +11,7 @@
 //! Full IGBT models (IGBTv3) have 20+ parameters — out of scope.
 
 /// IGBT parameters (simplified model).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IgbtParams {
     /// Gate threshold voltage (V). Typical: 4.0–6.0 V.

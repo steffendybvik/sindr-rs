@@ -11,8 +11,10 @@ use thiserror::Error;
 /// [`dc_sweep`](fn@crate::dc_sweep) and
 /// [`temperature_sweep`](crate::temperature_sweep).
 ///
-/// Variants split into three groups:
+/// Variants split into four groups:
 ///
+/// - **Design errors** ([`Design`](Self::Design)) — the hierarchy can't be
+///   flattened.
 /// - **Topology / validation errors** ([`NoGround`](Self::NoGround),
 ///   [`DisconnectedNodes`](Self::DisconnectedNodes),
 ///   [`FloatingNode`](Self::FloatingNode)) — caught before solving.
@@ -25,6 +27,11 @@ use thiserror::Error;
 ///   analysis setting that the solver explicitly rejects.
 #[derive(Debug, Error)]
 pub enum SimError {
+    /// The design hierarchy can't be flattened: an unknown block, a
+    /// port-count mismatch, a recursive block or a repeated id.
+    #[error("{0}")]
+    Design(#[from] sindr_core::DesignError),
+
     /// No ground node was defined. Every circuit needs a reference node.
     #[error(
         "No ground node defined in circuit. Every circuit needs a ground (reference) node \

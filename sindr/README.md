@@ -4,7 +4,7 @@ MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circu
 
 Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
-Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
+Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices). The data model (`Circuit`, elements, waveforms, blocks, instances, parts) lives in [`sindr-core`](../sindr-core) and is re-exported here.
 
 ## Add to your project
 
@@ -30,7 +30,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), flattening hierarchy with `.`-separated node naming. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -63,6 +63,7 @@ let circuit = Circuit {
             resistance: 2_000.0,
         },
     ],
+    ..Default::default()
 };
 
 let result = solve_circuit(&circuit)?;
@@ -201,6 +202,7 @@ let circuit = Circuit {
             model: None,
         },
     ],
+    ..Default::default()
 };
 
 let result = solve_circuit(&circuit)?;

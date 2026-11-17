@@ -115,6 +115,7 @@ pub struct TfResult {
 ///             resistance: 3_000.0,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// let config = TfConfig {
@@ -128,6 +129,8 @@ pub struct TfResult {
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     solve_tf_with_initial_voltages(circuit, config, &HashMap::new())
 }
 
@@ -143,6 +146,8 @@ pub fn solve_tf_with_initial_voltages(
     config: &TfConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<TfResult, SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     // Name the bad port before paying for the bias point.
     check_ports(circuit, config)?;
     let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;

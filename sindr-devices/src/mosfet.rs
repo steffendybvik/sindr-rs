@@ -60,7 +60,7 @@ impl MosfetRegion {
 
 /// MOSFET device parameters (Level 1 Shichman-Hodges).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MosfetParams {
     /// Transconductance parameter (A/V^2). SPICE KP parameter.
     pub kp: f64,

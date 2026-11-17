@@ -6,7 +6,7 @@
 //! In AC analysis it is the capacitance at the DC bias point.
 
 /// Varactor diode parameters.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VaractorParams {
     /// Zero-bias junction capacitance (F). Typical: 10e-12 (10 pF).

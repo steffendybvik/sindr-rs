@@ -101,6 +101,7 @@ fn source_with(waveform: Waveform, dc: f64) -> Circuit {
                 resistance: 1e3,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -242,6 +243,7 @@ fn models_round_trip() {
                 model: Some(diode),
             },
         ],
+        ..Default::default()
     };
     let deck = to_netlist(&circuit, "models").unwrap();
     // One card per distinct model.
@@ -289,6 +291,7 @@ fn names_get_their_spice_letter_and_ground_becomes_0() {
                 alpha: 2.0,
             },
         ],
+        ..Default::default()
     };
     let deck = to_netlist(&circuit, "names").unwrap();
     assert_eq!(
@@ -305,6 +308,7 @@ fn one_resistor(id: &str, a: &str, b: &str) -> Circuit {
             nodes: [a.into(), b.into()],
             resistance: 1.0,
         }],
+        ..Default::default()
     }
 }
 
@@ -384,5 +388,67 @@ fn what_spice_cannot_express_is_reported() {
     assert!(matches!(
         to_netlist(&orphan, "t"),
         Err(ExportError::BadName { .. })
+    ));
+}
+
+const NESTED: &str = "* nested\n\
+                      V1 in 0 DC 1\n\
+                      R9 out 0 1000\n\
+                      X1 in out stage\n\
+                      .subckt inner a b\n\
+                      R1 a mid 1000\n\
+                      R2 mid b 1000\n\
+                      .ends inner\n\
+                      .subckt stage p q\n\
+                      R3 n q 1000\n\
+                      X2 p n inner\n\
+                      .ends stage\n\
+                      .end\n";
+
+#[test]
+fn blocks_are_written_as_subckts() {
+    let parsed = parse_str(NESTED).unwrap().circuit;
+    let deck = to_netlist(&parsed, "nested").unwrap();
+    // The parser reads names as lowercase, so they come back that way.
+    let expected = NESTED.replacen("* nested", "nested", 1);
+    assert_eq!(deck.to_ascii_lowercase(), expected.to_ascii_lowercase());
+}
+
+#[test]
+fn hierarchy_round_trips() {
+    let src = "* filter\n\
+               Vin in 0 DC 5\n\
+               X1 in mid rcfilter R=1k\n\
+               X2 mid out rcfilter R=2k\n\
+               X3 out end rcfilter R=1k\n\
+               .subckt rcfilter a b R=10k\n\
+               R1 a b {R}\n\
+               C1 b 0 1u\n\
+               .ends\n\
+               .end\n";
+    let parsed = parse_str(src).unwrap().circuit;
+    assert_eq!(parsed.blocks.len(), 2);
+    let deck = to_netlist(&parsed, "filter").unwrap();
+    let back = parse_str(&deck).unwrap().circuit;
+    assert_eq!(back, parsed, "deck:\n{deck}");
+}
+
+#[test]
+fn a_broken_hierarchy_is_a_design_error() {
+    let mut circuit = parse_str(NESTED).unwrap().circuit;
+    circuit.blocks.remove("inner");
+    assert!(matches!(
+        to_netlist(&circuit, "t"),
+        Err(ExportError::Design(_))
+    ));
+}
+
+#[test]
+fn a_ground_port_is_rejected() {
+    let mut circuit = parse_str(NESTED).unwrap().circuit;
+    circuit.blocks.get_mut("inner").unwrap().ports[1] = "0".into();
+    assert!(matches!(
+        to_netlist(&circuit, "t"),
+        Err(ExportError::BadName { what: "node", .. })
     ));
 }

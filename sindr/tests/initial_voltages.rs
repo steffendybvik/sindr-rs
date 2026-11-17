@@ -26,6 +26,7 @@ fn voltage_divider() -> Circuit {
                 resistance: 2_000.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -51,6 +52,7 @@ fn diode_resistor(vsource: f64) -> Circuit {
                 model: None,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -177,6 +179,7 @@ fn seed_does_not_break_transient_path() {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     };
 
     let mut seed = HashMap::new();

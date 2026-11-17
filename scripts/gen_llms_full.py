@@ -132,12 +132,13 @@ def main():
     for title, rel in [
         ("Workspace README", "README.md"),
         ("Crate `sindr` README", "sindr/README.md"),
+        ("Crate `sindr-core` README", "sindr-core/README.md"),
         ("Crate `sindr-devices` README", "sindr-devices/README.md"),
         ("Scope and limitations", "LIMITATIONS.md"),
     ]:
         parts.append(section(f"{title} ({rel})", demote((ROOT / rel).read_text(), 1)))
 
-    for crate in ["sindr", "sindr-devices"]:
+    for crate in ["sindr", "sindr-core", "sindr-devices"]:
         src = ROOT / crate / "src"
         # Private top-level modules (`mod x;` in lib.rs) aren't API.
         private = set(re.findall(r"^mod (\w+);", (src / "lib.rs").read_text(), re.M))

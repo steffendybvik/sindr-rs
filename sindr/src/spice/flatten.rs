@@ -53,6 +53,9 @@ pub(crate) struct Flattened {
     pub elements: Vec<FlatElement>,
     pub models: HashMap<String, RawModel>,
     pub source_map: SourceMap,
+    /// Every subckt instance, in expansion (pre-)order: parents before
+    /// their children.
+    pub instances: Vec<InstanceRecord>,
     pub analyses: Vec<(RawAnalysis, Span)>,
     /// Top-level `.ic` / `.nodeset` cards, in source order.
     pub node_values: Vec<NodeValueCard>,
@@ -70,9 +73,30 @@ pub(crate) type NodeValueCard = (NodeValueKind, Vec<(String, ParamExpr)>, Span);
 /// re-walking the hierarchy.
 #[derive(Debug)]
 pub(crate) struct FlatElement {
+    /// The element with its id and nodes renamed into the flat namespace.
     pub raw: RawElement,
+    /// Its nodes as written in its own subckt body, before renaming.
+    pub local_nodes: Vec<String>,
     pub instance_path: Vec<String>,
     pub scope_snapshot: HashMap<String, f64>,
+}
+
+/// One `X` instance, as written in its parent's scope.
+#[derive(Debug)]
+pub(crate) struct InstanceRecord {
+    /// Instance ids from the top down to this one.
+    pub path: Vec<String>,
+    pub subckt: String,
+    pub ports: Vec<String>,
+    /// The caller's nodes, as written in the parent's scope.
+    pub local_nodes: Vec<String>,
+}
+
+/// Where expansion writes its output.
+struct Sink {
+    elements: Vec<FlatElement>,
+    source_map: SourceMap,
+    instances: Vec<InstanceRecord>,
 }
 
 /// Flatten `cards` into a [`Flattened`] form.
@@ -138,25 +162,30 @@ pub(crate) fn flatten(
     let top_params_snapshot = snapshot_scope(&scope);
 
     // ---- Pass 2 cont: expand top-level elements ----
-    let mut out_elements: Vec<FlatElement> = Vec::new();
-    let mut source_map: SourceMap = HashMap::new();
+    let mut sink = Sink {
+        elements: Vec::new(),
+        source_map: HashMap::new(),
+        instances: Vec::new(),
+    };
     let mut active_stack: HashSet<String> = HashSet::new();
 
     for el in top_elements {
         if matches!(el.body, RawElementBody::Subckt { .. }) {
+            let local_nodes = el.nodes.clone();
             expand_instance(
                 el,
+                local_nodes,
                 &[],
                 &subckts,
                 &mut scope,
                 &mut active_stack,
-                &mut out_elements,
-                &mut source_map,
+                &mut sink,
             )?;
         } else {
             // Top-level non-X element: emit directly.
             let snapshot = snapshot_scope(&scope);
-            out_elements.push(FlatElement {
+            sink.elements.push(FlatElement {
+                local_nodes: el.nodes.clone(),
                 raw: el,
                 instance_path: Vec::new(),
                 scope_snapshot: snapshot,
@@ -165,9 +194,10 @@ pub(crate) fn flatten(
     }
 
     Ok(Flattened {
-        elements: out_elements,
+        elements: sink.elements,
         models,
-        source_map,
+        source_map: sink.source_map,
+        instances: sink.instances,
         analyses: top_analyses,
         node_values: top_node_values,
         top_params: top_params_snapshot,
@@ -177,12 +207,12 @@ pub(crate) fn flatten(
 /// Recursive expansion of one `X<inst>` subckt instance.
 fn expand_instance(
     inst: RawElement,
+    local_nodes: Vec<String>,
     parent_path: &[String],
     subckts: &HashMap<String, RawSubckt>,
     scope: &mut ParamScope,
     active_stack: &mut HashSet<String>,
-    out: &mut Vec<FlatElement>,
-    source_map: &mut SourceMap,
+    sink: &mut Sink,
 ) -> Result<(), SpiceParseError> {
     let (subckt_name, instance_overrides) = match &inst.body {
         RawElementBody::Subckt { name, params } => (name.clone(), params.clone()),
@@ -244,6 +274,12 @@ fn expand_instance(
     // Build the instance path for renaming.
     let mut instance_path = parent_path.to_vec();
     instance_path.push(inst.id.clone());
+    sink.instances.push(InstanceRecord {
+        path: instance_path.clone(),
+        subckt: subckt_name.clone(),
+        ports: def.ports.clone(),
+        local_nodes,
+    });
 
     // Walk the body.
     for body_card in &def.body {
@@ -264,12 +300,12 @@ fn expand_instance(
                         .collect();
                     expand_instance(
                         nested,
+                        child.nodes.clone(),
                         &instance_path,
                         subckts,
                         scope,
                         active_stack,
-                        out,
-                        source_map,
+                        sink,
                     )?;
                 } else {
                     let renamed = rename_element(child, &instance_path, &port_map);
@@ -284,7 +320,7 @@ fn expand_instance(
                         if port_map.contains_key(original_node) {
                             continue; // mapped through to caller — already in caller's namespace
                         }
-                        source_map
+                        sink.source_map
                             .entry(renamed_node.clone())
                             .or_insert_with(|| HierarchyPath {
                                 instance_path: instance_path.clone(),
@@ -292,8 +328,9 @@ fn expand_instance(
                             });
                     }
                     let snapshot = snapshot_scope(scope);
-                    out.push(FlatElement {
+                    sink.elements.push(FlatElement {
                         raw: renamed,
+                        local_nodes: child.nodes.clone(),
                         instance_path: instance_path.clone(),
                         scope_snapshot: snapshot,
                     });

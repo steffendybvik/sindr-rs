@@ -37,6 +37,7 @@ fn rc(waveform: Waveform) -> Circuit {
             resistor("R1", "in", "out", 1e3),
             capacitor("C1", "out", "0", 100e-9),
         ],
+        ..Default::default()
     }
 }
 
@@ -149,6 +150,7 @@ fn sources_report_their_waveform_value() {
             resistor("R1", "out", "0", 1e3),
             capacitor("C1", "out", "0", 100e-9),
         ],
+        ..Default::default()
     };
     let tran = solve_transient(&i1, &config).unwrap().transient.unwrap();
     for s in &tran.timesteps {

@@ -7,6 +7,7 @@ use sindr_devices::diode::{DiodeParams, T_NOM};
 use thiserror::Error;
 
 use crate::circuit::{BjtModel, DiodeModel};
+use crate::design::{DesignError, Instance};
 use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 use crate::{device_params, BjtKind, Circuit, CircuitElement, Waveform};
 
@@ -28,13 +29,16 @@ pub enum ExportError {
     /// SPICE, being case-insensitive, would merge.
     #[error("{what} `{name}` can't be written as SPICE: {reason}")]
     BadName {
-        /// `"node"` or `"element"`.
+        /// `"node"`, `"element"` or `"block"`.
         what: &'static str,
         /// The name as the circuit has it.
         name: String,
         /// What is wrong with it.
         reason: String,
     },
+    /// The design hierarchy is broken: see [`DesignError`].
+    #[error(transparent)]
+    Design(#[from] DesignError),
     /// A value that is NaN or infinite.
     #[error("`{id}`: {field} is {value}, not a finite number")]
     NonFinite {
@@ -115,21 +119,54 @@ pub enum ExportError {
 ///             resistance: 1e3,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 /// let deck = sindr::spice::to_netlist(&circuit, "divider")?;
 /// assert_eq!(deck, "divider\nV1 in 0 DC 5\nRload in 0 1000\n.end\n");
 /// # Ok::<(), sindr::spice::ExportError>(())
 /// ```
 pub fn to_netlist(circuit: &Circuit, title: &str) -> Result<String, ExportError> {
-    let mut deck = Deck::new(circuit)?;
-    for component in &circuit.components {
-        deck.element(component)?;
+    circuit.flattened()?;
+    let mut deck = Deck::new(&circuit.ground_node);
+    let mut lines = Vec::new();
+    for global in &circuit.globals {
+        check_token("node", global)?;
+        lines.push(format!(".global {global}"));
+    }
+    lines.extend(deck.scope(&circuit.components, &circuit.instances)?);
+
+    let mut block_names = HashMap::<String, &str>::new();
+    for (name, block) in &circuit.blocks {
+        check_token("block", name)?;
+        if let Some(other) = block_names.insert(name.to_ascii_lowercase(), name) {
+            return Err(ExportError::BadName {
+                what: "block",
+                name: name.clone(),
+                reason: format!("SPICE folds case, so it is the same block as `{other}`"),
+            });
+        }
+        let body = deck.scope(&block.components, &block.instances)?;
+        let mut header = format!(".subckt {name}");
+        for port in &block.ports {
+            if *port == circuit.ground_node {
+                return Err(ExportError::BadName {
+                    what: "node",
+                    name: port.clone(),
+                    reason: format!("block `{name}` has ground as a port"),
+                });
+            }
+            header.push(' ');
+            header.push_str(&deck.node(port)?);
+        }
+        lines.push(header);
+        lines.extend(body);
+        lines.push(format!(".ends {name}"));
     }
 
     let mut out = String::new();
     out.push_str(title.lines().next().unwrap_or(""));
     out.push('\n');
-    for line in deck.lines.iter().chain(&deck.models) {
+    for line in lines.iter().chain(&deck.models) {
         out.push_str(line);
         out.push('\n');
     }
@@ -152,16 +189,38 @@ struct Deck<'a> {
 }
 
 impl<'a> Deck<'a> {
-    /// Names every element up front, so an F or H line can name a source
-    /// that comes after it.
-    fn new(circuit: &'a Circuit) -> Result<Self, ExportError> {
-        let mut names = HashMap::new();
+    fn new(ground: &'a str) -> Self {
+        Self {
+            ground,
+            names: HashMap::new(),
+            voltage_sources: HashSet::new(),
+            nodes: HashMap::new(),
+            lines: Vec::new(),
+            models: Vec::new(),
+            diode_models: Vec::new(),
+            bjt_models: Vec::new(),
+        }
+    }
+
+    /// Starts a scope (the top level or one block): names every element and
+    /// instance up front, so an F or H line can name a source that comes
+    /// after it. Models carry over; they are global in SPICE.
+    fn begin_scope(
+        &mut self,
+        components: &'a [CircuitElement],
+        instances: &'a [Instance],
+    ) -> Result<(), ExportError> {
+        self.names.clear();
+        self.voltage_sources.clear();
+        self.nodes.clear();
+        self.lines.clear();
         let mut taken = HashMap::<String, &str>::new();
-        let mut voltage_sources = HashSet::new();
-        for component in &circuit.components {
-            let id = component.id();
+        let ids = components
+            .iter()
+            .map(|c| (c.id(), spice_letter(c)))
+            .chain(instances.iter().map(|i| (i.id.as_str(), 'x')));
+        for (id, letter) in ids {
             check_token("element", id)?;
-            let letter = spice_letter(component);
             let name = if id
                 .chars()
                 .next()
@@ -178,21 +237,37 @@ impl<'a> Deck<'a> {
                     reason: format!("its SPICE name `{name}` is also `{other}`'s"),
                 });
             }
-            if matches!(component, CircuitElement::VoltageSource { .. }) {
-                voltage_sources.insert(id);
-            }
-            names.insert(id, name);
+            self.names.insert(id, name);
         }
-        Ok(Self {
-            ground: &circuit.ground_node,
-            names,
-            voltage_sources,
-            nodes: HashMap::new(),
-            lines: Vec::new(),
-            models: Vec::new(),
-            diode_models: Vec::new(),
-            bjt_models: Vec::new(),
-        })
+        for component in components {
+            if matches!(component, CircuitElement::VoltageSource { .. }) {
+                self.voltage_sources.insert(component.id());
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes a whole scope's element and `X` lines, and returns them.
+    fn scope(
+        &mut self,
+        components: &'a [CircuitElement],
+        instances: &'a [Instance],
+    ) -> Result<Vec<String>, ExportError> {
+        self.begin_scope(components, instances)?;
+        for component in components {
+            self.element(component)?;
+        }
+        for instance in instances {
+            let mut line = self.names[instance.id.as_str()].clone();
+            for node in &instance.nodes {
+                line.push(' ');
+                line.push_str(&self.node(node)?);
+            }
+            line.push(' ');
+            line.push_str(&instance.block);
+            self.line(line);
+        }
+        Ok(std::mem::take(&mut self.lines))
     }
 
     fn node(&mut self, node: &str) -> Result<String, ExportError> {

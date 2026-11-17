@@ -33,6 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 model: None,
             },
         ],
+        ..Default::default()
     };
 
     // 250 K to 400 K (−23 °C to 127 °C) in 7 points

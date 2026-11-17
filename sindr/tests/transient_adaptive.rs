@@ -38,6 +38,7 @@ fn pulse_rc() -> Circuit {
                 capacitance: TAU / 1e3,
             },
         ],
+        ..Default::default()
     }
 }
 

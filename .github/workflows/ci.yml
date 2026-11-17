@@ -134,8 +134,12 @@ jobs:
           set -euo pipefail
           base="origin/${{ github.base_ref }}"
           fail=0
-          for manifest in sindr/Cargo.toml sindr-devices/Cargo.toml; do
+          for manifest in sindr/Cargo.toml sindr-core/Cargo.toml sindr-devices/Cargo.toml; do
             pr_ver=$(grep -m1 '^version' "$manifest" | cut -d'"' -f2)
+            if ! git cat-file -e "$base:$manifest" 2>/dev/null; then
+              echo "$manifest: new crate at $pr_ver"
+              continue
+            fi
             base_ver=$(git show "$base:$manifest" | grep -m1 '^version' | cut -d'"' -f2)
             if [ "$pr_ver" = "$base_ver" ]; then
               echo "::error file=$manifest::version $pr_ver matches $base — bump it before merging"

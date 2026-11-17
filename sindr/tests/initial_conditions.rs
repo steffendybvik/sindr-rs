@@ -42,6 +42,7 @@ fn capacitor_starts_at_its_initial_voltage() {
             },
             resistor("R2", "b", "0", 1e-3),
         ],
+        ..Default::default()
     };
     // τ ≈ 1 ms; V(a) − V(b) starts at 5 − 2 = 3 V.
     let ics = HashMap::from([("a".to_string(), 5.0), ("b".to_string(), 2.0)]);
@@ -71,6 +72,7 @@ fn inductor_starts_at_its_initial_current() {
             },
             resistor("R1", "a", "0", 100.0),
         ],
+        ..Default::default()
     };
     let tau = 10e-3 / 100.0;
     let config = TransientConfig::new(tau, tau / 200.0).with_initial_current("L1", 10e-3);
@@ -105,6 +107,7 @@ fn lc_tank_rings_from_its_initial_charge() {
                 capacitance: c,
             },
         ],
+        ..Default::default()
     };
     let config = TransientConfig::new(3.0 * period, period / 100.0)
         .with_method(IntegrationMethod::Trapezoidal)
@@ -194,6 +197,7 @@ fn ac_bias_point_takes_a_nodeset() {
                 model: None,
             },
         ],
+        ..Default::default()
     };
     let config = AcConfig {
         f_start: 1e3,

@@ -13,7 +13,7 @@ use std::f64::consts::PI;
 
 /// A time-varying waveform.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
 pub enum Waveform {
     /// Sinusoidal: amplitude * sin(2*pi*frequency*t + phase) + offset
@@ -248,7 +248,7 @@ impl Waveform {
     /// edge between two steps isn't stepped over.
     ///
     /// ```
-    /// use sindr::Waveform;
+    /// use sindr_core::Waveform;
     ///
     /// let pulse = Waveform::Pulse {
     ///     v1: 0.0, v2: 5.0, delay: 1e-3, rise_time: 1e-9, fall_time: 1e-9,
@@ -262,7 +262,8 @@ impl Waveform {
 
     /// [`Self::breakpoints`], and whether some were dropped to keep to
     /// [`MAX_BREAKPOINTS`].
-    pub(crate) fn capped_breakpoints(&self, t_end: f64) -> (Vec<f64>, bool) {
+    #[doc(hidden)]
+    pub fn capped_breakpoints(&self, t_end: f64) -> (Vec<f64>, bool) {
         let mut out = Vec::new();
         let mut capped = false;
         // Corners at `start + k·period + offset` for each offset, k ≥ 0.

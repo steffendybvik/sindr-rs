@@ -40,6 +40,8 @@ use crate::stamp::{
 /// duration is at least 3·T and dt at most T/100 (also floored at 1 µs).
 /// Without RC/RL time constants, those alone set it.
 pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) {
+    let flat = circuit.flattened();
+    let circuit: &Circuit = flat.as_deref().unwrap_or(circuit);
     // Collect R, C, L values
     let mut resistances: Vec<f64> = Vec::new();
     let mut capacitances: Vec<f64> = Vec::new();
@@ -1343,6 +1345,7 @@ impl TransientConfig {
     ///             capacitance: 1e-6,
     ///         },
     ///     ],
+    ///     ..Default::default()
     /// };
     /// let config = TransientConfig::new(1e-3, 10e-6)
     ///     .with_initial_voltages(HashMap::from([("a".to_string(), 5.0)]));
@@ -1389,6 +1392,8 @@ impl TransientConfig {
     /// stretched to cover 3 periods of a periodic source at 100 steps per
     /// period (see [`calculate_duration`]).
     pub fn auto(circuit: &Circuit) -> Self {
+        let flat = circuit.flattened();
+        let circuit: &Circuit = flat.as_deref().unwrap_or(circuit);
         let (duration, dt) = calculate_duration(circuit);
         Self::new(duration, dt.min(duration))
     }
@@ -1479,6 +1484,7 @@ impl TransientConfig {
 ///             capacitance: 1e-6,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// let result = solve_transient(&circuit, &TransientConfig::new(2e-3, 10e-6)).unwrap();
@@ -1494,6 +1500,8 @@ pub fn solve_transient(
     circuit: &Circuit,
     config: &TransientConfig,
 ) -> Result<SimulationResult, SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     config.validate()?;
     crate::validation::validate_circuit(circuit)?;
     let node_map = NodeMap::from_circuit(circuit);
@@ -2116,6 +2124,7 @@ mod tests {
                     capacitance: 100e-6,
                 },
             ],
+            ..Default::default()
         };
         let (duration, dt) = calculate_duration(&circuit);
         // tau = 1000 * 100e-6 = 0.1s
@@ -2150,6 +2159,7 @@ mod tests {
                     capacitance: 100e-6,
                 },
             ],
+            ..Default::default()
         };
         let result = solve_circuit(&circuit).unwrap();
 
@@ -2238,6 +2248,7 @@ mod tests {
                     capacitance: 1e-6,
                 },
             ],
+            ..Default::default()
         };
         // Fixed-step backward Euler, so the first step is exactly tstep.
         let config = TransientConfig::auto(&circuit)
@@ -2279,6 +2290,7 @@ mod tests {
                     inductance: 0.5,
                 },
             ],
+            ..Default::default()
         };
         let result = solve_circuit(&circuit).unwrap();
 
@@ -2342,6 +2354,7 @@ mod tests {
                     resistance: 2000.0,
                 },
             ],
+            ..Default::default()
         };
         let result = solve_circuit(&circuit).unwrap();
 
@@ -2387,6 +2400,7 @@ mod tests {
                     capacitance: 1e-6,
                 },
             ],
+            ..Default::default()
         };
         let result = solve_circuit(&circuit);
         assert!(
@@ -2461,6 +2475,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         let result = solve_circuit(&circuit);
         assert!(
@@ -2512,6 +2527,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
 
         let result = solve_circuit(&circuit);
@@ -2591,6 +2607,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
         let result = solve_circuit(&circuit);
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
@@ -2649,6 +2666,7 @@ mod tests {
                     capacitance: 100e-6, // tau = 0.1s
                 },
             ],
+            ..Default::default()
         };
 
         let result = solve_circuit(&circuit);
@@ -2708,6 +2726,7 @@ mod tests {
                     capacitance: 1e-6,
                 },
             ],
+            ..Default::default()
         };
         let result = solve_circuit(&circuit);
         assert!(
@@ -2771,6 +2790,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
 
         let result = solve_circuit(&circuit);
@@ -2839,6 +2859,7 @@ mod tests {
                     model: None,
                 },
             ],
+            ..Default::default()
         };
 
         let result_no_caps = solve_circuit(&make_circuit(false)).expect("No-caps circuit failed");

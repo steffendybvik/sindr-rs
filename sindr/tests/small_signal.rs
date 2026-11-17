@@ -89,6 +89,7 @@ fn two_terminal(device: CircuitElement) -> Circuit {
             resistor("R1", "in", "n2", 1e3),
             device,
         ],
+        ..Default::default()
     }
 }
 
@@ -219,6 +220,7 @@ fn bjt_stage_with(kind: BjtKind, temperature: f64, model: Option<BjtModel>) -> C
                 model,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -279,6 +281,7 @@ fn fet_stage(device: CircuitElement, sign: f64, vdd: f64) -> Circuit {
             resistor("RS", "s", "0", 1e3),
             device,
         ],
+        ..Default::default()
     }
 }
 
@@ -354,6 +357,7 @@ fn jfet_ac_matches_dc_with_the_drain_below_the_source() {
                 resistor("RS", "s", "0", 100.0),
                 jfet(kind),
             ],
+            ..Default::default()
         };
         assert_ac_matches_dc(&format!("{kind:?}"), &circuit, &[-0.5 * sign]);
     }
@@ -374,6 +378,7 @@ fn igbt_ac_matches_dc() {
                 params: IgbtParams::default(),
             },
         ],
+        ..Default::default()
     };
     assert_ac_matches_dc("IGBT", &circuit, &[3.0, 5.5, 6.0, 15.0]);
 }

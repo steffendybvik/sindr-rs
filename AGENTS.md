@@ -10,10 +10,11 @@ A pure-Rust analog circuit simulator. SPICE-style MNA (Modified Nodal Analysis) 
 
 ```
 sindr-rs/
-├── sindr/              # MNA solver crate (depends on sindr-devices)
+├── sindr-core/         # data model: Circuit, CircuitElement, Waveform, design hierarchy (no solver dep)
+│   └── src/{circuit,design,waveform}.rs   # waveform: sine, pulse, square, triangle, PWM, PWL
+├── sindr/              # MNA solver crate (depends on sindr-core, sindr-devices)
 │   ├── src/
 │   │   ├── lib.rs              # public API surface, re-exports
-│   │   ├── circuit.rs          # CircuitElement enum — every supported component
 │   │   ├── mna.rs              # MNA matrix assembly
 │   │   ├── stamp.rs            # per-element matrix stamping
 │   │   ├── newton_raphson.rs   # nonlinear DC solver
@@ -24,7 +25,6 @@ sindr-rs/
 │   │   ├── sensitivity.rs      # .sens: DC adjoint sensitivity
 │   │   ├── dc_sweep.rs         # parameter sweep
 │   │   ├── temp_sweep.rs       # temperature sweep
-│   │   ├── waveform.rs         # Waveform enum (sine, pulse, square, triangle, PWM, PWL)
 │   │   ├── results.rs          # SimulationResult, ComponentResult, etc.
 │   │   ├── node_map.rs         # node-name → matrix-index mapping
 │   │   ├── validation.rs       # circuit pre-flight checks
@@ -45,7 +45,7 @@ sindr-rs/
 └── .planning/          # local GSD workflow artefacts (gitignored) — IGNORE for normal code work
 ```
 
-`sindr` depends on `sindr-devices`. `sindr-devices` has no dependency on `sindr` and is independently testable. SPICE netlist parsing lives in `sindr::spice` behind the optional, default-off `spice` feature, which pulls in `winnow` + `miette`.
+`sindr` depends on `sindr-core` and `sindr-devices`; `sindr-core` depends only on `sindr-devices` (plus `thiserror`, optional `serde`). `sindr` re-exports `sindr_core::{circuit, design, waveform}`, so `crate::circuit` inside `sindr` is the core module. Every public analysis entry point flattens a hierarchical `Circuit` first (`circuit.flattened()?`); the internal `mna`/`stamp`/`newton_raphson` code assumes a flat one. SPICE netlist parsing lives in `sindr::spice` behind the optional, default-off `spice` feature, which pulls in `winnow` + `miette`.
 
 ## Commands
 
@@ -81,7 +81,7 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 
 ## Adding a new circuit element
 
-1. Add a variant to `CircuitElement` in `sindr/src/circuit.rs` (with serde tags).
+1. Add a variant to `CircuitElement` in `sindr-core/src/circuit.rs` (with serde tags), and to its `nodes`/`nodes_mut`/`id`/`id_mut` matches.
 2. If it has device physics, add a module in `sindr-devices/src/` exposing a companion-model function.
 3. Implement matrix stamping in `sindr/src/stamp.rs` (and Newton-Raphson contribution if nonlinear).
 4. If it stores state across timesteps (charge, current), thread it through the transient state in `sindr/src/transient.rs`.
@@ -127,7 +127,7 @@ When in doubt, run `cargo run --example list_examples` and copy the closest exis
 
 - **Don't add `unsafe`.**
 - **Don't add a new dependency without a clear need.** `nalgebra`, `faer` (sparse LU above 100 unknowns), `serde`, `thiserror` are the load-bearing ones; `winnow` + `miette` back the SPICE parser and are pulled in only by the optional `spice` feature.
-- **Don't introduce a CLI or GUI in `sindr` or `sindr-devices`** — those are explicit non-goals; propose a sibling crate instead. Schematic capture and EDA-file import are likewise out of scope. Heavy *optional* capabilities (like SPICE netlist parsing) belong behind a default-off feature flag with their deps marked `optional`, following the `spice` precedent.
+- **Don't introduce a CLI or GUI in `sindr`, `sindr-core` or `sindr-devices`** — those are explicit non-goals; propose a sibling crate instead. Schematic and PCB tools are meant to build on `sindr-core`'s design model (blocks, instances, parts) from their own crates, not inside these. Heavy *optional* capabilities (like SPICE netlist parsing) belong behind a default-off feature flag with their deps marked `optional`, following the `spice` precedent.
 - **Don't implement BSIM / Gummel-Poon / VBIC** speculatively. They are large undertakings; coordinate via an issue first.
 - **Don't bypass `SimError`** with `panic!` / `unwrap()` in solver code.
 - **Don't write to `.planning/`** unless you are explicitly running a GSD command. It is workflow state, not source.
@@ -147,7 +147,7 @@ When in doubt, run `cargo run --example list_examples` and copy the closest exis
 
 | Question | File |
 |----------|------|
-| "What components exist?" | `sindr/src/circuit.rs` (`CircuitElement` enum) |
+| "What components exist?" | `sindr-core/src/circuit.rs` (`CircuitElement` enum) |
 | "What does the solver do for circuit X?" | routing table in `sindr/README.md`, plus `sindr/src/lib.rs::solve_circuit` |
 | "How is element Y stamped?" | `sindr/src/stamp.rs` |
 | "Why did this fail?" | `sindr/src/error.rs` (`SimError` variants) |
