@@ -469,6 +469,25 @@ fn stamp_circuit_transient(
                     system.b[qi] += i_eq;
                 }
             }
+            CircuitElement::OpAmp {
+                id,
+                nodes,
+                v_pos,
+                v_neg,
+                model: Some(model),
+            } => {
+                let op = crate::op_amp::OpAmpStamp {
+                    model,
+                    nodes,
+                    ground: &circuit.ground_node,
+                    v_pos: *v_pos,
+                    v_neg: *v_neg,
+                    branch: num_nodes + vsource_index,
+                };
+                let history = parasitic_history(parasitic, id, OP_AMP_STAGE);
+                op.stamp_transient(system, node_map, integ, &history, v_prev);
+                vsource_index += 2;
+            }
             CircuitElement::OpAmp { nodes, .. } | CircuitElement::Comparator { nodes, .. } => {
                 let branch = num_nodes + vsource_index;
                 let out_nodes: [String; 2] = [nodes[2].clone(), circuit.ground_node.clone()];
@@ -929,7 +948,7 @@ fn extract_timestep_results(
                     current_through: i_through,
                     power: v_out * i_through,
                 });
-                vsource_index += 1;
+                vsource_index += component.branch_slots();
             }
             CircuitElement::SchottkyDiode {
                 id,
@@ -1995,7 +2014,34 @@ fn update_parasitic_histories(
     parasitic: &mut HashMap<String, History>,
 ) {
     let v = |n: &String| node_map.index(n).map_or(0.0, |i| solution[i]);
+    let num_nodes = node_map.num_nodes();
     for component in &circuit.components {
+        if let CircuitElement::OpAmp {
+            id,
+            nodes,
+            v_pos,
+            v_neg,
+            model: Some(model),
+        } = component
+        {
+            let Some(branch) = circuit.vsource_branch_index(id) else {
+                continue;
+            };
+            let op = crate::op_amp::OpAmpStamp {
+                model,
+                nodes,
+                ground: &circuit.ground_node,
+                v_pos: *v_pos,
+                v_neg: *v_neg,
+                branch: num_nodes + branch,
+            };
+            let history = parasitic_history(parasitic, id, OP_AMP_STAGE);
+            parasitic.insert(
+                format!("{id}-{OP_AMP_STAGE}"),
+                op.advance(integ, &history, solution),
+            );
+            continue;
+        }
         let (id, caps) = match component {
             CircuitElement::Bjt {
                 id,
@@ -2057,6 +2103,10 @@ fn parasitic_history(parasitic: &HashMap<String, History>, id: &str, junction: &
         .copied()
         .unwrap_or_default()
 }
+
+/// Key suffix, in the parasitic-history map, of a modelled op-amp's gain
+/// stage. It starts from rest (0 V) like the capacitors.
+const OP_AMP_STAGE: &str = "stage";
 
 /// A transformer's inductance matrix `[[L1, M], [M, L2]]`, M = k·√(L1·L2).
 fn transformer_inductances(l1: f64, l2: f64, k: f64) -> [[f64; 2]; 2] {

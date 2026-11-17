@@ -103,7 +103,8 @@
 //! | JFET (N/P) | Shichman–Hodges square law |
 //! | IGBT | MOSFET-like gate control, square-law collector current |
 //! | Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
-//! | Op-amp, comparator | Saturating VCVS, gain 1e5; no GBW or slew rate |
+//! | Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
+//! | Comparator | VCVS of gain 1e5; no GBW or slew rate |
 //! | Transformer | Linear coupled inductors |
 //!
 //! Parameters are Rust structs, not SPICE `.model` cards.
@@ -258,6 +259,7 @@ mod integration;
 pub mod mna;
 pub mod newton_raphson;
 pub mod node_map;
+mod op_amp;
 pub mod results;
 pub mod sensitivity;
 #[cfg(feature = "spice")]
@@ -270,7 +272,7 @@ pub mod transient;
 pub mod validation;
 pub use sindr_core::waveform;
 
-pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel};
+pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
 pub use dc_sweep::{dc_sweep, DcSweepResult};
 pub use design::{Block, DesignError, Instance, Part};
 pub use error::SimError;
