@@ -109,3 +109,10 @@ fn with_temperature(mut params: DiodeParams, temperature: f64) -> DiodeParams {
     params.temperature = temperature;
     params
 }
+
+/// Resistance of the built-in NTC thermistor at `temperature` (K), in Ω.
+/// Every analysis and the SPICE exporter read it from here, so they agree.
+pub(crate) fn thermistor_resistance(temperature: f64) -> f64 {
+    let params = sindr_devices::thermistor::ThermistorParams::default();
+    sindr_devices::thermistor::thermistor_resistance(temperature, &params)
+}

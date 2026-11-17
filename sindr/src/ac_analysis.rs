@@ -655,8 +655,7 @@ pub(crate) fn small_signal_system(
             CircuitElement::Thermistor {
                 nodes, temperature, ..
             } => {
-                let params = sindr_devices::thermistor::ThermistorParams::default();
-                let r = sindr_devices::thermistor::thermistor_resistance(*temperature, &params);
+                let r = crate::device_params::thermistor_resistance(*temperature);
                 let g = Complex64::new(1.0 / r, 0.0);
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
