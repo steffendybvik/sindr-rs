@@ -52,7 +52,7 @@ impl DiodeParams {
         }
     }
 
-    /// LED with a given forward voltage at 20 mA.
+    /// LED with a given forward voltage (V) at 20 mA.
     ///
     /// IS is derived from the Shockley equation: IS = 0.020 / (exp(Vf / (N * VT)) - 1)
     /// with N = 2.0 (typical LED emission coefficient).
@@ -118,6 +118,9 @@ pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64, n: f
 /// `I = IS * (exp((v_d - I*RS) / (N*V_T)) - 1)`, with V_T at
 /// `params.temperature`, and the terminal conductance `g_j / (1 + RS*g_j)`
 /// is returned, so `g_d * v_d + i_eq` is the terminal current at `v_d`.
+///
+/// Units and signs: `v_d` is anode − cathode (V), `g_d` is in S and `i_eq`
+/// in A, both for current flowing anode → cathode.
 pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) {
     let nv_t = params.n * params.vt();
     let v_j = junction_voltage(v_d, params);
@@ -148,8 +151,8 @@ pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) {
     (g_d, i_eq)
 }
 
-/// Compute the diode current at terminal voltage `v_d`, including the drop
-/// across `params.rs`.
+/// Compute the diode current (A, anode → cathode) at terminal voltage
+/// `v_d` (V, anode − cathode), including the drop across `params.rs`.
 pub fn diode_current(v_d: f64, params: &DiodeParams) -> f64 {
     let nv_t = params.n * params.vt();
     params.is * ((junction_voltage(v_d, params) / nv_t).exp() - 1.0)

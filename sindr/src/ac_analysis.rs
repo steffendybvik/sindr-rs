@@ -25,7 +25,8 @@ use crate::node_map::NodeMap;
 /// Frequency sweep spacing.
 #[derive(Debug, Clone, Copy)]
 pub enum FrequencySpacing {
-    /// Logarithmic spacing (decade-based).
+    /// Logarithmic spacing: `num_points` in total, evenly spaced in
+    /// log10(f) from `f_start` to `f_stop`. Not points per decade.
     Logarithmic,
     /// Linear spacing.
     Linear,
@@ -45,7 +46,8 @@ pub struct AcConfig {
     pub spacing: FrequencySpacing,
     /// ID of the AC source (voltage source with AC stimulus).
     pub source_id: String,
-    /// AC magnitude of the source.
+    /// AC amplitude of the source: volts, linear (not dB), at 0° phase.
+    /// Results scale with it; 1 V makes node voltages read as gain.
     pub ac_magnitude: f64,
 }
 
@@ -59,7 +61,10 @@ pub struct AcPoint {
 }
 
 impl AcPoint {
-    /// Get gain in dB for a node relative to AC source magnitude.
+    /// Gain in dB for a node: `20·log10(|V(node)| / source_magnitude)`, a
+    /// voltage ratio. `source_magnitude` is in volts, normally
+    /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
+    /// circuit.
     pub fn gain_db(&self, node: &str, source_magnitude: f64) -> Option<f64> {
         self.node_voltages.get(node).map(|v| {
             let gain = v.norm() / source_magnitude;
@@ -67,7 +72,9 @@ impl AcPoint {
         })
     }
 
-    /// Get phase in degrees for a node.
+    /// Phase of a node's voltage in degrees, in (−180°, 180°], relative to
+    /// the source (which is at 0°). `None` when the node isn't in the
+    /// circuit.
     pub fn phase_deg(&self, node: &str) -> Option<f64> {
         self.node_voltages.get(node).map(|v| v.arg().to_degrees())
     }
@@ -83,7 +90,8 @@ pub struct AcResult {
 }
 
 impl AcResult {
-    /// Extract gain (dB) curve for a node.
+    /// The gain curve for a node as `(frequency in Hz, gain in dB)` pairs,
+    /// one per point, using [`AcConfig::ac_magnitude`].
     pub fn gain_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()
@@ -94,7 +102,8 @@ impl AcResult {
             .collect()
     }
 
-    /// Extract phase (degrees) curve for a node.
+    /// The phase curve for a node as `(frequency in Hz, phase in degrees)`
+    /// pairs, one per point; see [`AcPoint::phase_deg`].
     pub fn phase_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()

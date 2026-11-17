@@ -54,11 +54,14 @@ pub struct BjtResult {
     pub vbe: f64,
     /// Collector–emitter voltage (V).
     pub vce: f64,
-    /// Base current (A).
+    /// Base current (A), into the base: positive for a conducting NPN,
+    /// negative for a PNP.
     pub ib: f64,
-    /// Collector current (A).
+    /// Collector current (A), into the collector: positive for a
+    /// conducting NPN, negative for a PNP.
     pub ic: f64,
-    /// Emitter current (A).
+    /// Emitter current (A), into the emitter: `−(ic + ib)` by KCL, so
+    /// negative for a conducting NPN and positive for a PNP.
     pub ie: f64,
     /// Collector dissipation `|Ic·Vce|` (W). The base's `Ib·Vbe` is left
     /// out.
@@ -77,7 +80,8 @@ pub struct MosfetResult {
     pub vgs: f64,
     /// Drain–source voltage (V).
     pub vds: f64,
-    /// Drain current (A).
+    /// Drain current (A), into the drain: positive for a conducting NMOS,
+    /// negative for a PMOS.
     pub id_current: f64,
     /// Total dissipation (W).
     pub power: f64,
@@ -107,13 +111,16 @@ pub struct OpAmpResult {
 pub struct RelayResult {
     /// Component id.
     pub id: String,
-    /// Voltage across the coil terminals (V).
+    /// Coil voltage, `coil+ − coil−` (`nodes[0] − nodes[1]`) (V).
     pub coil_voltage: f64,
     /// `true` when coil voltage exceeds the pickup threshold.
     pub contact_closed: bool,
 }
 
 /// Per-microcontroller results: per-pin GPIO output currents.
+///
+/// Never filled: sindr has no microcontroller element, so
+/// [`SimulationResult::mcu_results`] is always empty.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct McuResult {
@@ -206,6 +213,15 @@ pub struct SimulationResult {
     pub node_voltages: HashMap<String, f64>,
     /// Branch currents (A) for components that introduce a current unknown
     /// — voltage sources, op-amps, transformers, etc. Keyed by component id.
+    ///
+    /// The MNA convention: the current entering the element at `nodes[0]`
+    /// and leaving at `nodes[1]`, through the element. A source delivering
+    /// power reads **negative**: a 5 V supply feeding 5 mA into a load is
+    /// `-0.005`. For a VCVS, CCVS, op-amp or comparator it is the current
+    /// into the output node (`nodes[0]`, or the op-amp's `out`), so an
+    /// output sourcing current is negative too. For a voltage regulator it
+    /// is the current into its output pin (negative when it sources); its
+    /// [`ComponentResult`] has the output current as a positive number.
     pub branch_currents: HashMap<String, f64>,
     /// Per-component voltage, current, and power for every two-terminal
     /// component.
