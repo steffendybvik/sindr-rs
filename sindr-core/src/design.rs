@@ -99,7 +99,7 @@ impl Instance {
 /// The simulator ignores it.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Part {
     /// Reference designator (`"R1"`). `None` means the element id is the
     /// reference.
@@ -118,6 +118,67 @@ pub struct Part {
     /// Any other fields: manufacturer, MPN, tolerance, …
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
     pub fields: BTreeMap<String, String>,
+    /// Absolute maximum ratings from the datasheet. `sindr::check_ratings`
+    /// compares a simulation against them.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Ratings::is_empty"))]
+    pub ratings: Ratings,
+}
+
+/// Absolute maximum ratings: the datasheet limits a part must never pass.
+///
+/// Every limit is a magnitude in SI units and `None` when unknown. A rating
+/// a part needs but doesn't have is reported as unverified, never as a
+/// pass. Which ratings a component needs depends on its kind; see
+/// `sindr::ratings`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Ratings {
+    /// Power dissipation (W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub power: Option<f64>,
+    /// Voltage across the part (V): a capacitor's rated voltage, a
+    /// resistor's working voltage.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub voltage: Option<f64>,
+    /// Current through the part (A): an inductor's saturation current.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current: Option<f64>,
+    /// Diode reverse voltage, cathode above anode (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub reverse_voltage: Option<f64>,
+    /// Diode forward current, anode to cathode (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub forward_current: Option<f64>,
+    /// BJT or IGBT collector–emitter voltage, `|Vce|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vce: Option<f64>,
+    /// BJT collector–base voltage, `|Vcb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vcb: Option<f64>,
+    /// BJT emitter–base voltage, `|Veb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub veb: Option<f64>,
+    /// BJT or IGBT collector current, `|Ic|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub ic: Option<f64>,
+    /// MOSFET or JFET drain–source voltage, `|Vds|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vds: Option<f64>,
+    /// MOSFET or JFET gate–source voltage, `|Vgs|`; an IGBT's gate–emitter
+    /// voltage (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vgs: Option<f64>,
+    /// MOSFET or JFET drain current, `|Id|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub id: Option<f64>,
+}
+
+impl Ratings {
+    /// `true` when no limit is set.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Why a design can't be flattened.

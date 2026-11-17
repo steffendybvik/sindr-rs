@@ -40,7 +40,7 @@ pub use circuit::{
     BjtModel, BjtParasiticCaps, Circuit, CircuitElement, DiodeModel, MosfetParasiticCaps,
     OpAmpModel,
 };
-pub use design::{Block, DesignError, Instance, Part};
+pub use design::{Block, DesignError, Instance, Part, Ratings};
 pub use waveform::Waveform;
 
 // Compiles and runs the README's code blocks as doctests so they stay current.
