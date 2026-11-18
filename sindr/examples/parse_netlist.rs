@@ -44,14 +44,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AnalysisRequest::Op => {
                 sindr::solve_circuit(&netlist.circuit)?;
             }
-            AnalysisRequest::Dc {
-                source,
-                start,
-                stop,
-                step,
-            } => {
-                let points = ((stop - start) / step).abs() as usize + 1;
-                let sweep = sindr::dc_sweep(&netlist.circuit, source, *start, *stop, points)?;
+            AnalysisRequest::Dc { source, .. } => {
+                let (axis, _outer) = analysis.dc_axes().ok_or("not a .dc")??;
+                let sweep = sindr::dc_sweep(
+                    &netlist.circuit,
+                    &axis.source_id,
+                    axis.start,
+                    axis.stop,
+                    axis.num_points,
+                )?;
                 let curve = sweep.node_voltage_curve("n2");
                 println!(
                     "dc sweep of {source}: {} points, V(n2) {:.3}..{:.3} V",

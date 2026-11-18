@@ -141,6 +141,8 @@ pub(crate) enum RawAnalysis {
     Dc {
         source: String,
         args: Vec<ParamExpr>,
+        /// A second, outer source: `.dc SRC1 … SRC2 start stop step`.
+        outer: Option<(String, Vec<ParamExpr>)>,
     },
     Ac {
         sweep: AcSweepKind,

@@ -702,24 +702,33 @@ fn parse_card_tran(input: &mut Input<'_>) -> ModalResult<RawCard> {
 
 /// Parse `.dc source start stop step`.
 fn parse_card_dc(input: &mut Input<'_>) -> ModalResult<RawCard> {
-    ws(input)?;
-    let (source, _) = ident(input)?;
-    let mut args: Vec<ParamExpr> = Vec::new();
-    loop {
+    let sweep = |input: &mut Input<'_>| -> ModalResult<(String, Vec<ParamExpr>)> {
         ws(input)?;
-        if input.is_empty() {
-            break;
+        let (source, _) = ident(input)?;
+        let mut args: Vec<ParamExpr> = Vec::new();
+        while args.len() < 3 {
+            ws(input)?;
+            let (v, _) = value_expr(input)?;
+            args.push(v);
         }
-        match value_expr(input) {
-            Ok((v, _)) => args.push(v),
-            Err(_) => break,
-        }
-    }
-    if args.len() != 3 {
+        ws(input)?;
+        Ok((source, args))
+    };
+    let (source, args) = sweep(input)?;
+    let outer = if input.is_empty() {
+        None
+    } else {
+        Some(sweep(input)?)
+    };
+    if !input.is_empty() {
         return Err(ErrMode::from_input(input));
     }
     Ok(RawCard::Analysis(
-        RawAnalysis::Dc { source, args },
+        RawAnalysis::Dc {
+            source,
+            args,
+            outer,
+        },
         Span::detached(),
     ))
 }
@@ -1471,12 +1480,37 @@ mod tests {
     fn cards_dc_sweep() {
         let card = parse_one_card_local(".dc vin 0 5 0.1").unwrap();
         match card {
-            RawCard::Analysis(RawAnalysis::Dc { source, args }, _) => {
+            RawCard::Analysis(
+                RawAnalysis::Dc {
+                    source,
+                    args,
+                    outer,
+                },
+                _,
+            ) => {
                 assert_eq!(source, "vin");
+                assert_eq!(args.len(), 3);
+                assert!(outer.is_none());
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cards_dc_two_sources() {
+        let card = parse_one_card_local(".dc vds 0 10 1 vgs 0 5 0.5").unwrap();
+        match card {
+            RawCard::Analysis(RawAnalysis::Dc { source, outer, .. }, _) => {
+                assert_eq!(source, "vds");
+                let (outer, args) = outer.unwrap();
+                assert_eq!(outer, "vgs");
                 assert_eq!(args.len(), 3);
             }
             other => panic!("got {other:?}"),
         }
+        assert!(parse_one_card_local(".dc vds 0 10").is_err());
+        assert!(parse_one_card_local(".dc vds 0 10 1 vgs 0 5").is_err());
+        assert!(parse_one_card_local(".dc vds 0 10 1 vgs 0 5 1 2").is_err());
     }
 
     #[test]

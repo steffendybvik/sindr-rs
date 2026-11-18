@@ -56,10 +56,19 @@
 //!             let result = sindr::solve_circuit(&netlist.circuit)?;
 //!             println!("op: {} node voltages", result.node_voltages.len());
 //!         }
-//!         AnalysisRequest::Dc { source, start, stop, step } => {
-//!             let points = ((stop - start) / step).abs() as usize + 1;
-//!             let sweep = sindr::dc_sweep(&netlist.circuit, source, *start, *stop, points)?;
-//!             println!("dc sweep of {source}: {} points", sweep.points.len());
+//!         AnalysisRequest::Dc { source, .. } => {
+//!             match analysis.dc_axes().unwrap()? {
+//!                 (inner, Some(outer)) => {
+//!                     let sweep = sindr::dc_sweep_nested(&netlist.circuit, &inner, &outer)?;
+//!                     println!("dc sweep of {source}: {} curves", sweep.curves.len());
+//!                 }
+//!                 (axis, None) => {
+//!                     let sweep = sindr::dc_sweep(
+//!                         &netlist.circuit, &axis.source_id, axis.start, axis.stop, axis.num_points,
+//!                     )?;
+//!                     println!("dc sweep of {source}: {} points", sweep.points.len());
+//!                 }
+//!             }
 //!         }
 //!         AnalysisRequest::Tran { tstop, .. } => {
 //!             let config = analysis.transient_config().unwrap();
@@ -109,9 +118,9 @@
 //! at most 256 levels deep. A value that evaluates to NaN or ±∞ (`1e400`,
 //! `{1/0}`) is an error at its line.
 //!
-//! Analysis cards are checked as they are read: a `.dc` must sweep a
-//! voltage or current source the deck defines, with a non-zero step that
-//! moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
+//! Analysis cards are checked as they are read: a `.dc` must sweep one or
+//! two different voltage or current sources the deck defines, each with a
+//! non-zero step that moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
 //! `fstart > 0` for `dec`/`oct`.
 //!
 //! # Strictness and warnings
@@ -178,7 +187,7 @@ mod preprocess;
 mod si;
 mod source_map;
 
-pub use analysis::{AcSweep, AnalysisRequest};
+pub use analysis::{AcSweep, AnalysisRequest, DcSweepSpec};
 pub use error::{ParseWarning, SpiceParseError};
 pub use export::{to_netlist, ExportError};
 pub use source_map::{HierarchyPath, SourceMap};

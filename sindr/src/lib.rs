@@ -84,7 +84,7 @@
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 //! | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
-//! | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
+//! | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`) |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
 //! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
@@ -279,7 +279,7 @@ pub mod validation;
 pub use sindr_core::waveform;
 
 pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
-pub use dc_sweep::{dc_sweep, DcSweepResult};
+pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::SimError;
 pub use mna::MnaSystem;
