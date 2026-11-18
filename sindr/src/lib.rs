@@ -255,6 +255,7 @@ pub use examples::{get_examples, ExampleCircuit};
 pub mod ac_analysis;
 pub use sindr_core::circuit;
 pub use sindr_core::design;
+pub mod csv;
 pub mod dc_sweep;
 mod device_params;
 pub mod error;
