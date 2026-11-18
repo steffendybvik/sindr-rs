@@ -106,7 +106,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No CLI**. sindr is a library only.
 - **No schematic input**. Circuits are written as Rust `Vec<CircuitElement>` (or JSON via serde).
 - **No KiCad / Eagle / Altium netlist import.**
-- **No waveform export** to VCD, CSV, Touchstone, or Common Simulation Data Format. Users marshal `TransientData` themselves.
+- **Waveform export is CSV only.** Transient, AC and sweep results have `to_csv()`; there's no VCD, Touchstone or Common Simulation Data Format.
 - **No built-in plotting**. Examples like `bode_plot.rs` produce data; rendering is on the user.
 - **No interactive REPL or notebook integration.**
 - **No web / WASM target tested.** It may build, but it is not a supported configuration.

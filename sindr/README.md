@@ -352,6 +352,14 @@ pub struct TimestepSnapshot {
 }
 ```
 
+### CSV export
+
+`TransientData`, `AcResult`, `DcSweepResult` and `TempSweepResult` each have `to_csv()`. It writes one row per point: the scale first (`time`, `frequency`, the swept source's id, or `temperature` in K), then `v(<node>)` for each node in name order, then `i(<id>)` (each component's `current_through`) in circuit order. AC writes each node as `re(v(<node>))` and `im(v(<node>))`. Numbers read back as the same `f64`, and names with commas or quotes are quoted.
+
+```rust
+std::fs::write("rc.csv", result.transient.unwrap().to_csv())?;
+```
+
 ## AC analysis
 
 Small-signal frequency response around the DC operating point. Nonlinear devices are linearised at the operating point, then each frequency is a complex MNA solve.
