@@ -228,14 +228,14 @@ Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 #### Diodes
 
 ```rust
-CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless model sets IS, N, RS
+CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
 CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"green"|"blue"|"yellow"|"white"
 CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage
 CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` (`DiodeModel { is, n, rs }`, defaults `1e-14`, `1`, `0`) is what a SPICE `.model D` card fills in. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
+All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 #### Varactor diode
 
@@ -676,7 +676,7 @@ pub enum SimError {
 |---|---|
 | Only linear elements | Direct MNA (LU factorisation) |
 | Nonlinear elements (diodes, BJTs, MOSFETs, IGBTs…) | Newton-Raphson iteration |
-| Reactive elements (C, L, Varactor, Transformer) or waveform sources | Transient (Gear-2 by default) |
+| Reactive elements (C, L, Varactor, Transformer, parasitic caps, a diode whose model sets `cjo` or `tt`) or waveform sources | Transient (Gear-2 by default) |
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
 The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
@@ -777,7 +777,7 @@ Pure electronics device physics companion models for MNA circuit simulation.
 
 | Module | Device | Model |
 |--------|--------|-------|
-| `diode` | Silicon diode | Shockley companion with series resistance and temperature IS scaling |
+| `diode` | Silicon diode | Shockley companion with series resistance, temperature IS scaling, SPICE `BV`/`IBV` breakdown and junction charge (`CJO`, `VJ`, `M`, `FC`, `TT`) |
 | `bjt` | BJT (NPN/PNP) | Ebers-Moll companion with Early voltage |
 | `mosfet` | MOSFET (NMOS/PMOS) | Level-1 companion; body effect when called with a `vbs` (in a sindr circuit the body is tied to the source) |
 | `jfet` | JFET (N/P-channel) | Shichman-Hodges |
@@ -951,10 +951,10 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage and behavioural (`B`) sources are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` on BJTs. Anything else (junction capacitance, transit time, breakdown, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage and behavioural (`B`) sources are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, noise terms, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards are written. sindr's parser reads back only the R, L, C, V, I, D, Q part.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data (`sindr-core`), and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation. The parser doesn't read `.global`, although export writes it.
-- **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
+- **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
 - **No Verilog-A / behavioural device language.** Adding a new device means writing a Rust companion model.
 
 #### Analyses
@@ -2896,7 +2896,9 @@ Per-element mapping rules:
   is dropped with a warning in lenient mode and an error in strict mode
   when non-zero.
 * **D** — look up `.model`; kind must be `D`. Other kinds raise
-  `UnsupportedModelType`. `IS`, `N` and `RS` fill a `DiodeModel`.
+  `UnsupportedModelType`. `IS`, `N`, `RS`, `CJO` (alias `CJ0`, `CJ`),
+  `VJ` (alias `PB`), `M` (alias `MJ`), `FC`, `TT`, `BV` and `IBV` fill a
+  `DiodeModel`.
 * **Q** — look up `.model`; kind must be `NPN` or `PNP`. `BF` sets `bf`;
   `IS`, `BR`, `NF`, `NR` and `VAF` (alias `VA`) fill a `BjtModel`.
   Any other D or Q card parameter is a warning in lenient mode and an
@@ -4461,9 +4463,10 @@ pub struct BjtParasiticCaps {
     pub cbc: f64,
 }
 
-/// Shockley parameters of a [`CircuitElement::Diode`], as a SPICE `.model D`
-/// card gives them. Values are at the nominal 27 °C; the element's
-/// `temperature` scales `is` from there.
+/// Parameters of a [`CircuitElement::Diode`], as a SPICE `.model D` card
+/// gives them: Shockley (IS, N, RS), charge storage (CJO, VJ, M, FC, TT) and
+/// reverse breakdown (BV, IBV). Values are at the nominal 27 °C; the
+/// element's `temperature` scales `is` from there, and only `is`.
 ///
 /// The default is sindr's built-in silicon diode. With serde, a missing field
 /// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
@@ -4474,6 +4477,29 @@ pub struct DiodeModel {
     pub n: f64,
     /// Series resistance RS (Ω), zero or positive. Default 0.
     pub rs: f64,
+    /// Zero-bias depletion capacitance CJO (F), zero or positive. Default 0.
+    pub cjo: f64,
+    /// Junction potential VJ (V), positive. Default 1.
+    pub vj: f64,
+    /// Grading coefficient M, in `[0, 0.9]`. Default 0.5.
+    pub m: f64,
+    /// Forward-bias depletion capacitance coefficient FC, in `[0, 0.95]`.
+    /// Default 0.5.
+    pub fc: f64,
+    /// Transit time TT (s), zero or positive: the diffusion charge is
+    /// `TT·I_d`, which sets reverse recovery. Default 0.
+    pub tt: f64,
+    /// Reverse breakdown voltage BV (V), positive. Default `None`: no
+    /// breakdown, as in SPICE without `BV`.
+    pub bv: Option<f64>,
+    /// Current at `−BV`, IBV (A), positive. Default 1 mA.
+    pub ibv: f64,
+}
+
+impl DiodeModel {
+    /// Whether the diode stores charge (CJO or TT set), which makes the
+    /// circuit reactive.
+    pub fn stores_charge(&self) -> bool { … }
 }
 
 /// Ebers–Moll parameters of a [`CircuitElement::Bjt`], as a SPICE
@@ -5211,7 +5237,8 @@ impl Circuit {
     pub fn has_nonlinear_elements(&self) -> bool { … }
 
     /// Returns true if the circuit contains any reactive elements (Capacitor, Inductor, or
-    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET with non-zero parasitic caps).
+    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET with non-zero parasitic caps,
+    /// or a diode whose model stores charge).
     pub fn has_reactive_elements(&self) -> bool { … }
 
     /// Returns true if any source has a time-varying waveform.
@@ -5869,6 +5896,22 @@ pub struct DiodeParams {
     /// voltage [`DiodeParams::vt`]; `is` is used as given, so scale it with
     /// [`temperature_scale_is`] for a junction away from [`T_NOM`].
     pub temperature: f64,
+    /// Reverse breakdown (SPICE `BV`/`IBV`). `None`: the junction never
+    /// breaks down, as in SPICE without `BV`.
+    pub breakdown: Option<Breakdown>,
+}
+
+/// Reverse breakdown of a diode, as a SPICE card's `BV` and `IBV` give it.
+///
+/// Breakdown adds `−IS·exp(−(v_j + xbv)/(N·V_T))` to the junction current,
+/// with `xbv` fitted as ngspice fits it: the current at `v_j = −bv` is
+/// `−ibv`, less about `IS·bv/V_T` that ngspice's fit carries. Away from the
+/// knee this is the ngspice current to within `IS`.
+pub struct Breakdown {
+    /// Breakdown voltage BV (V), positive.
+    pub bv: f64,
+    /// Current at `−bv`, IBV (A), positive. SPICE's default is 1 mA.
+    pub ibv: f64,
 }
 
 impl DiodeParams {
@@ -5930,6 +5973,56 @@ pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) { … }
 /// Compute the diode current (A, anode → cathode) at terminal voltage
 /// `v_d` (V, anode − cathode), including the drop across `params.rs`.
 pub fn diode_current(v_d: f64, params: &DiodeParams) -> f64 { … }
+
+/// Current (A) and conductance (S) of the junction itself at junction
+/// voltage `v_j`: Shockley, plus the breakdown branch when `params` has one.
+pub fn junction_current(v_j: f64, params: &DiodeParams) -> (f64, f64) { … }
+
+/// Charge-storage parameters of a junction, as a SPICE diode card's `CJO`,
+/// `VJ`, `M`, `FC` and `TT` give them. The default stores no charge.
+pub struct JunctionCharge {
+    /// Zero-bias depletion capacitance CJO (F). Default 0.
+    pub cjo: f64,
+    /// Junction potential VJ (V). Default 1.
+    pub vj: f64,
+    /// Grading coefficient M, in `[0, 1)`. Default 0.5.
+    pub m: f64,
+    /// Forward-bias depletion coefficient FC, in `[0, 1)`: above `FC·VJ` the
+    /// depletion capacitance is continued linearly. Default 0.5.
+    pub fc: f64,
+    /// Transit time TT (s): the diffusion charge is `TT·I_d`. Default 0.
+    pub tt: f64,
+}
+
+impl JunctionCharge {
+    /// Whether the junction stores any charge at all.
+    pub fn is_none(&self) -> bool { … }
+
+    /// Stored charge (C) and capacitance dQ/dV (F) at junction voltage `v`
+    /// (V), carrying current `i_d` (A) with conductance `g_d` (S).
+    ///
+    /// The SPICE junction charge: depletion `CJO·VJ·(1 − (1 − v/VJ)^(1−M))/(1−M)`
+    /// up to `FC·VJ`, continued with a linear capacitance above it so it
+    /// stays finite in forward bias, plus diffusion `TT·I_d`.
+    pub fn charge(&self, v: f64, i_d: f64, g_d: f64) -> (f64, f64) { … }
+}
+
+/// The junction behind RS at terminal voltage `v_d` (V): its conductance
+/// `g_j` (S) and capacitance `c_j` (F). In AC the diode is RS in series with
+/// `g_j + jωC_j`.
+pub fn junction_small_signal(
+    v_d: f64,
+    params: &DiodeParams,
+    charge: &JunctionCharge,
+) -> (f64, f64) { … }
+
+/// Stored charge (C) and its derivative with respect to the terminal
+/// voltage (F) of a diode at terminal voltage `v_d` (V, anode − cathode).
+///
+/// The charge is the junction's at the junction voltage the diode current
+/// sets across RS. The drop the charging current itself makes across RS is
+/// left out, so with RS > 0 the charge sits across the terminals.
+pub fn diode_charge(v_d: f64, params: &DiodeParams, charge: &JunctionCharge) -> (f64, f64) { … }
 
 /// Critical voltage for voltage limiting.
 ///
@@ -6110,7 +6203,7 @@ end-to-end simulator.
 
 | Module | Device | Model |
 |---|---|---|
-| [`diode`] | Silicon diode | Shockley with series resistance + temperature IS scaling |
+| [`diode`] | Silicon diode | Shockley with series resistance, temperature IS scaling, breakdown and junction charge |
 | [`bjt`] | BJT (NPN/PNP) | Ebers–Moll with Early voltage |
 | [`mosfet`] | MOSFET (NMOS/PMOS) | Level-1 |
 | [`jfet`] | JFET (N/P-channel) | Shichman–Hodges |

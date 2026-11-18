@@ -1,0 +1,7 @@
+tran: 1N4148 reverse recovery, 5 V forward then -5 V reverse through 1k
+V1 a 0 PWL(0 0 1n 5 100n 5 101n -5 300n -5)
+R1 a b 1k
+D1 b 0 d1n4148
+.model d1n4148 D(IS=2.52n N=1.752 RS=0.568 CJO=4p M=0.4 TT=20n BV=100 IBV=100u)
+.tran 0.1n 300n
+.end

@@ -8,7 +8,7 @@ Pure electronics device physics companion models for MNA circuit simulation.
 
 | Module | Device | Model |
 |--------|--------|-------|
-| `diode` | Silicon diode | Shockley companion with series resistance and temperature IS scaling |
+| `diode` | Silicon diode | Shockley companion with series resistance, temperature IS scaling, SPICE `BV`/`IBV` breakdown and junction charge (`CJO`, `VJ`, `M`, `FC`, `TT`) |
 | `bjt` | BJT (NPN/PNP) | Ebers-Moll companion with Early voltage |
 | `mosfet` | MOSFET (NMOS/PMOS) | Level-1 companion; body effect when called with a `vbs` (in a sindr circuit the body is tied to the source) |
 | `jfet` | JFET (N/P-channel) | Shichman-Hodges |

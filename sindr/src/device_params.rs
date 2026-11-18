@@ -7,7 +7,7 @@
 
 use crate::circuit::{BjtModel, DiodeModel};
 use sindr_devices::bjt::BjtParams;
-use sindr_devices::diode::{temperature_scale_is, DiodeParams, T_NOM};
+use sindr_devices::diode::{temperature_scale_is, Breakdown, DiodeParams, JunctionCharge, T_NOM};
 use sindr_devices::led::led_params_from_str;
 use sindr_devices::photodiode::PhotodiodeParams;
 use sindr_devices::schottky::SchottkyParams;
@@ -38,9 +38,22 @@ pub(crate) fn diode(model: Option<&DiodeModel>, temperature: f64) -> DiodeParams
             n: model.n,
             rs: model.rs,
             temperature: T_NOM,
+            breakdown: model.bv.map(|bv| Breakdown { bv, ibv: model.ibv }),
         },
         temperature,
     )
+}
+
+/// The charge a diode with `model` stores, or `None` if it stores none.
+pub(crate) fn diode_charge(model: Option<&DiodeModel>) -> Option<JunctionCharge> {
+    let model = model.filter(|m| m.stores_charge())?;
+    Some(JunctionCharge {
+        cjo: model.cjo,
+        vj: model.vj,
+        m: model.m,
+        fc: model.fc,
+        tt: model.tt,
+    })
 }
 
 /// LED of colour `color` at `temperature` (K).
@@ -57,6 +70,7 @@ pub(crate) fn schottky(temperature: f64) -> DiodeParams {
             n: schottky.n,
             rs: 0.0,
             temperature: T_NOM,
+            breakdown: None,
         },
         temperature,
     )
@@ -87,6 +101,7 @@ pub(crate) fn photodiode_dark(temperature: f64) -> DiodeParams {
         n: params.n,
         rs: 0.0,
         temperature,
+        breakdown: None,
     }
 }
 

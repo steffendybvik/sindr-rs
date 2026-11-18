@@ -32,9 +32,10 @@ pub struct BjtParasiticCaps {
     pub cbc: f64,
 }
 
-/// Shockley parameters of a [`CircuitElement::Diode`], as a SPICE `.model D`
-/// card gives them. Values are at the nominal 27 °C; the element's
-/// `temperature` scales `is` from there.
+/// Parameters of a [`CircuitElement::Diode`], as a SPICE `.model D` card
+/// gives them: Shockley (IS, N, RS), charge storage (CJO, VJ, M, FC, TT) and
+/// reverse breakdown (BV, IBV). Values are at the nominal 27 °C; the
+/// element's `temperature` scales `is` from there, and only `is`.
 ///
 /// The default is sindr's built-in silicon diode. With serde, a missing field
 /// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
@@ -48,6 +49,23 @@ pub struct DiodeModel {
     pub n: f64,
     /// Series resistance RS (Ω), zero or positive. Default 0.
     pub rs: f64,
+    /// Zero-bias depletion capacitance CJO (F), zero or positive. Default 0.
+    pub cjo: f64,
+    /// Junction potential VJ (V), positive. Default 1.
+    pub vj: f64,
+    /// Grading coefficient M, in `[0, 0.9]`. Default 0.5.
+    pub m: f64,
+    /// Forward-bias depletion capacitance coefficient FC, in `[0, 0.95]`.
+    /// Default 0.5.
+    pub fc: f64,
+    /// Transit time TT (s), zero or positive: the diffusion charge is
+    /// `TT·I_d`, which sets reverse recovery. Default 0.
+    pub tt: f64,
+    /// Reverse breakdown voltage BV (V), positive. Default `None`: no
+    /// breakdown, as in SPICE without `BV`.
+    pub bv: Option<f64>,
+    /// Current at `−BV`, IBV (A), positive. Default 1 mA.
+    pub ibv: f64,
 }
 
 impl Default for DiodeModel {
@@ -56,7 +74,22 @@ impl Default for DiodeModel {
             is: 1e-14,
             n: 1.0,
             rs: 0.0,
+            cjo: 0.0,
+            vj: 1.0,
+            m: 0.5,
+            fc: 0.5,
+            tt: 0.0,
+            bv: None,
+            ibv: 1e-3,
         }
+    }
+}
+
+impl DiodeModel {
+    /// Whether the diode stores charge (CJO or TT set), which makes the
+    /// circuit reactive.
+    pub fn stores_charge(&self) -> bool {
+        self.cjo > 0.0 || self.tt > 0.0
     }
 }
 
@@ -1099,7 +1132,8 @@ impl Circuit {
     }
 
     /// Returns true if the circuit contains any reactive elements (Capacitor, Inductor, or
-    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET with non-zero parasitic caps).
+    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET with non-zero parasitic caps,
+    /// or a diode whose model stores charge).
     pub fn has_reactive_elements(&self) -> bool {
         self.components.iter().any(|c| match c {
             CircuitElement::Capacitor { .. }
@@ -1115,6 +1149,9 @@ impl Circuit {
                 parasitic_caps: Some(caps),
                 ..
             } if caps.cgs > 0.0 || caps.cgd > 0.0 => true,
+            CircuitElement::Diode {
+                model: Some(model), ..
+            } => model.stores_charge(),
             _ => false,
         })
     }
@@ -1196,6 +1233,35 @@ mod tests {
             ..Default::default()
         };
         assert!(!circuit.has_reactive_elements());
+    }
+
+    #[test]
+    fn diode_storing_charge_is_reactive() {
+        let diode = |model: Option<DiodeModel>| Circuit {
+            components: vec![CircuitElement::Diode {
+                id: "D1".into(),
+                nodes: ["a".into(), "0".into()],
+                temperature: 300.15,
+                model,
+            }],
+            ..Default::default()
+        };
+        assert!(!diode(None).has_reactive_elements());
+        assert!(!diode(Some(DiodeModel {
+            bv: Some(100.0),
+            ..DiodeModel::default()
+        }))
+        .has_reactive_elements());
+        assert!(diode(Some(DiodeModel {
+            tt: 1e-9,
+            ..DiodeModel::default()
+        }))
+        .has_reactive_elements());
+        assert!(diode(Some(DiodeModel {
+            cjo: 1e-12,
+            ..DiodeModel::default()
+        }))
+        .has_reactive_elements());
     }
 
     #[test]

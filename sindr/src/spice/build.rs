@@ -11,7 +11,9 @@
 //!   is dropped with a warning in lenient mode and an error in strict mode
 //!   when non-zero.
 //! * **D** — look up `.model`; kind must be `D`. Other kinds raise
-//!   `UnsupportedModelType`. `IS`, `N` and `RS` fill a `DiodeModel`.
+//!   `UnsupportedModelType`. `IS`, `N`, `RS`, `CJO` (alias `CJ0`, `CJ`),
+//!   `VJ` (alias `PB`), `M` (alias `MJ`), `FC`, `TT`, `BV` and `IBV` fill a
+//!   `DiodeModel`.
 //! * **Q** — look up `.model`; kind must be `NPN` or `PNP`. `BF` sets `bf`;
 //!   `IS`, `BR`, `NF`, `NR` and `VAF` (alias `VA`) fill a `BjtModel`.
 //!   Any other D or Q card parameter is a warning in lenient mode and an
@@ -203,7 +205,14 @@ fn build_element(
                     match key {
                         "is" => model.is = value,
                         "n" => model.n = value,
-                        _ => model.rs = value,
+                        "rs" => model.rs = value,
+                        "cjo" => model.cjo = value,
+                        "vj" => model.vj = value,
+                        "m" => model.m = value,
+                        "fc" => model.fc = value,
+                        "tt" => model.tt = value,
+                        "bv" => model.bv = Some(value),
+                        _ => model.ibv = value,
                     }
                 }
                 model
@@ -398,7 +407,17 @@ fn translate_waveform(
 
 /// A syntax error with no span of its own: the caller locates it on the card.
 /// `.model D` parameters sindr's diode uses.
-const DIODE_KEYS: &[&str] = &["is", "n", "rs"];
+const DIODE_KEYS: &[&str] = &["is", "n", "rs", "cjo", "vj", "m", "fc", "tt", "bv", "ibv"];
+
+/// SPICE's alternative names for `.model` parameters, and the name sindr
+/// reads them as.
+const KEY_ALIASES: &[(&str, &str)] = &[
+    ("va", "vaf"),
+    ("cj0", "cjo"),
+    ("cj", "cjo"),
+    ("pb", "vj"),
+    ("mj", "m"),
+];
 
 /// `.model NPN`/`PNP` parameters sindr's Ebers–Moll transistor uses.
 const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf"];
@@ -410,7 +429,7 @@ const ANNOTATION_KEYS: &[&str] = &["mfg", "type", "vceo", "icrating", "iave", "v
 
 /// The parameters of card `m` that `known` lists, as `(key, value)` in card
 /// order, so a repeated key's last value wins when applied in turn. Keys are
-/// lowercased and SPICE's `VA` alias read as `VAF`.
+/// lowercased and [`KEY_ALIASES`] read as the name they stand for.
 ///
 /// Any other parameter can't be honoured: an error naming it in strict mode,
 /// otherwise one warning per card listing them all.
@@ -425,11 +444,10 @@ fn model_params(
     let mut ignored = Vec::new();
     for (key, expr) in &m.params {
         let lower = key.to_ascii_lowercase();
-        let lower = if lower == "va" {
-            "vaf".to_string()
-        } else {
-            lower
-        };
+        let lower = KEY_ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == lower)
+            .map_or(lower, |(_, name)| name.to_string());
         match known.iter().find(|k| **k == lower) {
             Some(k) => params.push((*k, eval_or_lift(expr, scope)?)),
             None if ANNOTATION_KEYS.contains(&lower.as_str()) => {}
@@ -1381,7 +1399,45 @@ mod tests {
                 Some(DiodeModel {
                     is: 2.52e-9,
                     n: 1.752,
-                    rs: 0.568
+                    rs: 0.568,
+                    ..DiodeModel::default()
+                })
+            ),
+            other => panic!("expected Diode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diode_card_fills_charge_and_breakdown_under_any_alias() {
+        let cards = vec![
+            model_card(
+                "d",
+                "D",
+                &[
+                    ("CJ0", 4e-12),
+                    ("PB", 0.6),
+                    ("MJ", 0.33),
+                    ("FC", 0.4),
+                    ("TT", 5.76e-9),
+                    ("BV", 100.0),
+                    ("IBV", 1e-4),
+                ],
+            ),
+            diode_card("D1", "d"),
+        ];
+        let netlist = build_from_cards(cards).unwrap();
+        match &netlist.circuit.components[0] {
+            CircuitElement::Diode { model, .. } => assert_eq!(
+                *model,
+                Some(DiodeModel {
+                    cjo: 4e-12,
+                    vj: 0.6,
+                    m: 0.33,
+                    fc: 0.4,
+                    tt: 5.76e-9,
+                    bv: Some(100.0),
+                    ibv: 1e-4,
+                    ..DiodeModel::default()
                 })
             ),
             other => panic!("expected Diode, got {other:?}"),
@@ -1451,12 +1507,12 @@ mod tests {
     fn unused_parameters_are_an_error_in_strict_mode() {
         for (kind, element) in [("D", diode_card("D1", "m")), ("NPN", bjt_card("m"))] {
             let cards = vec![
-                model_card("m", kind, &[("IS", 1e-14), ("CJO", 4e-12), ("VAR", 10.0)]),
+                model_card("m", kind, &[("IS", 1e-14), ("XTI", 3.0), ("VAR", 10.0)]),
                 element,
             ];
             let err = build_from_cards(cards).unwrap_err().to_string();
             assert!(
-                err.contains("CJO, VAR") && err.contains("m"),
+                err.contains("XTI, VAR") && err.contains("m"),
                 "{kind}: {err}"
             );
         }
@@ -1465,7 +1521,7 @@ mod tests {
     #[test]
     fn unused_parameters_warn_once_per_card_in_lenient_mode() {
         let cards = vec![
-            model_card("m", "D", &[("IS", 1e-12), ("TT", 4e-9), ("BV", 100.0)]),
+            model_card("m", "D", &[("IS", 1e-12), ("KF", 1e-16), ("EG", 0.69)]),
             diode_card("D1", "m"),
             diode_card("D2", "m"),
         ];
@@ -1475,7 +1531,7 @@ mod tests {
             .filter(|w| w.message.contains(".model m"))
             .collect();
         assert_eq!(about_card.len(), 1, "{warnings:?}");
-        assert!(about_card[0].message.contains("TT, BV"), "{warnings:?}");
+        assert!(about_card[0].message.contains("KF, EG"), "{warnings:?}");
         // What is used still applies.
         assert!(matches!(
             &netlist.circuit.components[1],

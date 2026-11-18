@@ -1,0 +1,6 @@
+dc: 1N4148 junction capacitance across its bias, from its .model card
+V1 a 0 0
+R1 a b 1
+D1 b 0 d1n4148
+.model d1n4148 D(IS=2.52n N=1.752 RS=0.568 CJO=4p M=0.4 TT=20n BV=100 IBV=100u)
+.end

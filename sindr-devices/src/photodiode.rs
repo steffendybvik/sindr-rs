@@ -62,6 +62,7 @@ pub fn photodiode_companion(v_d: f64, irradiance: f64, params: &PhotodiodeParams
             n: params.n,
             rs: 0.0,
             temperature: params.temperature,
+            breakdown: None,
         },
     );
     let i_photo = params.responsivity * irradiance.max(0.0);
@@ -85,6 +86,7 @@ mod tests {
                 n: params.n,
                 rs: 0.0,
                 temperature: 300.15,
+                breakdown: None,
             },
         );
         assert_relative_eq!(g_photo, g_diode, max_relative = 1e-10);

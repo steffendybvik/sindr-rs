@@ -252,12 +252,20 @@ fn stamp_circuit_transient(
             }
             CircuitElement::Diode {
                 model,
+                id,
                 nodes,
                 temperature,
-                ..
             } => {
                 let params = device_params::diode(model.as_ref(), *temperature);
                 stamp_diode_companion(system, node_map, nodes, v_prev, &params);
+                if let Some(charge) = device_params::diode_charge(model.as_ref()) {
+                    let v = node_voltage(&nodes[0], node_map, v_prev)
+                        - node_voltage(&nodes[1], node_map, v_prev);
+                    let (q, c) = sindr_devices::diode::diode_charge(v, &params, &charge);
+                    let history = parasitic_history(parasitic, id, DIODE_CHARGE);
+                    let (g, i_hist) = integ.charge(q, c, v, &history);
+                    stamp_companion(system, node_map, nodes, g, i_hist);
+                }
             }
             CircuitElement::Led {
                 nodes,
@@ -1600,6 +1608,19 @@ pub(crate) fn run_transient(
                     parasitic.insert(format!("{id}-{junction}"), across(&a, &b));
                 }
             }
+            CircuitElement::Diode {
+                id,
+                nodes,
+                model,
+                temperature,
+            } => {
+                if let Some(charge) = device_params::diode_charge(model.as_ref()) {
+                    let params = device_params::diode(model.as_ref(), *temperature);
+                    let v = ic(&nodes[0]) - ic(&nodes[1]);
+                    let (q, _) = sindr_devices::diode::diode_charge(v, &params, &charge);
+                    parasitic.insert(format!("{id}-{DIODE_CHARGE}"), History::at(q));
+                }
+            }
             _ => {}
         }
     }
@@ -1729,6 +1750,9 @@ pub(crate) fn run_transient(
         let (mut snapshot, new_caps, new_inds) = extract_timestep_results(
             stepped, node_map, &next, num_nodes, t_next, t_src, &integ, &caps, &inds,
         );
+        // At the temperatures this step solved at, before self-heating moves them.
+        update_parasitic_histories(stepped, node_map, &next, &integ, &mut parasitic);
+        add_diode_charge_currents(stepped, &parasitic, &mut snapshot.component_results);
         if let (Some(heated), Some(work)) = (&heated, &mut work) {
             temps = heated.advance(&temps, &heated.powers(&snapshot.component_results), dt);
             heated.check_runaway(&temps)?;
@@ -1739,7 +1763,6 @@ pub(crate) fn run_transient(
         stats.accepted_steps += 1;
         caps = new_caps;
         inds = new_inds;
-        update_parasitic_histories(circuit, node_map, &next, &integ, &mut parasitic);
         time = t_next;
         // A landing step was cut short; size the next from the step wanted.
         let base = if landing { h.max(dt) } else { dt };
@@ -2092,6 +2115,28 @@ fn update_parasitic_histories(
             );
             continue;
         }
+        if let CircuitElement::Diode {
+            id,
+            nodes,
+            model,
+            temperature,
+        } = component
+        {
+            if let Some(charge) = device_params::diode_charge(model.as_ref()) {
+                let params = device_params::diode(model.as_ref(), *temperature);
+                let (q, _) = sindr_devices::diode::diode_charge(
+                    v(&nodes[0]) - v(&nodes[1]),
+                    &params,
+                    &charge,
+                );
+                let history = parasitic_history(parasitic, id, DIODE_CHARGE);
+                parasitic.insert(
+                    format!("{id}-{DIODE_CHARGE}"),
+                    history.push(q, integ.charge_current(q, &history)),
+                );
+            }
+            continue;
+        }
         let (id, caps) = match component {
             CircuitElement::Bjt {
                 id,
@@ -2152,6 +2197,32 @@ fn parasitic_history(parasitic: &HashMap<String, History>, id: &str, junction: &
         .get(&format!("{id}-{junction}"))
         .copied()
         .unwrap_or_default()
+}
+
+/// Key suffix, in the parasitic-history map, of a diode's stored charge
+/// (CJO/TT). Its history holds charges (C), not voltages.
+const DIODE_CHARGE: &str = "q";
+
+/// Add each charge-storing diode's charging current, the rate just pushed
+/// onto its history, to its result, so `current_through` is the terminal
+/// current (reverse recovery included). `power` stays the junction's
+/// dissipation: the stored charge doesn't heat it.
+fn add_diode_charge_currents(
+    circuit: &Circuit,
+    parasitic: &HashMap<String, History>,
+    results: &mut [ComponentResult],
+) {
+    for component in &circuit.components {
+        let CircuitElement::Diode { id, .. } = component else {
+            continue;
+        };
+        let Some(history) = parasitic.get(&format!("{id}-{DIODE_CHARGE}")) else {
+            continue;
+        };
+        if let Some(result) = results.iter_mut().find(|r| &r.id == id) {
+            result.current_through += history.y1;
+        }
+    }
 }
 
 /// Key suffix, in the parasitic-history map, of a modelled op-amp's gain

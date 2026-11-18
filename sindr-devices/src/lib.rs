@@ -16,7 +16,7 @@
 //!
 //! | Module | Device | Model |
 //! |---|---|---|
-//! | [`diode`] | Silicon diode | Shockley with series resistance + temperature IS scaling |
+//! | [`diode`] | Silicon diode | Shockley with series resistance, temperature IS scaling, breakdown and junction charge |
 //! | [`bjt`] | BJT (NPN/PNP) | Ebers–Moll with Early voltage |
 //! | [`mosfet`] | MOSFET (NMOS/PMOS) | Level-1 |
 //! | [`jfet`] | JFET (N/P-channel) | Shichman–Hodges |

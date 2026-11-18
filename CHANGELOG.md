@@ -33,6 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ac_exported_transformer`) pin the controlled-source signs.
 - ngspice goldens `dc_diode_1n4148` (a 1N4148 card with `RS`) and
   `op_bjt_card`.
+- Diode charge storage and breakdown from `.model D` cards: `CJO` (alias
+  `CJ0`, `CJ`), `VJ` (`PB`), `M` (`MJ`), `FC`, `TT`, `BV` and `IBV`, as new
+  `DiodeModel` fields. The junction charge (depletion plus `TT·I_d`
+  diffusion) is a charge-based companion in transient, so a diode now shows
+  reverse recovery, and the diode's result current includes its charging
+  current. In AC the diode is RS in series with `g_j + jωC_j`. Breakdown is
+  SPICE's exponential with ngspice's `BV`/`IBV` knee fit, in every analysis,
+  with Newton limiting past the knee. A diode that stores charge makes a
+  circuit reactive, so `solve_circuit` runs it as a transient. Export writes
+  the new parameters when they're set. Validation rejects negative CJO or TT,
+  non-positive VJ, BV or IBV, and M above 0.9 or FC above 0.95.
+  `sindr_devices::diode` gains `Breakdown`, `JunctionCharge`,
+  `junction_current`, `diode_charge` and `junction_small_signal`;
+  `DiodeParams` has a `breakdown` field (breaking for struct literals).
+- ngspice goldens `tran_diode_recovery` (1N4148 reverse recovery),
+  `cv_1n4148` and `cv_1n5819` (small-signal admittance across bias) and
+  `dc_diode_breakdown`.
 - New crate `sindr-core`: the data model (`Circuit`, `CircuitElement`,
   `Waveform`) with no solver dependencies, so design tools can use it alone.
   `sindr` re-exports it, so `sindr::Circuit` paths still work.

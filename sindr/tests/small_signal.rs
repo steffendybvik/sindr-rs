@@ -115,6 +115,7 @@ fn diode_model_ac_matches_dc() {
         is: 2.52e-9,
         n: 1.752,
         rs: 0.568,
+        ..DiodeModel::default()
     };
     for t in [T_NOM, 350.0] {
         let circuit = two_terminal(CircuitElement::Diode {

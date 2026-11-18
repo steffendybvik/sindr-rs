@@ -43,6 +43,7 @@ pub fn schottky_companion(v_d: f64, params: &SchottkyParams) -> (f64, f64) {
             n: params.n,
             rs: 0.0,
             temperature: 300.15,
+            breakdown: None,
         },
     )
 }
@@ -68,6 +69,7 @@ mod tests {
                 n: 1.0,
                 rs: 0.0,
                 temperature: 300.15,
+                breakdown: None,
             },
         );
         assert!(

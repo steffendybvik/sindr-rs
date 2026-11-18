@@ -398,6 +398,9 @@ pub(crate) struct DiodeLimitInfo {
     is_bjt: bool,
     /// Breakdown voltage for a Zener, which is also driven in reverse.
     zener_vz: Option<f64>,
+    /// BV of a diode whose breakdown is exponential: its reverse steps are
+    /// limited past breakdown as forward ones are, mirrored about `−BV`.
+    breakdown: Option<f64>,
 }
 
 /// Which node to apply voltage limiting corrections to.
@@ -421,6 +424,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 ..
             } => {
                 let params = device_params::diode(model.as_ref(), *temperature);
+                let bv = params.breakdown.map(|b| b.bv);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
@@ -429,7 +433,8 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     vt: params.vt(),
                     correction_node: None,
                     is_bjt: false,
-                    zener_vz: None,
+                    zener_vz: bv,
+                    breakdown: bv,
                 });
             }
             CircuitElement::Led {
@@ -448,6 +453,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
+                    breakdown: None,
                 });
             }
             CircuitElement::ZenerDiode {
@@ -467,6 +473,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: Some(*vz),
+                    breakdown: None,
                 });
             }
             CircuitElement::SchottkyDiode {
@@ -482,6 +489,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
+                    breakdown: None,
                 });
             }
             CircuitElement::Photodiode {
@@ -501,6 +509,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
+                    breakdown: None,
                 });
             }
             CircuitElement::Bjt {
@@ -529,6 +538,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: None,
                     is_bjt: true,
                     zener_vz: None,
+                    breakdown: None,
                 });
 
                 // B-C junction: correction goes ONLY to the collector node.
@@ -551,6 +561,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: Some(bc_correction),
                     is_bjt: true,
                     zener_vz: None,
+                    breakdown: None,
                 });
             }
             _ => {}
@@ -587,6 +598,21 @@ pub(crate) fn apply_voltage_limiting(
         let v_d_old = v_anode_old - v_cathode_old;
 
         let mut v_d_limited = diode::limit_voltage(v_d_new, v_d_old, info.v_crit, info.n, info.vt);
+
+        // Past breakdown the reverse current is exponential too: limit the
+        // step in −(v + BV) the way the forward one is, as SPICE does.
+        if let Some(bv) = info.breakdown {
+            if v_d_limited < (-bv + 10.0 * info.n * info.vt).min(0.0) {
+                let past = diode::limit_voltage(
+                    -(v_d_limited + bv),
+                    -(v_d_old + bv),
+                    info.v_crit,
+                    info.n,
+                    info.vt,
+                );
+                v_d_limited = -(past + bv);
+            }
+        }
 
         // For BJT junctions, also apply bilateral step limiting.
         // The standard SPICE limiter only clamps forward-bias overshoots.
@@ -1327,6 +1353,7 @@ mod tests {
                 correction_node: None,
                 is_bjt: true,
                 zener_vz: None,
+                breakdown: None,
             },
             DiodeLimitInfo {
                 anode_idx: Some(0),
@@ -1337,6 +1364,7 @@ mod tests {
                 correction_node: Some(CorrectionTarget::Cathode),
                 is_bjt: true,
                 zener_vz: None,
+                breakdown: None,
             },
         ];
         let v_prev = DVector::from_vec(vec![0.65, 5.0]);
