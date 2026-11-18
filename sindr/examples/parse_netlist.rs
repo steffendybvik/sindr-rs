@@ -75,6 +75,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let sens = sindr::solve_sensitivity(&netlist.circuit, &config)?;
                 println!("sens: {} parameters", sens.entries.len());
             }
+            AnalysisRequest::Noise { .. } => {
+                let config = analysis.noise_config().ok_or("not a .noise")?;
+                let noise = sindr::solve_noise(&netlist.circuit, &config)?;
+                println!("noise: {} points", noise.points.len());
+            }
             AnalysisRequest::Tf { .. } => {
                 let config = analysis.tf_config().ok_or("not a .tf")?;
                 let tf = sindr::solve_tf(&netlist.circuit, &config)?;

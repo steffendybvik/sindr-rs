@@ -188,6 +188,8 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
                 positive("model.bv", bv, " V")?;
                 positive("model.ibv", model.ibv, " A")?;
             }
+            non_negative("model.kf", model.kf, "")?;
+            positive("model.af", model.af, "")?;
             Ok(())
         }
         CircuitElement::Diode { temperature, .. }
@@ -212,6 +214,8 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
                 positive("model.nf", model.nf, "")?;
                 positive("model.nr", model.nr, "")?;
                 non_negative("model.vaf", model.vaf, " V")?;
+                non_negative("model.kf", model.kf, "")?;
+                positive("model.af", model.af, "")?;
             }
             Ok(())
         }
@@ -269,6 +273,12 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
                 }
             }
             Ok(())
+        }
+        // Only the noise fields: the rest of a MOSFET's parameters have
+        // never been checked here.
+        CircuitElement::Mosfet { params, .. } => {
+            non_negative("params.kf", params.kf, "")?;
+            positive("params.af", params.af, "")
         }
         _ => Ok(()),
     }

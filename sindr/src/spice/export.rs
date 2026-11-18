@@ -575,6 +575,7 @@ impl<'a> Deck<'a> {
                 if let Some(bv) = model.bv {
                     card.push_str(&format!(" BV={}", num(id, "bv", bv)?));
                 }
+                card.push_str(&flicker(id, model.kf, model.af)?);
                 card.push(')');
                 self.models.push(card);
                 self.diode_models.push((model, n.clone()));
@@ -604,13 +605,14 @@ impl<'a> Deck<'a> {
         };
         let n = format!("qmod{}", self.bjt_models.len() + 1);
         self.models.push(format!(
-            ".model {n} {card}(IS={} BF={} BR={} NF={} NR={} VAF={})",
+            ".model {n} {card}(IS={} BF={} BR={} NF={} NR={} VAF={}{})",
             num(id, "is", model.is)?,
             num(id, "bf", bf)?,
             num(id, "br", model.br)?,
             num(id, "nf", model.nf)?,
             num(id, "nr", model.nr)?,
-            num(id, "vaf", model.vaf)?
+            num(id, "vaf", model.vaf)?,
+            flicker(id, model.kf, model.af)?
         ));
         self.bjt_models.push((kind, bf, model, n.clone()));
         Ok(n)
@@ -708,6 +710,19 @@ fn nominal(id: &str, temperature: f64) -> Result<(), ExportError> {
         });
     }
     Ok(())
+}
+
+/// ` KF=… AF=…` for a card with flicker noise; nothing when `kf` is 0, so
+/// cards without it read as they always have.
+fn flicker(id: &str, kf: f64, af: f64) -> Result<String, ExportError> {
+    if kf == 0.0 {
+        return Ok(String::new());
+    }
+    Ok(format!(
+        " KF={} AF={}",
+        num(id, "kf", kf)?,
+        num(id, "af", af)?
+    ))
 }
 
 fn shockley(params: DiodeParams) -> DiodeModel {

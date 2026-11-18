@@ -813,6 +813,53 @@ fn parse_card_tf(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ))
 }
 
+/// Parse `.noise v(node[,ref]) source dec|oct|lin points fstart fstop
+/// [pts_per_summary]`. The summary interval is ngspice's printing detail
+/// and is read and ignored.
+fn parse_card_noise(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    ws(input)?;
+    let crate::TfOutput::Voltage { node, reference } = output_variable(input)? else {
+        // Noise is measured at a voltage, never a current.
+        return Err(ErrMode::from_input(input));
+    };
+    ws(input)?;
+    let (source, _) = ident(input)?;
+    ws(input)?;
+    let (sweep_kw, _) = ident(input)?;
+    let sweep = match sweep_kw.as_str() {
+        "dec" => AcSweepKind::Dec,
+        "oct" => AcSweepKind::Oct,
+        "lin" => AcSweepKind::Lin,
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    ws(input)?;
+    let (points, _) = value_expr(input)?;
+    ws(input)?;
+    let (fstart, _) = value_expr(input)?;
+    ws(input)?;
+    let (fstop, _) = value_expr(input)?;
+    ws(input)?;
+    if !input.is_empty() {
+        value_expr(input)?;
+        ws(input)?;
+    }
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawCard::Analysis(
+        RawAnalysis::Noise {
+            node,
+            reference,
+            input: source,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        },
+        Span::detached(),
+    ))
+}
+
 /// Parse `.op` (no args).
 fn parse_card_op(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
@@ -849,6 +896,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "op" => parse_card_op(&mut input),
             "tf" => parse_card_tf(&mut input),
             "sens" => parse_card_sens(&mut input),
+            "noise" => parse_card_noise(&mut input),
             "ic" => parse_card_node_values(&mut input, NodeValueKind::Ic),
             "nodeset" => parse_card_node_values(&mut input, NodeValueKind::Nodeset),
             "include" | "lib" => {
