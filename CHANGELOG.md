@@ -129,6 +129,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `newton_raphson::I_ABSTOL`, which nothing read. Newton
   converges on node voltages (`V_ABSTOL`, `RELTOL`).
 
+### Fixed
+
+- A hot LED's forward voltage now falls about 2 mV/K at its rated current,
+  as a real one does. IS scaled with silicon's 1.11 eV bandgap, below every
+  LED's Vf, so Vf rose with temperature and a self-heated LED drew less
+  current as it warmed. Each colour now has an effective EG fitted to
+  −2 mV/K. Temperature sweeps and self-heated results for LEDs change.
+
 ## [0.1.0-alpha.7] - 2026-11-16
 
 ### Added

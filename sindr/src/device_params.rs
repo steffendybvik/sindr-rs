@@ -7,8 +7,10 @@
 
 use crate::circuit::{BjtModel, DiodeModel};
 use sindr_devices::bjt::BjtParams;
-use sindr_devices::diode::{temperature_scale_is, Breakdown, DiodeParams, JunctionCharge, T_NOM};
-use sindr_devices::led::led_params_from_str;
+use sindr_devices::diode::{
+    temperature_scale_is, Breakdown, DiodeParams, JunctionCharge, K_OVER_Q, T_NOM,
+};
+use sindr_devices::led::{led_params_from_str, LedColor};
 use sindr_devices::photodiode::PhotodiodeParams;
 use sindr_devices::schottky::SchottkyParams;
 use sindr_devices::zener::ZenerParams;
@@ -19,14 +21,34 @@ const EG_SI: f64 = 1.11;
 /// IS temperature exponent: SPICE's default XTI, for diodes and BJTs alike.
 const XTI: f64 = 3.0;
 
-/// `is` of a junction with emission coefficient `n` (1 for a BJT), given at
-/// nominal temperature, scaled to `temperature`.
+/// Forward-voltage temperature coefficient (V/K) of an LED at its rated
+/// 20 mA: the typical datasheet −2 mV/K, the same for every colour.
+const LED_VF_TEMPCO: f64 = -2e-3;
+
+/// `is` of a silicon junction with emission coefficient `n` (1 for a BJT),
+/// given at nominal temperature, scaled to `temperature`.
 fn scale_is(is: f64, temperature: f64, n: f64) -> f64 {
+    scale_is_eg(is, temperature, n, EG_SI)
+}
+
+/// [`scale_is`] for a junction whose bandgap is `eg` (eV).
+fn scale_is_eg(is: f64, temperature: f64, n: f64, eg: f64) -> f64 {
     if (temperature - T_NOM).abs() > 1e-6 {
-        temperature_scale_is(is, temperature, T_NOM, EG_SI, XTI, n)
+        temperature_scale_is(is, temperature, T_NOM, eg, XTI, n)
     } else {
         is
     }
+}
+
+/// The EG (eV) an LED's IS scales with, fitted so its forward voltage `vf`
+/// falls [`LED_VF_TEMPCO`] at 27 °C.
+///
+/// With SPICE's IS(T), a diode's `dVf/dT = (Vf − EG)/T − XTI·k/q` at fixed
+/// current. Silicon's 1.11 eV, below every LED's Vf, made a hot LED's Vf
+/// rise. The photon energy (≈ 1.9 eV for red) only gets it to about
+/// −0.6 mV/K, so this is an effective value, a little above it.
+fn led_eg(vf: f64) -> f64 {
+    vf - T_NOM * (LED_VF_TEMPCO + XTI * K_OVER_Q)
 }
 
 /// Diode with `model` (the built-in silicon diode if `None`) at `temperature` (K).
@@ -56,9 +78,15 @@ pub(crate) fn diode_charge(model: Option<&DiodeModel>) -> Option<JunctionCharge>
     })
 }
 
-/// LED of colour `color` at `temperature` (K).
+/// LED of colour `color` at `temperature` (K). IS scales with the colour's
+/// effective EG ([`led_eg`]), so Vf falls with temperature as a real LED's
+/// does.
 pub(crate) fn led(color: &str, temperature: f64) -> DiodeParams {
-    with_temperature(led_params_from_str(color), temperature)
+    let mut params = led_params_from_str(color);
+    let eg = led_eg(LedColor::from_str(color).forward_voltage());
+    params.is = scale_is_eg(params.is, temperature, params.n, eg);
+    params.temperature = temperature;
+    params
 }
 
 /// Schottky diode at `temperature` (K), as the Shockley diode it is stamped as.
@@ -130,4 +158,28 @@ fn with_temperature(mut params: DiodeParams, temperature: f64) -> DiodeParams {
 pub(crate) fn thermistor_resistance(temperature: f64) -> f64 {
     let params = sindr_devices::thermistor::ThermistorParams::default();
     sindr_devices::thermistor::thermistor_resistance(temperature, &params)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An LED's Vf at its rated 20 mA falls about 2 mV/K, for every colour.
+    #[test]
+    fn hot_led_forward_voltage_falls() {
+        for color in ["red", "green", "blue", "yellow", "white"] {
+            let vf = |t: f64| {
+                let p = led(color, t);
+                p.n * p.vt() * (0.020 / p.is).ln_1p()
+            };
+            let tempco = (vf(T_NOM + 1.0) - vf(T_NOM - 1.0)) / 2.0;
+            assert!(
+                (-2.5e-3..=-1.5e-3).contains(&tempco),
+                "{color}: {tempco} V/K"
+            );
+            // 27 °C is untouched.
+            let rated = LedColor::from_str(color).forward_voltage();
+            assert!((vf(T_NOM) - rated).abs() < 1e-9, "{color}");
+        }
+    }
 }
