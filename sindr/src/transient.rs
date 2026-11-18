@@ -1330,15 +1330,85 @@ pub struct TransientConfig {
     /// `false`, every step is `tstep` (or `tmax`) except where a breakpoint
     /// or Newton failure shortens it.
     pub adaptive: bool,
-    /// Initial node voltages (V), keyed by node name, as SPICE's `.ic` with
-    /// `UIC`: each capacitor (and BJT/MOSFET parasitic capacitor) starts
-    /// charged to the difference of its nodes' values. Nodes not listed
-    /// count as 0 V.
+    /// Where the run starts: from the initial conditions alone, as if
+    /// switched on at t = 0 (the default), or from the DC operating point.
+    /// See [`TransientStart`].
+    pub start: TransientStart,
+    /// Initial node voltages (V), keyed by node name, as SPICE's `.ic`.
+    /// With [`TransientStart::InitialConditions`] (SPICE's `UIC`) each
+    /// capacitor (and BJT/MOSFET parasitic capacitor) starts charged to the
+    /// difference of its nodes' values, and nodes not listed count as 0 V.
+    /// With [`TransientStart::OperatingPoint`] these nodes are held at their
+    /// values while the operating point is solved, as SPICE does with `.ic`
+    /// and no `UIC`.
     pub initial_voltages: HashMap<String, f64>,
     /// Initial inductor currents (A), keyed by inductor or relay id, flowing
     /// from the element's first node to its second. Inductors not listed
-    /// start at 0 A.
+    /// start at 0 A, or with [`TransientStart::OperatingPoint`] at their
+    /// operating-point current. There an inductor listed here is held at its
+    /// current while the operating point is solved; a relay coil just starts
+    /// at it.
     pub initial_currents: HashMap<String, f64>,
+}
+
+/// The state a transient run starts from at t = 0.
+///
+/// ```
+/// use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig, TransientStart};
+///
+/// // 5 V through 1 kΩ into 1 µF: settled, the capacitor sits at 5 V.
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["in".into(), "0".into()],
+///             voltage: 5.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["in".into(), "out".into()],
+///             resistance: 1e3,
+///         },
+///         CircuitElement::Capacitor {
+///             id: "C1".into(),
+///             nodes: ["out".into(), "0".into()],
+///             capacitance: 1e-6,
+///         },
+///     ],
+///     ..Default::default()
+/// };
+/// // From the operating point nothing moves; switched on at t = 0, the
+/// // capacitor charges from 0 V.
+/// let at_op = TransientConfig::new(1e-3, 1e-5).with_start(TransientStart::OperatingPoint);
+/// let tran = solve_transient(&circuit, &at_op).unwrap().transient.unwrap();
+/// assert!((tran.timesteps[0].node_voltages["out"] - 5.0).abs() < 1e-6);
+///
+/// let switched_on = TransientConfig::new(1e-3, 1e-5);
+/// let tran = solve_transient(&circuit, &switched_on).unwrap().transient.unwrap();
+/// assert!(tran.timesteps[0].node_voltages["out"] < 0.1);
+/// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum TransientStart {
+    /// Start from [`initial_voltages`](TransientConfig::initial_voltages)
+    /// and [`initial_currents`](TransientConfig::initial_currents) alone:
+    /// capacitors not set are uncharged, inductors and transformer windings
+    /// not set are at 0 A, as if the circuit were switched on at t = 0.
+    /// SPICE's `.tran … UIC`. Inrush and power-on behaviour show up here.
+    #[default]
+    InitialConditions,
+    /// Start from the DC operating point, as SPICE's `.tran` without `UIC`:
+    /// capacitors open and inductors shorted, each source at its value at
+    /// t = 0, any `initial_voltages` and `initial_currents` held while it's
+    /// solved. Capacitors start charged to it, and inductors and transformer
+    /// windings carry its currents, so a circuit at rest stays at rest. The
+    /// operating point is solved without self-heating, at the ambient the
+    /// run starts from.
+    OperatingPoint,
 }
 
 /// Most steps one transient run may take.
@@ -1353,13 +1423,15 @@ impl TransientConfig {
             tmax: None,
             method: IntegrationMethod::default(),
             adaptive: true,
+            start: TransientStart::default(),
             initial_voltages: HashMap::new(),
             initial_currents: HashMap::new(),
         }
     }
 
     /// Start from these node voltages (V) instead of all-zero, as SPICE's
-    /// `.ic` with `UIC`. See [`TransientConfig::initial_voltages`].
+    /// `.ic`. See [`TransientConfig::initial_voltages`] for what they do
+    /// with each [`TransientStart`].
     ///
     /// ```
     /// use std::collections::HashMap;
@@ -1405,6 +1477,13 @@ impl TransientConfig {
         self
     }
 
+    /// Start the run from `start`: the DC operating point, or the initial
+    /// conditions alone (the default). See [`TransientStart`].
+    pub fn with_start(mut self, start: TransientStart) -> Self {
+        self.start = start;
+        self
+    }
+
     /// Step at a fixed `tstep` instead of controlling the step by local
     /// truncation error.
     pub fn with_fixed_step(mut self) -> Self {
@@ -1427,12 +1506,14 @@ impl TransientConfig {
     /// The config [`solve_circuit`](crate::solve_circuit) uses: `tstop` = 5·τ
     /// and `tstep` = τ/50 for the circuit's longest time constant τ,
     /// stretched to cover 3 periods of a periodic source at 100 steps per
-    /// period (see [`calculate_duration`]).
+    /// period (see [`calculate_duration`]). It starts from
+    /// [`TransientStart::InitialConditions`], switched on at t = 0, so the
+    /// run shows the circuit settling.
     pub fn auto(circuit: &Circuit) -> Self {
         let flat = circuit.flattened();
         let circuit: &Circuit = flat.as_deref().unwrap_or(circuit);
         let (duration, dt) = calculate_duration(circuit);
-        Self::new(duration, dt.min(duration))
+        Self::new(duration, dt.min(duration)).with_start(TransientStart::InitialConditions)
     }
 
     /// The step the stepper aims for: `tstep`, or `tmax` if that's smaller.
@@ -1564,13 +1645,19 @@ pub(crate) fn run_transient(
 
     check_initial_conditions(circuit, node_map, config)?;
 
-    // Initial state: the config's initial conditions, otherwise uncharged
-    // caps (0 V) and inductors at rest (0 A), as if the circuit were
-    // switched on at t = 0.
-    let ic = |node: &String| config.initial_voltages.get(node).copied().unwrap_or(0.0);
+    // Initial state: the DC operating point, or the config's initial
+    // conditions with uncharged caps (0 V) and inductors at rest (0 A)
+    // elsewhere, as if the circuit were switched on at t = 0.
+    let start = match config.start {
+        TransientStart::OperatingPoint => operating_point_start(circuit, config)?,
+        TransientStart::InitialConditions => Start {
+            voltages: config.initial_voltages.clone(),
+            currents: config.initial_currents.clone(),
+        },
+    };
+    let ic = |node: &String| start.voltages.get(node).copied().unwrap_or(0.0);
     let across = |a: &String, b: &String| History::at(ic(a) - ic(b));
-    let current =
-        |id: &String| History::at(config.initial_currents.get(id).copied().unwrap_or(0.0));
+    let current = |id: &String| History::at(start.currents.get(id).copied().unwrap_or(0.0));
     let mut caps: Vec<History> = Vec::new();
     let mut inds: Vec<History> = Vec::new();
     // Parasitic cap histories, keyed by "component_id-junction" ("Q1-be").
@@ -1584,9 +1671,9 @@ pub(crate) fn run_transient(
             CircuitElement::Relay { id, inductance, .. } if *inductance > 0.0 => {
                 inds.push(current(id));
             }
-            CircuitElement::Transformer { .. } => {
-                inds.push(History::default()); // primary
-                inds.push(History::default()); // secondary
+            CircuitElement::Transformer { id, .. } => {
+                inds.push(current(id)); // primary
+                inds.push(current(&secondary_winding(id))); // secondary
             }
             CircuitElement::Bjt {
                 id,
@@ -1621,6 +1708,29 @@ pub(crate) fn run_transient(
                     parasitic.insert(format!("{id}-{DIODE_CHARGE}"), History::at(q));
                 }
             }
+            CircuitElement::OpAmp {
+                id,
+                nodes,
+                v_pos,
+                v_neg,
+                model: Some(model),
+            } if config.start == TransientStart::OperatingPoint => {
+                // The gain stage starts settled at the operating point's
+                // input, so a pole doesn't drag the output from 0 V.
+                let op = crate::op_amp::OpAmpStamp {
+                    model,
+                    nodes,
+                    ground: &circuit.ground_node,
+                    v_pos: *v_pos,
+                    v_neg: *v_neg,
+                    branch: 0,
+                };
+                let vd = ic(&nodes[0]) - ic(&nodes[1]);
+                parasitic.insert(
+                    format!("{id}-{OP_AMP_STAGE}"),
+                    History::at(op.settled_stage(vd)),
+                );
+            }
             _ => {}
         }
     }
@@ -1654,11 +1764,25 @@ pub(crate) fn run_transient(
     let mut next_bp = 0;
     let mut grid = 0u64; // index of the last tstep multiple reached
 
-    // Newton starts its first step from the initial node voltages.
+    // Newton starts its first step from the initial node voltages, and an
+    // op-amp stage from where it starts.
     let mut solution = DVector::zeros(num_nodes + num_vsources);
-    for (node, v) in &config.initial_voltages {
+    for (node, v) in &start.voltages {
         if let Some(i) = node_map.index(node) {
             solution[i] = *v;
+        }
+    }
+    for component in &circuit.components {
+        if let CircuitElement::OpAmp {
+            id, model: Some(_), ..
+        } = component
+        {
+            if let (Some(branch), Some(stage)) = (
+                circuit.vsource_branch_index(id),
+                parasitic.get(&format!("{id}-{OP_AMP_STAGE}")),
+            ) {
+                solution[num_nodes + branch + 1] = stage.x1;
+            }
         }
     }
     let mut timesteps = Vec::new();
@@ -1826,6 +1950,144 @@ pub(crate) fn run_transient(
             duration: tstop,
             stats,
         }),
+    })
+}
+
+/// The state a run starts from: node voltages (V) by node name, and
+/// inductor, relay-coil and transformer-winding currents (A) by id (a
+/// transformer's secondary under [`secondary_winding`]).
+struct Start {
+    voltages: HashMap<String, f64>,
+    currents: HashMap<String, f64>,
+}
+
+/// The key a transformer's secondary-winding current goes under, the id of
+/// its second 0 V source in [`dc_equivalent`](crate::dc_equivalent).
+fn secondary_winding(id: &str) -> String {
+    format!("{id}#2")
+}
+
+/// Conductance (S) that holds an `.ic` node at its value while the
+/// operating point is solved: SPICE's, 1e10 S in a Norton with its
+/// current, so a node already held by a source isn't a singular matrix.
+const IC_CONDUCTANCE: f64 = 1e10;
+
+/// [`TransientStart::OperatingPoint`]: the DC operating point of flat,
+/// validated `circuit`, with each source at its t = 0 value, each
+/// `initial_voltages` node held there and each inductor in
+/// `initial_currents` carrying its current.
+fn operating_point_start(circuit: &Circuit, config: &TransientConfig) -> Result<Start, SimError> {
+    let mut dc = crate::dc_equivalent(circuit);
+    for component in &mut dc.components {
+        match component {
+            CircuitElement::VoltageSource {
+                voltage, waveform, ..
+            } => {
+                if let Some(w) = waveform.take() {
+                    *voltage += w.evaluate(0.0);
+                }
+            }
+            CircuitElement::CurrentSource {
+                current, waveform, ..
+            } => {
+                if let Some(w) = waveform.take() {
+                    *current += w.evaluate(0.0);
+                }
+            }
+            _ => {}
+        }
+    }
+    // An inductor given a current carries it: a current source in place
+    // of its short. (A relay coil is a resistor at DC, and just starts at
+    // its current.)
+    let inductors: HashMap<&str, f64> = circuit
+        .components
+        .iter()
+        .filter_map(|c| match c {
+            CircuitElement::Inductor { id, .. } => config
+                .initial_currents
+                .get(id)
+                .map(|&amps| (id.as_str(), amps)),
+            _ => None,
+        })
+        .collect();
+    for component in &mut dc.components {
+        if let CircuitElement::VoltageSource { id, nodes, .. } = component {
+            if let Some(&amps) = inductors.get(id.as_str()) {
+                *component = CircuitElement::CurrentSource {
+                    id: id.clone(),
+                    nodes: nodes.clone(),
+                    current: amps,
+                    waveform: None,
+                };
+            }
+        }
+    }
+    let mut held: Vec<_> = config.initial_voltages.iter().collect();
+    held.sort_by(|a, b| a.0.cmp(b.0));
+    for (node, &v) in held {
+        if *node == circuit.ground_node {
+            continue;
+        }
+        dc.components.push(CircuitElement::Resistor {
+            id: format!("#ic-r:{node}"),
+            nodes: [node.clone(), circuit.ground_node.clone()],
+            resistance: 1.0 / IC_CONDUCTANCE,
+        });
+        dc.components.push(CircuitElement::CurrentSource {
+            id: format!("#ic-i:{node}"),
+            nodes: [circuit.ground_node.clone(), node.clone()],
+            current: v * IC_CONDUCTANCE,
+            waveform: None,
+        });
+    }
+
+    let op = crate::solve_dc_circuit(&dc, &config.initial_voltages).map_err(|e| match e {
+        SimError::InvalidComponent(msg) => {
+            SimError::InvalidComponent(format!("transient operating point: {msg}"))
+        }
+        other => other,
+    })?;
+
+    let mut currents = HashMap::new();
+    for component in &circuit.components {
+        match component {
+            CircuitElement::Inductor { id, .. } => {
+                let amps = match config.initial_currents.get(id) {
+                    Some(&amps) => amps,
+                    None => op.branch_currents.get(id).copied().unwrap_or(0.0),
+                };
+                currents.insert(id.clone(), amps);
+            }
+            CircuitElement::Relay {
+                id,
+                nodes,
+                coil_resistance,
+                inductance,
+                ..
+            } if *inductance > 0.0 => {
+                let amps = match config.initial_currents.get(id) {
+                    Some(&amps) => amps,
+                    None => {
+                        let v = |n: &String| op.node_voltages.get(n).copied().unwrap_or(0.0);
+                        (v(&nodes[0]) - v(&nodes[1])) / coil_resistance
+                    }
+                };
+                currents.insert(id.clone(), amps);
+            }
+            CircuitElement::Transformer { id, .. } => {
+                let secondary = secondary_winding(id);
+                for winding in [id, &secondary] {
+                    let amps = op.branch_currents.get(winding).copied().unwrap_or(0.0);
+                    currents.insert(winding.clone(), amps);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Start {
+        voltages: op.node_voltages,
+        currents,
     })
 }
 

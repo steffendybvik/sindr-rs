@@ -135,6 +135,8 @@ pub(crate) enum RawAnalysis {
     Op,
     Tran {
         args: Vec<ParamExpr>,
+        /// The card ends in `uic`.
+        uic: bool,
     },
     Dc {
         source: String,

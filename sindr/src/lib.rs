@@ -89,7 +89,7 @@
 //! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
 //! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
 //! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
-//! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
+//! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 //!
 //! Not available: noise, distortion, pole-zero, AC sensitivity, Monte Carlo,
 //! periodic steady state, S-parameters, variable-order integration.
@@ -292,7 +292,7 @@ pub use results::{
 pub use sensitivity::{solve_sensitivity, SensConfig, SensEntry, SensParameter, SensResult};
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
 pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
-pub use transient::{solve_transient, IntegrationMethod, TransientConfig};
+pub use transient::{solve_transient, IntegrationMethod, TransientConfig, TransientStart};
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
 
@@ -427,14 +427,22 @@ pub(crate) fn solve_dc_operating_point(
     initial_voltages: &std::collections::HashMap<String, f64>,
 ) -> Result<SimulationResult, SimError> {
     validation::validate_circuit(circuit)?;
-    let dc = dc_equivalent(circuit);
+    solve_dc_circuit(&dc_equivalent(circuit), initial_voltages)
+}
 
-    let node_map = NM::from_circuit(&dc);
+/// The DC solution of `dc`, a circuit with no reactive elements left (as
+/// [`dc_equivalent`] gives), without self-heating. `initial_voltages` seeds
+/// Newton–Raphson.
+pub(crate) fn solve_dc_circuit(
+    dc: &Circuit,
+    initial_voltages: &std::collections::HashMap<String, f64>,
+) -> Result<SimulationResult, SimError> {
+    let node_map = NM::from_circuit(dc);
     let num_nodes = node_map.num_nodes();
     let num_vsources = dc.count_voltage_sources();
     if dc.has_nonlinear_elements() {
         newton_raphson::solve_nonlinear_with_initial_voltages(
-            &dc,
+            dc,
             &node_map,
             num_nodes,
             num_vsources,
@@ -442,10 +450,10 @@ pub(crate) fn solve_dc_operating_point(
         )
     } else {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(&dc, &mut system, &node_map, None)?;
+        stamp::stamp_circuit(dc, &mut system, &node_map, None)?;
         let solution = system.solve()?;
         Ok(results::extract_results(
-            &dc, &node_map, &solution, num_nodes,
+            dc, &node_map, &solution, num_nodes,
         ))
     }
 }

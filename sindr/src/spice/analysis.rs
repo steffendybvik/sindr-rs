@@ -8,14 +8,20 @@
 pub enum AnalysisRequest {
     /// `.op` — DC operating-point analysis.
     Op,
-    /// `.tran tstep tstop [tstart]` — transient analysis.
+    /// `.tran tstep tstop [tstart [tmax]] [uic]` — transient analysis.
     Tran {
         /// Print/integration step in seconds.
         tstep: f64,
         /// Stop time in seconds.
         tstop: f64,
-        /// Optional start time (`uic`-style not modelled here).
+        /// Optional start time (s). Read but not used: sindr's results
+        /// start at 0.
         tstart: Option<f64>,
+        /// Optional largest step (s), SPICE's TMAX.
+        tmax: Option<f64>,
+        /// `uic`: start from the `.ic` values alone rather than the DC
+        /// operating point (see [`TransientStart`](crate::TransientStart)).
+        uic: bool,
     },
     /// `.dc <source> start stop step` — DC sweep over a single source.
     ///
@@ -66,6 +72,13 @@ impl AnalysisRequest {
     /// request, to pass to [`solve_transient`](crate::solve_transient);
     /// `None` for any other analysis.
     ///
+    /// As SPICE, the run starts from the DC operating point
+    /// ([`TransientStart::OperatingPoint`](crate::TransientStart::OperatingPoint)),
+    /// or with `uic` from the initial conditions alone
+    /// ([`TransientStart::InitialConditions`](crate::TransientStart::InitialConditions)).
+    /// `tmax` caps the step. The deck's `.ic` values aren't in the config:
+    /// add [`ParsedNetlist::initial_conditions`](crate::spice::ParsedNetlist::initial_conditions)
+    /// with [`with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
     /// `tstart` is not applied: the result holds every step from the first
     /// one on.
     ///
@@ -82,8 +95,23 @@ impl AnalysisRequest {
     /// ```
     pub fn transient_config(&self) -> Option<crate::TransientConfig> {
         match self {
-            AnalysisRequest::Tran { tstep, tstop, .. } => {
-                Some(crate::TransientConfig::new(*tstop, *tstep))
+            AnalysisRequest::Tran {
+                tstep,
+                tstop,
+                tmax,
+                uic,
+                ..
+            } => {
+                let start = if *uic {
+                    crate::TransientStart::InitialConditions
+                } else {
+                    crate::TransientStart::OperatingPoint
+                };
+                let config = crate::TransientConfig::new(*tstop, *tstep).with_start(start);
+                Some(match tmax {
+                    Some(tmax) => config.with_tmax(*tmax),
+                    None => config,
+                })
             }
             _ => None,
         }
@@ -171,12 +199,16 @@ mod tests {
                 AnalysisRequest::Tran {
                     tstep: 1e-6,
                     tstop: 1e-3,
-                    tstart: None
+                    tstart: None,
+                    tmax: None,
+                    uic: false,
                 },
                 AnalysisRequest::Tran {
                     tstep: 10e-9,
                     tstop: 2e-3,
-                    tstart: Some(0.5e-3)
+                    tstart: Some(0.5e-3),
+                    tmax: None,
+                    uic: false,
                 },
             ]
         );
@@ -311,7 +343,9 @@ mod tests {
             vec![AnalysisRequest::Tran {
                 tstep: 1e-6,
                 tstop: 2e-3,
-                tstart: None
+                tstart: None,
+                tmax: None,
+                uic: false,
             }]
         );
     }
