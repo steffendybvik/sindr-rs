@@ -45,7 +45,7 @@ pub enum SpiceParseError {
     #[error("unknown control card '.{card}'")]
     #[diagnostic(
         code(sindr::spice::unknown_card),
-        help("supported cards: .subckt/.ends, .model, .param, .include, .lib, .tran, .dc, .ac, .op, .end")
+        help("supported cards: .subckt/.ends, .model, .param, .include, .lib, .tran, .dc, .ac, .op, .tf, .sens, .noise, .ic, .nodeset, .end")
     )]
     UnknownCard {
         /// The card name without its leading `.`.

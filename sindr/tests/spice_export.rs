@@ -194,6 +194,8 @@ fn models_round_trip() {
         is: 2.52e-9,
         n: 1.752,
         rs: 0.568,
+        kf: 1e-16,
+        af: 1.2,
         ..DiodeModel::default()
     };
     let bjt = BjtModel {
@@ -202,6 +204,8 @@ fn models_round_trip() {
         nf: 1.05,
         nr: 1.1,
         vaf: 74.03,
+        kf: 3e-15,
+        af: 1.1,
     };
     let circuit = Circuit {
         ground_node: "gnd".into(),
@@ -282,6 +286,7 @@ fn diode_charge_and_breakdown_round_trip() {
         tt: 2e-9,
         bv: Some(40.0),
         ibv: 1e-3,
+        ..DiodeModel::default()
     };
     let circuit = Circuit {
         ground_node: "0".into(),

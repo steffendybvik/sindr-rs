@@ -245,7 +245,7 @@ pub(crate) enum Port {
 }
 
 impl Port {
-    fn input(
+    pub(crate) fn input(
         circuit: &Circuit,
         node_map: &NodeMap,
         system: &SmallSignalSystem,

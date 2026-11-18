@@ -23,7 +23,7 @@ use crate::mna::MnaMatrix;
 use crate::node_map::NodeMap;
 
 /// Frequency sweep spacing.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrequencySpacing {
     /// Logarithmic spacing: `num_points` in total, evenly spaced in
     /// log10(f) from `f_start` to `f_stop`. Not points per decade.
@@ -351,7 +351,7 @@ fn two_terminal(nodes: &[String; 2], node_map: &NodeMap, g: f64) -> SmallSignalM
 
 /// Reject sweep configs that would underflow, divide by zero, or feed
 /// `log10` a non-positive value.
-fn validate_config(config: &AcConfig) -> Result<(), SimError> {
+pub(crate) fn validate_config(config: &AcConfig) -> Result<(), SimError> {
     let invalid = |msg: String| Err(SimError::InvalidComponent(format!("AC sweep: {msg}")));
 
     if config.num_points == 0 {
@@ -392,7 +392,7 @@ fn validate_config(config: &AcConfig) -> Result<(), SimError> {
 ///
 /// Expects a config that passed [`validate_config`]. A single point sweeps
 /// only `f_start`, as SPICE does for `.ac lin 1`.
-fn generate_frequencies(config: &AcConfig) -> Vec<f64> {
+pub(crate) fn generate_frequencies(config: &AcConfig) -> Vec<f64> {
     if config.num_points == 1 {
         return vec![config.f_start];
     }
@@ -434,6 +434,16 @@ pub(crate) fn bias_point(
     circuit: &Circuit,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<(NodeMap, DVector<f64>), SimError> {
+    let (node_map, dc_solution, _) = bias_point_with_result(circuit, initial_voltages)?;
+    Ok((node_map, dc_solution))
+}
+
+/// [`bias_point`], with the operating-point result it came from (device
+/// currents for noise analysis).
+pub(crate) fn bias_point_with_result(
+    circuit: &Circuit,
+    initial_voltages: &HashMap<String, f64>,
+) -> Result<(NodeMap, DVector<f64>, crate::SimulationResult), SimError> {
     let dc_result = crate::solve_dc_operating_point(circuit, initial_voltages)?;
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
@@ -457,7 +467,7 @@ pub(crate) fn bias_point(
             }
         }
     }
-    Ok((node_map, dc_solution))
+    Ok((node_map, dc_solution, dc_result))
 }
 
 /// The linearised (small-signal) MNA system of `circuit` at angular

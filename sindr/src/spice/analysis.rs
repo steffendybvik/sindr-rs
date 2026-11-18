@@ -3,7 +3,7 @@
 //! These are returned in [`crate::spice::ParsedNetlist::analyses`]. They map 1-to-1
 //! onto the analyses that `sindr` knows how to run.
 
-/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`).
+/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnalysisRequest {
     /// `.op` — DC operating-point analysis.
@@ -70,6 +70,25 @@ pub enum AnalysisRequest {
     Sens {
         /// The output whose sensitivities are wanted.
         output: crate::TfOutput,
+    },
+    /// `.noise v(node[,ref]) source <sweep> points fstart fstop` — noise
+    /// analysis. The parser checks `points` as `.ac` does, and that
+    /// `fstart` is above 0.
+    Noise {
+        /// Output node.
+        node: String,
+        /// Reference node; ground when `None`.
+        reference: Option<String>,
+        /// The source noise is referred back to.
+        input: String,
+        /// Sweep style (decade / octave / linear).
+        sweep: AcSweep,
+        /// Points per decade or octave, or the total for linear.
+        points: usize,
+        /// Start frequency in Hz.
+        fstart: f64,
+        /// Stop frequency in Hz.
+        fstop: f64,
     },
 }
 
@@ -215,6 +234,59 @@ impl AnalysisRequest {
             }),
             _ => None,
         }
+    }
+
+    /// The [`NoiseConfig`](crate::NoiseConfig) for a `.noise` request, to
+    /// pass to [`solve_noise`](crate::solve_noise); `None` for any other
+    /// analysis. A `dec` or `oct` sweep's per-decade or per-octave count
+    /// becomes the total over the band, both ends included.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 0\nR1 in out 1k\nC1 out 0 1u\n.noise v(out) v1 dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].noise_config().unwrap();
+    /// assert_eq!(config.num_points, 51);
+    /// let noise = sindr::solve_noise(&netlist.circuit, &config)?;
+    /// // 1 kΩ's thermal noise, √(4kTR), well below the pole.
+    /// assert!((noise.points[0].output_density() - 4.0713e-9).abs() < 1e-12);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn noise_config(&self) -> Option<crate::NoiseConfig> {
+        let AnalysisRequest::Noise {
+            node,
+            reference,
+            input,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        } = self
+        else {
+            return None;
+        };
+        let span = |base: f64| (fstop / fstart).log(base);
+        let (num_points, spacing) = match sweep {
+            AcSweep::Dec => (
+                (*points as f64 * span(10.0)).round() as usize + 1,
+                crate::ac_analysis::FrequencySpacing::Logarithmic,
+            ),
+            AcSweep::Oct => (
+                (*points as f64 * span(2.0)).round() as usize + 1,
+                crate::ac_analysis::FrequencySpacing::Logarithmic,
+            ),
+            AcSweep::Lin => (*points, crate::ac_analysis::FrequencySpacing::Linear),
+        };
+        Some(crate::NoiseConfig {
+            output: node.clone(),
+            reference: reference.clone(),
+            input_source: input.clone(),
+            f_start: *fstart,
+            f_stop: *fstop,
+            num_points,
+            spacing,
+        })
     }
 
     /// The [`SensConfig`](crate::SensConfig) for a `.sens` request, to pass
@@ -417,6 +489,36 @@ mod tests {
     }
 
     #[test]
+    fn noise_card() {
+        assert_eq!(
+            analyses(".noise V(out, 0) V1 oct 4 10 1k 1"),
+            vec![AnalysisRequest::Noise {
+                node: "out".into(),
+                reference: Some("0".into()),
+                input: "v1".into(),
+                sweep: AcSweep::Oct,
+                points: 4,
+                fstart: 10.0,
+                fstop: 1e3,
+            }]
+        );
+        let config = analyses(".noise v(in) v1 oct 4 10 1280")[0]
+            .noise_config()
+            .unwrap();
+        // 7 octaves at 4 per octave, both ends.
+        assert_eq!(config.num_points, 29);
+        for card in [
+            ".noise i(v1) v1 dec 10 1 1k",
+            ".noise v(in) v1 dec 10 0 1k",
+            ".noise v(in) v1 dec 10 1k 1",
+            ".noise v(in) v1 log 10 1 1k",
+        ] {
+            let deck = format!("* noise\nV1 in 0 1\nR1 in 0 1k\n{card}\n.end\n");
+            assert!(parse_str(&deck).is_err(), "{card}");
+        }
+    }
+
+    #[test]
     fn directives_keep_source_order() {
         let kinds: Vec<&str> = analyses(".ac lin 2 1 2\n.op\n.tran 1u 1m\n.dc V1 0 1 1")
             .iter()
@@ -427,6 +529,7 @@ mod tests {
                 AnalysisRequest::Ac { .. } => "ac",
                 AnalysisRequest::Tf { .. } => "tf",
                 AnalysisRequest::Sens { .. } => "sens",
+                AnalysisRequest::Noise { .. } => "noise",
             })
             .collect();
         assert_eq!(kinds, ["ac", "op", "tran", "dc"]);

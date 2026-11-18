@@ -246,6 +246,7 @@ fn bjt_model_ac_matches_dc() {
         nf: 1.05,
         nr: 1.1,
         vaf: 74.03,
+        ..BjtModel::default()
     };
     for (kind, biases) in [
         (BjtKind::Npn, [0.3, 0.9, 1.5, 6.0]),

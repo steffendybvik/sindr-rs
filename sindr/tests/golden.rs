@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use num_complex::Complex64;
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::noise::{solve_noise, NoiseConfig, NoiseResult};
 use sindr::spice::{parse_file, to_netlist};
 use sindr::{
     dc_sweep, solve_circuit, temperature_sweep, Circuit, CircuitElement, JfetKind, MosfetKind,
@@ -539,6 +540,127 @@ fn ac_bjt_ce() {
         5,
         (10.0, 100e3),
         OP_V,
+    );
+}
+
+// ---------------------------------------------------------------- noise
+
+fn noise(
+    circuit: &Circuit,
+    source: &str,
+    node: &str,
+    per_decade: usize,
+    f: (f64, f64),
+) -> NoiseResult {
+    let decades = (f.1 / f.0).log10().round() as usize;
+    solve_noise(
+        circuit,
+        &NoiseConfig {
+            output: node.into(),
+            reference: None,
+            input_source: source.into(),
+            f_start: f.0,
+            f_stop: f.1,
+            num_points: decades * per_decade + 1,
+            spacing: FrequencySpacing::Logarithmic,
+        },
+    )
+    .unwrap_or_else(|e| panic!("noise: {e}"))
+}
+
+fn check_noise(case: &'static str, result: &NoiseResult, tol: Tol) {
+    let golden = Golden::load(case);
+    let scale = golden.scale();
+    let freqs: Vec<f64> = result.points.iter().map(|p| p.frequency).collect();
+    let onoise: Vec<f64> = result.points.iter().map(|p| p.output_density()).collect();
+    let inoise: Vec<f64> = result.points.iter().map(|p| p.input_density()).collect();
+    let mut check = Check::new(case);
+    check.series(
+        "frequency",
+        &scale,
+        &freqs,
+        &scale,
+        Tol {
+            rel: 1e-8,
+            abs: 0.0,
+        },
+    );
+    check.series(
+        "onoise_spectrum",
+        &scale,
+        &onoise,
+        &golden.column("onoise_spectrum"),
+        tol,
+    );
+    check.series(
+        "inoise_spectrum",
+        &scale,
+        &inoise,
+        &golden.column("inoise_spectrum"),
+        tol,
+    );
+    check.finish();
+}
+
+/// Resistor thermal noise through an RC: 4kTR at the bottom of the band,
+/// rolling off past the pole.
+#[test]
+fn noise_rc_lowpass() {
+    let result = noise(&parse("noise_rc_lowpass"), "v1", "out", 10, (1.0, 100e3));
+    check_noise(
+        "noise_rc_lowpass",
+        &result,
+        Tol {
+            rel: 1e-6,
+            abs: 0.0,
+        },
+    );
+}
+
+/// The band totals, which ngspice integrates as a power law between points.
+///
+/// Only `onoise_total` is compared. Referred to V1, the RC's noise is R1's
+/// flat 4kTR, so `inoise_total` is exactly √(4kTR·(f_stop − f_start)), which
+/// sindr gives. ngspice's 1.444 µV is about 11 % high: its input-noise
+/// integral applies each point's gain to both ends of the interval before
+/// it, which is off wherever the gain is rolling off.
+#[test]
+fn noise_rc_total() {
+    let result = noise(&parse("noise_rc_total"), "v1", "out", 10, (1.0, 100e3));
+    let golden = Golden::load("noise_rc_total");
+    let mut check = Check::new("noise_rc_total");
+    let tol = Tol {
+        rel: 1e-4,
+        abs: 0.0,
+    };
+    check.value(
+        "onoise_total",
+        result.total_output_noise,
+        golden.column("onoise_total")[0],
+        tol,
+    );
+    check.finish();
+
+    let four_ktr: f64 = 4.0 * 1.380_649e-23 * 300.15 * 1e3;
+    let exact = (four_ktr * (100e3 - 1.0)).sqrt();
+    assert!(
+        (result.total_input_noise / exact - 1.0).abs() < 1e-9,
+        "inoise_total {} vs {exact}",
+        result.total_input_noise
+    );
+}
+
+/// Collector and base shot noise of a biased NPN, through the stage's gain.
+#[test]
+fn noise_bjt_ce() {
+    let result = noise(&parse("noise_bjt_ce"), "vin", "c", 5, (10.0, 100e3));
+    check_noise(
+        "noise_bjt_ce",
+        &result,
+        Tol {
+            rel: 1e-5,
+            abs: 0.0,
+        },
     );
 }
 

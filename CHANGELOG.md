@@ -115,6 +115,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   way SPICE steps (callers used to truncate `(stop − start) / step`).
 - `dc_sweep` sweeps current sources too; `.dc` accepted them, but running
   the sweep failed.
+- Noise analysis, SPICE's `.noise`: `solve_noise` with `NoiseConfig` gives
+  output and input-referred noise density, each source's contribution and
+  band totals. It covers thermal noise (resistors, potentiometers,
+  thermistors, photoresistors, FET channels), shot noise (diodes and BJT
+  junctions) and flicker noise (`KF`, `AF`). Validated against ngspice on
+  an RC filter (kT/C) and a BJT common-emitter stage. `.noise v(out[,ref])
+  src dec|oct|lin n f1 f2` is parsed, and `KF`/`AF` are read from `D` and
+  `NPN`/`PNP` cards and written by `to_netlist`.
 
 ### Changed
 
@@ -126,6 +134,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `dc_sweep` starts each point's Newton–Raphson from the previous point,
   as SPICE does, so a curve stays on one branch of a circuit with several
   operating points. Results move only within Newton's tolerance.
+- **Breaking:** `DiodeModel`, `BjtModel` and `MosfetParams` have new `kf`
+  and `af` fields (struct literals need `..Default::default()`; JSON
+  without them still loads), and `AnalysisRequest` has a new `Noise`
+  variant.
 - **Breaking:** `CircuitElement::Diode` and `CircuitElement::Bjt` have a new
   `model` field; struct literals need `model: None` for the old behaviour.
   JSON without it still loads.
