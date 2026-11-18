@@ -97,9 +97,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `TempSweepResult`. One row per point, with the scale first, then
   `v(<node>)` and `i(<id>)` columns (`re(…)`/`im(…)` for AC). Numbers read
   back exactly. No new dependency.
+- Transient start from the DC operating point: `TransientConfig::start`
+  and `with_start(TransientStart::OperatingPoint)`. Capacitors start
+  charged, and inductors and transformer windings carry their DC currents,
+  with sources at their t = 0 value and any `.ic` nodes and inductor
+  currents held while it's solved, as SPICE's `.tran` without `UIC`. The
+  default stays `TransientStart::InitialConditions` (switched on at t = 0),
+  so existing runs don't change.
+- SPICE `.tran` reads `tmax` and `uic` (`.tran tstep tstop [tstart [tmax]]
+  [uic]`), and `transient_config()` starts from the operating point unless
+  `uic` is given, as ngspice does. `uic` used to be dropped without a word,
+  and a `tmax` was a parse error.
 
 ### Changed
 
+- **Breaking:** `AnalysisRequest::Tran` has new `tmax` and `uic` fields;
+  patterns need `..`. A deck's `transient_config()` now starts from the
+  operating point unless the card says `uic`.
 - **Breaking:** `CircuitElement::Diode` and `CircuitElement::Bjt` have a new
   `model` field; struct literals need `model: None` for the old behaviour.
   JSON without it still loads.

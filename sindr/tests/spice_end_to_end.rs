@@ -72,6 +72,7 @@ fn parse_file_rc() {
             tstep,
             tstop,
             tstart,
+            ..
         } => {
             assert_relative_eq!(*tstep, 1e-6, epsilon = 1e-15);
             assert_relative_eq!(*tstop, 5e-3, epsilon = 1e-15);
