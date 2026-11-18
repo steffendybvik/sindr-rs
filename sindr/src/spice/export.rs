@@ -551,12 +551,32 @@ impl<'a> Deck<'a> {
             Some((_, n)) => n.clone(),
             None => {
                 let n = format!("dmod{}", self.diode_models.len() + 1);
-                self.models.push(format!(
-                    ".model {n} D(IS={} N={} RS={})",
+                let mut card = format!(
+                    ".model {n} D(IS={} N={} RS={}",
                     num(id, "is", model.is)?,
                     num(id, "n", model.n)?,
                     num(id, "rs", model.rs)?
-                ));
+                );
+                // Charge and breakdown only when set, so a plain diode's
+                // card reads as it always has.
+                let default = DiodeModel::default();
+                for (key, field, value, unset) in [
+                    ("CJO", "cjo", model.cjo, default.cjo),
+                    ("VJ", "vj", model.vj, default.vj),
+                    ("M", "m", model.m, default.m),
+                    ("FC", "fc", model.fc, default.fc),
+                    ("TT", "tt", model.tt, default.tt),
+                    ("IBV", "ibv", model.ibv, default.ibv),
+                ] {
+                    if value != unset {
+                        card.push_str(&format!(" {key}={}", num(id, field, value)?));
+                    }
+                }
+                if let Some(bv) = model.bv {
+                    card.push_str(&format!(" BV={}", num(id, "bv", bv)?));
+                }
+                card.push(')');
+                self.models.push(card);
                 self.diode_models.push((model, n.clone()));
                 n
             }
@@ -695,6 +715,7 @@ fn shockley(params: DiodeParams) -> DiodeModel {
         is: params.is,
         n: params.n,
         rs: params.rs,
+        ..DiodeModel::default()
     }
 }
 

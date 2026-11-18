@@ -194,6 +194,7 @@ fn models_round_trip() {
         is: 2.52e-9,
         n: 1.752,
         rs: 0.568,
+        ..DiodeModel::default()
     };
     let bjt = BjtModel {
         is: 6.734e-15,
@@ -265,6 +266,70 @@ fn models_round_trip() {
         &circuit,
         &solve_circuit(&circuit).unwrap(),
         &solve_circuit(&back).unwrap(),
+    );
+}
+
+#[test]
+fn diode_charge_and_breakdown_round_trip() {
+    let model = DiodeModel {
+        is: 31.7e-6,
+        n: 1.373,
+        rs: 0.051,
+        cjo: 110e-12,
+        vj: 0.3,
+        m: 0.35,
+        fc: 0.4,
+        tt: 2e-9,
+        bv: Some(40.0),
+        ibv: 1e-3,
+    };
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            CircuitElement::VoltageSource {
+                id: "V1".into(),
+                nodes: ["a".into(), "0".into()],
+                voltage: 0.2,
+                waveform: None,
+            },
+            CircuitElement::Resistor {
+                id: "R1".into(),
+                nodes: ["a".into(), "b".into()],
+                resistance: 10.0,
+            },
+            CircuitElement::Diode {
+                id: "D1".into(),
+                nodes: ["b".into(), "0".into()],
+                temperature: 300.15,
+                model: Some(model),
+            },
+        ],
+        ..Default::default()
+    };
+    let deck = to_netlist(&circuit, "schottky").unwrap();
+    assert!(
+        deck.contains("CJO=1.1e-10 VJ=0.3 M=0.35 FC=0.4 TT=2e-9 BV=40"),
+        "{deck}"
+    );
+    let back = parse_str(&deck).unwrap().circuit;
+    assert!(matches!(
+        &back.components[2],
+        CircuitElement::Diode { model: Some(m), .. } if *m == model
+    ));
+
+    // A plain card stays as it was.
+    let plain = DiodeModel {
+        rs: 0.5,
+        ..DiodeModel::default()
+    };
+    let mut circuit = circuit;
+    if let CircuitElement::Diode { model, .. } = &mut circuit.components[2] {
+        *model = Some(plain);
+    }
+    let deck = to_netlist(&circuit, "plain").unwrap();
+    assert!(
+        deck.contains(".model dmod1 D(IS=1e-14 N=1 RS=0.5)\n"),
+        "{deck}"
     );
 }
 
