@@ -108,12 +108,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [uic]`), and `transient_config()` starts from the operating point unless
   `uic` is given, as ngspice does. `uic` used to be dropped without a word,
   and a `tmax` was a parse error.
+- Two-source DC sweeps: `dc_sweep_nested(circuit, inner, outer)` with
+  `DcSweepAxis` gives a `DcSweepResult` along the inner source for each
+  value of the outer one, for device curve families. SPICE `.dc` takes a
+  second source (`.dc VDS 0 5 0.1 VGS 0 3 0.5`), and
+  `AnalysisRequest::dc_axes()` turns a card into axes, counting points the
+  way SPICE steps (callers used to truncate `(stop − start) / step`).
+- `dc_sweep` sweeps current sources too; `.dc` accepted them, but running
+  the sweep failed.
 
 ### Changed
 
 - **Breaking:** `AnalysisRequest::Tran` has new `tmax` and `uic` fields;
   patterns need `..`. A deck's `transient_config()` now starts from the
   operating point unless the card says `uic`.
+- **Breaking:** `AnalysisRequest::Dc` has a new `outer` field; patterns
+  need `..`.
+- `dc_sweep` starts each point's Newton–Raphson from the previous point,
+  as SPICE does, so a curve stays on one branch of a circuit with several
+  operating points. Results move only within Newton's tolerance.
 - **Breaking:** `CircuitElement::Diode` and `CircuitElement::Bjt` have a new
   `model` field; struct literals need `model: None` for the old behaviour.
   JSON without it still loads.

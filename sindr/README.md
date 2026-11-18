@@ -423,7 +423,7 @@ Entries cover resistance, voltage and current source values, VCVS gain and VCCS 
 
 ## DC sweep
 
-Sweep a voltage source across a range and collect operating points at each step.
+Sweep a voltage or current source across a range and collect operating points at each step. Each point's Newton–Raphson starts from the one before, as in SPICE.
 
 ```rust
 use sindr::{Circuit, CircuitElement, dc_sweep};
@@ -433,6 +433,24 @@ let sweep = dc_sweep(&circuit, "V1", 0.0, 5.0, 51)?;
 let v_curve = sweep.node_voltage_curve("n2");
 let i_curve = sweep.component_current_curve("D1");
 ```
+
+Two sources, one inside the other (SPICE's `.dc VDS 0 5 0.1 VGS 0 3 0.5`), draw a family of device curves: one `DcSweepResult` along the inner source per value of the outer one.
+
+```rust
+use sindr::{dc_sweep_nested, dc_sweep::DcSweepAxis};
+
+let family = dc_sweep_nested(
+    &circuit,
+    &DcSweepAxis::from_step("VDS", 0.0, 5.0, 0.1)?, // inner, fastest
+    &DcSweepAxis::from_step("VGS", 0.0, 3.0, 0.5)?, // outer
+)?;
+for curve in &family.curves {
+    let id_vs_vds = curve.sweep.component_current_curve("M1");
+    println!("VGS = {} V: {} points", curve.outer_value, id_vs_vds.len());
+}
+```
+
+A parsed `.dc` card gives its axes with `analysis.dc_axes()`.
 
 ## Temperature sweep
 

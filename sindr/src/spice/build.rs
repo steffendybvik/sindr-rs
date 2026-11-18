@@ -590,20 +590,57 @@ fn check_sweep_source(
     analysis: AnalysisRequest,
     components: &[CircuitElement],
 ) -> Result<AnalysisRequest, SpiceParseError> {
-    if let AnalysisRequest::Dc { source, .. } = &analysis {
-        let found = components.iter().any(|c| {
-            matches!(
-                c,
-                CircuitElement::VoltageSource { .. } | CircuitElement::CurrentSource { .. }
-            ) && c.id().eq_ignore_ascii_case(source)
-        });
-        if !found {
-            return Err(card_error(format!(
-                "`.dc` sweeps `{source}`, which is not a voltage or current source in the deck"
-            )));
+    if let AnalysisRequest::Dc { source, outer, .. } = &analysis {
+        let sources = std::iter::once(source).chain(outer.as_ref().map(|o| &o.source));
+        for source in sources {
+            let found = components.iter().any(|c| {
+                matches!(
+                    c,
+                    CircuitElement::VoltageSource { .. } | CircuitElement::CurrentSource { .. }
+                ) && c.id().eq_ignore_ascii_case(source)
+            });
+            if !found {
+                return Err(card_error(format!(
+                    "`.dc` sweeps `{source}`, which is not a voltage or current source in the deck"
+                )));
+            }
+        }
+        if let Some(o) = outer {
+            if o.source.eq_ignore_ascii_case(source) {
+                return Err(card_error(format!(
+                    "`.dc` sweeps `{source}` twice; the two sources must differ"
+                )));
+            }
         }
     }
     Ok(analysis)
+}
+
+/// `start stop step` of one `.dc` source, evaluated and checked.
+fn build_dc_axis(
+    args: &[ParamExpr],
+    scope: &ParamScope,
+) -> Result<(f64, f64, f64), SpiceParseError> {
+    if args.len() != 3 {
+        return Err(SpiceParseError::ArityMismatch {
+            card: ".dc".to_string(),
+            expected: "3 args after source name (start stop step)".to_string(),
+            got: args.len(),
+            src: NamedSource::new("<build>", String::new()),
+            bad_span: (0, 0).into(),
+        });
+    }
+    let start = eval_finite(&args[0], scope, ".dc", "start")?;
+    let stop = eval_finite(&args[1], scope, ".dc", "stop")?;
+    let step = eval_finite(&args[2], scope, ".dc", "step")?;
+    // A zero step never reaches stop, and one pointing away from it
+    // never gets there either.
+    if start != stop && (step == 0.0 || (stop - start).signum() != step.signum()) {
+        return Err(card_error(format!(
+            "`.dc` step {step} doesn't move from {start} towards {stop}"
+        )));
+    }
+    Ok((start, stop, step))
 }
 
 fn build_analysis(
@@ -640,31 +677,30 @@ fn build_analysis(
                 uic: *uic,
             })
         }
-        RawAnalysis::Dc { source, args } => {
-            if args.len() != 3 {
-                return Err(SpiceParseError::ArityMismatch {
-                    card: ".dc".to_string(),
-                    expected: "3 args after source name (start stop step)".to_string(),
-                    got: args.len(),
-                    src: NamedSource::new("<build>", String::new()),
-                    bad_span: (0, 0).into(),
-                });
-            }
-            let start = eval_finite(&args[0], scope, ".dc", "start")?;
-            let stop = eval_finite(&args[1], scope, ".dc", "stop")?;
-            let step = eval_finite(&args[2], scope, ".dc", "step")?;
-            // A zero step never reaches stop, and one pointing away from it
-            // never gets there either.
-            if start != stop && (step == 0.0 || (stop - start).signum() != step.signum()) {
-                return Err(card_error(format!(
-                    "`.dc` step {step} doesn't move from {start} towards {stop}"
-                )));
-            }
+        RawAnalysis::Dc {
+            source,
+            args,
+            outer,
+        } => {
+            let (start, stop, step) = build_dc_axis(args, scope)?;
+            let outer = match outer {
+                Some((source, args)) => {
+                    let (start, stop, step) = build_dc_axis(args, scope)?;
+                    Some(super::analysis::DcSweepSpec {
+                        source: source.clone(),
+                        start,
+                        stop,
+                        step,
+                    })
+                }
+                None => None,
+            };
             Ok(AnalysisRequest::Dc {
                 source: source.clone(),
                 start,
                 stop,
                 step,
+                outer,
             })
         }
         RawAnalysis::Sens { output } => Ok(AnalysisRequest::Sens {
@@ -1078,6 +1114,7 @@ mod tests {
                     ParamExpr::Number(f64::NAN),
                     ParamExpr::Number(1.0),
                 ],
+                outer: None,
             },
             Span::detached(),
         )];
@@ -1171,6 +1208,7 @@ mod tests {
                         ParamExpr::Ref("vcc".to_string()),
                         ParamExpr::Number(1.0),
                     ],
+                    outer: None,
                 },
                 Span::detached(),
             ),
@@ -1182,6 +1220,7 @@ mod tests {
                 start,
                 stop,
                 step,
+                ..
             } => {
                 assert_eq!(source, "V1");
                 assert_eq!(*start, 0.0);

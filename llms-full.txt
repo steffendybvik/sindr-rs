@@ -541,7 +541,7 @@ Entries cover resistance, voltage and current source values, VCVS gain and VCCS 
 
 ### DC sweep
 
-Sweep a voltage source across a range and collect operating points at each step.
+Sweep a voltage or current source across a range and collect operating points at each step. Each point's Newton–Raphson starts from the one before, as in SPICE.
 
 ```rust
 use sindr::{Circuit, CircuitElement, dc_sweep};
@@ -551,6 +551,24 @@ let sweep = dc_sweep(&circuit, "V1", 0.0, 5.0, 51)?;
 let v_curve = sweep.node_voltage_curve("n2");
 let i_curve = sweep.component_current_curve("D1");
 ```
+
+Two sources, one inside the other (SPICE's `.dc VDS 0 5 0.1 VGS 0 3 0.5`), draw a family of device curves: one `DcSweepResult` along the inner source per value of the outer one.
+
+```rust
+use sindr::{dc_sweep_nested, dc_sweep::DcSweepAxis};
+
+let family = dc_sweep_nested(
+    &circuit,
+    &DcSweepAxis::from_step("VDS", 0.0, 5.0, 0.1)?, // inner, fastest
+    &DcSweepAxis::from_step("VGS", 0.0, 3.0, 0.5)?, // outer
+)?;
+for curve in &family.curves {
+    let id_vs_vds = curve.sweep.component_current_curve("M1");
+    println!("VGS = {} V: {} points", curve.outer_value, id_vs_vds.len());
+}
+```
+
+A parsed `.dc` card gives its axes with `analysis.dc_axes()`.
 
 ### Temperature sweep
 
@@ -972,7 +990,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | Analysis | Supported | Notes |
 |----------|-----------|-------|
 | `.op` (operating point) | ✅ | via `solve_circuit` |
-| `.dc` (DC sweep) | ✅ | one source at a time |
+| `.dc` (DC sweep) | ✅ | one source (`dc_sweep`) or two nested (`dc_sweep_nested`), voltage or current |
 | `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` ignored |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
@@ -983,7 +1001,6 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
 | Monte Carlo / worst-case / corner analysis | ❌ | no parameter-distribution sampling |
 | `.fft` on transient output | ❌ | user-side only |
-| Two-source / nested DC sweep | ❌ | single source per call |
 | Periodic steady-state (PSS / shooting / harmonic balance) | ❌ | relevant for switching converters, RF |
 | S-parameter / two-port extraction | ❌ | |
 | Stability / loop-gain (middlebrook, Tian) | ❌ | |
@@ -1277,14 +1294,17 @@ impl AcResult {
 
 DC parameter sweep module.
 
-Sweeps a voltage source value across a range and collects operating point
-results at each step. Used for generating I-V curves and transfer characteristics.
+Sweeps a voltage or current source across a range and collects operating
+point results at each step ([`dc_sweep`]), or two sources, one inside the
+other ([`dc_sweep_nested`]). Used for generating I-V curves, families of
+device curves and transfer characteristics.
 
 ```rust
 /// One operating point of a DC sweep: the sweep value and the full result
 /// at that value.
 pub struct DcSweepPoint {
-    /// The voltage applied to the swept source at this point (V).
+    /// The value of the swept source at this point (V, or A for a current
+    /// source).
     pub sweep_value: f64,
     /// Full simulation result at this sweep value.
     pub result: SimulationResult,
@@ -1315,27 +1335,76 @@ impl DcSweepResult {
     pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> { … }
 }
 
-/// Sweeps a voltage source across a range and solves the operating point at
-/// each step.
+/// One axis of a DC sweep: a source and the values it takes, `num_points`
+/// of them evenly spaced from `start` to `stop`, both included.
+///
+/// ```
+/// use sindr::dc_sweep::DcSweepAxis;
+///
+/// // SPICE's `V1 0 1 0.1`: 0, 0.1, …, 1 V, eleven points.
+/// let axis = DcSweepAxis::from_step("V1", 0.0, 1.0, 0.1).unwrap();
+/// assert_eq!(axis.num_points, 11);
+/// assert_eq!(axis.stop, 1.0);
+/// ```
+pub struct DcSweepAxis {
+    /// Id of the [`VoltageSource`](CircuitElement::VoltageSource) or
+    /// [`CurrentSource`](CircuitElement::CurrentSource) to sweep.
+    pub source_id: String,
+    /// First value (V or A).
+    pub start: f64,
+    /// Last value (V or A).
+    pub stop: f64,
+    /// Points including both ends. At least 2, or 1 when `start == stop`.
+    pub num_points: usize,
+}
+
+impl DcSweepAxis {
+    /// `num_points` values of `source_id` from `start` to `stop`.
+    pub fn new(source_id: impl Into<String>, start: f64, stop: f64, num_points: usize) -> Self { … }
+
+    /// SPICE's `.dc` form: from `start` in steps of `step` for as long as
+    /// it doesn't pass `stop`. When `step` doesn't divide the span, the last
+    /// value is short of `stop`, as in SPICE.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::InvalidComponent`] for a value that isn't finite, a step
+    /// that is zero (with `start != stop`) or points away from `stop`, or
+    /// more than 10⁷ points.
+    pub fn from_step(
+        source_id: impl Into<String>,
+        start: f64,
+        stop: f64,
+        step: f64,
+    ) -> Result<Self, SimError> { … }
+}
+
+/// Sweeps a voltage or current source across a range and solves the
+/// operating point at each step.
 ///
 /// Used for generating I-V curves and transfer characteristics. The returned
 /// [`DcSweepResult`] has helpers to pull out plottable curves for any node
-/// voltage or component current.
+/// voltage or component current. Each point's Newton–Raphson starts from
+/// the previous point's solution, as in SPICE, so a curve follows one
+/// branch of a circuit with several operating points.
 ///
 /// # Arguments
 ///
 /// - `circuit` — the base circuit (unchanged; each sweep point gets a
 ///   modified copy)
 /// - `source_id` — id of the [`VoltageSource`](CircuitElement::VoltageSource)
-///   to sweep
-/// - `start`, `stop` — sweep endpoints (V), inclusive
+///   or [`CurrentSource`](CircuitElement::CurrentSource) to sweep
+/// - `start`, `stop` — sweep endpoints (V or A), inclusive
 /// - `num_points` — total points including both endpoints (minimum 2)
+///
+/// For two sources at once, as SPICE's `.dc V1 … V2 …`, see
+/// [`dc_sweep_nested`].
 ///
 /// # Errors
 ///
 /// - [`SimError::InvalidComponent`] if `num_points < 2` or above 10⁷, `start` or `stop`
-///   is not finite, or `source_id` doesn't match any voltage source in the
-///   circuit
+///   is not finite, or `source_id` doesn't match any voltage or current
+///   source in the circuit
 /// - Any [`SimError`] returned by [`solve_circuit`](crate::solve_circuit)
 ///   at one of the sweep points (propagated immediately)
 ///
@@ -1377,6 +1446,87 @@ pub fn dc_sweep(
     stop: f64,
     num_points: usize,
 ) -> Result<DcSweepResult, SimError> { … }
+
+/// A two-source DC sweep: one [`DcSweepResult`] along the inner source per
+/// value of the outer one.
+pub struct NestedDcSweepResult {
+    /// Component id of the outer (slower) source.
+    pub outer_source_id: String,
+    /// One curve per outer value, in sweep order.
+    pub curves: Vec<NestedDcSweepCurve>,
+}
+
+/// One curve of a [`NestedDcSweepResult`]: the inner sweep at one value of
+/// the outer source.
+pub struct NestedDcSweepCurve {
+    /// The outer source's value for this curve (V or A).
+    pub outer_value: f64,
+    /// The inner sweep at that value.
+    pub sweep: DcSweepResult,
+}
+
+/// Sweeps two sources, `inner` fastest: for each value of `outer`, a full
+/// sweep of `inner`. SPICE's `.dc SRC1 … SRC2 …`, with `SRC1` as `inner`.
+/// This is how a family of device curves is drawn: a MOSFET's drain current
+/// against V_DS for each V_GS, or a BJT's collector current against V_CE
+/// for each base current.
+///
+/// Each point's Newton–Raphson starts from its neighbour along the inner
+/// axis, and each curve's first point from the first point of the curve
+/// before.
+///
+/// # Errors
+///
+/// [`SimError::InvalidComponent`] for an axis with fewer than 2 points (1 is
+/// allowed when its `start` and `stop` are equal), values that aren't
+/// finite, a source that isn't a voltage or current source in the circuit,
+/// both axes on the same source, or more than 10⁷ points in all; and any
+/// error from [`solve_circuit`](crate::solve_circuit) at a point.
+///
+/// # Example
+///
+/// ```
+/// use sindr::{dc_sweep_nested, Circuit, CircuitElement};
+/// use sindr::dc_sweep::DcSweepAxis;
+///
+/// // Two sources into a 1 kΩ: the current is (V1 + V2) / 1 kΩ.
+/// let circuit = Circuit::new(
+///     "0",
+///     vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["a".into(), "b".into()],
+///             voltage: 0.0,
+///             waveform: None,
+///         },
+///         CircuitElement::VoltageSource {
+///             id: "V2".into(),
+///             nodes: ["b".into(), "0".into()],
+///             voltage: 0.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["a".into(), "0".into()],
+///             resistance: 1e3,
+///         },
+///     ],
+/// );
+/// let sweep = dc_sweep_nested(
+///     &circuit,
+///     &DcSweepAxis::new("V1", 0.0, 1.0, 3),
+///     &DcSweepAxis::new("V2", 0.0, 2.0, 2),
+/// )
+/// .unwrap();
+/// assert_eq!(sweep.curves.len(), 2);
+/// let last = sweep.curves[1].sweep.component_current_curve("R1");
+/// assert!((last[2].1 - 3e-3).abs() < 1e-12); // (1 V + 2 V) / 1 kΩ
+/// ```
+pub fn dc_sweep_nested(
+    circuit: &Circuit,
+    inner: &DcSweepAxis,
+    outer: &DcSweepAxis,
+) -> Result<NestedDcSweepResult, SimError> { … }
 ```
 
 ## `sindr/src/error.rs`
@@ -1650,7 +1800,7 @@ hierarchy is [`SimError::Design`].
 | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
-| DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
+| DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`) |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
 | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
@@ -1847,7 +1997,7 @@ pub use sindr_core::waveform;
 
 pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
 
-pub use dc_sweep::{dc_sweep, DcSweepResult};
+pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 
@@ -2824,13 +2974,17 @@ pub enum AnalysisRequest {
         /// operating point (see [`TransientStart`](crate::TransientStart)).
         uic: bool,
     },
-    /// `.dc <source> start stop step` — DC sweep over a single source.
+    /// `.dc <source> start stop step [<source2> start2 stop2 step2]` — DC
+    /// sweep over one source, or two with the first inside the second.
     ///
-    /// The parser checks that `source` is a voltage or current source in the
-    /// deck, and that `step` is non-zero and points from `start` towards
-    /// `stop` (any step when they are equal).
+    /// The parser checks that each source is a voltage or current source in
+    /// the deck, that the two differ, and that each step is non-zero and
+    /// points from its start towards its stop (any step when they are
+    /// equal). [`dc_axes`](Self::dc_axes) turns it into the axes
+    /// [`dc_sweep`](crate::dc_sweep()) and
+    /// [`dc_sweep_nested`](crate::dc_sweep_nested) take.
     Dc {
-        /// Source id being swept.
+        /// Source id being swept (the inner, faster sweep when there are two).
         source: String,
         /// Sweep start value.
         start: f64,
@@ -2838,6 +2992,8 @@ pub enum AnalysisRequest {
         stop: f64,
         /// Sweep step.
         step: f64,
+        /// The second, outer source, if the card names one.
+        outer: Option<DcSweepSpec>,
     },
     /// `.ac <sweep> points fstart fstop` — small-signal AC sweep.
     ///
@@ -2868,7 +3024,50 @@ pub enum AnalysisRequest {
     },
 }
 
+/// The outer source of a two-source `.dc`: `<source> start stop step`.
+pub struct DcSweepSpec {
+    /// Source id being swept.
+    pub source: String,
+    /// Sweep start value.
+    pub start: f64,
+    /// Sweep stop value.
+    pub stop: f64,
+    /// Sweep step.
+    pub step: f64,
+}
+
 impl AnalysisRequest {
+    /// The sweep axes of a `.dc` request: the inner source, and the outer
+    /// one if the card names two. `None` for any other analysis.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* family\nV1 a 0 0\nV2 b 0 0\nR1 a b 1k\n.dc V1 0 1 0.1 V2 0 2 1\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let (inner, outer) = netlist.analyses[0].dc_axes().unwrap()?;
+    /// assert_eq!(inner.num_points, 11);
+    /// let sweep = sindr::dc_sweep_nested(&netlist.circuit, &inner, &outer.unwrap())?;
+    /// assert_eq!(sweep.curves.len(), 3);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// for an axis of more than 10⁷ points.
+    pub fn dc_axes(
+        &self,
+    ) -> Option<
+        Result<
+            (
+                crate::dc_sweep::DcSweepAxis,
+                Option<crate::dc_sweep::DcSweepAxis>,
+            ),
+            crate::SimError,
+        >,
+    > { … }
+
     /// The [`TransientConfig`](crate::TransientConfig) for a `.tran`
     /// request, to pass to [`solve_transient`](crate::solve_transient);
     /// `None` for any other analysis.
@@ -3479,10 +3678,19 @@ for analysis in &netlist.analyses {
             let result = sindr::solve_circuit(&netlist.circuit)?;
             println!("op: {} node voltages", result.node_voltages.len());
         }
-        AnalysisRequest::Dc { source, start, stop, step } => {
-            let points = ((stop - start) / step).abs() as usize + 1;
-            let sweep = sindr::dc_sweep(&netlist.circuit, source, *start, *stop, points)?;
-            println!("dc sweep of {source}: {} points", sweep.points.len());
+        AnalysisRequest::Dc { source, .. } => {
+            match analysis.dc_axes().unwrap()? {
+                (inner, Some(outer)) => {
+                    let sweep = sindr::dc_sweep_nested(&netlist.circuit, &inner, &outer)?;
+                    println!("dc sweep of {source}: {} curves", sweep.curves.len());
+                }
+                (axis, None) => {
+                    let sweep = sindr::dc_sweep(
+                        &netlist.circuit, &axis.source_id, axis.start, axis.stop, axis.num_points,
+                    )?;
+                    println!("dc sweep of {source}: {} points", sweep.points.len());
+                }
+            }
         }
         AnalysisRequest::Tran { tstop, .. } => {
             let config = analysis.transient_config().unwrap();
@@ -3531,9 +3739,9 @@ suffix are ignored, so `4.7uF` is 4.7e-6. `{…}` expressions may nest
 at most 256 levels deep. A value that evaluates to NaN or ±∞ (`1e400`,
 `{1/0}`) is an error at its line.
 
-Analysis cards are checked as they are read: a `.dc` must sweep a
-voltage or current source the deck defines, with a non-zero step that
-moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
+Analysis cards are checked as they are read: a `.dc` must sweep one or
+two different voltage or current sources the deck defines, each with a
+non-zero step that moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
 `fstart > 0` for `dec`/`oct`.
 
 ### Strictness and warnings
@@ -3581,7 +3789,7 @@ Known gaps against full SPICE3 are listed in the repository's
 [`LIMITATIONS.md`](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
 
 ```rust
-pub use analysis::{AcSweep, AnalysisRequest};
+pub use analysis::{AcSweep, AnalysisRequest, DcSweepSpec};
 
 pub use error::{ParseWarning, SpiceParseError};
 
@@ -7105,14 +7313,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             AnalysisRequest::Op => {
                 sindr::solve_circuit(&netlist.circuit)?;
             }
-            AnalysisRequest::Dc {
-                source,
-                start,
-                stop,
-                step,
-            } => {
-                let points = ((stop - start) / step).abs() as usize + 1;
-                let sweep = sindr::dc_sweep(&netlist.circuit, source, *start, *stop, points)?;
+            AnalysisRequest::Dc { source, .. } => {
+                let (axis, _outer) = analysis.dc_axes().ok_or("not a .dc")??;
+                let sweep = sindr::dc_sweep(
+                    &netlist.circuit,
+                    &axis.source_id,
+                    axis.start,
+                    axis.stop,
+                    axis.num_points,
+                )?;
                 let curve = sweep.node_voltage_curve("n2");
                 println!(
                     "dc sweep of {source}: {} points, V(n2) {:.3}..{:.3} V",
