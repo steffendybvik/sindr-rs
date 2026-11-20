@@ -50,9 +50,9 @@ On the staging branch, before its PR into `main`:
 1. **Versions.** Plain `0.x`, never a prerelease: a minor bump if the
    release has any breaking change, a patch bump otherwise. Do the bump as
    described in CONTRIBUTING, then check no snippet or status line still
-   names the old version:
-   `grep -rn "0\.2\.0\|\"0\.2\"" --include=*.md --include=*.rs .`
-   (with the previous version in place of `0.1`).
+   names the old version. For a release that replaces `0.1.x`:
+   `grep -rn '0\.1\.[0-9]\|"0\.1"' --include=*.md --include=*.rs --include=*.toml --include=*.txt .`
+   Matches in the CHANGELOG's older sections are expected.
 2. **CHANGELOG.** The release section is complete, and breaking changes say
    what to change in calling code.
 3. **Capabilities.** The crate-docs tables, `llms.txt` "Key facts" and

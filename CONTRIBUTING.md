@@ -37,8 +37,10 @@ python3 scripts/gen_llms_full.py --check
   `--no-default-features` checks the build without `serde` and `examples`.
 - Both crates have `#![deny(missing_docs)]`: every public item needs a doc
   comment.
-- The code blocks in `sindr-devices/README.md` run as doctests, so a stale
-  README example fails `cargo test`.
+- The code blocks in `sindr/README.md` and `sindr-devices/README.md` run as
+  doctests, so a stale README example fails `cargo test`. A snippet that
+  continues from an earlier one gets hidden `# ` setup lines and
+  `no_run`; a signature listing that isn't Rust code is `rust,ignore`.
 - `llms-full.txt` is generated from the READMEs, LIMITATIONS, doc comments
   and examples. If you changed any of them, run
   `python3 scripts/gen_llms_full.py` and commit the result.

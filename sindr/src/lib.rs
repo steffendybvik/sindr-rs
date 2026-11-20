@@ -693,3 +693,8 @@ pub fn solve_circuit_with_initial_voltages(
         &SolverOptions::default().with_nodeset(initial_voltages.clone()),
     )
 }
+
+// Compiles and runs the README's code blocks as doctests so they stay current.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
