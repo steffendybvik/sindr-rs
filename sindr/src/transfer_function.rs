@@ -134,7 +134,7 @@ pub struct TfResult {
 pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    solve_tf_with_initial_voltages(circuit, config, &HashMap::new())
+    solve_tf_with(circuit, config, &crate::SolverOptions::default())
 }
 
 /// Like [`solve_tf`], seeding the Newton–Raphson solve for the DC bias
@@ -144,16 +144,33 @@ pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimErr
 /// # Errors
 ///
 /// As [`solve_tf`].
+#[deprecated(
+    since = "0.2.0",
+    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).tf(..)`"
+)]
 pub fn solve_tf_with_initial_voltages(
     circuit: &Circuit,
     config: &TfConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<TfResult, SimError> {
+    solve_tf_with(
+        circuit,
+        config,
+        &crate::SolverOptions::default().with_nodeset(initial_voltages.clone()),
+    )
+}
+
+/// [`solve_tf`] with `opts`.
+pub(crate) fn solve_tf_with(
+    circuit: &Circuit,
+    config: &TfConfig,
+    opts: &crate::SolverOptions,
+) -> Result<TfResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     // Name the bad port before paying for the bias point.
     check_ports(circuit, config)?;
-    let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;
+    let (node_map, dc_solution) = bias_point(circuit, opts)?;
     // The bias-point circuit, so an inductor is an exact short (a 0 V
     // source) rather than AC's large conductance at ω = 0.
     let dc = crate::dc_equivalent(circuit);

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use sindr::ac_analysis::{solve_ac, solve_ac_with_initial_voltages, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 use sindr::{
     solve_transient, BjtKind, Circuit, CircuitElement, IntegrationMethod, TransientConfig,
 };
@@ -211,7 +211,8 @@ fn ac_bias_point_takes_a_nodeset() {
     };
     let plain = solve_ac(&stage, &config).unwrap().points[0].node_voltages["c"];
     let seed = HashMap::from([("c".to_string(), 5.0)]);
-    let seeded = solve_ac_with_initial_voltages(&stage, &config, &seed)
+    let seeded = sindr::Solver::new(sindr::SolverOptions::default().with_nodeset(seed.clone()))
+        .ac(&stage, &config)
         .unwrap()
         .points[0]
         .node_voltages["c"];

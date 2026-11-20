@@ -3,7 +3,16 @@
 
 use std::collections::HashMap;
 
-use sindr::{solve_circuit, solve_circuit_with_initial_voltages, Circuit, CircuitElement};
+use sindr::{solve_circuit, Circuit, CircuitElement};
+
+/// The operating point of `circuit`, Newton seeded with `nodeset`.
+fn solve_seeded(
+    circuit: &Circuit,
+    nodeset: &HashMap<String, f64>,
+) -> Result<sindr::SimulationResult, sindr::SimError> {
+    sindr::Solver::new(sindr::SolverOptions::default().with_nodeset(nodeset.clone()))
+        .circuit(circuit)
+}
 
 fn voltage_divider() -> Circuit {
     Circuit {
@@ -60,7 +69,7 @@ fn diode_resistor(vsource: f64) -> Circuit {
 fn empty_seed_matches_plain_solve_linear() {
     let circuit = voltage_divider();
     let plain = solve_circuit(&circuit).unwrap();
-    let seeded = solve_circuit_with_initial_voltages(&circuit, &HashMap::new()).unwrap();
+    let seeded = solve_seeded(&circuit, &HashMap::new()).unwrap();
 
     for node in plain.node_voltages.keys() {
         let p = plain.node_voltages[node];
@@ -73,7 +82,7 @@ fn empty_seed_matches_plain_solve_linear() {
 fn empty_seed_matches_plain_solve_nonlinear() {
     let circuit = diode_resistor(5.0);
     let plain = solve_circuit(&circuit).unwrap();
-    let seeded = solve_circuit_with_initial_voltages(&circuit, &HashMap::new()).unwrap();
+    let seeded = solve_seeded(&circuit, &HashMap::new()).unwrap();
 
     let v_plain = plain.node_voltages["n2"];
     let v_seed = seeded.node_voltages["n2"];
@@ -91,7 +100,7 @@ fn linear_circuit_ignores_seed() {
     seed.insert("n1".to_string(), 999.0);
     seed.insert("n2".to_string(), -42.0);
 
-    let result = solve_circuit_with_initial_voltages(&circuit, &seed).unwrap();
+    let result = solve_seeded(&circuit, &seed).unwrap();
     // V(n2) for the divider = 10 V * 2/3 ≈ 6.667 V
     let v_n2 = result.node_voltages["n2"];
     assert!(
@@ -108,8 +117,7 @@ fn unknown_node_names_in_seed_are_silently_ignored() {
     seed.insert("also_missing".to_string(), -1.0);
 
     // Must not error; should converge to the same answer as a plain solve.
-    let result = solve_circuit_with_initial_voltages(&circuit, &seed)
-        .expect("unknown seed keys must not cause failure");
+    let result = solve_seeded(&circuit, &seed).expect("unknown seed keys must not cause failure");
     let v_n2 = result.node_voltages["n2"];
     assert!(
         (0.5..=0.9).contains(&v_n2),
@@ -123,7 +131,7 @@ fn seed_near_correct_answer_still_converges() {
     let mut seed = HashMap::new();
     seed.insert("n2".to_string(), 0.65); // a hint at the diode drop
 
-    let result = solve_circuit_with_initial_voltages(&circuit, &seed).unwrap();
+    let result = solve_seeded(&circuit, &seed).unwrap();
     let v_n2 = result.node_voltages["n2"];
     assert!(
         (0.5..=0.9).contains(&v_n2),
@@ -147,7 +155,7 @@ fn seed_far_from_answer_recovers_via_gmin() {
     seed.insert("n1".to_string(), 1.0e4);
     seed.insert("n2".to_string(), -1.0e4);
 
-    let result = solve_circuit_with_initial_voltages(&circuit, &seed).unwrap();
+    let result = solve_seeded(&circuit, &seed).unwrap();
     let v_n2 = result.node_voltages["n2"];
     assert!(
         (0.5..=0.9).contains(&v_n2),
@@ -185,7 +193,7 @@ fn seed_does_not_break_transient_path() {
     let mut seed = HashMap::new();
     seed.insert("n2".to_string(), 999.0);
 
-    let result = solve_circuit_with_initial_voltages(&circuit, &seed)
-        .expect("transient solve must not error when given a seed");
+    let result =
+        solve_seeded(&circuit, &seed).expect("transient solve must not error when given a seed");
     assert!(result.transient.is_some(), "expected transient data");
 }

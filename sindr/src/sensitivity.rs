@@ -133,7 +133,7 @@ impl SensResult {
 pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    solve_sensitivity_with_initial_voltages(circuit, config, &HashMap::new())
+    solve_sensitivity_with(circuit, config, &crate::SolverOptions::default())
 }
 
 /// Like [`solve_sensitivity`], seeding the Newton–Raphson solve for the DC
@@ -143,14 +143,31 @@ pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensR
 /// # Errors
 ///
 /// As [`solve_sensitivity`].
+#[deprecated(
+    since = "0.2.0",
+    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).sensitivity(..)`"
+)]
 pub fn solve_sensitivity_with_initial_voltages(
     circuit: &Circuit,
     config: &SensConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<SensResult, SimError> {
+    solve_sensitivity_with(
+        circuit,
+        config,
+        &crate::SolverOptions::default().with_nodeset(initial_voltages.clone()),
+    )
+}
+
+/// [`solve_sensitivity`] with `opts`.
+pub(crate) fn solve_sensitivity_with(
+    circuit: &Circuit,
+    config: &SensConfig,
+    opts: &crate::SolverOptions,
+) -> Result<SensResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;
+    let (node_map, dc_solution) = bias_point(circuit, opts)?;
     let dc = crate::dc_equivalent(circuit);
     let ss_models = linearize_at_dc(&dc, &node_map, &dc_solution);
     let system = small_signal_system(&dc, &node_map, &dc_solution, &ss_models, 0.0);

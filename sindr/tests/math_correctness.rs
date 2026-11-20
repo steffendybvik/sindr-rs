@@ -13,9 +13,16 @@
 
 use std::collections::HashMap;
 
-use sindr::{
-    solve_circuit, solve_circuit_with_initial_voltages, Circuit, CircuitElement, SimulationResult,
-};
+use sindr::{solve_circuit, Circuit, CircuitElement, SimulationResult};
+
+/// The operating point of `circuit`, Newton seeded with `nodeset`.
+fn solve_seeded(
+    circuit: &Circuit,
+    nodeset: &HashMap<String, f64>,
+) -> Result<sindr::SimulationResult, sindr::SimError> {
+    sindr::Solver::new(sindr::SolverOptions::default().with_nodeset(nodeset.clone()))
+        .circuit(circuit)
+}
 
 // ---------- helpers ----------
 
@@ -223,7 +230,7 @@ fn gmin_path_agrees_with_plain_nr_to_microvolts() {
     let mut bad_seed = HashMap::new();
     bad_seed.insert("n1".to_string(), 1.0e6);
     bad_seed.insert("n2".to_string(), -1.0e6);
-    let via_gmin = solve_circuit_with_initial_voltages(&circuit, &bad_seed).unwrap();
+    let via_gmin = solve_seeded(&circuit, &bad_seed).unwrap();
 
     for node in plain.node_voltages.keys() {
         let p = plain.node_voltages[node];
@@ -276,7 +283,7 @@ fn seed_invariance_for_unique_operating_point() {
     for v in seeds {
         let mut s = HashMap::new();
         s.insert("n2".to_string(), v);
-        let r = match solve_circuit_with_initial_voltages(&circuit, &s) {
+        let r = match solve_seeded(&circuit, &s) {
             Ok(r) => r,
             Err(e) => panic!("seed V(n2)={v} failed to converge: {e}"),
         };
@@ -694,7 +701,7 @@ fn seeding_at_supply_rail_is_rescued_by_source_stepping() {
     let circuit = diode_resistor(5.0, 100.0);
     let mut s = HashMap::new();
     s.insert("n2".to_string(), 5.0);
-    let seeded = solve_circuit_with_initial_voltages(&circuit, &s).unwrap();
+    let seeded = solve_seeded(&circuit, &s).unwrap();
     assert_eq!(
         seeded.convergence_aid,
         Some(sindr::ConvergenceAid::SourceStepping)

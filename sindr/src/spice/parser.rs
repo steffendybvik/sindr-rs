@@ -74,6 +74,7 @@ fn anchor_to_line(card: RawCard, line: &LogicalLine) -> RawCard {
         RawCard::Analysis(analysis, _) => RawCard::Analysis(analysis, line_span(line)),
         RawCard::NodeValues(kind, values, _) => RawCard::NodeValues(kind, values, line_span(line)),
         RawCard::Measure(measure, _) => RawCard::Measure(measure, line_span(line)),
+        RawCard::Options(options, _) => RawCard::Options(options, line_span(line)),
         other => other,
     }
 }
@@ -665,6 +666,28 @@ fn parse_card_param(input: &mut Input<'_>) -> ModalResult<RawCard> {
     Ok(RawCard::Param(bindings, Span::detached()))
 }
 
+/// Parse `.options` / `.option` / `.opt`: `name=value` pairs and bare flags,
+/// in any order.
+fn parse_card_options(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    let mut options: Vec<(String, Option<ParamExpr>)> = Vec::new();
+    loop {
+        ws(input)?;
+        if input.is_empty() {
+            break;
+        }
+        let cp = input.checkpoint();
+        match param_assign.parse_next(input) {
+            Ok((name, expr)) => options.push((name, Some(expr))),
+            Err(_) => {
+                input.reset(&cp);
+                let (name, _) = ident(input)?;
+                options.push((name, None));
+            }
+        }
+    }
+    Ok(RawCard::Options(options, Span::detached()))
+}
+
 /// Parse `.ic` / `.nodeset`: one or more `V(node)=value`.
 fn parse_card_node_values(input: &mut Input<'_>, kind: NodeValueKind) -> ModalResult<RawCard> {
     let mut values: Vec<(String, ParamExpr)> = Vec::new();
@@ -1217,6 +1240,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             }
             "ic" => parse_card_node_values(&mut input, NodeValueKind::Ic),
             "nodeset" => parse_card_node_values(&mut input, NodeValueKind::Nodeset),
+            "options" | "option" | "opt" | "opts" => parse_card_options(&mut input),
             "include" | "lib" => {
                 // Should have been resolved by the preprocessor.
                 return Err(LocalError::Syntax {

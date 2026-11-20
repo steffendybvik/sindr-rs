@@ -94,6 +94,23 @@ pub fn temperature_sweep(
     temp_end: f64,
     num_steps: usize,
 ) -> Result<TempSweepResult, SimError> {
+    temperature_sweep_with(
+        circuit,
+        temp_start,
+        temp_end,
+        num_steps,
+        &crate::SolverOptions::default(),
+    )
+}
+
+/// [`temperature_sweep`] with `opts`.
+pub(crate) fn temperature_sweep_with(
+    circuit: &Circuit,
+    temp_start: f64,
+    temp_end: f64,
+    num_steps: usize,
+    opts: &crate::SolverOptions,
+) -> Result<TempSweepResult, SimError> {
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
@@ -158,7 +175,7 @@ pub fn temperature_sweep(
             thermal.ambient = t;
         }
 
-        let result = crate::solve_circuit(&sweep_circuit)
+        let result = crate::solve_circuit_with(&sweep_circuit, opts)
             .map_err(|e| e.at(crate::SolvePoint::Temperature { kelvin: t }))?;
         points.push(TempSweepPoint {
             temperature_kelvin: t,

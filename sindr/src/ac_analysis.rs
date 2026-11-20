@@ -438,9 +438,9 @@ fn stamp_complex_conductance(
 /// (node rows only; branch rows are left zero), for linearising around.
 pub(crate) fn bias_point(
     circuit: &Circuit,
-    initial_voltages: &HashMap<String, f64>,
+    opts: &crate::SolverOptions,
 ) -> Result<(NodeMap, DVector<f64>), SimError> {
-    let (node_map, dc_solution, _) = bias_point_with_result(circuit, initial_voltages)?;
+    let (node_map, dc_solution, _) = bias_point_with_result(circuit, opts)?;
     Ok((node_map, dc_solution))
 }
 
@@ -470,9 +470,9 @@ pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationRes
 /// currents for noise analysis).
 pub(crate) fn bias_point_with_result(
     circuit: &Circuit,
-    initial_voltages: &HashMap<String, f64>,
+    opts: &crate::SolverOptions,
 ) -> Result<(NodeMap, DVector<f64>, crate::SimulationResult), SimError> {
-    let dc_result = crate::solve_dc_operating_point(circuit, initial_voltages)?;
+    let dc_result = crate::solve_dc_operating_point(circuit, opts)?;
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
     let mut dc_solution = DVector::zeros(num_nodes + circuit.count_voltage_sources());
@@ -1157,7 +1157,7 @@ pub(crate) fn small_signal_system(
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
-    solve_ac_with_initial_voltages(circuit, config, &HashMap::new())
+    solve_ac_with(circuit, config, &crate::SolverOptions::default())
 }
 
 /// Like [`solve_ac`], seeding the Newton–Raphson solve for the DC bias
@@ -1168,10 +1168,27 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
 /// # Errors
 ///
 /// As [`solve_ac`].
+#[deprecated(
+    since = "0.2.0",
+    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).ac(..)`"
+)]
 pub fn solve_ac_with_initial_voltages(
     circuit: &Circuit,
     config: &AcConfig,
     initial_voltages: &HashMap<String, f64>,
+) -> Result<AcResult, SimError> {
+    solve_ac_with(
+        circuit,
+        config,
+        &crate::SolverOptions::default().with_nodeset(initial_voltages.clone()),
+    )
+}
+
+/// [`solve_ac`] with `opts`.
+pub(crate) fn solve_ac_with(
+    circuit: &Circuit,
+    config: &AcConfig,
+    opts: &crate::SolverOptions,
 ) -> Result<AcResult, SimError> {
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
@@ -1188,7 +1205,7 @@ pub fn solve_ac_with_initial_voltages(
         )));
     }
 
-    let (node_map, dc_solution, dc) = bias_point_with_result(circuit, initial_voltages)?;
+    let (node_map, dc_solution, dc) = bias_point_with_result(circuit, opts)?;
     let circuit = &incremental_inductors(circuit, &dc);
     let num_nodes = node_map.num_nodes();
     let ss_models = linearize_at_dc(circuit, &node_map, &dc_solution);
@@ -1744,7 +1761,8 @@ mod tests {
             }
             with(c)
         };
-        let op = crate::solve_dc_operating_point(&stage(true), &HashMap::new()).unwrap();
+        let op = crate::solve_dc_operating_point(&stage(true), &crate::SolverOptions::default())
+            .unwrap();
         let plain = crate::solve_circuit(&stage(false)).unwrap();
         // Both are Newton solves stopped at RELTOL = 1e-3 (see SIN-14), so
         // they agree to that precision, not to round-off.

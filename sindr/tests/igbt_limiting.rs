@@ -6,10 +6,16 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use sindr::{
-    solve_circuit_with_initial_voltages, solve_transient, Circuit, CircuitElement, IgbtParams,
-    TransientConfig, Waveform,
-};
+use sindr::{solve_transient, Circuit, CircuitElement, IgbtParams, TransientConfig, Waveform};
+
+/// The operating point of `circuit`, Newton seeded with `nodeset`.
+fn solve_seeded(
+    circuit: &Circuit,
+    nodeset: &HashMap<String, f64>,
+) -> Result<sindr::SimulationResult, sindr::SimError> {
+    sindr::Solver::new(sindr::SolverOptions::default().with_nodeset(nodeset.clone()))
+        .circuit(circuit)
+}
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
     CircuitElement::VoltageSource {
@@ -53,7 +59,7 @@ fn reverse_igbt(vs: f64) -> Circuit {
 #[test]
 fn reverse_blocking_from_a_forward_nodeset() {
     let nodeset = HashMap::from([("c".to_string(), 1.0)]);
-    let result = solve_circuit_with_initial_voltages(&reverse_igbt(-5.0), &nodeset).unwrap();
+    let result = solve_seeded(&reverse_igbt(-5.0), &nodeset).unwrap();
     let vc = result.node_voltages["c"];
     assert!((vc + 5.0).abs() < 1e-6, "Vc = {vc}, expected −5 V");
 }

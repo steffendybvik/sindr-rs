@@ -153,7 +153,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs and `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 
@@ -1229,7 +1229,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage and behavioural (`B`) sources are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. Full SPICE3 coverage and behavioural (`B`) sources are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards are written. sindr's parser reads back only the R, L, C, V, I, D, Q part.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data (`sindr-core`), and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation. The parser doesn't read `.global`, although export writes it.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
@@ -1278,9 +1278,9 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
 - **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation.
 - **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` names the node that won't settle, the components on it and the point of the analysis (`SolvePoint`), with the last Newton step (not a KCL residual).
-- **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the bias point of AC, `.tf` and `.sens` (`solve_ac_with_initial_voltages`, `solve_tf_with_initial_voltages`, `solve_sensitivity_with_initial_voltages`).
+- **`.nodeset`** (`SolverOptions::nodeset`) seeds the DC operating point and the bias point of AC, noise, `.tf`, `.sens` and every sweep, through a `Solver`.
 - **A transient starts switched on at t = 0 unless asked otherwise:** `TransientConfig::new` starts from the initial conditions alone (SPICE's `UIC`), where SPICE starts from the DC operating point. `TransientStart::OperatingPoint` does what SPICE does, and a deck's `.tran` maps onto it (`uic` onto the other). The operating point it starts from is solved without self-heating. Initial winding currents on a transformer can't be set, and inductor `IC=` on SPICE element lines isn't parsed. With `tstart`, sindr's first snapshot is at `tstart` itself, where ngspice's is its first step past it.
-- **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), not per charge or flux, and the tolerances can't be changed yet. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
+- **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7 by default; set them in `SolverOptions`), not per charge or flux. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
 - **No checkpointing / restart** of long transient runs.
 - **Large transients are slower than ngspice.** On a 1 000-node RC ladder, 200 steps take 151 ms in sindr and about 29 ms in ngspice's solve (5×, `examples/vs_ngspice.rs`). Each step re-assembles and refactors the matrix. sindr wins up to a few hundred nodes, where ngspice's 14 ms start dominates, and on DC operating points at every size measured (a 3 000-diode chain: 27 ms against 82 ms). Long transients of thousands of nodes are ngspice's ground.
 - **No multithreading** inside one solve. Separate solves do run in parallel threads.
@@ -1292,7 +1292,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Self-heating is one thermal RC per part.** A part with `Part::thermal` runs at `ambient + P·Rθ` (iterated to a balance in DC, a thermal RC state in transient). There's no thermal coupling between parts (a shared heatsink, neighbours on a board), and no multi-pole Foster/Cauer ladder for the junction-to-case path.
 - **Only junction devices and the thermistor feel their temperature:** diodes, LEDs, Zeners, Schottkys, photodiodes, BJTs and thermistors. MOSFETs, JFETs, IGBTs and resistors report a junction temperature (and so get Tj-max checks), but their models have no temperature in them, so heating doesn't move their operating point. Power-MOSFET and IGBT runaway is not predicted.
 - **An LED's temperature coefficient is one typical figure:** Vf falls 2 mV/K at its rated 20 mA for every colour, from an effective EG per colour. Real parts range from about −1.5 to −4 mV/K.
-- **Self-heating applies to `solve_circuit`, `solve_circuit_with_initial_voltages` and `solve_transient`** (and `temperature_sweep`, which sets the ambient). AC, `.tf`, `.sens` and `dc_sweep` linearise around the unheated operating point.
+- **Self-heating applies to `solve_circuit` and `solve_transient`** (and the same on a `Solver`) (and `temperature_sweep`, which sets the ambient). AC, `.tf`, `.sens` and `dc_sweep` linearise around the unheated operating point.
 - In a transient the electrical step solves at the temperature from the step before. Thermal time constants are far longer than the electrical steps, so the lag doesn't matter unless the step is coarse compared with Rθ·Cθ.
 
 #### Tooling & UX
@@ -1484,14 +1484,6 @@ impl AcResult {
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> { … }
 
-/// Like [`solve_ac`], seeding the Newton–Raphson solve for the DC bias
-/// point with node voltages (V) keyed by node name, as SPICE's `.nodeset`.
-/// Useful when the bias point is hard to find or not unique. Unknown node
-/// names are ignored.
-///
-/// # Errors
-///
-/// As [`solve_ac`].
 pub fn solve_ac_with_initial_voltages(
     circuit: &Circuit,
     config: &AcConfig,
@@ -2806,7 +2798,7 @@ hierarchy is [`SimError::Design`].
 | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
 | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`) |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
-| Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
+| Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
 | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
@@ -3000,6 +2992,8 @@ pub mod ratings;
 pub mod results;
 
 pub mod sensitivity;
+
+pub mod solver;
 
 pub mod spice;
 ```
@@ -3564,12 +3558,6 @@ pub struct NoiseResult {
 /// ```
 pub fn solve_noise(circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResult, SimError> { … }
 
-/// [`solve_noise`], seeding the bias point's Newton–Raphson solve as
-/// `.nodeset` does.
-///
-/// # Errors
-///
-/// As [`solve_noise`].
 pub fn solve_noise_with_initial_voltages(
     circuit: &Circuit,
     config: &NoiseConfig,
@@ -4151,18 +4139,211 @@ impl SensResult {
 /// ```
 pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensResult, SimError> { … }
 
-/// Like [`solve_sensitivity`], seeding the Newton–Raphson solve for the DC
-/// bias point with node voltages (V) keyed by node name, as SPICE's
-/// `.nodeset`. Unknown node names are ignored.
-///
-/// # Errors
-///
-/// As [`solve_sensitivity`].
 pub fn solve_sensitivity_with_initial_voltages(
     circuit: &Circuit,
     config: &SensConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<SensResult, SimError> { … }
+```
+
+## `sindr/src/solver.rs`
+
+Solver options and the [`Solver`] that carries them into every analysis.
+
+The free functions ([`solve_circuit`](crate::solve_circuit),
+[`solve_ac`](crate::solve_ac), …) run with [`SolverOptions::default`],
+which holds SPICE's default tolerances. Build a [`Solver`] to change
+them, or to seed the operating point with a `.nodeset`:
+
+```
+use sindr::{Circuit, CircuitElement, Solver, SolverOptions};
+
+let circuit = Circuit::new("0", vec![
+    CircuitElement::VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "0".into()], voltage: 5.0, waveform: None },
+    CircuitElement::Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 1_000.0 },
+    CircuitElement::Diode { id: "D1".into(), nodes: ["a".into(), "0".into()], temperature: 300.15, model: None },
+]);
+
+let mut options = SolverOptions::default();
+options.reltol = 1e-6;
+options.max_iterations = 200;
+options.nodeset.insert("a".into(), 0.7);
+
+let result = Solver::new(options).circuit(&circuit)?;
+assert!((result.node_voltages["a"] - 0.7).abs() < 0.1);
+```
+
+A SPICE deck's `.options` card fills
+[`ParsedNetlist::options`](crate::spice::ParsedNetlist::options), and its
+`.nodeset` cards fill the options' [`nodeset`](SolverOptions::nodeset).
+
+```rust
+/// Tolerances, iteration budgets and convergence aids for every analysis.
+///
+/// [`Default`] gives SPICE's defaults, which every golden is checked
+/// against. Change the fields you need on a default value; more may come,
+/// so the struct can't be built with a literal outside this crate.
+pub struct SolverOptions {
+    /// Relative tolerance (SPICE `RELTOL`, default `1e-3`). Newton–Raphson
+    /// has converged when every node voltage moved by at most
+    /// `vntol + reltol·|V|` and every junction by at most
+    /// `vntol + reltol·n·V_T`; a transient step's local truncation error may
+    /// be up to `trtol·(reltol·|V| + vntol)`.
+    pub reltol: f64,
+    /// Absolute voltage tolerance in volts (SPICE `VNTOL`, default `1e-6`).
+    pub vntol: f64,
+    /// Newton–Raphson iterations per solve before it counts as not
+    /// converged (SPICE `ITL1`, default `100`). Transient steps use the same
+    /// budget.
+    pub max_iterations: usize,
+    /// Extra conductance to ground (S) on every node for each step of gmin
+    /// stepping, tried in order when plain Newton–Raphson fails; a last
+    /// step without it always follows. Empty skips gmin stepping. Default
+    /// `[1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-8, 1e-10]`.
+    pub gmin_steps: Vec<f64>,
+    /// Ramp every independent source up from zero when gmin stepping fails
+    /// too (default `true`).
+    pub source_stepping: bool,
+    /// Smallest fraction of the sources one source-stepping step may add
+    /// before it gives up (default `1e-4`).
+    pub min_source_step: f64,
+    /// Transient truncation-error factor (SPICE `TRTOL`, default `7`).
+    pub trtol: f64,
+    /// Most timesteps a transient may take, counting the `tstep` grid and
+    /// every waveform breakpoint (default `10_000_000`).
+    pub max_transient_steps: u64,
+    /// Starting guess for the DC operating point in volts, keyed by node
+    /// name (SPICE `.nodeset`). Unknown node names are skipped. Only
+    /// nonlinear circuits use it; a transient starts from its
+    /// [`TransientConfig::initial_voltages`] instead.
+    pub nodeset: HashMap<String, f64>,
+}
+
+impl SolverOptions {
+    /// These options with `nodeset` as the starting guess.
+    pub fn with_nodeset(mut self, nodeset: HashMap<String, f64>) -> Self { … }
+
+    /// Checks every field is usable.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::InvalidComponent`] naming the first field that isn't:
+    /// a tolerance that isn't finite and positive, no iterations, a gmin
+    /// step that isn't finite and positive, a `min_source_step` outside
+    /// `(0, 1)`, no transient steps, or a `nodeset` voltage that isn't finite.
+    pub fn validate(&self) -> Result<(), SimError> { … }
+}
+
+/// Runs analyses with one set of [`SolverOptions`].
+///
+/// `Solver::default()` is what the free functions use: `solve_circuit(&c)`
+/// is `Solver::default().circuit(&c)`.
+pub struct Solver {
+    options: SolverOptions,
+}
+
+impl Solver {
+    /// A solver with `options`.
+    pub fn new(options: SolverOptions) -> Self { … }
+
+    /// The options this solver runs with.
+    pub fn options(&self) -> &SolverOptions { … }
+
+    /// As [`solve_circuit`](crate::solve_circuit).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_circuit`](crate::solve_circuit), and
+    /// [`SolverOptions::validate`].
+    pub fn circuit(&self, circuit: &Circuit) -> Result<SimulationResult, SimError> { … }
+
+    /// As [`solve_transient`](crate::solve_transient).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_transient`](crate::solve_transient), and
+    /// [`SolverOptions::validate`].
+    pub fn transient(
+        &self,
+        circuit: &Circuit,
+        config: &TransientConfig,
+    ) -> Result<SimulationResult, SimError> { … }
+
+    /// As [`solve_ac`](crate::solve_ac).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_ac`](crate::solve_ac), and [`SolverOptions::validate`].
+    pub fn ac(&self, circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> { … }
+
+    /// As [`solve_noise`](crate::solve_noise).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_noise`](crate::solve_noise), and [`SolverOptions::validate`].
+    pub fn noise(&self, circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResult, SimError> { … }
+
+    /// As [`solve_tf`](crate::solve_tf).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_tf`](crate::solve_tf), and [`SolverOptions::validate`].
+    pub fn tf(&self, circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimError> { … }
+
+    /// As [`solve_sensitivity`](crate::solve_sensitivity).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_sensitivity`](crate::solve_sensitivity), and
+    /// [`SolverOptions::validate`].
+    pub fn sensitivity(
+        &self,
+        circuit: &Circuit,
+        config: &SensConfig,
+    ) -> Result<SensResult, SimError> { … }
+
+    /// As [`dc_sweep`](fn@crate::dc_sweep). The nodeset seeds the first point.
+    ///
+    /// # Errors
+    ///
+    /// As [`dc_sweep`](fn@crate::dc_sweep), and [`SolverOptions::validate`].
+    pub fn dc_sweep(
+        &self,
+        circuit: &Circuit,
+        source_id: &str,
+        start: f64,
+        stop: f64,
+        num_points: usize,
+    ) -> Result<DcSweepResult, SimError> { … }
+
+    /// As [`dc_sweep_nested`](crate::dc_sweep_nested). The nodeset seeds the
+    /// first point.
+    ///
+    /// # Errors
+    ///
+    /// As [`dc_sweep_nested`](crate::dc_sweep_nested), and
+    /// [`SolverOptions::validate`].
+    pub fn dc_sweep_nested(
+        &self,
+        circuit: &Circuit,
+        inner: &DcSweepAxis,
+        outer: &DcSweepAxis,
+    ) -> Result<NestedDcSweepResult, SimError> { … }
+
+    /// As [`temperature_sweep`](crate::temperature_sweep).
+    ///
+    /// # Errors
+    ///
+    /// As [`temperature_sweep`](crate::temperature_sweep), and
+    /// [`SolverOptions::validate`].
+    pub fn temperature_sweep(
+        &self,
+        circuit: &Circuit,
+        temp_start: f64,
+        temp_end: f64,
+        num_steps: usize,
+    ) -> Result<TempSweepResult, SimError> { … }
+}
 ```
 
 ## `sindr/src/spice/analysis.rs`
@@ -4930,10 +5111,11 @@ and X (subcircuit instance). Subcircuits declared with `.subckt` /
 and a [`SourceMap`] maps each flattened node back to its instance path.
 [`to_netlist`] writes blocks back as `.subckt`s.
 
-`.ic` and `.nodeset` cards land in [`ParsedNetlist::initial_conditions`]
-and [`ParsedNetlist::nodesets`]; pass them to
-[`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages)
-and [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages).
+`.ic` cards land in [`ParsedNetlist::initial_conditions`], which
+[`ParsedNetlist::transient_config`] passes on. `.options` (`RELTOL`,
+`VNTOL`, `TRTOL`, `ITL1`) and `.nodeset` cards land in
+[`ParsedNetlist::options`]; [`ParsedNetlist::solver`] runs the deck's
+analyses with them.
 
 Enable the optional `spice` feature to pull this module in
 (`sindr = { version = "0.2", features = ["spice"] }`); it is off by
@@ -5124,13 +5306,15 @@ pub struct ParsedNetlist {
     /// Only top-level cards are read.
     pub initial_conditions: HashMap<String, f64>,
     /// `.nodeset` node voltages (V), keyed by node name: a starting guess for
-    /// the DC operating point. Pass them to
-    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages),
-    /// [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages),
-    /// [`solve_tf_with_initial_voltages`](crate::transfer_function::solve_tf_with_initial_voltages)
-    /// or [`solve_sensitivity_with_initial_voltages`](crate::sensitivity::solve_sensitivity_with_initial_voltages).
-    /// Only top-level cards are read.
+    /// the DC operating point. [`Self::options`] carries them too, as its
+    /// [`nodeset`](crate::SolverOptions::nodeset). Only top-level cards are
+    /// read.
     pub nodesets: HashMap<String, f64>,
+    /// The deck's `.options` (`reltol`, `vntol`, `trtol`, `itl1`) over the
+    /// defaults, with its `.nodeset` cards as the nodeset. Run the deck's
+    /// analyses through [`Self::solver`] to use them. Only top-level cards
+    /// are read.
+    pub options: crate::SolverOptions,
     /// `.meas` / `.measure` cards, in source order. Only top-level cards are
     /// read.
     pub measurements: Vec<MeasureRequest>,
@@ -5145,6 +5329,21 @@ pub struct ParsedNetlist {
 }
 
 impl ParsedNetlist {
+    /// A [`Solver`](crate::Solver) with the deck's [`options`](Self::options).
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* opts\nV1 in 0 5\nR1 in a 1k\nD1 a 0 dmod\n.model dmod D\n\
+    ///             .options reltol=1e-6 itl1=200\n.nodeset v(a)=0.7\n.op\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// assert_eq!(netlist.options.max_iterations, 200);
+    /// let op = netlist.solver().circuit(&netlist.circuit)?;
+    /// assert!((op.node_voltages["a"] - 0.7).abs() < 0.1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn solver(&self) -> crate::Solver { … }
+
     /// The [`TransientConfig`](crate::TransientConfig) for the deck's first
     /// `.tran`, with its `.ic` cards as
     /// [`initial_voltages`](crate::TransientConfig::initial_voltages), so
@@ -5586,13 +5785,6 @@ pub struct TfResult {
 /// ```
 pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimError> { … }
 
-/// Like [`solve_tf`], seeding the Newton–Raphson solve for the DC bias
-/// point with node voltages (V) keyed by node name, as SPICE's `.nodeset`.
-/// Unknown node names are ignored.
-///
-/// # Errors
-///
-/// As [`solve_tf`].
 pub fn solve_tf_with_initial_voltages(
     circuit: &Circuit,
     config: &TfConfig,
@@ -8437,7 +8629,7 @@ fn main() {
 
 use std::collections::HashMap;
 
-use sindr::{solve_circuit, solve_circuit_with_initial_voltages, Circuit, CircuitElement};
+use sindr::{solve_circuit, Circuit, CircuitElement, Solver, SolverOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit = Circuit {
@@ -8474,7 +8666,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start Newton near the expected answer: ~0.65 V per diode.
     let seed = HashMap::from([("top".to_string(), 1.3), ("mid".to_string(), 0.65)]);
-    let seeded = solve_circuit_with_initial_voltages(&circuit, &seed)?;
+    let seeded =
+        Solver::new(SolverOptions::default().with_nodeset(seed.clone())).circuit(&circuit)?;
 
     for node in ["top", "mid"] {
         println!(

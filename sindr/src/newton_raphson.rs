@@ -16,16 +16,8 @@ use crate::error::{SimError, SolvePoint};
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
 use crate::results::{self, ConvergenceAid, SimulationResult};
+use crate::solver::SolverOptions;
 use crate::stamp;
-
-/// Maximum Newton-Raphson iterations before declaring non-convergence.
-pub const MAX_NR_ITERATIONS: usize = 100;
-
-/// Absolute voltage tolerance (V).
-pub const V_ABSTOL: f64 = 1e-6;
-
-/// Relative tolerance (dimensionless).
-pub const RELTOL: f64 = 1e-3;
 
 /// Solve a circuit containing nonlinear elements via Newton-Raphson iteration.
 ///
@@ -40,12 +32,13 @@ pub const RELTOL: f64 = 1e-3;
 ///    its own limit (diodes in series), take a damped step that keeps every
 ///    junction within its limit instead.
 /// 3. Converged when every node voltage has settled within
-///    `V_ABSTOL + RELTOL·|V|` and every diode, LED and BJT junction voltage
-///    within `V_ABSTOL + RELTOL·n·V_T`; error after [`MAX_NR_ITERATIONS`].
+///    `vntol + reltol·|V|` and every diode, LED and BJT junction voltage
+///    within `vntol + reltol·n·V_T`; error after `max_iterations`.
 ///
 /// When plain Newton–Raphson fails, retries with gmin stepping and then
-/// source stepping; [`SimulationResult::convergence_aid`] says which one
-/// succeeded.
+/// source stepping, as `opts` allows; [`SimulationResult::convergence_aid`]
+/// says which one succeeded. `opts.nodeset` seeds the initial guess, as
+/// SPICE's `.NODESET`.
 ///
 /// # Errors
 ///
@@ -56,17 +49,9 @@ pub fn solve_nonlinear(
     node_map: &NodeMap,
     num_nodes: usize,
     num_vsources: usize,
+    opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
-    solve_nonlinear_with_seeds(circuit, node_map, num_nodes, num_vsources, None)
-}
-
-fn solve_nonlinear_with_seeds(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    num_nodes: usize,
-    num_vsources: usize,
-    initial_voltages: Option<&std::collections::HashMap<String, f64>>,
-) -> Result<SimulationResult, SimError> {
+    let initial_voltages = (!opts.nodeset.is_empty()).then_some(&opts.nodeset);
     // First attempt: plain Newton–Raphson with the default GMIN floor.
     match nr_inner(
         circuit,
@@ -76,21 +61,35 @@ fn solve_nonlinear_with_seeds(
         None,
         initial_voltages,
         0.0,
+        opts,
     ) {
         Ok((result, _)) => Ok(result),
-        Err(SimError::ConvergenceFailed { .. }) => {
+        Err(e @ SimError::ConvergenceFailed { .. }) => {
             // Fall back to gmin stepping: progressively softens the Jacobian
             // by adding extra conductance to ground on every node, then ramps
             // it down while warm-starting from the previous step's solution.
-            let gmin = gmin_stepping(circuit, node_map, num_nodes, num_vsources, initial_voltages);
+            let gmin = if opts.gmin_steps.is_empty() {
+                Err(e)
+            } else {
+                gmin_stepping(
+                    circuit,
+                    node_map,
+                    num_nodes,
+                    num_vsources,
+                    initial_voltages,
+                    opts,
+                )
+            };
             match gmin {
                 Ok(mut result) => {
                     result.convergence_aid = Some(ConvergenceAid::GminStepping);
                     Ok(result)
                 }
+                Err(e @ SimError::ConvergenceFailed { .. }) if !opts.source_stepping => Err(e),
                 Err(SimError::ConvergenceFailed { .. }) => {
                     // Then source stepping: ramp every source up from zero.
-                    let mut result = source_stepping(circuit, node_map, num_nodes, num_vsources)?;
+                    let mut result =
+                        source_stepping(circuit, node_map, num_nodes, num_vsources, opts)?;
                     result.convergence_aid = Some(ConvergenceAid::SourceStepping);
                     Ok(result)
                 }
@@ -110,12 +109,13 @@ fn solve_nonlinear_with_seeds(
 /// value up to 1, warm-starting each solve from the last. With the sources
 /// near zero every junction is near zero bias, where Newton–Raphson always
 /// converges; each later step starts close to its answer. A step that fails
-/// is retried with half the increment, down to [`MIN_SOURCE_STEP`].
+/// is retried with half the increment, down to `opts.min_source_step`.
 fn source_stepping(
     circuit: &Circuit,
     node_map: &NodeMap,
     num_nodes: usize,
     num_vsources: usize,
+    opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
     let mut scale: f64 = 0.0;
     let mut increment: f64 = 0.1;
@@ -131,6 +131,7 @@ fn source_stepping(
             warm.as_ref(),
             None,
             0.0,
+            opts,
         ) {
             Ok((result, v)) => {
                 if next >= 1.0 {
@@ -142,7 +143,7 @@ fn source_stepping(
             }
             Err(e @ SimError::ConvergenceFailed { .. }) => {
                 increment /= 2.0;
-                if increment < MIN_SOURCE_STEP {
+                if increment < opts.min_source_step {
                     return Err(e);
                 }
             }
@@ -150,9 +151,6 @@ fn source_stepping(
         }
     }
 }
-
-/// Smallest source-stepping increment before giving up.
-const MIN_SOURCE_STEP: f64 = 1e-4;
 
 /// `circuit` with every independent source scaled by `factor`.
 fn scale_sources(circuit: &Circuit, factor: f64) -> Circuit {
@@ -181,9 +179,10 @@ fn gmin_stepping(
     num_nodes: usize,
     num_vsources: usize,
     initial_voltages: Option<&std::collections::HashMap<String, f64>>,
+    opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
-    // Geometric ladder, ending at 0.0 (default GMIN floor).
-    const LADDER: &[f64] = &[1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-8, 1e-10, 0.0];
+    // `opts.gmin_steps`, then a last step at 0.0 (the default GMIN floor).
+    let ladder = opts.gmin_steps.iter().copied().chain(std::iter::once(0.0));
 
     let mut warm_start: Option<DVector<f64>> = None;
     let mut last_err = SimError::ConvergenceFailed {
@@ -194,7 +193,7 @@ fn gmin_stepping(
         at: SolvePoint::OperatingPoint,
     };
 
-    for &gmin_extra in LADDER {
+    for gmin_extra in ladder {
         let seeds = if warm_start.is_some() {
             None
         } else {
@@ -208,6 +207,7 @@ fn gmin_stepping(
             warm_start.as_ref(),
             seeds,
             gmin_extra,
+            opts,
         ) {
             Ok((result, v)) => {
                 if gmin_extra == 0.0 {
@@ -228,33 +228,8 @@ fn gmin_stepping(
     Err(last_err)
 }
 
-/// Like [`solve_nonlinear`] but seeds the Newton initial guess with the
-/// supplied per-node voltages (V), keyed by node name. Equivalent to SPICE's
-/// `.NODESET` directive — useful when a circuit has multiple operating
-/// points or when default heuristics fail to converge. Unknown node names
-/// are silently ignored; nodes not in the map fall back to the default
-/// initialisation.
-///
-/// # Errors
-///
-/// As [`solve_nonlinear`].
-pub fn solve_nonlinear_with_initial_voltages(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    num_nodes: usize,
-    num_vsources: usize,
-    initial_voltages: &std::collections::HashMap<String, f64>,
-) -> Result<SimulationResult, SimError> {
-    solve_nonlinear_with_seeds(
-        circuit,
-        node_map,
-        num_nodes,
-        num_vsources,
-        Some(initial_voltages),
-    )
-}
-
 /// Inner NR iteration loop. Returns simulation result and final voltage vector.
+#[allow(clippy::too_many_arguments)]
 fn nr_inner(
     circuit: &Circuit,
     node_map: &NodeMap,
@@ -263,6 +238,7 @@ fn nr_inner(
     v_init: Option<&DVector<f64>>,
     initial_voltages: Option<&std::collections::HashMap<String, f64>>,
     gmin_extra: f64,
+    opts: &SolverOptions,
 ) -> Result<(SimulationResult, DVector<f64>), SimError> {
     // A high-gain op-amp clamped to its rails gives Newton no slope once an
     // iterate saturates, so a feedback loop can bounce rail to rail. Solve
@@ -278,6 +254,7 @@ fn nr_inner(
                 None,
                 initial_voltages,
                 gmin_extra,
+                opts,
             ) {
                 if let Ok(solved) = nr_inner(
                     circuit,
@@ -287,6 +264,7 @@ fn nr_inner(
                     Some(&v),
                     None,
                     gmin_extra,
+                    opts,
                 ) {
                     return Ok(solved);
                 }
@@ -316,7 +294,7 @@ fn nr_inner(
     let igbt_info = collect_igbt_info(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
     let mut last_step = (f64::INFINITY, None);
-    for _iteration in 0..MAX_NR_ITERATIONS {
+    for _iteration in 0..opts.max_iterations {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
         stamp::stamp_circuit(circuit, &mut system, node_map, Some(&v_prev))?;
 
@@ -343,7 +321,7 @@ fn nr_inner(
             );
         }
 
-        if !igbt_limited && converged(&v_prev, &v_limited, num_nodes, &diode_info) {
+        if !igbt_limited && converged(&v_prev, &v_limited, num_nodes, &diode_info, opts) {
             let result = results::extract_results(circuit, node_map, &v_limited, num_nodes);
             return Ok((result, v_limited));
         }
@@ -357,6 +335,7 @@ fn nr_inner(
         node_map,
         last_step,
         SolvePoint::OperatingPoint,
+        opts.max_iterations,
     ))
 }
 
@@ -781,11 +760,11 @@ pub(crate) fn add_gmin_shunts(system: &mut MnaSystem, num_nodes: usize) {
 /// Check if Newton-Raphson has converged.
 ///
 /// Two criteria, both required:
-/// - SPICE-style node voltages: |v_new - v_prev| <= V_ABSTOL + RELTOL * max(|v_new|, |v_prev|)
-/// - Junction voltages: |Δv_j| <= V_ABSTOL + RELTOL * n * V_T for every
+/// - SPICE-style node voltages: |v_new - v_prev| <= vntol + reltol * max(|v_new|, |v_prev|)
+/// - Junction voltages: |Δv_j| <= vntol + reltol * n * V_T for every
 ///   diode/LED/BJT junction. A junction's current changes by about
 ///   Δv_j / (n·V_T) relative, so this bounds the device current error at
-///   RELTOL, as SPICE's device current check does. The node criterion alone
+///   reltol, as SPICE's device current check does. The node criterion alone
 ///   lets a junction between nodes near a 5 V rail move by ~5 mV, a ~20%
 ///   current error.
 pub(crate) fn converged(
@@ -793,10 +772,11 @@ pub(crate) fn converged(
     v_new: &DVector<f64>,
     num_nodes: usize,
     diode_info: &[DiodeLimitInfo],
+    opts: &SolverOptions,
 ) -> bool {
     for i in 0..num_nodes {
         let diff = (v_new[i] - v_prev[i]).abs();
-        let tol = V_ABSTOL + RELTOL * v_new[i].abs().max(v_prev[i].abs());
+        let tol = opts.vntol + opts.reltol * v_new[i].abs().max(v_prev[i].abs());
         if diff > tol {
             return false;
         }
@@ -805,7 +785,7 @@ pub(crate) fn converged(
     diode_info.iter().all(|info| {
         let vj_prev = node(v_prev, info.anode_idx) - node(v_prev, info.cathode_idx);
         let vj_new = node(v_new, info.anode_idx) - node(v_new, info.cathode_idx);
-        (vj_new - vj_prev).abs() <= V_ABSTOL + RELTOL * info.n * info.vt
+        (vj_new - vj_prev).abs() <= opts.vntol + opts.reltol * info.n * info.vt
     })
 }
 
@@ -834,6 +814,7 @@ pub(crate) fn convergence_failed(
     node_map: &NodeMap,
     step: (f64, Option<usize>),
     at: SolvePoint,
+    iterations: usize,
 ) -> SimError {
     let node = step
         .1
@@ -849,7 +830,7 @@ pub(crate) fn convergence_failed(
         None => Vec::new(),
     };
     SimError::ConvergenceFailed {
-        iterations: MAX_NR_ITERATIONS,
+        iterations,
         max_step_volts: step.0,
         node,
         components,
@@ -1055,6 +1036,7 @@ mod tests {
             &node_map,
             (0.25, Some(a)),
             SolvePoint::Transient { time: 2e-3 },
+            100,
         );
         match &err {
             SimError::ConvergenceFailed {
@@ -1080,6 +1062,7 @@ mod tests {
             &node_map,
             (f64::INFINITY, None),
             SolvePoint::OperatingPoint,
+            100,
         );
         assert!(
             matches!(none, SimError::ConvergenceFailed { node: None, ref components, .. } if components.is_empty())
@@ -1106,8 +1089,15 @@ mod tests {
         let num_nodes = node_map.num_nodes();
         let num_vsources = circuit.count_voltage_sources();
 
-        let result = gmin_stepping(&circuit, &node_map, num_nodes, num_vsources, None)
-            .expect("gmin stepping should converge on a diode-R circuit");
+        let result = gmin_stepping(
+            &circuit,
+            &node_map,
+            num_nodes,
+            num_vsources,
+            None,
+            &SolverOptions::default(),
+        )
+        .expect("gmin stepping should converge on a diode-R circuit");
 
         // Forward-biased silicon diode: V(n2) ≈ 0.65 V, current ≈ 43 mA.
         let v_n2 = result.node_voltages["n2"];
@@ -1144,6 +1134,7 @@ mod tests {
             num_nodes,
             num_vsources,
             Some(&bad_seed),
+            &SolverOptions::default(),
         )
         .expect("gmin stepping should rescue absurd initial seed");
 
@@ -1173,8 +1164,15 @@ mod tests {
         let num_nodes = node_map.num_nodes();
         let num_vsources = circuit.count_voltage_sources();
 
-        let result = gmin_stepping(&circuit, &node_map, num_nodes, num_vsources, None)
-            .expect("low-bias diode should still converge via homotopy");
+        let result = gmin_stepping(
+            &circuit,
+            &node_map,
+            num_nodes,
+            num_vsources,
+            None,
+            &SolverOptions::default(),
+        )
+        .expect("low-bias diode should still converge via homotopy");
         let v_n2 = result.node_voltages["n2"];
         // 0.3 V applied across 100 Ω + diode → diode is below knee, V(n2) ≈ V(n1) ≈ 0.3 V
         assert!(

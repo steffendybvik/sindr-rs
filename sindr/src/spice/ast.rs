@@ -49,6 +49,9 @@ pub(crate) enum RawCard {
     NodeValues(NodeValueKind, Vec<(String, ParamExpr)>, Span),
     /// `.meas` / `.measure` and the card's source line.
     Measure(RawMeasure, Span),
+    /// `.options`: `name=value` pairs and bare flags (`None`), and the
+    /// card's source line.
+    Options(Vec<(String, Option<ParamExpr>)>, Span),
     /// `.ends [name]` marker; only meaningful inside a subckt body.
     Ends(Option<String>),
 }

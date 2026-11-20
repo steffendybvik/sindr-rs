@@ -16,6 +16,19 @@ staged as `0.1.0-alpha.8`.
 
 ### Added
 
+- `SolverOptions` and `Solver` (SIN-68). The tolerances (`reltol`,
+  `vntol`, `trtol`), the Newton iteration budget, the gmin-stepping
+  ladder, source stepping, the transient step cap and a `nodeset` are
+  options now, not constants. `Solver::new(options)` runs every analysis
+  with them (`.circuit`, `.transient`, `.ac`, `.noise`, `.tf`,
+  `.sensitivity`, `.dc_sweep`, `.dc_sweep_nested`, `.temperature_sweep`).
+  The free functions are `Solver::default()` and their answers are
+  unchanged.
+- SPICE `.options` (also `.option`, `.opt`): `RELTOL`, `VNTOL`, `TRTOL`
+  and `ITL1` fill `ParsedNetlist::options`, together with the `.nodeset`
+  cards; `ParsedNetlist::solver()` runs the deck with them. Any other
+  option is an error in strict mode and a warning otherwise.
+
 - A polarised capacitor's reverse voltage. Set `Ratings::reverse_voltage`
   on a capacitor's part and `check_ratings` flags `nodes[1]` (the `-`
   terminal) rising above `nodes[0]` (the `+`) by more than it, the way it
@@ -222,6 +235,12 @@ staged as `0.1.0-alpha.8`.
   `NPN`/`PNP` cards and written by `to_netlist`.
 
 ### Changed
+
+- **Deprecated:** `solve_circuit_with_initial_voltages` and the
+  `solve_ac`, `solve_noise`, `solve_tf` and `solve_sensitivity`
+  `_with_initial_voltages` variants. Use a `Solver` whose
+  `SolverOptions::nodeset` holds the seed.
+- **Breaking:** `ParsedNetlist` has a new `options` field.
 
 - **Breaking:** solver internals are private. `mna`, `stamp`,
   `newton_raphson`, `node_map` and `transient` are no longer public

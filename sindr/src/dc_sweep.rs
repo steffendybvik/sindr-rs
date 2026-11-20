@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
 use crate::results::SimulationResult;
+use crate::solver::SolverOptions;
 
 /// One operating point of a DC sweep: the sweep value and the full result
 /// at that value.
@@ -213,23 +214,28 @@ fn set_source(circuit: &mut Circuit, id: &str, value: f64) {
 
 /// One curve along `axis` of flat `circuit`. Each point's Newton–Raphson
 /// starts from the previous point's node voltages, the first from `seed`
-/// when there is one.
+/// when there is one, else from `opts.nodeset`.
 fn sweep_curve(
     circuit: &Circuit,
     axis: &DcSweepAxis,
     seed: Option<&HashMap<String, f64>>,
+    opts: &SolverOptions,
 ) -> Result<DcSweepResult, SimError> {
     let mut work = circuit.clone();
     let mut points: Vec<DcSweepPoint> = Vec::with_capacity(axis.num_points);
+    let mut point_opts = opts.clone();
+    if let Some(seed) = seed {
+        point_opts.nodeset = seed.clone();
+    }
     for k in 0..axis.num_points {
         let sweep_value = axis.value(k);
         set_source(&mut work, &axis.source_id, sweep_value);
-        let previous = points.last().map(|p| &p.result.node_voltages).or(seed);
-        let result = match previous {
-            Some(v) => crate::solve_circuit_with_initial_voltages(&work, v),
-            None => crate::solve_circuit(&work),
+        if let Some(previous) = points.last() {
+            point_opts
+                .nodeset
+                .clone_from(&previous.result.node_voltages);
         }
-        .map_err(|e| {
+        let result = crate::solve_circuit_with(&work, &point_opts).map_err(|e| {
             e.at(crate::SolvePoint::DcSweep {
                 source: axis.source_id.clone(),
                 value: sweep_value,
@@ -313,6 +319,25 @@ pub fn dc_sweep(
     stop: f64,
     num_points: usize,
 ) -> Result<DcSweepResult, SimError> {
+    dc_sweep_with(
+        circuit,
+        source_id,
+        start,
+        stop,
+        num_points,
+        &SolverOptions::default(),
+    )
+}
+
+/// [`dc_sweep`] with `opts`.
+pub(crate) fn dc_sweep_with(
+    circuit: &Circuit,
+    source_id: &str,
+    start: f64,
+    stop: f64,
+    num_points: usize,
+    opts: &SolverOptions,
+) -> Result<DcSweepResult, SimError> {
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
@@ -323,7 +348,7 @@ pub fn dc_sweep(
         ));
     }
     axis.check(circuit, 2)?;
-    let mut sweep = sweep_curve(circuit, &axis, None)?;
+    let mut sweep = sweep_curve(circuit, &axis, None, opts)?;
     for point in &mut sweep.points {
         crate::composite::fold(original, &mut point.result);
     }
@@ -414,6 +439,16 @@ pub fn dc_sweep_nested(
     inner: &DcSweepAxis,
     outer: &DcSweepAxis,
 ) -> Result<NestedDcSweepResult, SimError> {
+    dc_sweep_nested_with(circuit, inner, outer, &SolverOptions::default())
+}
+
+/// [`dc_sweep_nested`] with `opts`.
+pub(crate) fn dc_sweep_nested_with(
+    circuit: &Circuit,
+    inner: &DcSweepAxis,
+    outer: &DcSweepAxis,
+    opts: &SolverOptions,
+) -> Result<NestedDcSweepResult, SimError> {
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
@@ -437,7 +472,7 @@ pub fn dc_sweep_nested(
             .last()
             .and_then(|c| c.sweep.points.first())
             .map(|p| p.result.node_voltages.clone());
-        let sweep = sweep_curve(&work, inner, seed.as_ref())?;
+        let sweep = sweep_curve(&work, inner, seed.as_ref(), opts)?;
         curves.push(NestedDcSweepCurve { outer_value, sweep });
     }
     for point in curves.iter_mut().flat_map(|c| &mut c.sweep.points) {
