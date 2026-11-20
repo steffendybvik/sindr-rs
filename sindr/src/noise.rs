@@ -431,8 +431,7 @@ fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> V
                 nodes,
                 temperature,
             } => {
-                let params = sindr_devices::thermistor::ThermistorParams::default();
-                let r = sindr_devices::thermistor::thermistor_resistance(*temperature, &params);
+                let r = crate::device_params::thermistor_resistance(*temperature);
                 out.push(thermal(id, "", &nodes[0], &nodes[1], r, *temperature));
             }
             CircuitElement::Photoresistor {
