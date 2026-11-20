@@ -764,6 +764,38 @@ assert!(report.passed()); // every spec passed and every part is within its rati
 
 A measurement that can't be taken (an unknown node, a level never crossed, a phase on a transient) is `SpecStatus::Unmeasured` with a reason, never a pass; `Measurement::on` returns it as `SimError::Measurement`. Average and RMS are weighted by step width, so the transient's uneven steps don't skew them. With the `spice` feature, `.meas tran|ac|dc` cards land in `ParsedNetlist::measurements`, each with the analysis it measures.
 
+### Importing a schematic netlist
+
+`sindr::import` is for editors: map your netlist onto it and simulate a schematic without writing a SPICE deck. A `Netlist` holds components (your id, a `ComponentKind`, a value as a number or text, named parameters, an optional model and `Part`) and nets (your id, an optional display name, and the `(component, terminal)` pins on it). A `Bench` adds what the schematic leaves out: the ground net, sources and loads attached to nets or terminals (a connector pin, a test point), nets to tie together (an analog ground to ground), and the analysis to run.
+
+```rust
+use sindr::import::{simulate, Analysis, Bench, BenchSource, Component, ComponentKind, Net, Netlist, Simulation};
+
+let netlist = Netlist {
+    components: vec![
+        Component::new("c1", ComponentKind::Resistor).with_value("10k"),
+        Component::new("c2", ComponentKind::Resistor).with_value("4k7"),
+    ],
+    nets: vec![
+        Net::new("vin", [("c1", "1")]),
+        Net::new("vout", [("c1", "2"), ("c2", "1")]),
+        Net::new("gnd", [("c2", "2")]),
+    ],
+};
+let bench = Bench::new("gnd")
+    .with_source(BenchSource::voltage("supply", "vin", 5.0))
+    .with_analysis(Analysis::OperatingPoint);
+let Simulation::OperatingPoint(op) = simulate(&netlist, &bench).unwrap().result else { unreachable!() };
+println!("vout = {:.3} V", op.node_voltages["vout"]);
+```
+
+- **Ids carry through.** Element ids are your component ids and node names your net ids, so results land on your parts. Every `ImportError` names the component, net or bench item: an unknown kind, a terminal the kind doesn't have, a terminal on two nets or on none, a value that isn't one.
+- **Terminals by name, never pin number:** `anode`/`cathode` (or `A`/`K`), `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out`, case ignored. Unpolarised two-terminal parts also take `1` and `2`. `ComponentKind::terminals` lists each kind's names. A MOSFET's `body` must sit on its source's net; an op-amp's `V+`/`V-` pins set its rails from the bench supplies on those nets.
+- **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
+- **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals.
+- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only.
+- Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
+
 ### Examples
 
 One small program per capability in [`examples/`](./examples), run with `cargo run -p sindr --example <name>`:
@@ -779,6 +811,7 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `dc_sweep_diode` | DC sweep (diode I–V curve) |
 | `temperature_sweep` | Temperature sweep |
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
+| `import_netlist` | Importing a schematic netlist with a test bench |
 | `parse_netlist` | SPICE input (`--features spice`) |
 | `list_examples`, `run_example` | The built-in named circuits |
 
@@ -1843,6 +1876,721 @@ pub fn npn_switch() -> Circuit { … }
 pub use meta::{get_examples, ExampleCircuit};
 ```
 
+## `sindr/src/import/bench.rs`
+
+The test bench: what a schematic leaves out, and the analysis to run.
+
+```rust
+/// Where a bench item connects: a net, or a component's terminal (a
+/// connector pin, a test point) standing for the net it is on.
+pub enum Attach {
+    /// A net, by its id, or by its display name when no net has that id
+    /// and only one net has that name.
+    Net(String),
+    /// A component's terminal.
+    Terminal(Pin),
+}
+
+/// What a [`BenchSource`] drives.
+pub enum SourceKind {
+    /// A voltage, `plus` above `minus`.
+    Voltage {
+        /// DC voltage (V); the offset of any waveform.
+        volts: f64,
+        /// A time-varying part added on top, for transient.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        waveform: Option<Waveform>,
+    },
+    /// A current, flowing out of the source into `plus`'s net and back
+    /// from `minus`'s: it drives `amps` into `plus`.
+    Current {
+        /// DC current (A); the offset of any waveform.
+        amps: f64,
+        /// A time-varying part added on top, for transient.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        waveform: Option<Waveform>,
+    },
+}
+
+/// A source the bench adds: a supply on a net, or a signal into an input.
+pub struct BenchSource {
+    /// Its id, unique among components and bench items. Results are keyed
+    /// by it, and an AC or DC sweep names its source by it.
+    pub id: String,
+    /// Voltage or current, with any waveform.
+    #[cfg_attr(feature = "serde", serde(flatten))]
+    pub kind: SourceKind,
+    /// The positive side.
+    pub plus: Attach,
+    /// The negative side; `None` is the bench's ground.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub minus: Option<Attach>,
+}
+
+impl BenchSource {
+    /// A DC voltage source from `plus` to ground.
+    pub fn voltage(id: impl Into<String>, plus: impl Into<Attach>, volts: f64) -> Self { … }
+
+    /// A DC current source driving `amps` into `plus`, returning through
+    /// ground.
+    pub fn current(id: impl Into<String>, plus: impl Into<Attach>, amps: f64) -> Self { … }
+
+    /// Sets the negative side.
+    pub fn with_minus(mut self, minus: impl Into<Attach>) -> Self { … }
+
+    /// Adds a waveform on top of the DC value.
+    pub fn with_waveform(mut self, waveform: Waveform) -> Self { … }
+}
+
+/// What a [`BenchLoad`] is.
+pub enum LoadKind {
+    /// A resistance (Ω).
+    Resistor(f64),
+    /// A capacitance (F).
+    Capacitor(f64),
+    /// An inductance (H).
+    Inductor(f64),
+}
+
+/// A load the bench adds: what an output drives, a probe's capacitance.
+pub struct BenchLoad {
+    /// Its id, unique among components and bench items.
+    pub id: String,
+    /// What it is.
+    pub kind: LoadKind,
+    /// One side.
+    pub a: Attach,
+    /// The other side; `None` is the bench's ground.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub b: Option<Attach>,
+}
+
+impl BenchLoad {
+    /// A load from `a` to ground.
+    pub fn new(id: impl Into<String>, kind: LoadKind, a: impl Into<Attach>) -> Self { … }
+
+    /// Sets the other side.
+    pub fn with_b(mut self, b: impl Into<Attach>) -> Self { … }
+}
+
+/// The analysis a [`Bench`] runs.
+pub enum Analysis {
+    /// The DC operating point: capacitors open, inductors shorted,
+    /// waveforms at their DC value. Self-heating applies.
+    OperatingPoint,
+    /// A transient run, as [`solve_transient`].
+    Transient(TransientConfig),
+    /// A small-signal frequency sweep, as [`solve_ac`]. `source_id` names
+    /// a bench source.
+    Ac(AcConfig),
+    /// A DC sweep of one source's value, as [`dc_sweep`].
+    DcSweep {
+        /// The bench source to sweep.
+        source: String,
+        /// First value (V or A).
+        start: f64,
+        /// Last value (V or A).
+        stop: f64,
+        /// Number of points, both ends included.
+        points: usize,
+    },
+}
+
+/// What a schematic leaves out: the ground net, the sources and loads that
+/// drive it, nets to tie together, and the analysis.
+pub struct Bench {
+    /// The reference (0 V) net.
+    pub ground: Attach,
+    /// Pairs of nets to join into one node, such as an analog ground and
+    /// the ground.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub ties: Vec<[Attach; 2]>,
+    /// Sources: supplies, signals.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub sources: Vec<BenchSource>,
+    /// Loads.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub loads: Vec<BenchLoad>,
+    /// The analysis [`simulate`] runs.
+    pub analysis: Analysis,
+}
+
+impl Bench {
+    /// A bench grounding `ground`, with nothing attached, running the
+    /// operating point.
+    pub fn new(ground: impl Into<Attach>) -> Self { … }
+
+    /// Adds a source.
+    pub fn with_source(mut self, source: BenchSource) -> Self { … }
+
+    /// Adds a load.
+    pub fn with_load(mut self, load: BenchLoad) -> Self { … }
+
+    /// Joins two nets.
+    pub fn with_tie(mut self, a: impl Into<Attach>, b: impl Into<Attach>) -> Self { … }
+
+    /// Sets the analysis.
+    pub fn with_analysis(mut self, analysis: Analysis) -> Self { … }
+
+    /// Adds a DC supply to ground on every net of `netlist` whose display
+    /// name is a voltage: `3V3`, `+5V`, `5V0`, `12V`, `-12V`, `+3.3V`.
+    /// Names that aren't (`VCC`, `VDD`, `GND`) get nothing. Each source's
+    /// id is `supply:` and the net's id. Never done unless called: a power
+    /// port's name is only a hint.
+    pub fn with_supplies_from_net_names(mut self, netlist: &Netlist) -> Self { … }
+}
+
+/// A netlist built against a bench, and the result of the bench's analysis.
+pub struct Imported {
+    /// The circuit that ran, and the node of each net.
+    pub circuit: ImportedCircuit,
+    /// The analysis' result.
+    pub result: Simulation,
+}
+
+/// The result of a [`Bench`]'s analysis.
+pub enum Simulation {
+    /// [`Analysis::OperatingPoint`].
+    OperatingPoint(SimulationResult),
+    /// [`Analysis::Transient`].
+    Transient(SimulationResult),
+    /// [`Analysis::Ac`].
+    Ac(AcResult),
+    /// [`Analysis::DcSweep`].
+    DcSweep(DcSweepResult),
+}
+
+/// Why [`simulate`] failed.
+pub enum BenchError {
+    /// The netlist and bench don't make a circuit.
+    #[error(transparent)]
+    Import(#[from] ImportError),
+    /// The circuit didn't solve.
+    #[error(transparent)]
+    Sim(#[from] SimError),
+}
+
+/// Builds `netlist` against `bench` ([`Netlist::to_circuit`]) and runs the
+/// bench's analysis.
+///
+/// # Errors
+///
+/// [`BenchError::Import`] when the circuit can't be built,
+/// [`BenchError::Sim`] when it doesn't solve.
+pub fn simulate(netlist: &Netlist, bench: &Bench) -> Result<Imported, BenchError> { … }
+```
+
+## `sindr/src/import/mod.rs`
+
+Import a schematic tool's netlist, plus a test bench, as a [`Circuit`].
+
+A schematic netlist names parts and wires, not physics: there's a
+resistor `R3` valued `"4k7"`, and its terminal `1` sits on net `VOUT`.
+It has no stimulus either, since a power port names a net (`3V3`)
+without driving it. This module takes that shape in, in the caller's
+own ids, and gives back a [`Circuit`] sindr can solve:
+
+- A [`Netlist`]: [`Component`]s, each with an id, a [`ComponentKind`], a
+  value (a number or text such as `"4k7"`), named parameters and
+  optional model and part data; and [`Net`]s, each an id and the
+  [`Pin`]s (component and terminal name) on it.
+- A [`Bench`]: what the schematic leaves out. The ground net, sources
+  and loads attached to nets or terminals, nets tied together, and the
+  [`Analysis`] to run.
+
+[`Netlist::to_circuit`] builds the circuit; [`simulate`] builds it and
+runs the bench's analysis. Ids carry through: each element's id is the
+component's id, and each node's name is a net id (see
+[`ImportedCircuit::node`]), so results and errors point back at the
+caller's own parts and nets. Every [`ImportError`] names the component,
+net or bench item it is about.
+
+Terminals are matched by name, never by pin number, since pin numbers
+depend on the package. Names are compared without case; each kind lists
+the names it takes in [`ComponentKind::terminals`]. Unpolarised
+two-terminal parts also take `1` and `2`.
+
+### Example
+
+```
+use sindr::import::{simulate, Analysis, Bench, BenchSource, Component,
+                    ComponentKind, Net, Netlist, Simulation};
+
+let netlist = Netlist {
+    components: vec![
+        Component::new("c1", ComponentKind::Resistor).with_value("10k"),
+        Component::new("c2", ComponentKind::Resistor).with_value("4k7"),
+    ],
+    nets: vec![
+        Net::new("vin", [("c1", "1")]),
+        Net::new("vout", [("c1", "2"), ("c2", "1")]),
+        Net::new("gnd", [("c2", "2")]),
+    ],
+};
+let bench = Bench::new("gnd")
+    .with_source(BenchSource::voltage("supply", "vin", 5.0))
+    .with_analysis(Analysis::OperatingPoint);
+
+let Simulation::OperatingPoint(op) = simulate(&netlist, &bench).unwrap().result else {
+    unreachable!()
+};
+let vout = op.node_voltages["vout"];
+assert!((vout - 5.0 * 4.7 / 14.7).abs() < 1e-9);
+```
+
+```rust
+pub use bench:: { … }
+
+pub use value::parse_value;
+
+/// A schematic's components and the nets joining them.
+pub struct Netlist {
+    /// The components, in any order.
+    pub components: Vec<Component>,
+    /// The nets, in any order. A terminal on no net is unconnected.
+    pub nets: Vec<Net>,
+}
+
+/// One component of a [`Netlist`].
+pub struct Component {
+    /// The caller's id, unique in the netlist. It becomes the element's id,
+    /// so results are keyed by it.
+    pub id: String,
+    /// What the component is.
+    pub kind: ComponentKind,
+    /// The main value: resistance (Ω), capacitance (F), inductance (H), a
+    /// fuse's rating (A), a zener's or regulator's voltage (V), a
+    /// potentiometer's end-to-end resistance (Ω), a crystal's frequency
+    /// (Hz). Text such as `"4k7"` goes through [`parse_value`]. Text that
+    /// isn't a value (a part number) is ignored where a parameter or model
+    /// can stand in, and an error where the kind needs a value.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub value: Option<Value>,
+    /// Further parameters by name, such as `bf` for a transistor's gain or
+    /// `color` for an LED. Each kind's are listed on [`ComponentKind`];
+    /// any other name is an [`ImportError::UnknownParameter`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub params: BTreeMap<String, Value>,
+    /// Device model, for the kinds that take one.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub model: Option<Model>,
+    /// Part data (ratings, thermal path, reference, MPN …), copied into
+    /// [`Circuit::parts`] under the component's id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub part: Option<Part>,
+}
+
+impl Component {
+    /// A component with no value, parameters, model or part data.
+    pub fn new(id: impl Into<String>, kind: ComponentKind) -> Self { … }
+
+    /// Sets [`value`](Self::value).
+    pub fn with_value(mut self, value: impl Into<Value>) -> Self { … }
+
+    /// Adds a parameter.
+    pub fn with_param(mut self, name: impl Into<String>, value: impl Into<Value>) -> Self { … }
+
+    /// Sets [`model`](Self::model).
+    pub fn with_model(mut self, model: Model) -> Self { … }
+
+    /// Sets [`part`](Self::part).
+    pub fn with_part(mut self, part: Part) -> Self { … }
+}
+
+/// A value or parameter: a number in SI base units, text, or a flag.
+pub enum Value {
+    /// A number in SI base units (Ω, F, H, V, A, Hz, K).
+    Number(f64),
+    /// A flag, such as a switch's `closed`.
+    Bool(bool),
+    /// Text: a value as written (`"4k7"`, read by [`parse_value`]) or a
+    /// name (an LED's `"red"`).
+    Text(String),
+}
+
+/// A device model for a [`Component`] whose kind takes one.
+pub enum Model {
+    /// For a diode (`.model D`).
+    Diode(DiodeModel),
+    /// For an NPN or PNP transistor (`.model NPN`/`PNP`), besides `bf`.
+    Bjt(BjtModel),
+    /// For an NMOS or PMOS transistor.
+    Mosfet(MosfetParams),
+    /// For an op-amp: its macromodel.
+    OpAmp(OpAmpModel),
+    /// For a linear regulator: dropout, quiescent current and limits.
+    Regulator(RegulatorParams),
+    /// For a battery: its equivalent circuit.
+    Battery(BatteryParams),
+    /// For a varactor.
+    Varactor(VaractorParams),
+    /// For an IGBT.
+    Igbt(IgbtParams),
+}
+
+/// What a [`Component`] is. Serialised as its snake_case name
+/// (`"resistor"`, `"npn"`); a name sindr doesn't know reads as
+/// [`Other`](Self::Other), which [`Netlist::to_circuit`] refuses with the
+/// component's id.
+///
+/// Parameters each kind takes, besides [`Component::value`] (numbers in SI
+/// units, or text for [`parse_value`]):
+///
+/// | Kind | Value | Parameters | Model |
+/// |---|---|---|---|
+/// | `resistor` | Ω, required | | |
+/// | `capacitor`, `capacitor_polarized` | F, required | | |
+/// | `inductor` | H, required | | |
+/// | `diode`, `schottky_diode`, `photodiode` | | `temperature` (K); photodiode `irradiance` (W) | diode only: `Diode` |
+/// | `zener_diode` | V (breakdown) or `vz` | `vz`, `temperature` | |
+/// | `led` | | `color` (`"red"`, `"green"`, `"blue"`, …; default red), `temperature` | |
+/// | `varactor` | | | `Varactor` |
+/// | `npn`, `pnp` | | `bf` (or `beta`, `hfe`), `temperature` | `Bjt` |
+/// | `nmos`, `pmos` | | | `Mosfet` |
+/// | `njfet`, `pjfet` | | `idss` (A), `vp` (V) | |
+/// | `igbt` | | | `Igbt` |
+/// | `op_amp`, `comparator` | | `v_pos`, `v_neg` (V; default from bench supplies on its supply pins, else ±15) | op-amp: `OpAmp` |
+/// | `potentiometer` | Ω, required | `position` (0 top to 1 bottom, default 0.5) | |
+/// | `switch`, `push_button` | | `closed` (default false) | |
+/// | `fuse` | A (rating) | `blown` (default false) | |
+/// | `relay` | | `pickup_voltage` (V, required), `coil_resistance` (Ω), `inductance` (H) | |
+/// | `transformer` | | `l1`, `l2` (H, required), `k` | |
+/// | `regulator` | V (output) or `voltage` | `voltage` | `Regulator` |
+/// | `battery` | V, unless a model | `state_of_charge` (default 1), `r_series` (Ω, default 0.1), `capacity` (Ah, default 1) | `Battery` |
+/// | `thermistor` | | `temperature` (K) | |
+/// | `photoresistor` | | `light_level` (0 dark to 1 bright) | |
+/// | `voltage_source`, `current_source` | V or A, required | | |
+/// | `connector`, `test_point`, `net_tie`, `mounting_hole` | | | |
+///
+/// The last row are [passive](Self::is_passive): they add no element, and
+/// any terminal name is fine. A bench attaches sources and loads to their
+/// terminals.
+pub enum ComponentKind {
+    Resistor,
+    Capacitor,
+    CapacitorPolarized,
+    Inductor,
+    Diode,
+    SchottkyDiode,
+    ZenerDiode,
+    Led,
+    Photodiode,
+    Varactor,
+    Npn,
+    Pnp,
+    Nmos,
+    Pmos,
+    Njfet,
+    Pjfet,
+    Igbt,
+    OpAmp,
+    Comparator,
+    Potentiometer,
+    Switch,
+    PushButton,
+    Fuse,
+    Relay,
+    Transformer,
+    Regulator,
+    Battery,
+    Thermistor,
+    Photoresistor,
+    VoltageSource,
+    CurrentSource,
+    Connector,
+    TestPoint,
+    NetTie,
+    MountingHole,
+    /// A kind sindr doesn't simulate, by the caller's name for it.
+    Other(String),
+}
+
+impl ComponentKind {
+    /// The kind with this snake_case name, or [`Other`](Self::Other).
+    pub fn from_name(name: &str) -> Self { … }
+
+    /// The kind's snake_case name; an [`Other`](Self::Other) kind's own.
+    pub fn name(&self) -> &str { … }
+
+    /// Whether the kind adds no element: connectors, test points, net ties
+    /// and mounting holes.
+    pub fn is_passive(&self) -> bool { … }
+
+    /// The kind's terminals in element order: each a list of the names it
+    /// answers to, lowercase, canonical first. Required terminals come
+    /// first; [`optional_terminals`](Self::optional_terminals) says how
+    /// many at the end may be left off. Empty for passive and unknown
+    /// kinds.
+    pub fn terminals(&self) -> &'static [&'static [&'static str]] { … }
+
+    /// How many of [`terminals`](Self::terminals), at the end, may be left
+    /// unconnected: a MOSFET's body (tied to its source), an op-amp's two
+    /// supply pins.
+    pub fn optional_terminals(&self) -> usize { … }
+}
+
+/// A net: the terminals wired together.
+pub struct Net {
+    /// The caller's id, unique in the netlist. It becomes the node's name.
+    pub id: String,
+    /// Display name (`"VOUT"`, `"3V3"`). A bench may refer to the net by
+    /// it when it is unique.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub name: Option<String>,
+    /// The terminals on the net.
+    pub pins: Vec<Pin>,
+}
+
+impl Net {
+    /// A net with no display name.
+    pub fn new<C, T>(id: impl Into<String>, pins: impl IntoIterator<Item = (C, T)>) -> Self
+    where
+        C: Into<String>,
+        T: Into<String>,
+ { … }
+
+    /// Sets [`name`](Self::name).
+    pub fn with_name(mut self, name: impl Into<String>) -> Self { … }
+}
+
+/// A component's terminal, by the component's id and the terminal's name.
+pub struct Pin {
+    /// The component's id.
+    pub component: String,
+    /// The terminal's name (`"anode"`, `"B"`, `"1"`).
+    pub terminal: String,
+}
+
+impl Pin {
+    /// The terminal `terminal` of component `component`.
+    pub fn new(component: impl Into<String>, terminal: impl Into<String>) -> Self { … }
+}
+
+/// Why a netlist and bench can't become a circuit. Each variant names the
+/// caller's component, net or bench item.
+pub enum ImportError {
+    /// Two components, nets or bench items share an id.
+    #[error("id \"{id}\" is used twice")]
+    DuplicateId {
+        /// The id.
+        id: String,
+    },
+    /// A kind sindr doesn't simulate.
+    #[error("component \"{component}\": sindr can't simulate a \"{kind}\"")]
+    UnsupportedKind {
+        /// The component's id.
+        component: String,
+        /// Its kind's name.
+        kind: String,
+    },
+    /// A net names a component that isn't in the netlist.
+    #[error("net \"{net}\" names component \"{component}\", which isn't in the netlist")]
+    UnknownComponent {
+        /// The net's id, or the bench item's.
+        net: String,
+        /// The missing component's id.
+        component: String,
+    },
+    /// A terminal name the component's kind doesn't have.
+    #[error(
+        "component \"{component}\" ({kind}) has no terminal \"{terminal}\"; it has {expected}"
+    )]
+    UnknownTerminal {
+        /// The component's id.
+        component: String,
+        /// Its kind's name.
+        kind: String,
+        /// The terminal as given.
+        terminal: String,
+        /// The names it takes.
+        expected: String,
+    },
+    /// A terminal sits on two nets.
+    #[error("terminal \"{terminal}\" of component \"{component}\" is on two nets, \"{first}\" and \"{second}\"")]
+    TerminalOnTwoNets {
+        /// The component's id.
+        component: String,
+        /// The terminal.
+        terminal: String,
+        /// One net's id.
+        first: String,
+        /// The other's.
+        second: String,
+    },
+    /// A terminal the element needs is on no net.
+    #[error("terminal \"{terminal}\" of component \"{component}\" isn't connected")]
+    Unconnected {
+        /// The component's id.
+        component: String,
+        /// The terminal's canonical name.
+        terminal: String,
+    },
+    /// The kind needs a value and the component has none, or one that
+    /// isn't a number.
+    #[error("component \"{component}\" needs {what}")]
+    MissingValue {
+        /// The component's id.
+        component: String,
+        /// What it needs, with its unit.
+        what: String,
+    },
+    /// A value or parameter that isn't a value of the right type.
+    #[error("component \"{component}\": {field} {given:?} isn't {expected}")]
+    BadValue {
+        /// The component's id.
+        component: String,
+        /// `"value"` or the parameter's name.
+        field: String,
+        /// What was given.
+        given: Value,
+        /// What it should be.
+        expected: String,
+    },
+    /// A parameter the kind doesn't take.
+    #[error("component \"{component}\" ({kind}) takes no parameter \"{parameter}\"")]
+    UnknownParameter {
+        /// The component's id.
+        component: String,
+        /// Its kind's name.
+        kind: String,
+        /// The parameter's name.
+        parameter: String,
+    },
+    /// A model of the wrong sort for the kind.
+    #[error("component \"{component}\" ({kind}) can't take a {model} model")]
+    WrongModel {
+        /// The component's id.
+        component: String,
+        /// Its kind's name.
+        kind: String,
+        /// The model's sort.
+        model: String,
+    },
+    /// A MOSFET's body is on a different net from its source; sindr's
+    /// MOSFET ties the two.
+    #[error("component \"{component}\": the body must be on the source's net")]
+    BodyNotAtSource {
+        /// The component's id.
+        component: String,
+    },
+    /// The bench names a net that isn't in the netlist, or a display name
+    /// several nets share.
+    #[error("{item} names net \"{net}\", which {problem}")]
+    UnknownNet {
+        /// The bench item: `"ground"`, a source's id …
+        item: String,
+        /// The net as named.
+        net: String,
+        /// `"isn't in the netlist"` or `"is the name of several nets"`.
+        problem: String,
+    },
+    /// The bench attaches to a terminal that's on no net.
+    #[error("{item} attaches to terminal \"{terminal}\" of component \"{component}\", which is on no net")]
+    AttachedToUnconnected {
+        /// The bench item.
+        item: String,
+        /// The component's id.
+        component: String,
+        /// The terminal.
+        terminal: String,
+    },
+}
+
+/// A [`Circuit`] built from a [`Netlist`], with the map from the caller's
+/// net ids to its node names.
+pub struct ImportedCircuit {
+    /// The circuit. Element ids are component and bench ids; node names
+    /// are net ids.
+    pub circuit: Circuit,
+    /// Node name by net id. Nets the bench ties together share one node,
+    /// named after one of them; every other net's node is its own id.
+    pub nodes: BTreeMap<String, String>,
+}
+
+impl ImportedCircuit {
+    /// The node name of net `net_id`, for looking up results.
+    pub fn node(&self, net_id: &str) -> Option<&str> { … }
+}
+
+impl Netlist {
+    /// Builds the circuit: the netlist's components, with `bench`'s ground,
+    /// ties, sources and loads. The bench's analysis isn't run; see
+    /// [`simulate`].
+    ///
+    /// # Errors
+    ///
+    /// An [`ImportError`] naming the component, net or bench item that
+    /// can't be built. Solver checks (a floating node, no path to ground)
+    /// come later, from the analysis.
+    pub fn to_circuit(&self, bench: &Bench) -> Result<ImportedCircuit, ImportError> { … }
+}
+```
+
+## `sindr/src/import/value.rs`
+
+Component values as a schematic writes them: `10k`, `4.7 µF`, `4k7`, `1M`.
+
+```rust
+/// Reads a component value the way a schematic writes it, to a number in
+/// SI base units. `None` when the text isn't a value.
+///
+/// Takes a number with an optional exponent, an optional prefix, and an
+/// optional unit: `10k`, `4.7uF`, `4.7 µF`, `100nF`, `2.2mH`, `1e-6`,
+/// `5V`, `10 kΩ`. Prefixes are case-sensitive as on a schematic, so `1M`
+/// is 1 MΩ, not the 1 mΩ a SPICE deck would read; `meg` is mega too.
+/// The prefix (or `R` for 1, or the unit) may stand in for the decimal
+/// point, as on a resistor's marking: `4k7` is 4.7 k, `4R7` is 4.7, `2M2`
+/// is 2.2 M, `5V1` is 5.1 V.
+///
+/// ```
+/// use sindr::import::parse_value;
+///
+/// assert_eq!(parse_value("10k"), Some(10e3));
+/// assert_eq!(parse_value("4k7"), Some(4.7e3));
+/// assert_eq!(parse_value("1M"), Some(1e6));
+/// assert_eq!(parse_value("100 nF"), Some(100e-9));
+/// assert_eq!(parse_value("5V1"), Some(5.1));
+/// assert_eq!(parse_value("BC547"), None);
+/// ```
+pub fn parse_value(text: &str) -> Option<f64> { … }
+```
+
 ## `sindr/src/lib.rs`
 
 Rust circuit simulator. SPICE-style MNA solver with built-in
@@ -1973,6 +2721,16 @@ up from zero); [`SimulationResult::convergence_aid`] says which one was
 needed. A transient step whose Newton solve fails is retried at half the
 step.
 
+#### Netlist import for editors
+
+[`import`] takes a schematic tool's netlist in the caller's own ids:
+components with a kind, a value (`"4k7"`, `"100nF"`) and named
+terminals, and nets of `(component, terminal)` pins. A [`import::Bench`]
+adds what a schematic leaves out (ground, supplies, signal sources,
+loads, the analysis), and [`import::simulate`] runs it. Results are
+keyed by the caller's component and net ids, and every
+[`import::ImportError`] names the part, net or bench item at fault.
+
 #### SPICE input (feature `spice`)
 
 [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
@@ -2092,6 +2850,8 @@ pub mod examples;
 pub use examples::{get_examples, ExampleCircuit};
 
 pub mod ac_analysis;
+
+pub mod import;
 
 pub use sindr_core::circuit;
 
@@ -5365,20 +6125,25 @@ pub struct TransientConfig {
     /// Newton solves add shorter steps in between.
     pub tstep: f64,
     /// Largest step allowed (s), as SPICE's TMAX. `None` means `tstep`.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub tmax: Option<f64>,
     /// Time (s) the result starts at, as SPICE's TSTART (default 0). The run
     /// is still integrated from 0, so the circuit has the same history, but
     /// steps before `tstart` aren't kept: the first snapshot is at `tstart`.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub tstart: f64,
     /// Integration method. Default [`IntegrationMethod::Gear2`].
+    #[cfg_attr(feature = "serde", serde(default))]
     pub method: IntegrationMethod,
     /// Control the step by local truncation error (default `true`). When
     /// `false`, every step is `tstep` (or `tmax`) except where a breakpoint
     /// or Newton failure shortens it.
+    #[cfg_attr(feature = "serde", serde(default = "default_adaptive"))]
     pub adaptive: bool,
     /// Where the run starts: from the initial conditions alone, as if
     /// switched on at t = 0 (the default), or from the DC operating point.
     /// See [`TransientStart`].
+    #[cfg_attr(feature = "serde", serde(default))]
     pub start: TransientStart,
     /// Initial node voltages (V), keyed by node name, as SPICE's `.ic`.
     /// With [`TransientStart::InitialConditions`] (SPICE's `UIC`) each
@@ -5387,6 +6152,7 @@ pub struct TransientConfig {
     /// With [`TransientStart::OperatingPoint`] these nodes are held at their
     /// values while the operating point is solved, as SPICE does with `.ic`
     /// and no `UIC`.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub initial_voltages: HashMap<String, f64>,
     /// Initial inductor currents (A), keyed by inductor or relay id, flowing
     /// from the element's first node to its second. Inductors not listed
@@ -5394,6 +6160,7 @@ pub struct TransientConfig {
     /// operating-point current. There an inductor listed here is held at its
     /// current while the operating point is solved; a relay coil just starts
     /// at it.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub initial_currents: HashMap<String, f64>,
 }
 
@@ -8265,6 +9032,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+```
+
+## `sindr/examples/import_netlist.rs`
+
+```rust
+//! Simulate a schematic tool's netlist with a test bench.
+//!
+//! A transistor switch: a 9 V battery comes in on connector J1, R1 feeds an
+//! LED, and Q1 sinks it when a logic-level signal on test point TP1 drives
+//! its base through R2. The netlist says nothing about voltages; the bench
+//! adds the supply on J1's pins and the 3.3 V drive on TP1, then runs an
+//! operating point. Results come back keyed by the netlist's own ids.
+//!
+//! Run: `cargo run -p sindr --example import_netlist`
+
+use sindr::import::{
+    simulate, Analysis, Bench, BenchSource, Component, ComponentKind, Net, Netlist, Pin, Simulation,
+};
+
+fn main() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("J1", ComponentKind::Connector),
+            Component::new("TP1", ComponentKind::TestPoint),
+            Component::new("R1", ComponentKind::Resistor).with_value("680"),
+            Component::new("D1", ComponentKind::Led).with_param("color", "green"),
+            Component::new("Q1", ComponentKind::Npn).with_param("hfe", 200.0),
+            Component::new("R2", ComponentKind::Resistor).with_value("4k7"),
+        ],
+        nets: vec![
+            Net::new("net-1", [("J1", "1"), ("R1", "1")]).with_name("VBAT"),
+            Net::new("net-2", [("R1", "2"), ("D1", "anode")]),
+            Net::new("net-3", [("D1", "cathode"), ("Q1", "C")]),
+            Net::new("net-4", [("TP1", "1"), ("R2", "1")]).with_name("DRIVE"),
+            Net::new("net-5", [("R2", "2"), ("Q1", "B")]),
+            Net::new("net-6", [("J1", "2"), ("Q1", "E")]).with_name("GND"),
+        ],
+    };
+
+    let bench = Bench::new("GND")
+        .with_source(BenchSource::voltage("battery", Pin::new("J1", "1"), 9.0))
+        .with_source(BenchSource::voltage("drive", Pin::new("TP1", "1"), 3.3))
+        .with_analysis(Analysis::OperatingPoint);
+
+    let imported = match simulate(&netlist, &bench) {
+        Ok(imported) => imported,
+        Err(e) => {
+            eprintln!("can't simulate: {e}");
+            std::process::exit(1);
+        }
+    };
+    let Simulation::OperatingPoint(op) = imported.result else {
+        unreachable!("the bench asked for an operating point")
+    };
+
+    for net in &netlist.nets {
+        let node = imported.circuit.node(&net.id).unwrap_or(&net.id);
+        let label = net.name.as_deref().unwrap_or(&net.id);
+        println!("{label:>6}: {:7.3} V", op.node_voltages[node]);
+    }
+    for id in ["R1", "D1", "R2"] {
+        if let Some(c) = op.component_results.iter().find(|c| c.id == id) {
+            println!(
+                "{id:>6}: {:7.3} mA, {:6.2} mW",
+                c.current_through * 1e3,
+                c.power * 1e3
+            );
+        }
+    }
 }
 ```
 

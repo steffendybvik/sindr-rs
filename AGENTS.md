@@ -32,6 +32,7 @@ sindr-rs/
 │   │   ├── thermal.rs          # self-heating: DC balance iteration, transient thermal RC
 │   │   ├── validation.rs       # circuit pre-flight checks
 │   │   ├── error.rs            # SimError variants
+│   │   ├── import/             # netlist-and-bench import for editors: Netlist, Bench, simulate, parse_value
 │   │   ├── examples.rs         # named example circuits, runnable from list_examples / run_example
 │   │   └── spice/              # SPICE3 netlist parser (optional `spice` feature)
 │   │       └── {mod,parser,preprocess,flatten,build,ast,param_eval,si,
