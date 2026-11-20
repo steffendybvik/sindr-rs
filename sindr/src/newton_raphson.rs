@@ -240,8 +240,8 @@ fn nr_inner(
     gmin_extra: f64,
     opts: &SolverOptions,
 ) -> Result<(SimulationResult, DVector<f64>), SimError> {
-    // A high-gain op-amp clamped to its rails gives Newton no slope once an
-    // iterate saturates, so a feedback loop can bounce rail to rail. Solve
+    // A high-gain op-amp or comparator clamped to its rails gives Newton no
+    // slope once an iterate saturates, so a feedback loop can bounce rail to rail. Solve
     // with the clamps lifted first: that is the answer whenever the op-amps
     // end up in their linear range, and a close start when they don't.
     if v_init.is_none() {
@@ -342,10 +342,17 @@ fn nr_inner(
 /// Rails far enough out that the op-amp clamp never engages.
 const UNCLAMPED_RAIL: f64 = 1e12;
 
-/// `circuit` with every modelled op-amp's rails moved out of reach, or
-/// `None` when it has no clamped op-amp.
+/// `circuit` with every modelled op-amp's and comparator's rails moved out
+/// of reach, or `None` when it has nothing clamped.
 fn without_op_amp_rails(circuit: &Circuit) -> Option<Circuit> {
-    let clamped = |c: &CircuitElement| matches!(c, CircuitElement::OpAmp { model: Some(_), v_pos, .. } if *v_pos < UNCLAMPED_RAIL);
+    let clamped = |c: &CircuitElement| {
+        matches!(
+            c,
+            CircuitElement::OpAmp { model: Some(_), v_pos, .. }
+                | CircuitElement::Comparator { v_pos, .. }
+                if *v_pos < UNCLAMPED_RAIL
+        )
+    };
     if !circuit.components.iter().any(clamped) {
         return None;
     }
@@ -356,7 +363,8 @@ fn without_op_amp_rails(circuit: &Circuit) -> Option<Circuit> {
             v_neg,
             model: Some(_),
             ..
-        } = c
+        }
+        | CircuitElement::Comparator { v_pos, v_neg, .. } = c
         {
             *v_pos = UNCLAMPED_RAIL;
             *v_neg = -UNCLAMPED_RAIL;

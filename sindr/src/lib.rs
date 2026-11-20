@@ -96,7 +96,7 @@
 //! | IGBT | MOSFET-like gate control, square-law collector current |
 //! | Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
 //! | Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
-//! | Comparator | VCVS of gain 1e5; no GBW or slew rate |
+//! | Comparator | Gain 1e5, output clamped to its rails; no GBW, slew rate or hysteresis |
 //! | Transformer | Linear coupled inductors |
 //! | Battery | Open-circuit voltage by state of charge behind R0 and an optional R1‖C1; state of charge falls with charge drawn ([`battery::BatteryParams`]; Li-ion and CR2032 presets) |
 //! | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |

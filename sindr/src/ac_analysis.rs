@@ -854,22 +854,17 @@ pub(crate) fn small_signal_system(
                 }
                 vsource_index += 2;
             }
-            // Modelled op-amp, linearised at the bias point: see `op_amp`.
-            CircuitElement::OpAmp {
-                nodes,
-                v_pos,
-                v_neg,
-                model: Some(model),
-                ..
-            } => {
-                let op = crate::op_amp::OpAmpStamp {
-                    model,
-                    nodes,
-                    ground: &circuit.ground_node,
-                    v_pos: *v_pos,
-                    v_neg: *v_neg,
-                    branch: num_nodes + vsource_index,
+            // Modelled op-amp or comparator, linearised at the bias point:
+            // see `op_amp`.
+            CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. } => {
+                let branch = num_nodes + vsource_index;
+                vsource_index += 2;
+                let Some(op) =
+                    crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, branch)
+                else {
+                    continue;
                 };
+                let (model, nodes) = (op.model, op.nodes);
                 let br = op.branch;
                 let x = br + 1;
                 let one = Complex64::new(1.0, 0.0);
@@ -891,10 +886,9 @@ pub(crate) fn small_signal_system(
                 if let Some(m) = node_map.index(&nodes[1]) {
                     a[(x, m)] += Complex64::new(c_u, 0.0);
                 }
-                vsource_index += 2;
             }
-            // OpAmp/Comparator: high-gain VCVS (gain=1e5) — linear, stamp properly in AC
-            CircuitElement::OpAmp { nodes, .. } | CircuitElement::Comparator { nodes, .. } => {
+            // Unmodelled op-amp: high-gain VCVS (gain=1e5), linear.
+            CircuitElement::OpAmp { nodes, .. } => {
                 let branch = num_nodes + vsource_index;
                 let p = node_map.index(&nodes[2]); // out
                 let gnd = node_map.index(&circuit.ground_node);

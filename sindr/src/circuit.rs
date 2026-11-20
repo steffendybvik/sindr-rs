@@ -727,18 +727,21 @@ pub enum CircuitElement {
         model: Option<OpAmpModel>,
     },
 
-    /// Ideal comparator (same VCVS stamp as OpAmp; output saturates to supply rails).
-    /// nodes: [in_plus, in_minus, out]
+    /// Comparator, output referred to ground: gain 1e5 from `v₊ − v₋` with
+    /// no frequency response, its output clamped to `[v_neg, v_pos]`. It is
+    /// an op-amp with an [`OpAmpModel`] of that gain and no pole, so it makes
+    /// the circuit nonlinear (Newton). No hysteresis, no open-collector output.
     #[cfg_attr(feature = "serde", serde(rename = "comparator"))]
     Comparator {
         /// Unique component identifier.
         id: String,
         /// Terminals `[in_plus, in_minus, out]`.
         nodes: [String; 3], // [in_plus, in_minus, out]
-        /// Positive supply rail / output high level (V). Default 15.
+        /// Output high level (V): the output's upper limit. Default 15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
         v_pos: f64,
-        /// Negative supply rail / output low level (V). Default -15.
+        /// Output low level (V): the output's lower limit, below
+        /// `v_pos`. Default -15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
         v_neg: f64,
     },
@@ -1089,16 +1092,15 @@ impl CircuitElement {
 
     /// Extra MNA unknowns the element adds after the node voltages: one
     /// branch current for a voltage-type source, two for a transformer
-    /// (one per winding), and two for an op-amp with an [`OpAmpModel`]
-    /// (its output current, then its internal gain-stage voltage).
+    /// (one per winding), and two for an op-amp with an [`OpAmpModel`] or a
+    /// comparator (its output current, then its internal gain-stage voltage).
     pub fn branch_slots(&self) -> usize {
         match self {
-            CircuitElement::OpAmp { model: Some(_), .. } => 2,
+            CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. } => 2,
             CircuitElement::VoltageSource { .. }
             | CircuitElement::Vcvs { .. }
             | CircuitElement::Ccvs { .. }
             | CircuitElement::OpAmp { .. }
-            | CircuitElement::Comparator { .. }
             | CircuitElement::VoltageRegulator { .. } => 1,
             CircuitElement::Transformer { .. } => 2,
             _ => 0,
@@ -1324,6 +1326,7 @@ impl Circuit {
             matches!(
                 c,
                 CircuitElement::OpAmp { model: Some(_), .. }
+                    | CircuitElement::Comparator { .. }
                     | CircuitElement::Inductor {
                         saturation: Some(_),
                         ..
@@ -1787,10 +1790,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        // Both OpAmp and Comparator count as voltage sources (VCVS branch)
-        assert_eq!(circuit.count_voltage_sources(), 2);
-        // Neither is nonlinear
-        assert!(!circuit.has_nonlinear_elements());
+        // The op-amp is one VCVS branch; the comparator, clamped to its
+        // rails, adds its gain-stage voltage too and needs Newton.
+        assert_eq!(circuit.count_voltage_sources(), 3);
+        assert!(circuit.has_nonlinear_elements());
     }
 
     #[cfg(feature = "serde")]

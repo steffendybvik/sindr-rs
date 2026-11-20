@@ -310,10 +310,10 @@ CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, al
 ```rust
 // nodes: [in_plus, in_minus, out]
 CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> } // rails, default ±15 V
-CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // default 5 V / 0 V
+CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // output low / high, default ±15 V
 ```
 
-With `model: None` both are a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
+With `model: None` the op-amp is a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. A comparator has the same gain and no frequency response, but its output is clamped to `v_neg`/`v_pos`, so overdrive beyond `v_pos / 1e5` (50 µV for a 5 V rail) pins it to a rail in DC, transient and AC (where its gain at a rail is zero). It has no hysteresis or open-collector output; `v_pos` must be above `v_neg`. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
 
 ```rust
 use sindr::{CircuitElement, OpAmpModel};
@@ -549,7 +549,7 @@ for (source, total) in noise.sources.iter().zip(&noise.source_totals) {
 }
 ```
 
-Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C. Sources, controlled sources, op-amps, regulators and a diode's series resistance are noiseless.
+Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C. Sources, controlled sources, op-amps, comparators, regulators and a diode's series resistance are noiseless.
 
 ## DC sweep
 
@@ -788,7 +788,7 @@ pub enum SimError {
 | Circuit contains | Solver used |
 |---|---|
 | Only linear elements | Direct MNA (LU factorisation) |
-| Nonlinear elements (diodes, BJTs, MOSFETs, IGBTs…) | Newton-Raphson iteration |
+| Nonlinear elements (diodes, BJTs, MOSFETs, IGBTs, comparators…) | Newton-Raphson iteration |
 | Reactive elements (C, L, Varactor, Transformer, parasitic caps, a diode whose model sets `cjo` or `tt`) or waveform sources | Transient (Gear-2 by default) |
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 

@@ -518,26 +518,17 @@ fn stamp_circuit_transient(
                     system.b[qi] += i_eq;
                 }
             }
-            CircuitElement::OpAmp {
-                id,
-                nodes,
-                v_pos,
-                v_neg,
-                model: Some(model),
-            } => {
-                let op = crate::op_amp::OpAmpStamp {
-                    model,
-                    nodes,
-                    ground: &circuit.ground_node,
-                    v_pos: *v_pos,
-                    v_neg: *v_neg,
-                    branch: num_nodes + vsource_index,
-                };
-                let history = parasitic_history(parasitic, id, OP_AMP_STAGE);
-                op.stamp_transient(system, node_map, integ, &history, v_prev);
+            CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. } => {
+                let branch = num_nodes + vsource_index;
+                if let Some(op) =
+                    crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, branch)
+                {
+                    let history = parasitic_history(parasitic, component.id(), OP_AMP_STAGE);
+                    op.stamp_transient(system, node_map, integ, &history, v_prev);
+                }
                 vsource_index += 2;
             }
-            CircuitElement::OpAmp { nodes, .. } | CircuitElement::Comparator { nodes, .. } => {
+            CircuitElement::OpAmp { nodes, .. } => {
                 let branch = num_nodes + vsource_index;
                 let out_nodes: [String; 2] = [nodes[2].clone(), circuit.ground_node.clone()];
                 let ctrl_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
@@ -1844,28 +1835,19 @@ pub(crate) fn run_transient(
                     parasitic.insert(format!("{id}-{DIODE_CHARGE}"), History::at(q));
                 }
             }
-            CircuitElement::OpAmp {
-                id,
-                nodes,
-                v_pos,
-                v_neg,
-                model: Some(model),
-            } if config.start == TransientStart::OperatingPoint => {
+            CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. }
+                if config.start == TransientStart::OperatingPoint =>
+            {
                 // The gain stage starts settled at the operating point's
                 // input, so a pole doesn't drag the output from 0 V.
-                let op = crate::op_amp::OpAmpStamp {
-                    model,
-                    nodes,
-                    ground: &circuit.ground_node,
-                    v_pos: *v_pos,
-                    v_neg: *v_neg,
-                    branch: 0,
-                };
-                let vd = ic(&nodes[0]) - ic(&nodes[1]);
-                parasitic.insert(
-                    format!("{id}-{OP_AMP_STAGE}"),
-                    History::at(op.settled_stage(vd)),
-                );
+                if let Some(op) = crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, 0)
+                {
+                    let vd = ic(&op.nodes[0]) - ic(&op.nodes[1]);
+                    parasitic.insert(
+                        format!("{}-{OP_AMP_STAGE}", component.id()),
+                        History::at(op.settled_stage(vd)),
+                    );
+                }
             }
             _ => {}
         }
@@ -1918,7 +1900,8 @@ pub(crate) fn run_transient(
     for component in &circuit.components {
         if let CircuitElement::OpAmp {
             id, model: Some(_), ..
-        } = component
+        }
+        | CircuitElement::Comparator { id, .. } = component
         {
             if let (Some(branch), Some(stage)) = (
                 circuit.vsource_branch_index(id),
@@ -2529,24 +2512,14 @@ fn update_parasitic_histories(
     let v = |n: &String| node_map.index(n).map_or(0.0, |i| solution[i]);
     let num_nodes = node_map.num_nodes();
     for component in &circuit.components {
-        if let CircuitElement::OpAmp {
-            id,
-            nodes,
-            v_pos,
-            v_neg,
-            model: Some(model),
-        } = component
-        {
+        if let Some(op) = crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, 0) {
+            let id = component.id();
             let Some(branch) = circuit.vsource_branch_index(id) else {
                 continue;
             };
             let op = crate::op_amp::OpAmpStamp {
-                model,
-                nodes,
-                ground: &circuit.ground_node,
-                v_pos: *v_pos,
-                v_neg: *v_neg,
                 branch: num_nodes + branch,
+                ..op
             };
             let history = parasitic_history(parasitic, id, OP_AMP_STAGE);
             parasitic.insert(
