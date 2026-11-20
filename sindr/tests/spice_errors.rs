@@ -351,10 +351,7 @@ fn fuzz_seed_decks_do_not_panic() {
         let Ok(src) = std::str::from_utf8(rest) else {
             continue;
         };
-        let opts = sindr::spice::ParseOptions {
-            strict: mode & 1 == 0,
-            ..Default::default()
-        };
+        let opts = sindr::spice::ParseOptions::default().with_strict(mode & 1 == 0);
         let _ = sindr::spice::parse_str_with_options(src, opts);
         seen += 1;
     }

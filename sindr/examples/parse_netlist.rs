@@ -94,10 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Lenient mode: an unsupported element (M = MOSFET) becomes a
     //    collected warning instead of a hard error.
     let with_mosfet = format!("{DECK}M1 n2 n1 0 nmod\n");
-    let opts = ParseOptions {
-        strict: false,
-        include_search_path: None,
-    };
+    let opts = ParseOptions::default().with_strict(false);
     let lenient = parse_str_with_options(&with_mosfet, opts)?;
     for warning in &lenient.warnings {
         println!("warning: {warning:?}");

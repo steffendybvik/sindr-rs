@@ -313,7 +313,7 @@ pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
 pub use noise::{solve_noise, NoiseConfig, NoiseResult};
 pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 pub use results::{
-    BjtResult, ComponentResult, ConvergenceAid, McuResult, MosfetResult, OpAmpResult, RelayResult,
+    BjtResult, ComponentResult, ConvergenceAid, MosfetResult, OpAmpResult, RelayResult,
     SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
 pub use sensitivity::{solve_sensitivity, SensConfig, SensEntry, SensParameter, SensResult};

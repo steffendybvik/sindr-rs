@@ -5103,19 +5103,6 @@ pub struct RelayResult {
     pub contact_closed: bool,
 }
 
-/// Per-microcontroller results: per-pin GPIO output currents.
-///
-/// Never filled: sindr has no microcontroller element, so
-/// [`SimulationResult::mcu_results`] is always empty.
-pub struct McuResult {
-    /// Component id.
-    pub id: String,
-    /// Current sourced/sunk by each GPIO pin (A), in pin index order.
-    pub pin_currents: Vec<f64>,
-    /// GPIO logic-high voltage used for this MCU (V).
-    pub gpio_voltage: f64,
-}
-
 /// One timestep of a transient simulation: time, node voltages, per-component
 /// state at that instant.
 pub struct TimestepSnapshot {
@@ -5182,7 +5169,6 @@ pub struct TransientStats {
 /// - `mosfet_results` — for [`Mosfet`](crate::CircuitElement::Mosfet)
 /// - `op_amp_results` — for op-amps and comparators
 /// - `relay_results` — for relays
-/// - `mcu_results` — always empty: sindr has no microcontroller element
 /// - `transient` — for circuits with capacitors, inductors, or waveform
 ///   sources (DC analysis returns `None`)
 pub struct SimulationResult {
@@ -5233,12 +5219,6 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub relay_results: Vec<RelayResult>,
-    /// Detailed per-microcontroller results.
-    #[cfg_attr(
-        feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
-    )]
-    pub mcu_results: Vec<McuResult>,
     /// Transient time-series, present only when the circuit has reactive
     /// elements or waveform sources.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -6511,7 +6491,7 @@ still parses:
 ```
 use sindr::spice::{parse_str_with_options, ParseOptions};
 
-let opts = ParseOptions { strict: false, include_search_path: None };
+let opts = ParseOptions::default().with_strict(false);
 let netlist = parse_str_with_options(deck, opts)?;
 for warning in &netlist.warnings {
     eprintln!("warning: {warning:?}");
@@ -6643,8 +6623,10 @@ impl ParsedNetlist {
 
 /// Knobs controlling parser strictness and include-path resolution.
 ///
-/// Start from [`Default`] (strict, no include-path override) and set the
-/// fields you need, or write the struct literal.
+/// Start from [`Default`] (strict, no include-path override) and set what
+/// you need with [`with_strict`](Self::with_strict) and
+/// [`with_include_search_path`](Self::with_include_search_path). It is
+/// `#[non_exhaustive]`, so new options can come without breaking callers.
 pub struct ParseOptions {
     /// If `true` (default), any unsupported card/device or syntax error is
     /// fatal. If `false`, recoverable unsupported items are skipped and
@@ -6657,6 +6639,16 @@ pub struct ParseOptions {
     /// this is required if you call [`parse_str`] on a netlist that
     /// contains relative `.include`s.
     pub include_search_path: Option<std::path::PathBuf>,
+}
+
+impl ParseOptions {
+    /// Set [`strict`](Self::strict): `false` turns recoverable unsupported
+    /// items into [`ParseWarning`]s instead of errors.
+    pub fn with_strict(mut self, strict: bool) -> Self { … }
+
+    /// Set [`include_search_path`](Self::include_search_path), the base
+    /// directory for relative `.include` / `.lib` paths.
+    pub fn with_include_search_path(mut self, path: impl Into<std::path::PathBuf>) -> Self { … }
 }
 
 /// Parse a SPICE netlist from an in-memory string in strict mode.
@@ -8769,10 +8761,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Lenient mode: an unsupported element (M = MOSFET) becomes a
     //    collected warning instead of a hard error.
     let with_mosfet = format!("{DECK}M1 n2 n1 0 nmod\n");
-    let opts = ParseOptions {
-        strict: false,
-        include_search_path: None,
-    };
+    let opts = ParseOptions::default().with_strict(false);
     let lenient = parse_str_with_options(&with_mosfet, opts)?;
     for warning in &lenient.warnings {
         println!("warning: {warning:?}");

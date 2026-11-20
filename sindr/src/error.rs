@@ -26,6 +26,7 @@ use thiserror::Error;
 ///   [`InvalidResistance`](Self::InvalidResistance)) — a component value or
 ///   analysis setting that the solver explicitly rejects.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SimError {
     /// The design hierarchy can't be flattened: an unknown block, a
     /// port-count mismatch, a recursive block or a repeated id.
@@ -151,6 +152,7 @@ pub enum SimError {
 /// Where in an analysis a solve failed, carried by
 /// [`SimError::ConvergenceFailed`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum SolvePoint {
     /// The DC operating point, including one AC, `.tf`, `.sens` or `.noise`
     /// linearise around and the one a transient starts from.

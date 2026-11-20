@@ -339,10 +339,7 @@ mod spice_options {
         let err = parse_str(&deck).unwrap_err().to_string();
         assert!(err.contains("abstol"), "{err}");
 
-        let opts = ParseOptions {
-            strict: false,
-            include_search_path: None,
-        };
+        let opts = ParseOptions::default().with_strict(false);
         let nl = parse_str_with_options(&deck, opts).unwrap();
         assert_eq!(nl.warnings.len(), 2, "{:?}", nl.warnings);
         assert!(nl.warnings[1].message.contains("noacct"));
