@@ -470,6 +470,14 @@ pub struct TimestepSnapshot {
 }
 ```
 
+#### CSV export
+
+`TransientData`, `AcResult`, `DcSweepResult` and `TempSweepResult` each have `to_csv()`. It writes one row per point: the scale first (`time`, `frequency`, the swept source's id, or `temperature` in K), then `v(<node>)` for each node in name order, then `i(<id>)` (each component's `current_through`) in circuit order. AC writes each node as `re(v(<node>))` and `im(v(<node>))`. Numbers read back as the same `f64`, and names with commas or quotes are quoted.
+
+```rust
+std::fs::write("rc.csv", result.transient.unwrap().to_csv())?;
+```
+
 ### AC analysis
 
 Small-signal frequency response around the DC operating point. Nonlinear devices are linearised at the operating point, then each frequency is a complex MNA solve.
@@ -1021,7 +1029,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No CLI**. sindr is a library only.
 - **No schematic input**. Circuits are written as Rust `Vec<CircuitElement>` (or JSON via serde).
 - **No KiCad / Eagle / Altium netlist import.**
-- **No waveform export** to VCD, CSV, Touchstone, or Common Simulation Data Format. Users marshal `TransientData` themselves.
+- **Waveform export is CSV only.** Transient, AC and sweep results have `to_csv()`; there's no VCD, Touchstone or Common Simulation Data Format.
 - **No built-in plotting**. Examples like `bode_plot.rs` produce data; rendering is on the user.
 - **No interactive REPL or notebook integration.**
 - **No web / WASM target tested.** It may build, but it is not a supported configuration.
@@ -1217,6 +1225,50 @@ pub fn solve_ac_with_initial_voltages(
     config: &AcConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<AcResult, SimError> { … }
+```
+
+## `sindr/src/csv.rs`
+
+CSV export of transient, AC and sweep results.
+
+Each result type gets a `to_csv` method that writes one row per point:
+the scale (time, frequency, swept value or temperature) first, then a
+column per node voltage, `v(<node>)` with nodes in name order, then
+for real-valued results a column per component current, `i(<id>)`, in
+circuit order. AC writes each node voltage as two columns,
+`re(v(<node>))` and `im(v(<node>))`.
+
+Numbers are written so they read back as the same `f64`. A value missing
+from a row is an empty field. Names that need it are quoted as RFC 4180
+has it. Lines end in `\n`.
+
+```rust
+impl TransientData {
+    /// The waveforms as CSV: `time` (s), then `v(<node>)` (V) and
+    /// `i(<id>)` (A, each component's `current_through`), one row per
+    /// timestep. See the [module docs](crate::csv) for the layout.
+    pub fn to_csv(&self) -> String { … }
+}
+
+impl DcSweepResult {
+    /// The sweep as CSV: the swept source's value, in a column named after
+    /// it, then `v(<node>)` (V) and `i(<id>)` (A), one row per point.
+    pub fn to_csv(&self) -> String { … }
+}
+
+impl TempSweepResult {
+    /// The sweep as CSV: `temperature` (K), then `v(<node>)` (V) and
+    /// `i(<id>)` (A), one row per point.
+    pub fn to_csv(&self) -> String { … }
+}
+
+impl AcResult {
+    /// The frequency response as CSV: `frequency` (Hz), then for each node
+    /// `re(v(<node>))` and `im(v(<node>))` (V, for the source's
+    /// [`ac_magnitude`](crate::ac_analysis::AcConfig::ac_magnitude)), one
+    /// row per frequency. Magnitude and phase follow from the two parts.
+    pub fn to_csv(&self) -> String { … }
+}
 ```
 
 ## `sindr/src/dc_sweep.rs`
@@ -1758,6 +1810,8 @@ pub mod ac_analysis;
 pub use sindr_core::circuit;
 
 pub use sindr_core::design;
+
+pub mod csv;
 
 pub mod dc_sweep;
 

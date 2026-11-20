@@ -76,6 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passes input ripple through line regulation. Ratings checks need its
   input voltage, output current and power.
 
+- CSV export: `to_csv()` on `TransientData`, `AcResult`, `DcSweepResult`
+  and `TempSweepResult`. One row per point, with the scale first, then
+  `v(<node>)` and `i(<id>)` columns (`re(…)`/`im(…)` for AC). Numbers read
+  back exactly. No new dependency.
+
 ### Changed
 
 - **Breaking:** `CircuitElement::Diode` and `CircuitElement::Bjt` have a new
