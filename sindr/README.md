@@ -335,7 +335,7 @@ let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 1e-6))?;
 
 Each snapshot is the end of one step, with sources evaluated at that time; the last is at `tstop`. The default integrator is Gear-2 (second order, no ringing); `.with_method(IntegrationMethod::Trapezoidal)` keeps an LC tank's amplitude exactly, and `IntegrationMethod::BackwardEuler` matches sindr before 0.1.0-alpha.7. Every method takes its first step as backward Euler.
 
-A run starts switched on at t = 0 by default: capacitors uncharged and inductors at 0 A, unless `.with_initial_voltages(…)` or `.with_initial_current(…)` say otherwise (SPICE's `.ic` with `UIC`), so power-on inrush shows. `.with_start(TransientStart::OperatingPoint)` starts from the DC operating point instead, as SPICE's `.tran` without `UIC` does: each source at its t = 0 value, capacitors charged and inductors and transformer windings carrying its currents, with any initial voltages and currents held while it's solved. A SPICE deck's `transient_config()` picks the start the way ngspice does.
+A run starts switched on at t = 0 by default: capacitors uncharged and inductors at 0 A, unless `.with_initial_voltages(…)` or `.with_initial_current(…)` say otherwise (SPICE's `.ic` with `UIC`), so power-on inrush shows. `.with_start(TransientStart::OperatingPoint)` starts from the DC operating point instead, as SPICE's `.tran` without `UIC` does: each source at its t = 0 value, capacitors charged and inductors and transformer windings carrying its currents, with any initial voltages and currents held while it's solved. A SPICE deck's `ParsedNetlist::transient_config()` sets the run up the way ngspice does: the start, `.ic`, `tmax`, and `tstart` (`.with_tstart(t)`: integrate from 0, keep the steps from `t` on).
 
 Steps are at most `tstep` long and every multiple of `tstep` gets a snapshot. In between, the stepper shortens steps where the local truncation error would exceed SPICE's default tolerances, and lands exactly on each corner of a source waveform (pulse edges, PWL points, square-wave flips), so a 1 ns edge in a 1 ms run is resolved without 1 ns steps everywhere. `result.transient.stats` counts accepted and rejected steps; `.with_fixed_step()` turns the error control off.
 
@@ -650,6 +650,20 @@ pub enum SimError {
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
 The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
+
+## Performance
+
+Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple M1 Pro (release build, one thread). The circuits are in `sindr/benches/`.
+
+| Case | 10 | 100 | 1 000 |
+|---|---:|---:|---:|
+| DC, diode–resistor chain (devices) | 37 µs | 0.93 ms | 8.7 ms |
+| DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
+| Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
+
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes.
+
+Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
 
 ## Serde
 

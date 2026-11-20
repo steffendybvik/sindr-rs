@@ -57,6 +57,19 @@ python3 scripts/gen_llms_full.py --check
   ```
 
   Raise a floor when coverage rises. Lower one only with a reason in the PR.
+- Benchmarks live in `sindr/benches/` (criterion). The `benchmarks` CI job
+  runs `transient` and `newton` on a PR's base and on the PR, and fails if any
+  case is more than 25 % slower. To check locally before pushing:
+
+  ```bash
+  cargo bench -p sindr --bench transient --bench newton -- --quick --save-baseline base
+  # make the change
+  cargo bench -p sindr --bench transient --bench newton -- --quick --save-baseline head
+  python3 scripts/bench_compare.py base head
+  ```
+
+  When a change makes something deliberately slower, say why in the PR. If
+  the numbers move a lot, update the table in `sindr/README.md`.
 
 ## Versions and the CHANGELOG
 

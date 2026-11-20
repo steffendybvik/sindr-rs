@@ -1,0 +1,10 @@
+tran: .ic without UIC holds v(a) at 3 V in the operating point, then lets go
+V1 in 0 1
+R1 in a 1k
+R2 a 0 1k
+C1 a 0 1u
+R3 in b 1k
+C2 b 0 1u
+.ic v(a)=3
+.tran 20u 3m 0 1u
+.end

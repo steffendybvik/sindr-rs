@@ -33,7 +33,22 @@ included. sindr reads `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`
 `dc_diode_1n4148` and `op_bjt_card` use non-default values. MOSFET, JFET,
 LED, Schottky and photodiode have no SPICE card in sindr, so those tests
 build the `Circuit` in Rust, element for element, and the `.cir` is read
-only by ngspice.
+only by ngspice. Each one passes its circuit through `in_deck`
+(`tests/support/deck_parity.rs`), which reads the `.cir` and fails unless
+every element matches: names, nodes, values, and each `.model` parameter
+against the Rust parameter it stands for (`KP·W/L` against `kp`,
+`BETA·VTO²` against `idss`, LED and Schottky IS and N against sindr's
+built-in values, a photodiode's current source against
+responsivity × irradiance). A parameter the card leaves out is compared at
+its SPICE default. A new Rust-built case must use it too.
+
+### Decks with their own `.tran`
+
+`tran_ic_op`, `tran_ic_uic` and `tran_tstart` keep the `.tran` and `.ic`
+in the `.cir`, and their `.ctl` just says `run`. sindr runs the same cards
+through `ParsedNetlist::transient_config()`, so these check the deck's
+semantics (operating point or `UIC`, `.ic`, `tstart`) and not only the
+solver.
 
 ### Decks written by `to_netlist`
 
@@ -55,7 +70,8 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 2. Run `regen.sh <case>`.
 3. Add a `#[test]` in `golden.rs` that runs the same analysis on the sindr
    side and compares with `Check`, which reports the worst deviation of each
-   quantity.
+   quantity. A circuit built in Rust goes through `in_deck` (or `exported`)
+   first, so it can't drift from the deck.
 
 ## Tolerances
 
@@ -79,10 +95,11 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 | DC sweep | `dc_diode_iv`, `dc_diode_1n4148`, `dc_diode_breakdown` (BV, IBV) |
 | Diode charge | `cv_1n4148`, `cv_1n5819`: sindr's AC admittance at each bias of an ngspice sweep, against ngspice's `gd` and `cd` behind the card's RS |
 | AC | `ac_rc_lowpass`, `ac_rlc_bandpass`, `ac_bjt_ce`, `ac_exported_transformer` |
-| Transient | `tran_rc_step`, `tran_rl_step`, `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
+| Transient | `tran_rc_step`, `tran_rl_step`, `tran_op_start` (operating-point start), `tran_ic_op` and `tran_ic_uic` (`.ic` without and with `UIC`), `tran_tstart`, `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
 | Temperature | `temp_diode` |
 
-Ignored until its bug is fixed: `temp_diode` (SIN-15, temperature maths).
+None is ignored. `temp_diode` was, until SIN-15's temperature fix; it reads
+its deck and runs like the rest.
 
 Not covered, and why:
 
@@ -94,6 +111,5 @@ Not covered, and why:
   with `CJO` also conducts.
 - **Thermistor, photoresistor, potentiometer:** resistors whose value comes
   from a closed form, which unit tests cover; ngspice would only add a resistor.
-- **`.lib`, `.nodeset`, `.ic`:** covered by `tests/spice_end_to_end.rs` and
-  `tests/initial_conditions.rs`. A `.nodeset` doesn't change the answer, and
-  sindr's `.ic` is always `UIC`, which ngspice runs differently.
+- **`.lib`, `.nodeset`:** covered by `tests/spice_end_to_end.rs` and
+  `tests/initial_conditions.rs`. A `.nodeset` doesn't change the answer.

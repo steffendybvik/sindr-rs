@@ -1315,6 +1315,10 @@ pub struct TransientConfig {
     pub tstep: f64,
     /// Largest step allowed (s), as SPICE's TMAX. `None` means `tstep`.
     pub tmax: Option<f64>,
+    /// Time (s) the result starts at, as SPICE's TSTART (default 0). The run
+    /// is still integrated from 0, so the circuit has the same history, but
+    /// steps before `tstart` aren't kept: the first snapshot is at `tstart`.
+    pub tstart: f64,
     /// Integration method. Default [`IntegrationMethod::Gear2`].
     pub method: IntegrationMethod,
     /// Control the step by local truncation error (default `true`). When
@@ -1412,6 +1416,7 @@ impl TransientConfig {
             tstop,
             tstep,
             tmax: None,
+            tstart: 0.0,
             method: IntegrationMethod::default(),
             adaptive: true,
             start: TransientStart::default(),
@@ -1494,6 +1499,47 @@ impl TransientConfig {
         self
     }
 
+    /// Keep only the steps from `tstart` seconds on, as SPICE's TSTART. The
+    /// run is still integrated from 0; a step lands on `tstart`, and it's
+    /// the first snapshot. See [`tstart`](Self::tstart).
+    ///
+    /// ```
+    /// use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+    ///
+    /// let circuit = Circuit {
+    ///     ground_node: "0".into(),
+    ///     components: vec![
+    ///         CircuitElement::VoltageSource {
+    ///             id: "V1".into(),
+    ///             nodes: ["in".into(), "0".into()],
+    ///             voltage: 5.0,
+    ///             waveform: None,
+    ///         },
+    ///         CircuitElement::Resistor {
+    ///             id: "R1".into(),
+    ///             nodes: ["in".into(), "out".into()],
+    ///             resistance: 1e3,
+    ///         },
+    ///         CircuitElement::Capacitor {
+    ///             id: "C1".into(),
+    ///             nodes: ["out".into(), "0".into()],
+    ///             capacitance: 1e-6,
+    ///         },
+    ///     ],
+    ///     ..Default::default()
+    /// };
+    /// // Charging from 0 V at t = 0, kept from 1 ms (one τ) on.
+    /// let config = TransientConfig::new(3e-3, 1e-5).with_tstart(1e-3);
+    /// let tran = solve_transient(&circuit, &config).unwrap().transient.unwrap();
+    /// let first = &tran.timesteps[0];
+    /// assert!((first.time - 1e-3).abs() < 1e-12);
+    /// assert!((first.node_voltages["out"] - 5.0 * (1.0 - (-1.0_f64).exp())).abs() < 1e-2);
+    /// ```
+    pub fn with_tstart(mut self, tstart: f64) -> Self {
+        self.tstart = tstart;
+        self
+    }
+
     /// The config [`solve_circuit`](crate::solve_circuit) uses: `tstop` = 5·τ
     /// and `tstep` = τ/50 for the circuit's longest time constant τ,
     /// stretched to cover 3 periods of a periodic source at 100 steps per
@@ -1524,6 +1570,12 @@ impl TransientConfig {
                     return invalid(format!("{name} must be finite and > 0 s (got {v})"));
                 }
             }
+        }
+        if !self.tstart.is_finite() || self.tstart < 0.0 || self.tstart >= self.tstop {
+            return invalid(format!(
+                "tstart must be finite, >= 0 s and below tstop ({}) (got {})",
+                self.tstop, self.tstart
+            ));
         }
         if self.tstep > self.tstop {
             return invalid(format!(
@@ -1806,7 +1858,15 @@ pub(crate) fn run_transient(
             g => g,
         };
         let bp = breakpoints.get(next_bp).copied().unwrap_or(f64::INFINITY);
-        let target = tstop.min(next_grid).min(bp);
+        // Land on tstart, where the result begins. Unlike a breakpoint,
+        // nothing in the circuit changes there, so the integration carries
+        // straight on.
+        let save_from = if config.tstart > time + eps {
+            config.tstart
+        } else {
+            f64::INFINITY
+        };
+        let target = tstop.min(next_grid).min(bp).min(save_from);
         let landing = target - time <= h * (1.0 + 1e-9);
         let (dt, t_next) = if landing {
             (target - time, target)
@@ -1874,7 +1934,9 @@ pub(crate) fn run_transient(
             heated.apply(work, &temps);
             snapshot.junction_temperatures = heated.report(&temps);
         }
-        timesteps.push(snapshot);
+        if t_next >= config.tstart - eps {
+            timesteps.push(snapshot);
+        }
         stats.accepted_steps += 1;
         caps = new_caps;
         inds = new_inds;

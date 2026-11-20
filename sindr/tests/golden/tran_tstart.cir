@@ -1,0 +1,6 @@
+tran: integrated from 0, kept from tstart = 1.25 ms on
+V1 in 0 PULSE(0 5 0 1u 1u 0.5m 1m)
+R1 in a 1k
+C1 a 0 1u
+.tran 20u 3m 1.25m 1u
+.end
