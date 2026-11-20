@@ -22,6 +22,16 @@ use sindr::{
 };
 use sindr_devices::mosfet::MosfetParams;
 
+#[path = "support/deck_parity.rs"]
+mod deck_parity;
+
+/// Checks that `<case>.cir` describes the Rust-built `circuit` (see
+/// `support/deck_parity.rs`), so ngspice and sindr solve the same thing.
+fn in_deck<'a>(case: &str, circuit: &'a Circuit) -> &'a Circuit {
+    let deck = std::fs::read_to_string(case_path(case, "cir")).unwrap();
+    deck_parity::in_deck(case, &deck, circuit)
+}
+
 fn case_path(case: &str, ext: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden")
@@ -253,18 +263,21 @@ fn circuit(components: Vec<CircuitElement>) -> Circuit {
 fn op_mosfet_cs() {
     check_op(
         "op_mosfet_cs",
-        &circuit(vec![
-            vsource("vdd", "vdd", "0", 10.0),
-            vsource("vg", "g", "0", 3.0),
-            resistor("rd", "vdd", "d", 10e3),
-            CircuitElement::Mosfet {
-                id: "m1".into(),
-                nodes: ["g".into(), "d".into(), "0".into()],
-                kind: MosfetKind::Nmos,
-                params: MosfetParams::default_nmos(),
-                parasitic_caps: None,
-            },
-        ]),
+        in_deck(
+            "op_mosfet_cs",
+            &circuit(vec![
+                vsource("vdd", "vdd", "0", 10.0),
+                vsource("vg", "g", "0", 3.0),
+                resistor("rd", "vdd", "d", 10e3),
+                CircuitElement::Mosfet {
+                    id: "m1".into(),
+                    nodes: ["g".into(), "d".into(), "0".into()],
+                    kind: MosfetKind::Nmos,
+                    params: MosfetParams::default_nmos(),
+                    parasitic_caps: None,
+                },
+            ]),
+        ),
         (OP_V, OP_I),
     );
 }
@@ -275,18 +288,21 @@ fn op_mosfet_cs() {
 fn op_mosfet_follower() {
     check_op(
         "op_mosfet_follower",
-        &circuit(vec![
-            vsource("vdd", "vdd", "0", 10.0),
-            vsource("vg", "g", "0", 5.0),
-            resistor("rs", "s", "0", 10e3),
-            CircuitElement::Mosfet {
-                id: "m1".into(),
-                nodes: ["g".into(), "vdd".into(), "s".into()],
-                kind: MosfetKind::Nmos,
-                params: MosfetParams::default_nmos(),
-                parasitic_caps: None,
-            },
-        ]),
+        in_deck(
+            "op_mosfet_follower",
+            &circuit(vec![
+                vsource("vdd", "vdd", "0", 10.0),
+                vsource("vg", "g", "0", 5.0),
+                resistor("rs", "s", "0", 10e3),
+                CircuitElement::Mosfet {
+                    id: "m1".into(),
+                    nodes: ["g".into(), "vdd".into(), "s".into()],
+                    kind: MosfetKind::Nmos,
+                    params: MosfetParams::default_nmos(),
+                    parasitic_caps: None,
+                },
+            ]),
+        ),
         (OP_V, OP_I),
     );
 }
@@ -296,18 +312,21 @@ fn op_mosfet_follower() {
 fn op_pmos_highside() {
     check_op(
         "op_pmos_highside",
-        &circuit(vec![
-            vsource("vdd", "vdd", "0", 10.0),
-            vsource("vg", "g", "0", 5.0),
-            resistor("rd", "d", "0", 10e3),
-            CircuitElement::Mosfet {
-                id: "m1".into(),
-                nodes: ["g".into(), "d".into(), "vdd".into()],
-                kind: MosfetKind::Pmos,
-                params: MosfetParams::default_pmos(),
-                parasitic_caps: None,
-            },
-        ]),
+        in_deck(
+            "op_pmos_highside",
+            &circuit(vec![
+                vsource("vdd", "vdd", "0", 10.0),
+                vsource("vg", "g", "0", 5.0),
+                resistor("rd", "d", "0", 10e3),
+                CircuitElement::Mosfet {
+                    id: "m1".into(),
+                    nodes: ["g".into(), "d".into(), "vdd".into()],
+                    kind: MosfetKind::Pmos,
+                    params: MosfetParams::default_pmos(),
+                    parasitic_caps: None,
+                },
+            ]),
+        ),
         (OP_V, OP_I),
     );
 }
@@ -316,19 +335,22 @@ fn op_pmos_highside() {
 fn op_jfet() {
     check_op(
         "op_jfet",
-        &circuit(vec![
-            vsource("vdd", "vdd", "0", 12.0),
-            resistor("rd", "vdd", "d", 1e3),
-            resistor("rs", "s", "0", 220.0),
-            resistor("rg", "g", "0", 1e6),
-            CircuitElement::Jfet {
-                id: "j1".into(),
-                nodes: ["g".into(), "d".into(), "s".into()],
-                kind: JfetKind::NChannel,
-                idss: 10e-3,
-                vp: -2.0,
-            },
-        ]),
+        in_deck(
+            "op_jfet",
+            &circuit(vec![
+                vsource("vdd", "vdd", "0", 12.0),
+                resistor("rd", "vdd", "d", 1e3),
+                resistor("rs", "s", "0", 220.0),
+                resistor("rg", "g", "0", 1e6),
+                CircuitElement::Jfet {
+                    id: "j1".into(),
+                    nodes: ["g".into(), "d".into(), "s".into()],
+                    kind: JfetKind::NChannel,
+                    idss: 10e-3,
+                    vp: -2.0,
+                },
+            ]),
+        ),
         JFET,
     );
 }
@@ -337,16 +359,19 @@ fn op_jfet() {
 fn op_led() {
     check_op(
         "op_led",
-        &circuit(vec![
-            vsource("v1", "in", "0", 5.0),
-            resistor("r1", "in", "out", 150.0),
-            CircuitElement::Led {
-                id: "d1".into(),
-                nodes: ["out".into(), "0".into()],
-                color: "red".into(),
-                temperature: 300.15,
-            },
-        ]),
+        in_deck(
+            "op_led",
+            &circuit(vec![
+                vsource("v1", "in", "0", 5.0),
+                resistor("r1", "in", "out", 150.0),
+                CircuitElement::Led {
+                    id: "d1".into(),
+                    nodes: ["out".into(), "0".into()],
+                    color: "red".into(),
+                    temperature: 300.15,
+                },
+            ]),
+        ),
         (OP_V, OP_I),
     );
 }
@@ -355,15 +380,18 @@ fn op_led() {
 fn op_schottky() {
     check_op(
         "op_schottky",
-        &circuit(vec![
-            vsource("v1", "in", "0", 5.0),
-            resistor("r1", "in", "out", 1e3),
-            CircuitElement::SchottkyDiode {
-                id: "d1".into(),
-                nodes: ["out".into(), "0".into()],
-                temperature: 300.15,
-            },
-        ]),
+        in_deck(
+            "op_schottky",
+            &circuit(vec![
+                vsource("v1", "in", "0", 5.0),
+                resistor("r1", "in", "out", 1e3),
+                CircuitElement::SchottkyDiode {
+                    id: "d1".into(),
+                    nodes: ["out".into(), "0".into()],
+                    temperature: 300.15,
+                },
+            ]),
+        ),
         (OP_V, OP_I),
     );
 }
@@ -372,16 +400,19 @@ fn op_schottky() {
 fn op_photodiode() {
     check_op(
         "op_photodiode",
-        &circuit(vec![
-            vsource("v1", "k", "0", 5.0),
-            resistor("r1", "k", "a", 10e3),
-            CircuitElement::Photodiode {
-                id: "d1".into(),
-                nodes: ["0".into(), "a".into()],
-                irradiance: 1e-4,
-                temperature: 300.15,
-            },
-        ]),
+        in_deck(
+            "op_photodiode",
+            &circuit(vec![
+                vsource("v1", "k", "0", 5.0),
+                resistor("r1", "k", "a", 10e3),
+                CircuitElement::Photodiode {
+                    id: "d1".into(),
+                    nodes: ["0".into(), "a".into()],
+                    irradiance: 1e-4,
+                    temperature: 300.15,
+                },
+            ]),
+        ),
         (OP_V, OP_I),
     );
 }

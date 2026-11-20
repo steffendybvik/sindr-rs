@@ -33,7 +33,14 @@ included. sindr reads `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`
 `dc_diode_1n4148` and `op_bjt_card` use non-default values. MOSFET, JFET,
 LED, Schottky and photodiode have no SPICE card in sindr, so those tests
 build the `Circuit` in Rust, element for element, and the `.cir` is read
-only by ngspice.
+only by ngspice. Each one passes its circuit through `in_deck`
+(`tests/support/deck_parity.rs`), which reads the `.cir` and fails unless
+every element matches: names, nodes, values, and each `.model` parameter
+against the Rust parameter it stands for (`KP·W/L` against `kp`,
+`BETA·VTO²` against `idss`, LED and Schottky IS and N against sindr's
+built-in values, a photodiode's current source against
+responsivity × irradiance). A parameter the card leaves out is compared at
+its SPICE default. A new Rust-built case must use it too.
 
 ### Decks written by `to_netlist`
 
@@ -55,7 +62,8 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 2. Run `regen.sh <case>`.
 3. Add a `#[test]` in `golden.rs` that runs the same analysis on the sindr
    side and compares with `Check`, which reports the worst deviation of each
-   quantity.
+   quantity. A circuit built in Rust goes through `in_deck` (or `exported`)
+   first, so it can't drift from the deck.
 
 ## Tolerances
 
@@ -82,7 +90,8 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 | Transient | `tran_rc_step`, `tran_rl_step`, `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
 | Temperature | `temp_diode` |
 
-Ignored until its bug is fixed: `temp_diode` (SIN-15, temperature maths).
+None is ignored. `temp_diode` was, until SIN-15's temperature fix; it reads
+its deck and runs like the rest.
 
 Not covered, and why:
 
