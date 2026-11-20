@@ -15,6 +15,7 @@ use crate::error::SimError;
 use crate::node_map::NodeMap;
 
 /// What a transfer function is measured at.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum TfOutput {
     /// `V(node[,reference])`: the voltage of `node` against `reference`,
@@ -34,6 +35,7 @@ pub enum TfOutput {
 }
 
 /// Transfer-function analysis configuration.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TfConfig {
     /// The output the gain is measured at.
@@ -46,6 +48,7 @@ pub struct TfConfig {
 ///
 /// The gain's unit follows the input and output: V/V for a voltage in and
 /// out, A/A for a current in and out, Ω or S for a mix.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TfResult {
     /// Small-signal DC gain: d(output)/d(input).

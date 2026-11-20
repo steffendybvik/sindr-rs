@@ -31,7 +31,7 @@ miette = { version = "7", optional = true }
 
 [features]
 default = ["serde", "examples"]
-serde = ["dep:serde", "sindr-core/serde"]
+serde = ["dep:serde", "sindr-core/serde", "num-complex/serde"]
 examples = ["serde"]
 # SPICE3 netlist parsing (`sindr::spice`). Off by default to keep the
 # baseline dependency tree lean.

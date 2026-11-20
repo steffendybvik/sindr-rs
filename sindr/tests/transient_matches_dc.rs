@@ -6,6 +6,9 @@
 //! The transient extracts its per-element results in its own code
 //! (`extract_timestep_results`), so this pins it to the DC path one device
 //! at a time.
+//!
+//! Each circuit also goes through JSON and back unchanged, which covers
+//! serde for these elements (`serde_round_trip.rs` has the rest).
 
 use sindr::{
     solve_circuit, solve_transient, BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind,
@@ -138,6 +141,12 @@ fn assert_same(name: &str, dc: &SimulationResult, tr: &SimulationResult) {
 
 fn check(name: &str, parts: Vec<CircuitElement>) {
     let circuit = bench(parts);
+    #[cfg(feature = "serde")]
+    {
+        let json = serde_json::to_string(&circuit).unwrap();
+        let back: Circuit = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(back, circuit, "{name}: changed in a JSON round trip");
+    }
     let dc = solve_circuit(&circuit).unwrap_or_else(|e| panic!("{name}: DC: {e}"));
     let tr = solve_transient(&circuit, &TransientConfig::new(10e-6, 1e-6))
         .unwrap_or_else(|e| panic!("{name}: transient: {e}"));

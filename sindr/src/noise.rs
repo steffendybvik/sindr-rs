@@ -51,6 +51,7 @@ const T_NOISE: f64 = 300.15;
 
 /// Noise analysis configuration: SPICE's
 /// `.noise V(output[,reference]) input_source {dec|lin} points f_start f_stop`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoiseConfig {
     /// The output node.
@@ -70,6 +71,7 @@ pub struct NoiseConfig {
 }
 
 /// The physical mechanism behind a noise source.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NoiseKind {
@@ -82,6 +84,7 @@ pub enum NoiseKind {
 }
 
 /// One noise source in the circuit.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoiseSource {
     /// Component id (flattened).
@@ -90,10 +93,11 @@ pub struct NoiseSource {
     pub kind: NoiseKind,
     /// Which current it sits on, for parts with more than one: `"ic"`,
     /// `"ib"`, `"top"`/`"bottom"` for a potentiometer; empty otherwise.
-    pub branch: &'static str,
+    pub branch: String,
 }
 
 /// Noise at one frequency.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoisePoint {
     /// Frequency (Hz).
@@ -124,6 +128,7 @@ impl NoisePoint {
 }
 
 /// Result of a noise analysis.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoiseResult {
     /// Every noise source, in the order of [`NoisePoint::contributions`].
@@ -333,36 +338,40 @@ fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> V
             .find(|r| r.id == id)
             .map_or(0.0, |r| r.current_through)
     };
-    let source = |id: &str, kind, branch| NoiseSource {
+    let source = |id: &str, kind, branch: &str| NoiseSource {
         component: id.to_string(),
         kind,
-        branch,
+        branch: branch.to_string(),
     };
-    let thermal = |id: &str, branch, a: &String, b: &String, r: f64, t: f64| Generator {
-        source: source(id, NoiseKind::Thermal, branch),
-        p: idx(a),
-        q: idx(b),
-        white: if r > 0.0 {
-            4.0 * BOLTZMANN * t / r
-        } else {
-            0.0
-        },
-        flicker: 0.0,
-    };
-    let shot = |id: &str, branch, a: &String, b: &String, i: f64| Generator {
+    let thermal =
+        |id: &str, branch: &'static str, a: &String, b: &String, r: f64, t: f64| Generator {
+            source: source(id, NoiseKind::Thermal, branch),
+            p: idx(a),
+            q: idx(b),
+            white: if r > 0.0 {
+                4.0 * BOLTZMANN * t / r
+            } else {
+                0.0
+            },
+            flicker: 0.0,
+        };
+    let shot = |id: &str, branch: &'static str, a: &String, b: &String, i: f64| Generator {
         source: source(id, NoiseKind::Shot, branch),
         p: idx(a),
         q: idx(b),
         white: 2.0 * CHARGE * i.abs(),
         flicker: 0.0,
     };
-    let flicker = |id: &str, branch, a: &String, b: &String, i: f64, kf: f64, af: f64| Generator {
-        source: source(id, NoiseKind::Flicker, branch),
-        p: idx(a),
-        q: idx(b),
-        white: 0.0,
-        flicker: kf * i.abs().powf(af),
-    };
+    let flicker =
+        |id: &str, branch: &'static str, a: &String, b: &String, i: f64, kf: f64, af: f64| {
+            Generator {
+                source: source(id, NoiseKind::Flicker, branch),
+                p: idx(a),
+                q: idx(b),
+                white: 0.0,
+                flicker: kf * i.abs().powf(af),
+            }
+        };
     let voltage = |n: &String| dc.node_voltages.get(n).copied().unwrap_or(0.0);
 
     let mut out = Vec::new();

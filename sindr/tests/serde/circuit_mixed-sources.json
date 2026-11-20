@@ -1,0 +1,41 @@
+{
+  "components": [
+    {
+      "id": "V1",
+      "nodes": [
+        "n1",
+        "0"
+      ],
+      "type": "voltage_source",
+      "voltage": 5.0
+    },
+    {
+      "id": "R1",
+      "nodes": [
+        "n1",
+        "n2"
+      ],
+      "resistance": 1000.0,
+      "type": "resistor"
+    },
+    {
+      "current": 0.002,
+      "id": "I1",
+      "nodes": [
+        "0",
+        "n2"
+      ],
+      "type": "current_source"
+    },
+    {
+      "id": "R2",
+      "nodes": [
+        "n2",
+        "0"
+      ],
+      "resistance": 2000.0,
+      "type": "resistor"
+    }
+  ],
+  "ground_node": "0"
+}

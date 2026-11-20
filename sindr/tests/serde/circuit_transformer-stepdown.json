@@ -1,0 +1,36 @@
+{
+  "components": [
+    {
+      "id": "V1",
+      "nodes": [
+        "n1",
+        "0"
+      ],
+      "type": "voltage_source",
+      "voltage": 10.0
+    },
+    {
+      "id": "T1",
+      "k": 0.999,
+      "l1": 1.0,
+      "l2": 0.25,
+      "nodes": [
+        "n1",
+        "0",
+        "n2",
+        "0"
+      ],
+      "type": "transformer"
+    },
+    {
+      "id": "R_load",
+      "nodes": [
+        "n2",
+        "0"
+      ],
+      "resistance": 100.0,
+      "type": "resistor"
+    }
+  ],
+  "ground_node": "0"
+}

@@ -55,6 +55,7 @@ pub struct AcConfig {
 }
 
 /// Result at a single frequency point.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct AcPoint {
     /// Frequency of this point (Hz).
@@ -85,6 +86,7 @@ impl AcPoint {
 }
 
 /// Complete AC analysis result.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct AcResult {
     /// Result points, one per swept frequency.

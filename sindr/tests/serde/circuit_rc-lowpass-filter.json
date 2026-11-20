@@ -1,0 +1,32 @@
+{
+  "components": [
+    {
+      "id": "V1",
+      "nodes": [
+        "n1",
+        "0"
+      ],
+      "type": "voltage_source",
+      "voltage": 5.0
+    },
+    {
+      "id": "R1",
+      "nodes": [
+        "n1",
+        "n2"
+      ],
+      "resistance": 1000.0,
+      "type": "resistor"
+    },
+    {
+      "capacitance": 1e-6,
+      "id": "C1",
+      "nodes": [
+        "n2",
+        "0"
+      ],
+      "type": "capacitor"
+    }
+  ],
+  "ground_node": "0"
+}
