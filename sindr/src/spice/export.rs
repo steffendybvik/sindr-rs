@@ -346,6 +346,9 @@ impl<'a> Deck<'a> {
             reason: reason.to_string(),
         };
         match component {
+            CircuitElement::Battery { .. } => Err(unsupported(
+                "a battery's state of charge has no SPICE3 primitive",
+            )),
             CircuitElement::Resistor {
                 nodes, resistance, ..
             } => self.two_terminal(&name, nodes, num(id, "resistance", *resistance)?),

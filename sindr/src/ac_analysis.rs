@@ -608,6 +608,22 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, p, q, -y);
                 stamp_complex_conductance(&mut a, q, p, -y);
             }
+            CircuitElement::Battery { nodes, params, .. } => {
+                // Its open-circuit voltage is a DC source, zero in AC; what
+                // is left is Z = R0 + R1‖C1.
+                let mut z = Complex64::new(params.r_series, 0.0);
+                if let Some(pair) = params.rc {
+                    z += Complex64::new(pair.r, 0.0)
+                        / (Complex64::new(1.0, 0.0) + j_omega * pair.r * pair.c);
+                }
+                let y = Complex64::new(1.0, 0.0) / z;
+                let p = node_map.index(&nodes[0]);
+                let q = node_map.index(&nodes[1]);
+                stamp_complex_conductance(&mut a, p, p, y);
+                stamp_complex_conductance(&mut a, q, q, y);
+                stamp_complex_conductance(&mut a, p, q, -y);
+                stamp_complex_conductance(&mut a, q, p, -y);
+            }
             CircuitElement::Inductor {
                 nodes, inductance, ..
             } => {

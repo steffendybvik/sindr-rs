@@ -293,6 +293,32 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
+        CircuitElement::Battery {
+            params,
+            state_of_charge,
+            ..
+        } => {
+            positive("params.capacity", params.capacity, " Ah")?;
+            positive("params.r_series", params.r_series, " Ω")?;
+            if let Some(pair) = params.rc {
+                positive("params.rc.r", pair.r, " Ω")?;
+                positive("params.rc.c", pair.c, " F")?;
+            }
+            let bad_curve = params.ocv.is_empty()
+                || params
+                    .ocv
+                    .iter()
+                    .any(|&(soc, v)| !soc.is_finite() || !v.is_finite())
+                || params.ocv.windows(2).any(|w| w[1].0 <= w[0].0);
+            if bad_curve {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: params.ocv must be finite (state of charge, volts) points \
+                     with the state of charge rising",
+                    comp.id()
+                )));
+            }
+            within("state_of_charge", *state_of_charge, 1.0)
+        }
         CircuitElement::Inductor {
             inductance,
             saturation: Some(sat),

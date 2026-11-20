@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Breaking:** `CircuitElement::Battery`, an equivalent-circuit cell:
+  open-circuit voltage by state of charge behind a series resistance and
+  an optional RC pair (`sindr::battery::BatteryParams`, with Li-ion/LiPo
+  and CR2032 presets). DC, transient and AC take it. In transient the
+  state of charge falls with the charge drawn, and `TimestepSnapshot`
+  and `SimulationResult` have a new `state_of_charge` map by battery id.
+  Exhaustive matches on `CircuitElement` and struct literals of those
+  result types need updating.
 - **Breaking:** saturating inductors. `CircuitElement::Inductor` has a new
   `saturation: Option<InductorSaturation>` field (`None` keeps today's
   linear inductor; struct literals need it, JSON may omit it). With
