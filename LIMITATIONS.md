@@ -48,7 +48,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 |----------|-----------|-------|
 | `.op` (operating point) | ✅ | via `solve_circuit` |
 | `.dc` (DC sweep) | ✅ | one source (`dc_sweep`) or two nested (`dc_sweep_nested`), voltage or current |
-| `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` ignored |
+| `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` keeps the result from there on |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
 | `.temp` (temperature sweep) | ✅ | junction-device temp parameter |
@@ -86,7 +86,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation.
 - **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
 - **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the bias point of AC, `.tf` and `.sens` (`solve_ac_with_initial_voltages`, `solve_tf_with_initial_voltages`, `solve_sensitivity_with_initial_voltages`).
-- **A transient starts switched on at t = 0 unless asked otherwise:** `TransientConfig::new` starts from the initial conditions alone (SPICE's `UIC`), where SPICE starts from the DC operating point. `TransientStart::OperatingPoint` does what SPICE does, and a deck's `.tran` maps onto it (`uic` onto the other). The operating point it starts from is solved without self-heating. Initial winding currents on a transformer can't be set, and inductor `IC=` on SPICE element lines isn't parsed. `.tran`'s `tstart` is read but not applied.
+- **A transient starts switched on at t = 0 unless asked otherwise:** `TransientConfig::new` starts from the initial conditions alone (SPICE's `UIC`), where SPICE starts from the DC operating point. `TransientStart::OperatingPoint` does what SPICE does, and a deck's `.tran` maps onto it (`uic` onto the other). The operating point it starts from is solved without self-heating. Initial winding currents on a transformer can't be set, and inductor `IC=` on SPICE element lines isn't parsed. With `tstart`, sindr's first snapshot is at `tstart` itself, where ngspice's is its first step past it.
 - **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), not per charge or flux, and the tolerances can't be changed yet. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
 - **No checkpointing / restart** of long transient runs.
 - **No multithreading** in the solver.

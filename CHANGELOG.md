@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Transient and Newton benchmarks (`cargo bench -p sindr --bench transient
+  --bench newton`), with a CI job that fails a PR more than 25 % slower than
+  its base, and a Performance section in the README with the numbers.
 - SPICE `.model` cards now set device parameters: `IS`, `N`, `RS` on `D`
   cards, and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` (alias `VA`) on `NPN`/`PNP`
   cards. Any other card parameter is an error in strict mode and a warning
@@ -124,6 +127,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [uic]`), and `transient_config()` starts from the operating point unless
   `uic` is given, as ngspice does. `uic` used to be dropped without a word,
   and a `tmax` was a parse error.
+- `.tran`'s `tstart` is applied: `TransientConfig::tstart` and
+  `with_tstart(t)` integrate from 0 as before but keep only the steps from
+  `t` on, with one landing on `t`. It used to be read and ignored.
+- `ParsedNetlist::transient_config()`: the deck's first `.tran` with its
+  `.ic` cards as initial voltages, so a deck runs as ngspice runs it.
+- ngspice goldens `tran_ic_op` and `tran_ic_uic` (`.ic` without and with
+  `UIC`, on the same deck) and `tran_tstart`, run from the deck's own
+  `.tran` and `.ic`.
 - Two-source DC sweeps: `dc_sweep_nested(circuit, inner, outer)` with
   `DcSweepAxis` gives a `DcSweepResult` along the inner source for each
   value of the outer one, for device curve families. SPICE `.dc` takes a
@@ -205,6 +216,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LED's Vf, so Vf rose with temperature and a self-heated LED drew less
   current as it warmed. Each colour now has an effective EG fitted to
   −2 mV/K. Temperature sweeps and self-heated results for LEDs change.
+- Validation now refuses values the models can't use, naming the
+  component and field, before the solver turns them into a bare
+  `InvalidSolution` or a wrong answer: a NaN or infinite resistance
+  (`InvalidResistance`; an infinite one solved as an open), a non-finite
+  source value or controlled-source gain, a negative or non-finite
+  capacitance, a zero, negative or non-finite inductance (or transformer
+  winding), and non-finite relay, potentiometer, photoresistor, fuse and
+  op-amp/comparator rail values. A zero capacitor is still an open.
+- **Breaking:** two components with the same id are an `InvalidComponent`.
+  Results, controlled sources and sweeps look components up by id, so the
+  second was silently shadowed by the first. A SPICE deck that names two
+  elements alike now fails to solve.
 
 ## [0.1.0-alpha.7] - 2026-11-16
 
