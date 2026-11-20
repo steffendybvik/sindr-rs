@@ -19,7 +19,6 @@ use sindr_devices::jfet::JfetKind;
 use sindr_devices::mosfet::{self, MosfetKind, MosfetParams};
 use sindr_devices::photoresistor::{ldr_resistance as rs_ldr_resistance, PhotoresistorParams};
 use sindr_devices::regulator::{regulator_piece, RegulatorLinear, RegulatorParams};
-use sindr_devices::zener::{zener_companion as rs_zener_companion, ZenerParams};
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
@@ -266,7 +265,7 @@ pub fn stamp_circuit(
                 let contact_nodes: [String; 2] = [nodes[2].clone(), nodes[3].clone()];
                 stamp_resistor(system, node_map, &contact_nodes, contact_r);
             }
-            // ZenerDiode: piecewise nonlinear companion model with breakdown clamping
+            // ZenerDiode: a diode with SPICE breakdown at vz (see zener_model)
             CircuitElement::ZenerDiode {
                 nodes,
                 vz,
@@ -274,8 +273,8 @@ pub fn stamp_circuit(
                 ..
             } => {
                 if let Some(vp) = v_prev {
-                    let zparams = device_params::zener(*vz, *temperature);
-                    stamp_zener_companion(system, node_map, nodes, vp, &zparams);
+                    let params = device_params::zener_diode(*vz, *temperature);
+                    stamp_diode_companion(system, node_map, nodes, vp, &params);
                 }
             }
             CircuitElement::OpAmp {
@@ -616,44 +615,6 @@ pub(crate) fn stamp_diode_companion(
     }
 
     // Stamp current source (current flows anode -> cathode)
-    if let Some(pi) = p {
-        system.b[pi] -= i_eq;
-    }
-    if let Some(qi) = q {
-        system.b[qi] += i_eq;
-    }
-}
-
-/// Stamp a zener diode companion model into the MNA system.
-///
-/// nodes[0] = anode, nodes[1] = cathode.
-pub(crate) fn stamp_zener_companion(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    v_prev: &DVector<f64>,
-    params: &ZenerParams,
-) {
-    let p = node_map.index(&nodes[0]); // anode
-    let q = node_map.index(&nodes[1]); // cathode
-
-    let v_anode = p.map_or(0.0, |i| v_prev[i]);
-    let v_cathode = q.map_or(0.0, |i| v_prev[i]);
-    let v_d = v_anode - v_cathode;
-
-    let (g_eq, i_eq) = rs_zener_companion(v_d, params);
-
-    if let Some(pi) = p {
-        system.a[(pi, pi)] += g_eq;
-    }
-    if let Some(qi) = q {
-        system.a[(qi, qi)] += g_eq;
-    }
-    if let (Some(pi), Some(qi)) = (p, q) {
-        system.a[(pi, qi)] -= g_eq;
-        system.a[(qi, pi)] -= g_eq;
-    }
-
     if let Some(pi) = p {
         system.b[pi] -= i_eq;
     }
@@ -1386,6 +1347,7 @@ mod tests {
                 id: "L1".into(),
                 nodes: ["n1".into(), "0".into()],
                 inductance: 10e-3,
+                saturation: None,
             }],
             ..Default::default()
         };
@@ -1412,6 +1374,7 @@ mod tests {
                     id: "L1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     inductance: 1e-3,
+                    saturation: None,
                 },
                 CircuitElement::Resistor {
                     id: "R1".into(),

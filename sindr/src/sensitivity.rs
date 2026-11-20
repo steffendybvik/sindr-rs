@@ -127,7 +127,7 @@ impl SensResult {
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     solve_sensitivity_with_initial_voltages(circuit, config, &HashMap::new())
 }
@@ -144,7 +144,7 @@ pub fn solve_sensitivity_with_initial_voltages(
     config: &SensConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<SensResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;
     let dc = crate::dc_equivalent(circuit);

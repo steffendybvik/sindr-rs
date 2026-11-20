@@ -1,0 +1,7 @@
+tran: series RLC rings after a 1 V step, f0 = 5.03 kHz, Q = 3.2
+V1 in 0 PULSE(0 1 10u 1n 1n 1 2)
+R1 in a 10
+L1 a b 1m
+C1 b 0 1u
+.tran 2u 2m 0 0.05u uic
+.end

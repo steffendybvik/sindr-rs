@@ -221,7 +221,7 @@ pub struct ParsedNetlist {
     pub analyses: Vec<AnalysisRequest>,
     /// `.ic` node voltages (V), keyed by node name: where a transient
     /// starts, or with no `uic` what its operating point holds them at.
-    /// Pass them to
+    /// [`ParsedNetlist::transient_config`] passes them to
     /// [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
     /// Only top-level cards are read.
     pub initial_conditions: HashMap<String, f64>,
@@ -244,6 +244,37 @@ pub struct ParsedNetlist {
     /// Title line of the netlist (first non-blank line). May be empty if the
     /// source has no title.
     pub title: String,
+}
+
+impl ParsedNetlist {
+    /// The [`TransientConfig`](crate::TransientConfig) for the deck's first
+    /// `.tran`, with its `.ic` cards as
+    /// [`initial_voltages`](crate::TransientConfig::initial_voltages), so
+    /// the run starts as ngspice's does: from the operating point with the
+    /// `.ic` nodes held, or with `uic` from the `.ic` values alone. `None`
+    /// without a `.tran`. See [`AnalysisRequest::transient_config`] for the
+    /// rest of the card.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// // .ic holds `a` at 3 V while the operating point is solved; then
+    /// // the capacitor discharges towards the divider's 0.5 V.
+    /// let deck = "* ic\nV1 in 0 1\nR1 in a 1k\nR2 a 0 1k\nC1 a 0 1u\n\
+    ///             .ic v(a)=3\n.tran 10u 5m\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.transient_config().unwrap();
+    /// let tran = sindr::solve_transient(&netlist.circuit, &config)?.transient.unwrap();
+    /// assert!(tran.timesteps[0].node_voltages["a"] > 2.9);
+    /// assert!((tran.timesteps.last().unwrap().node_voltages["a"] - 0.5).abs() < 1e-3);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn transient_config(&self) -> Option<crate::TransientConfig> {
+        self.analyses
+            .iter()
+            .find_map(AnalysisRequest::transient_config)
+            .map(|config| config.with_initial_voltages(self.initial_conditions.clone()))
+    }
 }
 
 /// Knobs controlling parser strictness and include-path resolution.

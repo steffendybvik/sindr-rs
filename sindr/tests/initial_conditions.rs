@@ -69,6 +69,7 @@ fn inductor_starts_at_its_initial_current() {
                 id: "L1".into(),
                 nodes: ["a".into(), "0".into()],
                 inductance: 10e-3,
+                saturation: None,
             },
             resistor("R1", "a", "0", 100.0),
         ],
@@ -100,6 +101,7 @@ fn lc_tank_rings_from_its_initial_charge() {
                 id: "L1".into(),
                 nodes: ["a".into(), "0".into()],
                 inductance: l,
+                saturation: None,
             },
             CircuitElement::Capacitor {
                 id: "C1".into(),

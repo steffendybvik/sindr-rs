@@ -82,10 +82,24 @@ Every component has an `id` (arbitrary string) and `nodes` (node names as string
 ```rust
 CircuitElement::Resistor   { id, nodes: [String; 2], resistance: f64 }
 CircuitElement::Capacitor  { id, nodes: [String; 2], capacitance: f64 }
-CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64 }
+CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64, saturation: Option<InductorSaturation> }
 ```
 
 Capacitors and inductors trigger transient analysis automatically. In pure DC (no reactive elements, no waveforms), they are treated as open circuits.
+
+An inductor with `saturation: Some(InductorSaturation { i_sat, l_sat })` has a core that saturates: its flux is `λ(i) = l_sat·i + (inductance − l_sat)·i_sat·tanh(i/i_sat)`, so its inductance falls from `inductance` at zero current towards `l_sat` past `i_sat` (to 42 % of the way at `i_sat`, 7 % at `2·i_sat`). A datasheet's saturation current, where L has dropped 20–30 %, is about `0.6·i_sat`. The transient integrates the flux, and AC and noise use the incremental inductance `dλ/di` at the DC current. There's no hysteresis or core loss; add a resistor for loss.
+
+```rust
+use sindr_devices::inductor::InductorSaturation;
+
+// 10 µH that saturates around 3 A, keeping 1 µH when saturated.
+let l1 = CircuitElement::Inductor {
+    id: "L1".into(),
+    nodes: ["sw".into(), "out".into()],
+    inductance: 10e-6,
+    saturation: Some(InductorSaturation { i_sat: 3.0 / 0.6, l_sat: 1e-6 }),
+};
+```
 
 ### Sources
 
@@ -138,12 +152,12 @@ Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 ```rust
 CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
 CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"green"|"blue"|"yellow"|"white"
-CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage
+CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage at 5 mA
 CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
+All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 ### Varactor diode
 
@@ -199,7 +213,7 @@ CircuitElement::Jfet {
 
 `BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps` and `MosfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
-When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally. This automatically triggers transient analysis.
+When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC. This automatically triggers transient analysis.
 
 **NPN common-emitter example:**
 
@@ -361,7 +375,7 @@ let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 1e-6))?;
 
 Each snapshot is the end of one step, with sources evaluated at that time; the last is at `tstop`. The default integrator is Gear-2 (second order, no ringing); `.with_method(IntegrationMethod::Trapezoidal)` keeps an LC tank's amplitude exactly, and `IntegrationMethod::BackwardEuler` matches sindr before 0.1.0-alpha.7. Every method takes its first step as backward Euler.
 
-A run starts switched on at t = 0 by default: capacitors uncharged and inductors at 0 A, unless `.with_initial_voltages(…)` or `.with_initial_current(…)` say otherwise (SPICE's `.ic` with `UIC`), so power-on inrush shows. `.with_start(TransientStart::OperatingPoint)` starts from the DC operating point instead, as SPICE's `.tran` without `UIC` does: each source at its t = 0 value, capacitors charged and inductors and transformer windings carrying its currents, with any initial voltages and currents held while it's solved. A SPICE deck's `transient_config()` picks the start the way ngspice does.
+A run starts switched on at t = 0 by default: capacitors uncharged and inductors at 0 A, unless `.with_initial_voltages(…)` or `.with_initial_current(…)` say otherwise (SPICE's `.ic` with `UIC`), so power-on inrush shows. `.with_start(TransientStart::OperatingPoint)` starts from the DC operating point instead, as SPICE's `.tran` without `UIC` does: each source at its t = 0 value, capacitors charged and inductors and transformer windings carrying its currents, with any initial voltages and currents held while it's solved. A SPICE deck's `ParsedNetlist::transient_config()` sets the run up the way ngspice does: the start, `.ic`, `tmax`, and `tstart` (`.with_tstart(t)`: integrate from 0, keep the steps from `t` on).
 
 Steps are at most `tstep` long and every multiple of `tstep` gets a snapshot. In between, the stepper shortens steps where the local truncation error would exceed SPICE's default tolerances, and lands exactly on each corner of a source waveform (pulse edges, PWL points, square-wave flips), so a 1 ns edge in a 1 ms run is resolved without 1 ns steps everywhere. `result.transient.stats` counts accepted and rejected steps; `.with_fixed_step()` turns the error control off.
 
@@ -676,6 +690,20 @@ pub enum SimError {
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
 The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
+
+## Performance
+
+Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple M1 Pro (release build, one thread). The circuits are in `sindr/benches/`.
+
+| Case | 10 | 100 | 1 000 |
+|---|---:|---:|---:|
+| DC, diode–resistor chain (devices) | 37 µs | 0.93 ms | 8.7 ms |
+| DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
+| Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
+
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes.
+
+Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
 
 ## Serde
 

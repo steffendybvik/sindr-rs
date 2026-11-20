@@ -104,6 +104,7 @@ fn an_inductor_starts_with_its_dc_current() {
             id: "L1".into(),
             nodes: ["a".into(), "0".into()],
             inductance: 10e-3,
+            saturation: None,
         },
     ]);
     let tran = run(&rl, &at_op(2e-3, 1e-5));
@@ -125,6 +126,7 @@ fn an_inductor_current_is_held_at_the_operating_point() {
             id: "L1".into(),
             nodes: ["a".into(), "0".into()],
             inductance: 10e-3,
+            saturation: None,
         },
     ]);
     let tran = run(&rl, &at_op(1e-3, 1e-6).with_initial_current("L1", 0.05));
@@ -280,5 +282,28 @@ mod spice {
             }]
         );
         assert!(parse_str(&format!("{RC}.tran 10u 2m sometimes\n.end\n")).is_err());
+    }
+
+    /// The deck's `.tran` carries its `tstart` and, through
+    /// `ParsedNetlist::transient_config`, its `.ic` cards.
+    #[test]
+    fn deck_config_carries_tstart_and_ic() {
+        let netlist =
+            parse_str(&format!("{RC}.ic v(a)=8\n.op\n.tran 10u 2m 0.5m\n.end\n")).unwrap();
+        let config = netlist.transient_config().unwrap();
+        assert_eq!(config.tstart, 0.5e-3);
+        assert_eq!(config.initial_voltages, netlist.initial_conditions);
+        assert_eq!(config.start, TransientStart::OperatingPoint);
+        // Without the .ic the analysis's own config starts `a` at the
+        // divider's 5 V; with it, C1 starts at 8 V and has decayed most of
+        // the way back by 0.5 ms (τ = 0.5 ms).
+        let tran = run(&netlist.circuit, &config);
+        let v0 = tran.timesteps[0].node_voltages["a"];
+        assert!((v0 - (5.0 + 3.0 * (-1.0_f64).exp())).abs() < 1e-2, "{v0}");
+
+        assert!(parse_str(&format!("{RC}.op\n.end\n"))
+            .unwrap()
+            .transient_config()
+            .is_none());
     }
 }

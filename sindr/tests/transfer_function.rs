@@ -177,6 +177,7 @@ fn reactive_parts_take_their_dc_values() {
         id: "L1".into(),
         nodes: ["mid".into(), "out".into()],
         inductance: 1e-3,
+        saturation: None,
     });
     c.components.push(CircuitElement::Capacitor {
         id: "C1".into(),
@@ -310,6 +311,7 @@ fn bad_input_or_output_is_an_error() {
         id: "L1".into(),
         nodes: ["mid".into(), "out".into()],
         inductance: 1e-3,
+        saturation: None,
     });
     for (output, input) in [
         (v_out("out"), "L1"),

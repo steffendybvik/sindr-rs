@@ -336,8 +336,15 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[a, b]`; `current_through` flows `nodes[0] → nodes[1]`.
         nodes: [String; 2],
-        /// Inductance (H).
+        /// Inductance (H): the small-signal value, at zero current.
         inductance: f64,
+        /// Core saturation: the inductance falls towards `l_sat` as the
+        /// current passes `i_sat`. `None` is a linear inductor.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        saturation: Option<sindr_devices::inductor::InductorSaturation>,
     },
 
     /// Diode (Shockley model, silicon unless `model` says otherwise).
@@ -565,8 +572,12 @@ pub enum CircuitElement {
         position: f64,
     },
 
-    /// Zener diode between two nodes.
-    /// Behaves as a normal diode in forward bias; clamps voltage at `vz` in reverse breakdown.
+    /// Zener diode between two nodes: a silicon diode with SPICE reverse
+    /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
+    /// (the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`), so it holds about
+    /// `vz` at a small zener's 5 mA test current and rises 1 V per amp past
+    /// it. For another knee, use a [`CircuitElement::Diode`] with a
+    /// [`DiodeModel`] setting `bv` and `ibv`.
     /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "zener_diode"))]
     ZenerDiode {
@@ -1155,6 +1166,10 @@ impl Circuit {
             matches!(
                 c,
                 CircuitElement::OpAmp { model: Some(_), .. }
+                    | CircuitElement::Inductor {
+                        saturation: Some(_),
+                        ..
+                    }
                     | CircuitElement::Diode { .. }
                     | CircuitElement::Led { .. }
                     | CircuitElement::Bjt { .. }
@@ -1256,6 +1271,7 @@ mod tests {
                 id: "L1".into(),
                 nodes: ["n1".into(), "0".into()],
                 inductance: 10e-3,
+                saturation: None,
             }],
             ..Default::default()
         };

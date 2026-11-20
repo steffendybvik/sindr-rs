@@ -99,7 +99,8 @@ jobs:
           done
 
   coverage:
-    # Report only, no threshold: the per-file table lands in the job summary.
+    # The per-file table lands in the job summary. Core files have a floor
+    # (scripts/coverage_floor.py); the rest is reported only.
     name: coverage
     runs-on: ubuntu-latest
     steps:
@@ -117,6 +118,42 @@ jobs:
             cat coverage.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Coverage floor
+        run: |
+          set -o pipefail
+          python3 scripts/coverage_floor.py coverage.txt | tee -a "$GITHUB_STEP_SUMMARY"
+
+  bench:
+    # Runs the transient and Newton benchmarks on the PR's base, then on the
+    # PR, on the same runner, and fails if any case is over 25% slower.
+    # Same-runner comparison keeps the noise to a few percent.
+    name: benchmarks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Base
+        run: |
+          set -euo pipefail
+          git checkout -q ${{ github.event.pull_request.base.sha }}
+          benches=""
+          for b in transient newton; do
+            [ -f "sindr/benches/$b.rs" ] && benches="$benches --bench $b"
+          done
+          if [ -n "$benches" ]; then
+            cargo bench -q -p sindr $benches -- --quick --save-baseline base
+          fi
+          git checkout -q ${{ github.event.pull_request.head.sha }}
+      - name: PR
+        run: cargo bench -q -p sindr --bench transient --bench newton -- --quick --save-baseline head
+      - name: Compare
+        run: |
+          set -o pipefail
+          python3 scripts/bench_compare.py base head --threshold 25 | tee -a "$GITHUB_STEP_SUMMARY"
 
   version-bumped:
     # Fails if a PR to main leaves any crate version unchanged from main.

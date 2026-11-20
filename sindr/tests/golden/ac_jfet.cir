@@ -1,0 +1,12 @@
+ac: N-channel JFET common-source, self-biased, AC-coupled gate (built in Rust on the sindr side)
+VDD vdd 0 12
+VIN in 0 0
+CIN in g 100n
+RG g 0 1meg
+RD vdd d 1k
+RS s 0 220
+CS s 0 100u
+J1 d g s jn
+* sindr: IDSS = 10 mA, Vp = -2 V  =>  BETA = IDSS/Vp^2, no channel-length modulation
+.model jn NJF(VTO=-2 BETA=2.5m LAMBDA=0)
+.end

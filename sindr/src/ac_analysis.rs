@@ -219,9 +219,9 @@ pub(crate) fn linearize_at_dc(
                 ..
             } => {
                 // Same parameters as the DC stamp, including the IS scaling.
-                let params = device_params::zener(*vz, *temperature);
+                let params = device_params::zener_diode(*vz, *temperature);
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
-                let (g_d, _) = sindr_devices::zener::zener_companion(v_d, &params);
+                let (g_d, _) = diode::diode_companion(v_d, &params);
                 models.push(two_terminal(nodes, node_map, g_d));
             }
             CircuitElement::SchottkyDiode {
@@ -439,6 +439,28 @@ pub(crate) fn bias_point(
     Ok((node_map, dc_solution))
 }
 
+/// `circuit` with each saturating inductor replaced by a linear one at its
+/// incremental inductance `dλ/di` at the DC current `dc` carries through it
+/// (the DC equivalent shorts it with a 0 V source of the same id).
+pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationResult) -> Circuit {
+    let mut out = circuit.clone();
+    for element in &mut out.components {
+        if let CircuitElement::Inductor {
+            id,
+            inductance,
+            saturation,
+            ..
+        } = element
+        {
+            if let Some(sat) = saturation.take() {
+                let i = dc.branch_currents.get(id.as_str()).copied().unwrap_or(0.0);
+                *inductance = sindr_devices::inductor::incremental_inductance(i, *inductance, &sat);
+            }
+        }
+    }
+    out
+}
+
 /// [`bias_point`], with the operating-point result it came from (device
 /// currents for noise analysis).
 pub(crate) fn bias_point_with_result(
@@ -545,6 +567,34 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, q, q, y);
                 stamp_complex_conductance(&mut a, p, q, -y);
                 stamp_complex_conductance(&mut a, q, p, -y);
+            }
+            CircuitElement::Bjt {
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (_, c, p, q) in crate::transient::bjt_parasitics(nodes, pc) {
+                    let y = j_omega * c;
+                    let (p, q) = (node_map.index(&p), node_map.index(&q));
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
+            }
+            CircuitElement::Mosfet {
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (_, c, p, q) in crate::transient::mosfet_parasitics(nodes, pc) {
+                    let y = j_omega * c;
+                    let (p, q) = (node_map.index(&p), node_map.index(&q));
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
             }
             CircuitElement::Varactor { nodes, params, .. } => {
                 // Small-signal capacitance at the DC bias.
@@ -1098,7 +1148,7 @@ pub(crate) fn small_signal_system(
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     solve_ac_with_initial_voltages(circuit, config, &HashMap::new())
 }
@@ -1116,7 +1166,7 @@ pub fn solve_ac_with_initial_voltages(
     config: &AcConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<AcResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     validate_config(config)?;
     let drives_a_voltage_source = circuit
@@ -1130,7 +1180,8 @@ pub fn solve_ac_with_initial_voltages(
         )));
     }
 
-    let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;
+    let (node_map, dc_solution, dc) = bias_point_with_result(circuit, initial_voltages)?;
+    let circuit = &incremental_inductors(circuit, &dc);
     let num_nodes = node_map.num_nodes();
     let ss_models = linearize_at_dc(circuit, &node_map, &dc_solution);
 
@@ -1676,6 +1727,7 @@ mod tests {
                     id: "L1".into(),
                     nodes: ["vcc".into(), "x".into()],
                     inductance: 1e-3,
+                    saturation: None,
                 });
             } else {
                 // Keep `in` connected so both circuits have the same nodes.

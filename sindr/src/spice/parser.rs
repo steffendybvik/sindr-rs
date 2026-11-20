@@ -569,6 +569,10 @@ fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
             Err(_) => break,
         }
     }
+    ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
     Ok(RawCard::Subckt(RawSubckt {
         name,
         ports,
@@ -611,12 +615,18 @@ fn parse_card_model(input: &mut Input<'_>) -> ModalResult<RawCard> {
             }
             input.reset(&cp);
         }
-        match param_assign.parse_next(input) {
-            Ok(pair) => params.push(pair),
-            Err(_) => break,
+        // Vendor libraries often separate parameters with commas.
+        if opt(',').parse_next(input)?.is_some() {
+            continue;
         }
+        // Anything that isn't `name=value` is an error: stopping here would
+        // drop it and every parameter after it without a word.
+        params.push(param_assign.parse_next(input)?);
     }
     ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
     Ok(RawCard::Model(RawModel {
         name,
         kind,
@@ -638,12 +648,18 @@ fn parse_card_param(input: &mut Input<'_>) -> ModalResult<RawCard> {
         if input.is_empty() {
             break;
         }
+        let cp = input.checkpoint();
         match param_assign.parse_next(input) {
             Ok(pair) => bindings.push(pair),
-            Err(_) => break,
+            Err(_) => {
+                // Rewind: a half-read `b=` must count as input left over.
+                input.reset(&cp);
+                break;
+            }
         }
     }
-    if bindings.is_empty() {
+    ws(input)?;
+    if bindings.is_empty() || !input.is_empty() {
         return Err(ErrMode::from_input(input));
     }
     Ok(RawCard::Param(bindings, Span::detached()))
