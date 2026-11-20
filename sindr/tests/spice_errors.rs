@@ -240,3 +240,123 @@ fn a_suffix_is_atto() {
         .unwrap();
     assert!((c - 3e-18).abs() < 1e-30, "{c}");
 }
+
+// ----- Every error variant, and the parser's silent drops ------------------
+
+#[test]
+fn unknown_card_names_it() {
+    let err = parse_str("* t\nV1 a 0 1\nR1 a 0 1k\n.foo\n.end\n").unwrap_err();
+    assert!(matches!(err, SpiceParseError::UnknownCard { ref card, .. } if card == "foo"));
+}
+
+#[test]
+fn unsupported_device_names_its_prefix() {
+    let err = parse_str("* t\nV1 a 0 1\nR1 a 0 1k\nK1 L1 L2 0.5\n.end\n").unwrap_err();
+    assert!(matches!(err, SpiceParseError::UnsupportedDevice { .. }));
+}
+
+#[test]
+fn undefined_subckt_names_it() {
+    let err = parse_str("* t\nV1 a 0 1\nR1 a 0 1k\nX1 a 0 nosuch\n.end\n").unwrap_err();
+    assert!(matches!(err, SpiceParseError::UndefinedSubckt { ref name, .. } if name == "nosuch"));
+}
+
+#[test]
+fn subckt_instance_with_the_wrong_port_count() {
+    for instance in ["X1 a foo", "X1 a 0 b foo"] {
+        let deck = format!("* t\n.subckt foo a b\nR1 a b 1k\n.ends\nV1 a 0 1\n{instance}\n.end\n");
+        let err = parse_str(&deck).unwrap_err();
+        assert!(
+            matches!(err, SpiceParseError::ArityMismatch { .. }),
+            "{instance}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn ends_without_subckt() {
+    let err = parse_str("* t\nV1 a 0 1\nR1 a 0 1k\n.ends\n.end\n").unwrap_err();
+    assert!(matches!(err, SpiceParseError::Syntax { .. }));
+}
+
+#[test]
+fn model_parameter_sindr_does_not_model_is_an_error_in_strict_mode() {
+    let deck = "* t\n.model m d(is=1e-14 zzz=3)\nV1 a 0 1\nR1 a b 1\nD1 b 0 m\n.end\n";
+    let err = parse_str(deck).unwrap_err();
+    assert!(err.to_string().contains("ZZZ"), "{err}");
+}
+
+/// A `.model` card used to stop at the first token it couldn't read and
+/// keep what came before, so `n=2` after a comma or a typo was dropped
+/// without a word.
+#[test]
+fn model_card_with_a_bad_parameter_is_an_error() {
+    for params in ["d(is=)", "d(is=1e-10 junk n=2)", "d (is=1e-10) n=2"] {
+        let deck = format!("* t\n.model m {params}\nV1 a 0 1\nR1 a b 1\nD1 b 0 m\n.end\n");
+        let err = parse_str(&deck).unwrap_err();
+        assert!(
+            matches!(err, SpiceParseError::Syntax { .. }),
+            "{params}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn model_card_parameters_may_be_comma_separated() {
+    let deck = "* t\n.model m d(is=1e-10, n=2)\nV1 a 0 1\nR1 a b 1\nD1 b 0 m\n.end\n";
+    let parsed = parse_str(deck).expect("parses");
+    let model = parsed
+        .circuit
+        .components
+        .iter()
+        .find_map(|c| match c {
+            sindr::CircuitElement::Diode { model, .. } => *model,
+            _ => None,
+        })
+        .expect("D1 has a model");
+    assert_eq!((model.is, model.n), (1e-10, 2.0));
+}
+
+#[test]
+fn param_card_with_trailing_junk_is_an_error() {
+    for card in [".param a=1 b=", ".param a=1 junk"] {
+        let deck = format!("* t\n{card}\nV1 x 0 {{a}}\nR1 x 0 1k\n.end\n");
+        let err = parse_str(&deck).unwrap_err();
+        assert!(
+            matches!(err, SpiceParseError::Syntax { .. }),
+            "{card}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn subckt_header_with_trailing_junk_is_an_error() {
+    let deck = "* t\n.subckt foo a b r={1+\nR1 a b 1k\n.ends\nV1 a 0 1\nX1 a 0 foo\n.end\n";
+    let err = parse_str(deck).unwrap_err();
+    assert!(matches!(err, SpiceParseError::Syntax { .. }), "{err:?}");
+}
+
+/// The fuzz target's seed decks (`fuzz/seeds/parse`) parse, or fail with an
+/// error: never a panic. They run here so CI checks them on stable.
+#[test]
+fn fuzz_seed_decks_do_not_panic() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fuzz/seeds/parse");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&dir).expect("seed dir") {
+        let bytes = std::fs::read(entry.expect("entry").path()).expect("seed");
+        // The first byte picks strict or lenient mode.
+        let Some((&mode, rest)) = bytes.split_first() else {
+            continue;
+        };
+        let Ok(src) = std::str::from_utf8(rest) else {
+            continue;
+        };
+        let opts = sindr::spice::ParseOptions {
+            strict: mode & 1 == 0,
+            ..Default::default()
+        };
+        let _ = sindr::spice::parse_str_with_options(src, opts);
+        seen += 1;
+    }
+    assert!(seen > 0, "no seeds in {}", dir.display());
+}

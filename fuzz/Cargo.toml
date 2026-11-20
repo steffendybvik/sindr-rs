@@ -1,0 +1,23 @@
+[package]
+name = "sindr-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sindr = { path = "../sindr", features = ["spice"] }
+
+# Not part of the main workspace: it needs nightly and libFuzzer.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
