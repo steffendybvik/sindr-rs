@@ -90,6 +90,7 @@
 //! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
 //! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
 //! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
+//! | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 //!
 //! Not available: distortion, pole-zero, AC sensitivity, Monte Carlo,
@@ -261,6 +262,7 @@ pub mod dc_sweep;
 mod device_params;
 pub mod error;
 mod integration;
+pub mod measure;
 pub mod mna;
 pub mod newton_raphson;
 pub mod node_map;
@@ -284,6 +286,7 @@ pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::SimError;
+pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
 pub use mna::MnaSystem;
 pub use node_map::NodeMap;
 pub use noise::{solve_noise, NoiseConfig, NoiseResult};

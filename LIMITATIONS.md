@@ -58,6 +58,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
 | Monte Carlo / worst-case / corner analysis | ❌ | no parameter-distribution sampling |
 | `.fft` on transient output | ❌ | user-side only |
+| `.meas` (measurements) | ⚠️ | `sindr::measure`: statistics, `FIND … AT`, `WHEN`, `TRIG`/`TARG`, plus rise/fall, settling and −3 dB in the API. No `FIND … WHEN`, `DERIV` or `PARAM=`; no currents on AC results |
 | Periodic steady-state (PSS / shooting / harmonic balance) | ❌ | relevant for switching converters, RF |
 | S-parameter / two-port extraction | ❌ | |
 | Stability / loop-gain (middlebrook, Tian) | ❌ | |

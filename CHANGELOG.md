@@ -92,6 +92,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RegulatorParams::lm7805()` and `::ams1117()` datasheet presets. AC
   passes input ripple through line regulation. Ratings checks need its
   input voltage, output current and power.
+- Measurements and specs (`sindr::measure`). A `Measurement` takes one
+  number from a transient, AC, DC sweep, temperature sweep or operating
+  point result: the value at an x, min, max, average, RMS, peak-to-peak,
+  integral or final value, a crossing (`WHEN`), a delay (`TRIG`/`TARG`),
+  a 10–90 % rise or fall time, a settling time or a −3 dB point. A `Spec`
+  adds limits. `check_specs` reports each spec's value, limits, pass/fail
+  and margin, with the reason when it can't be measured, and
+  `SpecReport::with_ratings` attaches the ratings checks.
+- SPICE `.meas` / `.measure` cards (`tran`, `ac`, `dc`: `AVG`, `RMS`,
+  `MIN`, `MAX`, `PP`, `INTEG`, `FIND … AT`, `WHEN`, `TRIG … TARG`, with
+  `FROM`/`TO`) are parsed into `ParsedNetlist::measurements`.
 
 - CSV export: `to_csv()` on `TransientData`, `AcResult`, `DcSweepResult`
   and `TempSweepResult`. One row per point, with the scale first, then
@@ -139,6 +150,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `af` fields (struct literals need `..Default::default()`; JSON
   without them still loads), and `AnalysisRequest` has a new `Noise`
   variant.
+- **Breaking:** `SimError::Measurement` is a new variant, and
+  `ParsedNetlist` has a new `measurements` field.
+- `AcPoint::node_voltages` now includes the ground node (0 V), as
+  `SimulationResult::node_voltages` does.
 - **Breaking:** `CircuitElement::Diode` and `CircuitElement::Bjt` have a new
   `model` field; struct literals need `model: None` for the old behaviour.
   JSON without it still loads.

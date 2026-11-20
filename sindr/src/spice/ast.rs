@@ -47,6 +47,8 @@ pub(crate) enum RawCard {
     Analysis(RawAnalysis, Span),
     /// `.ic` / `.nodeset`: `V(node)=value` pairs and the card's source line.
     NodeValues(NodeValueKind, Vec<(String, ParamExpr)>, Span),
+    /// `.meas` / `.measure` and the card's source line.
+    Measure(RawMeasure, Span),
     /// `.ends [name]` marker; only meaningful inside a subckt body.
     Ends(Option<String>),
 }
@@ -166,6 +168,38 @@ pub(crate) enum RawAnalysis {
         fstart: ParamExpr,
         fstop: ParamExpr,
     },
+}
+
+/// `.meas <analysis> <name> …` in raw (unevaluated) form.
+#[derive(Debug, Clone)]
+pub(crate) struct RawMeasure {
+    pub analysis: crate::spice::MeasureAnalysis,
+    pub name: String,
+    pub kind: RawMeasureKind,
+    pub from: Option<ParamExpr>,
+    pub to: Option<ParamExpr>,
+}
+
+/// What a `.meas` card measures.
+#[derive(Debug, Clone)]
+pub(crate) enum RawMeasureKind {
+    /// `AVG|RMS|MIN|MAX|PP|INTEG <signal>`.
+    Stat(crate::measure::Signal, crate::measure::Stat),
+    /// `FIND <signal> AT=<x>`.
+    Find(crate::measure::Signal, ParamExpr),
+    /// `WHEN <signal>=<level> [RISE|FALL|CROSS=n|LAST]`.
+    When(RawCrossing),
+    /// `TRIG … TARG …`.
+    Delay(RawCrossing, RawCrossing),
+}
+
+/// A crossing in a `.meas` card, its level not yet evaluated.
+#[derive(Debug, Clone)]
+pub(crate) struct RawCrossing {
+    pub signal: crate::measure::Signal,
+    pub level: ParamExpr,
+    pub edge: crate::measure::Edge,
+    pub occurrence: crate::measure::Occurrence,
 }
 
 /// AC sweep style keyword.
