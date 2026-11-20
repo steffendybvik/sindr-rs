@@ -64,7 +64,7 @@ cargo run --example list_examples             # list every bundled example circu
 cargo doc --workspace --no-deps --all-features --open  # API docs (CI uses RUSTDOCFLAGS=-D warnings)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint (CI)
 cargo fmt --all                               # format
-cargo bench -p sindr --bench transient --bench newton -- --quick  # benchmarks (CI gates PRs at +25 %)
+cargo bench -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick  # benchmarks (CI gates PRs at +25 %)
 python3 scripts/gen_llms_full.py              # regenerate llms-full.txt (CI checks it)
 ```
 
