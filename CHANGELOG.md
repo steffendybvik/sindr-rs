@@ -16,6 +16,10 @@ staged as `0.1.0-alpha.8`.
 
 ### Added
 
+- A polarised capacitor's reverse voltage. Set `Ratings::reverse_voltage`
+  on a capacitor's part and `check_ratings` flags `nodes[1]` (the `-`
+  terminal) rising above `nodes[0]` (the `+`) by more than it, the way it
+  does a diode's reverse voltage.
 - **Breaking:** three new `CircuitElement`s. `SwitchSpdt` (`[common, a,
   b]`, `position: SpdtPosition`), `Crystal` (`CrystalParams`: the
   Butterworth–Van Dyke model from frequency, ESR, C0 and Cm) and

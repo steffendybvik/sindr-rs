@@ -80,7 +80,7 @@ pub enum RatingKind {
     Voltage,
     /// Current through the part (A).
     Current,
-    /// Diode reverse voltage (V).
+    /// Reverse voltage (V): a diode's, or a polarised capacitor's.
     ReverseVoltage,
     /// Diode forward current (A).
     ForwardCurrent,
@@ -287,6 +287,10 @@ fn measure(
         (RatingKind::Voltage, _) => port?.voltage_across.abs(),
         (RatingKind::Current, _) => port?.current_through.abs(),
         (RatingKind::ReverseVoltage, e) if is_diode(e) => (-port?.voltage_across).max(0.0),
+        // A polarised capacitor's + terminal is nodes[0].
+        (RatingKind::ReverseVoltage, CircuitElement::Capacitor { .. }) => {
+            (-port?.voltage_across).max(0.0)
+        }
         (RatingKind::ForwardCurrent, e) if is_diode(e) => port?.current_through.max(0.0),
         // [base, collector, emitter] and [gate, collector, emitter]
         (RatingKind::Vce, CircuitElement::Bjt { .. } | CircuitElement::Igbt { .. }) => {

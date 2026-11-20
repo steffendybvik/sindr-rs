@@ -2,7 +2,7 @@
 
 use sindr::{
     check_ratings, solve_circuit, solve_transient, BjtKind, Block, Circuit, CircuitElement,
-    Instance, Part, RatingKind, RatingStatus, Ratings, TransientConfig, Waveform,
+    Instance, Part, RatingKind, RatingStatus, Ratings, TransientConfig, TransientStart, Waveform,
 };
 
 fn vsrc(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
@@ -157,6 +157,53 @@ fn inrush_peak_is_caught_in_the_transient() {
     let c1 = report.for_part("C1").next().unwrap();
     assert_eq!(c1.status, RatingStatus::Within);
     assert!((c1.worst.unwrap() - 10.0).abs() < 0.1);
+}
+
+#[test]
+fn polarised_capacitor_reverse_bias_is_flagged() {
+    // `+` is nodes[0]. C1 sits the right way round on +5 V; C2 is fitted
+    // backwards, so its `+` is 5 V below its `-`.
+    let cap = |id: &str, plus: &str, minus: &str| CircuitElement::Capacitor {
+        id: id.into(),
+        nodes: [plus.into(), minus.into()],
+        capacitance: 100e-6,
+    };
+    let mut c = Circuit::new(
+        "0",
+        vec![
+            vsrc("V1", "rail", "0", 5.0),
+            res("R1", "rail", "p", 10.0),
+            cap("C1", "p", "0"),
+            cap("C2", "0", "p"),
+        ],
+    );
+    let electrolytic = Ratings {
+        voltage: Some(16.0),
+        reverse_voltage: Some(1.0),
+        ..Ratings::default()
+    };
+    c.parts.insert("C1".into(), rated(electrolytic));
+    c.parts.insert("C2".into(), rated(electrolytic));
+    let config = TransientConfig::new(1e-3, 1e-5).with_start(TransientStart::OperatingPoint);
+    let report = check_ratings(&c, &solve_transient(&c, &config).unwrap()).unwrap();
+
+    let get = |part: &str, kind| {
+        report
+            .for_part(part)
+            .find(|c| c.rating == kind)
+            .unwrap()
+            .clone()
+    };
+    let c1 = get("C1", RatingKind::ReverseVoltage);
+    assert_eq!(c1.status, RatingStatus::Within);
+    assert_eq!(c1.worst, Some(0.0));
+    let c2 = get("C2", RatingKind::ReverseVoltage);
+    assert_eq!(c2.status, RatingStatus::Exceeded);
+    assert!((c2.worst.unwrap() - 5.0).abs() < 1e-3, "{:?}", c2.worst);
+    // Both see 5 V in magnitude, inside the 16 V rating.
+    assert_eq!(get("C2", RatingKind::Voltage).status, RatingStatus::Within);
+    let exceeded: Vec<_> = report.exceeded().iter().map(|c| &c.part).collect();
+    assert_eq!(exceeded, ["C2"]);
 }
 
 #[test]
