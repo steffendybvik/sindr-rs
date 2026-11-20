@@ -4095,11 +4095,14 @@ keyed by the caller's component and net ids, and every
 
 [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
 and X elements; `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
-`.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac`, `.tf`,
-`.sens` and `.tran`. Not supported: MOSFET (M)
-and JFET (J) elements, controlled sources (E, F, G, H), coupled inductors
-(K), `B` sources, most `.model` parameters (diodes always use IS = 1e-14,
-N = 1; BJTs honour only BF), and netlist export.
+`.ic`, `.nodeset` and `.options`; and the analysis cards `.op`, `.dc`,
+`.ac`, `.tf`, `.sens`, `.noise` and `.tran`. `.model` cards fill in what
+sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
+`M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
+`NR`, `VAF`, `KF`, `AF`). Not read: MOSFET (M) and JFET (J) elements,
+controlled sources (E, F, G, H), coupled inductors (K) and `B` sources.
+[`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
+sources and `.subckt`s included.
 
 The full list of what sindr doesn't do is in
 [LIMITATIONS.md](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
