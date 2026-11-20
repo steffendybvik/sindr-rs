@@ -53,6 +53,8 @@ More in [`sindr/examples/`](./sindr/examples): RC transient, BJT amplifier, Bode
 
 `sindr` depends on `sindr-core`, which depends on `sindr-devices`. The split lets design tools use `Circuit` without the solver, and lets you use the device-physics models with your own solver, without the `nalgebra` linear-algebra stack. `sindr` re-exports `sindr-core`, so most code needs only `sindr`.
 
+All three build for `wasm32-unknown-unknown`, with default and all features, so sindr runs in a browser. CI builds them and solves an operating point, an AC sweep, a transient and a SPICE deck under Node on every pull request.
+
 ## Accuracy
 
 Each analysis is checked against [ngspice](https://ngspice.sourceforge.io/) 47 on golden circuits solved by both: diodes with their `.model` cards and charge, BJTs, MOSFETs, JFETs, LEDs, controlled sources, transformers, subcircuits. The worst deviation of any quantity at any point, per analysis:

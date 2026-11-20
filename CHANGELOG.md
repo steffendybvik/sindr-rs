@@ -29,6 +29,8 @@ staged as `0.1.0-alpha.8`.
   it) and `at`, a new `SolvePoint` (operating point, DC sweep or
   temperature point, transient time). The message names them. Patterns
   that list the variant's fields need `..`.
+- CI builds every crate for `wasm32-unknown-unknown` and solves a circuit
+  there under Node (`sindr/tests/wasm.rs`).
 - **Breaking:** three new `CircuitElement`s. `SwitchSpdt` (`[common, a,
   b]`, `position: SpdtPosition`), `Crystal` (`CrystalParams`: the
   Butterworth–Van Dyke model from frequency, ESR, C0 and Cm) and

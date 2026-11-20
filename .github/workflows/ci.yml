@@ -47,6 +47,34 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: cargo test --workspace --no-default-features
 
+  wasm:
+    # PCBCraft's web app builds sindr for wasm32-unknown-unknown, where
+    # std::time, threads and the file system fail at run time, not build time.
+    name: wasm32
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --lib --target wasm32-unknown-unknown
+      - run: cargo build --workspace --lib --target wasm32-unknown-unknown --all-features
+      - name: Pin the test runner to Cargo.lock's wasm-bindgen
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/{getline; split($0,a,"\""); print a[2]}' Cargo.lock)
+          echo "WASM_BINDGEN=$version" >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@${{ env.WASM_BINDGEN }}
+      - name: Solve in Node
+        # No -q: cargo passes it on, and the runner rejects it.
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: |
+          cargo test -p sindr --target wasm32-unknown-unknown --test wasm
+          cargo test -p sindr --all-features --target wasm32-unknown-unknown --test wasm
+
   docs:
     name: rustdoc
     runs-on: ubuntu-latest
