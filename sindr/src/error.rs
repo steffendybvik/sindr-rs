@@ -86,28 +86,38 @@ pub enum SimError {
     InvalidResistance(String),
 
     /// Newton–Raphson exhausted its iteration budget without converging,
-    /// in DC after the gmin- and source-stepping fallbacks failed too.
+    /// in DC after the gmin- and source-stepping fallbacks failed too, or in
+    /// transient after halving the step down to its floor.
     ///
-    /// Carries the iteration count reached and the largest per-node voltage
-    /// step `max_i |Vᵢ_new − Vᵢ_prev|` (V) at the final iteration. A step
-    /// near the convergence tolerance suggests slow convergence — try
-    /// scaling component values or supplying initial conditions. A large
-    /// step usually means the circuit has no valid operating point (e.g. a
-    /// nonlinear element with no DC path to ground).
+    /// Says where the circuit is stuck: the node whose voltage was still
+    /// moving most on the last iteration, the components on that node, and
+    /// the point of the analysis that failed. The message names them, so a
+    /// designer or an agent knows which part to look at.
     ///
-    /// Note: this is the maximum *Newton step* between consecutive
-    /// iterations, not a KCL residual `|F(x)|`.
+    /// A final step near the convergence tolerance suggests slow
+    /// convergence: try initial conditions (`.nodeset`) or scaling values. A
+    /// large one usually means there's no valid operating point there, such
+    /// as a nonlinear element with no DC path to ground.
     #[error(
-        "Newton-Raphson failed to converge after {iterations} iterations \
-         (max node-voltage step {max_step_volts:.3e} V). \
-         The circuit may have no valid operating point."
+        "Newton-Raphson failed to converge at {at} after {iterations} iterations{}. \
+         The circuit may have no valid operating point there.",
+        stuck(.node, .components, .max_step_volts)
     )]
     ConvergenceFailed {
         /// Number of Newton iterations executed before giving up.
         iterations: usize,
         /// Largest per-node Newton step on the final iteration (V): the max
-        /// over node indices of `|V_new[i] − V_prev[i]|`.
+        /// over nodes of `|V_new − V_prev|`. A Newton step, not a KCL
+        /// residual.
         max_step_volts: f64,
+        /// The node that took that step: where the circuit won't settle.
+        /// `None` only when no iteration ran.
+        node: Option<String>,
+        /// Ids of the components with a terminal on [`node`](Self::ConvergenceFailed::node),
+        /// in circuit order, with blocks flattened (`X1.R2`).
+        components: Vec<String>,
+        /// Where in the analysis it failed.
+        at: SolvePoint,
     },
 
     /// Self-heating has no stable balance: a part's dissipation heats its
@@ -138,6 +148,95 @@ pub enum SimError {
     },
 }
 
+/// Where in an analysis a solve failed, carried by
+/// [`SimError::ConvergenceFailed`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum SolvePoint {
+    /// The DC operating point, including one AC, `.tf`, `.sens` or `.noise`
+    /// linearise around and the one a transient starts from.
+    OperatingPoint,
+    /// A DC sweep point: `source` set to `value` (V or A).
+    DcSweep {
+        /// The swept source's id.
+        source: String,
+        /// Its value at the failing point.
+        value: f64,
+    },
+    /// A temperature sweep point (K).
+    Temperature {
+        /// The device temperature at the failing point (K).
+        kelvin: f64,
+    },
+    /// A transient step to `time` (s), after the step was halved to its
+    /// floor.
+    Transient {
+        /// The time the failing step was solving for (s).
+        time: f64,
+    },
+}
+
+impl std::fmt::Display for SolvePoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SolvePoint::OperatingPoint => write!(f, "the DC operating point"),
+            SolvePoint::DcSweep { source, value } => {
+                write!(f, "DC sweep point {source} = {value:.6e}")
+            }
+            SolvePoint::Temperature { kelvin } => {
+                write!(f, "temperature sweep point {kelvin:.2} K")
+            }
+            SolvePoint::Transient { time } => write!(f, "transient time {time:.6e} s"),
+        }
+    }
+}
+
+impl SimError {
+    /// This error with a convergence failure's [`SolvePoint`] set to
+    /// `point`. Other errors pass through unchanged.
+    pub(crate) fn at(self, point: SolvePoint) -> Self {
+        match self {
+            SimError::ConvergenceFailed {
+                iterations,
+                max_step_volts,
+                node,
+                components,
+                ..
+            } => SimError::ConvergenceFailed {
+                iterations,
+                max_step_volts,
+                node,
+                components,
+                at: point,
+            },
+            other => other,
+        }
+    }
+}
+
+/// The message's "where": ": node `x` (on D1, R2) still moving 1.2e-1 V".
+fn stuck(node: &Option<String>, components: &[String], step: &f64) -> String {
+    /// More than this many components are elided.
+    const SHOWN: usize = 6;
+    let Some(node) = node else {
+        return String::new();
+    };
+    let mut on = components
+        .iter()
+        .take(SHOWN)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if components.len() > SHOWN {
+        on.push_str(&format!(" and {} more", components.len() - SHOWN));
+    }
+    let on = if on.is_empty() {
+        String::new()
+    } else {
+        format!(" (on {on})")
+    };
+    format!(": node `{node}`{on} was still moving {step:.3e} V per iteration")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,13 +246,16 @@ mod tests {
         let err = SimError::ConvergenceFailed {
             iterations: 100,
             max_step_volts: 1.234e-3,
+            node: None,
+            components: Vec::new(),
+            at: SolvePoint::OperatingPoint,
         };
 
-        // Pattern-destructure: both fields are accessible as named struct fields.
         match err {
             SimError::ConvergenceFailed {
                 iterations,
                 max_step_volts,
+                ..
             } => {
                 assert_eq!(iterations, 100);
                 assert!((max_step_volts - 1.234e-3).abs() < 1e-12);
@@ -167,16 +269,39 @@ mod tests {
         let err = SimError::ConvergenceFailed {
             iterations: 42,
             max_step_volts: 7.5e-4,
+            node: Some("out".into()),
+            components: (1..=8).map(|i| format!("D{i}")).collect(),
+            at: SolvePoint::Transient { time: 1.5e-3 },
         };
         let msg = err.to_string();
+        assert!(msg.contains("42 iterations"), "{msg}");
+        assert!(msg.contains("7.500e-4 V"), "{msg}");
+        assert!(msg.contains("node `out`"), "{msg}");
         assert!(
-            msg.contains("42 iterations"),
-            "Display should mention iteration count: {msg}"
+            msg.contains("(on D1, D2, D3, D4, D5, D6 and 2 more)"),
+            "{msg}"
         );
-        assert!(
-            msg.contains("7.500e-4") || msg.contains("step"),
-            "Display should mention step size: {msg}"
-        );
+        assert!(msg.contains("transient time 1.500000e-3 s"), "{msg}");
+    }
+
+    #[test]
+    fn at_sets_the_point_and_leaves_other_errors_alone() {
+        let err = SimError::ConvergenceFailed {
+            iterations: 1,
+            max_step_volts: 1.0,
+            node: None,
+            components: Vec::new(),
+            at: SolvePoint::OperatingPoint,
+        }
+        .at(SolvePoint::DcSweep {
+            source: "V1".into(),
+            value: 2.0,
+        });
+        assert!(err.to_string().contains("DC sweep point V1 = 2.000000e0"));
+        assert!(matches!(
+            SimError::SingularMatrix.at(SolvePoint::OperatingPoint),
+            SimError::SingularMatrix
+        ));
     }
 
     #[test]

@@ -223,9 +223,15 @@ fn sweep_curve(
         set_source(&mut work, &axis.source_id, sweep_value);
         let previous = points.last().map(|p| &p.result.node_voltages).or(seed);
         let result = match previous {
-            Some(v) => crate::solve_circuit_with_initial_voltages(&work, v)?,
-            None => crate::solve_circuit(&work)?,
-        };
+            Some(v) => crate::solve_circuit_with_initial_voltages(&work, v),
+            None => crate::solve_circuit(&work),
+        }
+        .map_err(|e| {
+            e.at(crate::SolvePoint::DcSweep {
+                source: axis.source_id.clone(),
+                value: sweep_value,
+            })
+        })?;
         points.push(DcSweepPoint {
             sweep_value,
             result,

@@ -158,7 +158,8 @@ pub fn temperature_sweep(
             thermal.ambient = t;
         }
 
-        let result = crate::solve_circuit(&sweep_circuit)?;
+        let result = crate::solve_circuit(&sweep_circuit)
+            .map_err(|e| e.at(crate::SolvePoint::Temperature { kelvin: t }))?;
         points.push(TempSweepPoint {
             temperature_kelvin: t,
             result,
