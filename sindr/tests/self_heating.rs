@@ -2,8 +2,9 @@
 //! solve.
 
 use sindr::{
-    check_ratings, solve_circuit, solve_transient, BjtKind, Circuit, CircuitElement, Part,
-    RatingKind, RatingStatus, Ratings, SimError, Thermal, TransientConfig,
+    check_ratings, solve_ac, solve_circuit, solve_noise, solve_tf, solve_transient, AcConfig,
+    BjtKind, Circuit, CircuitElement, FrequencySpacing, NoiseConfig, Part, RatingKind,
+    RatingStatus, Ratings, SimError, TfConfig, TfOutput, Thermal, TransientConfig,
 };
 
 const AMBIENT: f64 = 300.15;
@@ -275,5 +276,130 @@ fn ntc_with_strong_negative_feedback_balances_in_dc() {
     assert!(
         (settled - tj).abs() < 0.05,
         "transient {settled} K, DC {tj} K"
+    );
+}
+
+/// Boltzmann constant over the elementary charge (V/K).
+const K_OVER_Q: f64 = 1.380_649e-23 / 1.602_176_634e-19;
+const RC: f64 = 1e3;
+
+/// Common-emitter stage: base held at 0.67 V by `VIN`, emitter grounded,
+/// collector through `RC` to 10 V, Q1 heated at 400 K/W. It settles near
+/// Tj ≈ 309 K and Ic ≈ 3.1 mA, against about 1.7 mA cold, so `−gm·RC`
+/// tells the heated bias point from the ambient one by far more than the
+/// tolerances below.
+fn heated_ce_stage() -> Circuit {
+    let mut c = Circuit::new(
+        "0",
+        vec![
+            vsrc("VIN", "b", "0", 0.67),
+            vsrc("VCC", "vcc", "0", 10.0),
+            res("RC", "vcc", "c", RC),
+            npn("Q1", "b", "c", "0"),
+        ],
+    );
+    c.parts
+        .insert("Q1".into(), heated(Thermal::junction_to_ambient(400.0)));
+    c
+}
+
+/// `circuit` without thermal data, Q1 fixed at `temperature`.
+fn at_fixed_temperature(circuit: &Circuit, temperature: f64) -> Circuit {
+    let mut c = circuit.clone();
+    c.parts.clear();
+    for e in &mut c.components {
+        if let CircuitElement::Bjt { temperature: t, .. } = e {
+            *t = temperature;
+        }
+    }
+    c
+}
+
+/// The heated stage's junction temperature, collector current and the
+/// midband gain `−gm·RC` they give, `gm = Ic/(kTj/q)`, from the plain DC
+/// solve.
+fn heated_bias() -> (f64, f64, f64) {
+    let op = solve_circuit(&heated_ce_stage()).unwrap();
+    let tj = op.junction_temperatures["Q1"];
+    let ic = (10.0 - op.node_voltages["c"]) / RC;
+    (tj, ic, -ic / (K_OVER_Q * tj) * RC)
+}
+
+fn ac_gain(circuit: &Circuit) -> f64 {
+    let config = AcConfig {
+        f_start: 1e3,
+        f_stop: 1e3,
+        num_points: 1,
+        spacing: FrequencySpacing::Linear,
+        source_id: "VIN".into(),
+        ac_magnitude: 1.0,
+    };
+    let gain = solve_ac(circuit, &config).unwrap().points[0].node_voltages["c"];
+    assert!(gain.im.abs() < 1e-9 * gain.re.abs(), "{gain}");
+    gain.re
+}
+
+#[test]
+fn ac_linearises_at_the_heated_bias_point() {
+    let (tj, ic, expected) = heated_bias();
+    assert!(tj > AMBIENT + 5.0, "Tj {tj}");
+    let gain = ac_gain(&heated_ce_stage());
+    assert!(
+        (gain - expected).abs() < 1e-3 * expected.abs(),
+        "AC gain {gain} vs −gm·Rc {expected} at Tj {tj} K, Ic {ic} A"
+    );
+    // Linearised at ambient instead, the gain is well off.
+    let cold = ac_gain(&at_fixed_temperature(&heated_ce_stage(), AMBIENT));
+    assert!((cold - gain).abs() > 0.2 * gain.abs(), "cold gain {cold}");
+}
+
+#[test]
+fn tf_linearises_at_the_heated_bias_point() {
+    let (tj, ic, expected) = heated_bias();
+    let config = TfConfig {
+        output: TfOutput::Voltage {
+            node: "c".into(),
+            reference: None,
+        },
+        input_source: "VIN".into(),
+    };
+    let tf = solve_tf(&heated_ce_stage(), &config).unwrap();
+    assert!(
+        (tf.gain - expected).abs() < 1e-3 * expected.abs(),
+        ".tf gain {} vs −gm·Rc {expected} at Tj {tj} K, Ic {ic} A",
+        tf.gain
+    );
+    // The base draws Ic/β, so the input sees rπ = β·kTj/(q·Ic).
+    let r_pi = 100.0 * K_OVER_Q * tj / ic;
+    assert!(
+        (tf.input_resistance - r_pi).abs() < 1e-3 * r_pi,
+        "Rin {} vs rπ {r_pi}",
+        tf.input_resistance
+    );
+}
+
+#[test]
+fn noise_uses_the_heated_bias_point() {
+    let config = NoiseConfig {
+        output: "c".into(),
+        reference: None,
+        input_source: "VIN".into(),
+        f_start: 1e3,
+        f_stop: 1e5,
+        num_points: 5,
+        spacing: FrequencySpacing::Logarithmic,
+    };
+    let (tj, _, _) = heated_bias();
+    let total = |c: &Circuit| solve_noise(c, &config).unwrap().total_output_noise;
+    let heated = total(&heated_ce_stage());
+    let fixed = total(&at_fixed_temperature(&heated_ce_stage(), tj));
+    let cold = total(&at_fixed_temperature(&heated_ce_stage(), AMBIENT));
+    assert!(
+        (heated - fixed).abs() < 1e-3 * fixed,
+        "heated {heated} vs fixed at Tj {fixed}"
+    );
+    assert!(
+        (heated - cold).abs() > 0.1 * cold,
+        "heated {heated} vs cold {cold}"
     );
 }

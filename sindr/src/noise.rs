@@ -265,7 +265,10 @@ pub(crate) fn solve_noise_with(
     }
 
     let (node_map, dc_solution, dc) = bias_point_with_result(circuit, opts)?;
-    let circuit = &crate::ac_analysis::incremental_inductors(circuit, &dc);
+    let circuit = &crate::ac_analysis::incremental_inductors(
+        &crate::ac_analysis::at_junction_temperatures(circuit, &dc),
+        &dc,
+    );
     let ss_models = linearize_at_dc(circuit, &node_map, &dc_solution);
     let generators = generators(circuit, &node_map, &dc);
 

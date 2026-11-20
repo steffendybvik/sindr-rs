@@ -48,7 +48,7 @@ pub(crate) struct Heated {
     entries: Vec<Entry>,
 }
 
-fn temperature_mut(element: &mut CircuitElement) -> Option<&mut f64> {
+pub(crate) fn temperature_mut(element: &mut CircuitElement) -> Option<&mut f64> {
     match element {
         CircuitElement::Diode { temperature, .. }
         | CircuitElement::Led { temperature, .. }

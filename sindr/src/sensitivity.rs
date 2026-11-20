@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use nalgebra::DVector;
 use num_complex::Complex64;
 
-use crate::ac_analysis::{bias_point, linearize_at_dc, small_signal_system};
+use crate::ac_analysis::{
+    at_junction_temperatures, bias_point_with_result, linearize_at_dc, small_signal_system,
+};
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
 use crate::transfer_function::{independent_vsource_branch, Port, TfOutput};
@@ -167,8 +169,8 @@ pub(crate) fn solve_sensitivity_with(
 ) -> Result<SensResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    let (node_map, dc_solution) = bias_point(circuit, opts)?;
-    let dc = crate::dc_equivalent(circuit);
+    let (node_map, dc_solution, op) = bias_point_with_result(circuit, opts)?;
+    let dc = crate::dc_equivalent(&at_junction_temperatures(circuit, &op));
     let ss_models = linearize_at_dc(&dc, &node_map, &dc_solution);
     let system = small_signal_system(&dc, &node_map, &dc_solution, &ss_models, 0.0);
 

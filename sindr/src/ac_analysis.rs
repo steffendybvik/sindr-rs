@@ -6,6 +6,7 @@
 //! 3. Building a complex-valued MNA system at each frequency
 //! 4. Solving for node voltages as complex phasors
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use nalgebra::DVector;
@@ -434,14 +435,26 @@ fn stamp_complex_conductance(
     }
 }
 
-/// The DC bias point of `circuit` as a solution vector over its node map
-/// (node rows only; branch rows are left zero), for linearising around.
-pub(crate) fn bias_point(
-    circuit: &Circuit,
-    opts: &crate::SolverOptions,
-) -> Result<(NodeMap, DVector<f64>), SimError> {
-    let (node_map, dc_solution, _) = bias_point_with_result(circuit, opts)?;
-    Ok((node_map, dc_solution))
+/// `circuit` with each self-heated device at the junction temperature its
+/// operating point `dc` balanced at, so it linearises where it is biased
+/// rather than at ambient. Borrowed unchanged when nothing is heated.
+pub(crate) fn at_junction_temperatures<'a>(
+    circuit: &'a Circuit,
+    dc: &crate::SimulationResult,
+) -> Cow<'a, Circuit> {
+    if dc.junction_temperatures.is_empty() {
+        return Cow::Borrowed(circuit);
+    }
+    let mut heated = circuit.clone();
+    for element in &mut heated.components {
+        let Some(&t) = dc.junction_temperatures.get(element.id()) else {
+            continue;
+        };
+        if let Some(temperature) = crate::thermal::temperature_mut(element) {
+            *temperature = t;
+        }
+    }
+    Cow::Owned(heated)
 }
 
 /// `circuit` with each saturating inductor replaced by a linear one at its
@@ -466,8 +479,10 @@ pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationRes
     out
 }
 
-/// [`bias_point`], with the operating-point result it came from (device
-/// currents for noise analysis).
+/// The DC bias point of flat `circuit` as a solution vector over its node
+/// map (node rows, and a regulator's branch row), for linearising around,
+/// with the operating-point result it came from (device currents for noise
+/// analysis, junction temperatures for [`at_junction_temperatures`]).
 pub(crate) fn bias_point_with_result(
     circuit: &Circuit,
     opts: &crate::SolverOptions,
@@ -1206,7 +1221,7 @@ pub(crate) fn solve_ac_with(
     }
 
     let (node_map, dc_solution, dc) = bias_point_with_result(circuit, opts)?;
-    let circuit = &incremental_inductors(circuit, &dc);
+    let circuit = &incremental_inductors(&at_junction_temperatures(circuit, &dc), &dc);
     let num_nodes = node_map.num_nodes();
     let ss_models = linearize_at_dc(circuit, &node_map, &dc_solution);
 

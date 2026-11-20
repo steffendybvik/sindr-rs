@@ -99,7 +99,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Self-heating is one thermal RC per part.** A part with `Part::thermal` runs at `ambient + P·Rθ` (iterated to a balance in DC, a thermal RC state in transient). There's no thermal coupling between parts (a shared heatsink, neighbours on a board), and no multi-pole Foster/Cauer ladder for the junction-to-case path.
 - **Only junction devices and the thermistor feel their temperature:** diodes, LEDs, Zeners, Schottkys, photodiodes, BJTs and thermistors. MOSFETs, JFETs, IGBTs and resistors report a junction temperature (and so get Tj-max checks), but their models have no temperature in them, so heating doesn't move their operating point. Power-MOSFET and IGBT runaway is not predicted.
 - **An LED's temperature coefficient is one typical figure:** Vf falls 2 mV/K at its rated 20 mA for every colour, from an effective EG per colour. Real parts range from about −1.5 to −4 mV/K.
-- **Self-heating applies to `solve_circuit` and `solve_transient`** (and the same on a `Solver`) (and `temperature_sweep`, which sets the ambient). AC, `.tf`, `.sens` and `dc_sweep` linearise around the unheated operating point.
+- **Self-heating applies to `solve_circuit` and `solve_transient`** (and the same on a `Solver`) (and `temperature_sweep`, which sets the ambient), and to the bias point of AC, `.tf`, `.sens` and `.noise`, which linearise each device at its balanced junction temperature. `dc_sweep` solves each point unheated.
 - In a transient the electrical step solves at the temperature from the step before. Thermal time constants are far longer than the electrical steps, so the lag doesn't matter unless the step is coarse compared with Rθ·Cθ.
 
 ### Tooling & UX

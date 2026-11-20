@@ -632,7 +632,7 @@ match solve_circuit(&circuit) {
 }
 ```
 
-`Thermal` takes `rth_ja` (K/W), or `rth_jc` plus `rth_ca` for a part on a heatsink, an optional `cth` (J/K; without it a transient's junction follows its power with no lag), and `ambient` (K, default 300.15). With it, the element's own `temperature` field is ignored. `SimulationResult::junction_temperatures` and each `TimestepSnapshot`'s carry the result, and `Ratings::tj_max` is checked against them. When no balance exists (a junction past 1000 K, or the iteration never settles), the solve returns `SimError::ThermalRunaway`. MOSFETs, JFETs, IGBTs and resistors report a junction temperature, but their models don't depend on it.
+`Thermal` takes `rth_ja` (K/W), or `rth_jc` plus `rth_ca` for a part on a heatsink, an optional `cth` (J/K; without it a transient's junction follows its power with no lag), and `ambient` (K, default 300.15). With it, the element's own `temperature` field is ignored. `SimulationResult::junction_temperatures` and each `TimestepSnapshot`'s carry the result, and `Ratings::tj_max` is checked against them. When no balance exists (a junction past 1000 K, or the iteration never settles), the solve returns `SimError::ThermalRunaway`. AC, `.tf`, `.sens` and `.noise` solve the same heated bias point and linearise each device at its junction temperature. MOSFETs, JFETs, IGBTs and resistors report a junction temperature, but their models don't depend on it.
 
 ## Ratings checks
 
