@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `sindr::import`: simulate a schematic tool's netlist without writing a
+  SPICE deck. A `Netlist` of components (the caller's id, a
+  `ComponentKind`, a value such as `"4k7"`, parameters, an optional model
+  and `Part`) and nets of `(component, terminal)` pins, plus a `Bench`
+  (ground, sources and loads on nets or terminals, ties, the analysis),
+  becomes a `Circuit` keyed by the caller's ids (`Netlist::to_circuit`)
+  or runs (`import::simulate`). Terminals match by name, values read as a
+  schematic writes them (`import::parse_value`: `4k7`, `100nF`, `1M` is
+  mega), and every `ImportError` names the component, net or bench item.
+  All of it is serde.
+- `TransientConfig`, `AcConfig` and `FrequencySpacing` derive
+  `Serialize`/`Deserialize`, and `AcConfig` derives `PartialEq`.
 - **Breaking:** `CircuitElement::Battery`, an equivalent-circuit cell:
   open-circuit voltage by state of charge behind a series resistance and
   an optional RC pair (`sindr::battery::BatteryParams`, with Li-ion/LiPo

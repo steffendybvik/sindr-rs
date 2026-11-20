@@ -643,6 +643,38 @@ assert!(report.passed()); // every spec passed and every part is within its rati
 
 A measurement that can't be taken (an unknown node, a level never crossed, a phase on a transient) is `SpecStatus::Unmeasured` with a reason, never a pass; `Measurement::on` returns it as `SimError::Measurement`. Average and RMS are weighted by step width, so the transient's uneven steps don't skew them. With the `spice` feature, `.meas tran|ac|dc` cards land in `ParsedNetlist::measurements`, each with the analysis it measures.
 
+## Importing a schematic netlist
+
+`sindr::import` is for editors: map your netlist onto it and simulate a schematic without writing a SPICE deck. A `Netlist` holds components (your id, a `ComponentKind`, a value as a number or text, named parameters, an optional model and `Part`) and nets (your id, an optional display name, and the `(component, terminal)` pins on it). A `Bench` adds what the schematic leaves out: the ground net, sources and loads attached to nets or terminals (a connector pin, a test point), nets to tie together (an analog ground to ground), and the analysis to run.
+
+```rust
+use sindr::import::{simulate, Analysis, Bench, BenchSource, Component, ComponentKind, Net, Netlist, Simulation};
+
+let netlist = Netlist {
+    components: vec![
+        Component::new("c1", ComponentKind::Resistor).with_value("10k"),
+        Component::new("c2", ComponentKind::Resistor).with_value("4k7"),
+    ],
+    nets: vec![
+        Net::new("vin", [("c1", "1")]),
+        Net::new("vout", [("c1", "2"), ("c2", "1")]),
+        Net::new("gnd", [("c2", "2")]),
+    ],
+};
+let bench = Bench::new("gnd")
+    .with_source(BenchSource::voltage("supply", "vin", 5.0))
+    .with_analysis(Analysis::OperatingPoint);
+let Simulation::OperatingPoint(op) = simulate(&netlist, &bench).unwrap().result else { unreachable!() };
+println!("vout = {:.3} V", op.node_voltages["vout"]);
+```
+
+- **Ids carry through.** Element ids are your component ids and node names your net ids, so results land on your parts. Every `ImportError` names the component, net or bench item: an unknown kind, a terminal the kind doesn't have, a terminal on two nets or on none, a value that isn't one.
+- **Terminals by name, never pin number:** `anode`/`cathode` (or `A`/`K`), `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out`, case ignored. Unpolarised two-terminal parts also take `1` and `2`. `ComponentKind::terminals` lists each kind's names. A MOSFET's `body` must sit on its source's net; an op-amp's `V+`/`V-` pins set its rails from the bench supplies on those nets.
+- **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
+- **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals.
+- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only.
+- Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
+
 ## Examples
 
 One small program per capability in [`examples/`](./examples), run with `cargo run -p sindr --example <name>`:
@@ -658,6 +690,7 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `dc_sweep_diode` | DC sweep (diode I–V curve) |
 | `temperature_sweep` | Temperature sweep |
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
+| `import_netlist` | Importing a schematic netlist with a test bench |
 | `parse_netlist` | SPICE input (`--features spice`) |
 | `list_examples`, `run_example` | The built-in named circuits |
 

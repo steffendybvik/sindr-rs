@@ -126,6 +126,16 @@
 //! needed. A transient step whose Newton solve fails is retried at half the
 //! step.
 //!
+//! ## Netlist import for editors
+//!
+//! [`import`] takes a schematic tool's netlist in the caller's own ids:
+//! components with a kind, a value (`"4k7"`, `"100nF"`) and named
+//! terminals, and nets of `(component, terminal)` pins. A [`import::Bench`]
+//! adds what a schematic leaves out (ground, supplies, signal sources,
+//! loads, the analysis), and [`import::simulate`] runs it. Results are
+//! keyed by the caller's component and net ids, and every
+//! [`import::ImportError`] names the part, net or bench item at fault.
+//!
 //! ## SPICE input (feature `spice`)
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
@@ -257,6 +267,7 @@ pub use examples::{get_examples, ExampleCircuit};
 
 pub mod ac_analysis;
 mod battery_state;
+pub mod import;
 pub use sindr_core::circuit;
 pub use sindr_core::design;
 pub mod csv;
@@ -455,7 +466,7 @@ pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
 
 /// `solve` on flat `circuit`, iterated to a self-heating balance when any
 /// part has [`Thermal`] data.
-fn solve_dc_heated(
+pub(crate) fn solve_dc_heated(
     circuit: &Circuit,
     mut solve: impl FnMut(&Circuit) -> Result<SimulationResult, SimError>,
 ) -> Result<SimulationResult, SimError> {
