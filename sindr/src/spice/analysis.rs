@@ -23,13 +23,17 @@ pub enum AnalysisRequest {
         /// operating point (see [`TransientStart`](crate::TransientStart)).
         uic: bool,
     },
-    /// `.dc <source> start stop step` — DC sweep over a single source.
+    /// `.dc <source> start stop step [<source2> start2 stop2 step2]` — DC
+    /// sweep over one source, or two with the first inside the second.
     ///
-    /// The parser checks that `source` is a voltage or current source in the
-    /// deck, and that `step` is non-zero and points from `start` towards
-    /// `stop` (any step when they are equal).
+    /// The parser checks that each source is a voltage or current source in
+    /// the deck, that the two differ, and that each step is non-zero and
+    /// points from its start towards its stop (any step when they are
+    /// equal). [`dc_axes`](Self::dc_axes) turns it into the axes
+    /// [`dc_sweep`](crate::dc_sweep()) and
+    /// [`dc_sweep_nested`](crate::dc_sweep_nested) take.
     Dc {
-        /// Source id being swept.
+        /// Source id being swept (the inner, faster sweep when there are two).
         source: String,
         /// Sweep start value.
         start: f64,
@@ -37,6 +41,8 @@ pub enum AnalysisRequest {
         stop: f64,
         /// Sweep step.
         step: f64,
+        /// The second, outer source, if the card names one.
+        outer: Option<DcSweepSpec>,
     },
     /// `.ac <sweep> points fstart fstop` — small-signal AC sweep.
     ///
@@ -67,7 +73,77 @@ pub enum AnalysisRequest {
     },
 }
 
+/// The outer source of a two-source `.dc`: `<source> start stop step`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DcSweepSpec {
+    /// Source id being swept.
+    pub source: String,
+    /// Sweep start value.
+    pub start: f64,
+    /// Sweep stop value.
+    pub stop: f64,
+    /// Sweep step.
+    pub step: f64,
+}
+
 impl AnalysisRequest {
+    /// The sweep axes of a `.dc` request: the inner source, and the outer
+    /// one if the card names two. `None` for any other analysis.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* family\nV1 a 0 0\nV2 b 0 0\nR1 a b 1k\n.dc V1 0 1 0.1 V2 0 2 1\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let (inner, outer) = netlist.analyses[0].dc_axes().unwrap()?;
+    /// assert_eq!(inner.num_points, 11);
+    /// let sweep = sindr::dc_sweep_nested(&netlist.circuit, &inner, &outer.unwrap())?;
+    /// assert_eq!(sweep.curves.len(), 3);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// for an axis of more than 10⁷ points.
+    #[allow(clippy::type_complexity)]
+    pub fn dc_axes(
+        &self,
+    ) -> Option<
+        Result<
+            (
+                crate::dc_sweep::DcSweepAxis,
+                Option<crate::dc_sweep::DcSweepAxis>,
+            ),
+            crate::SimError,
+        >,
+    > {
+        use crate::dc_sweep::DcSweepAxis;
+        let AnalysisRequest::Dc {
+            source,
+            start,
+            stop,
+            step,
+            outer,
+        } = self
+        else {
+            return None;
+        };
+        Some((|| {
+            let inner = DcSweepAxis::from_step(source.clone(), *start, *stop, *step)?;
+            let outer = match outer {
+                Some(o) => Some(DcSweepAxis::from_step(
+                    o.source.clone(),
+                    o.start,
+                    o.stop,
+                    o.step,
+                )?),
+                None => None,
+            };
+            Ok((inner, outer))
+        })())
+    }
+
     /// The [`TransientConfig`](crate::TransientConfig) for a `.tran`
     /// request, to pass to [`solve_transient`](crate::solve_transient);
     /// `None` for any other analysis.
@@ -222,7 +298,28 @@ mod tests {
                 source: "v1".into(),
                 start: 0.0,
                 stop: 5.0,
-                step: 0.5
+                step: 0.5,
+                outer: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn dc_sweep_with_two_sources() {
+        let deck = "* two\nV1 a 0 1\nV2 b 0 1\nR1 a b 1k\n.dc V1 0 5 0.5 V2 5 0 -1\n.end\n";
+        assert_eq!(
+            parse_str(deck).unwrap().analyses,
+            vec![AnalysisRequest::Dc {
+                source: "v1".into(),
+                start: 0.0,
+                stop: 5.0,
+                step: 0.5,
+                outer: Some(DcSweepSpec {
+                    source: "v2".into(),
+                    start: 5.0,
+                    stop: 0.0,
+                    step: -1.0,
+                }),
             }]
         );
     }

@@ -47,7 +47,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | Analysis | Supported | Notes |
 |----------|-----------|-------|
 | `.op` (operating point) | ✅ | via `solve_circuit` |
-| `.dc` (DC sweep) | ✅ | one source at a time |
+| `.dc` (DC sweep) | ✅ | one source (`dc_sweep`) or two nested (`dc_sweep_nested`), voltage or current |
 | `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` ignored |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
@@ -58,7 +58,6 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
 | Monte Carlo / worst-case / corner analysis | ❌ | no parameter-distribution sampling |
 | `.fft` on transient output | ❌ | user-side only |
-| Two-source / nested DC sweep | ❌ | single source per call |
 | Periodic steady-state (PSS / shooting / harmonic balance) | ❌ | relevant for switching converters, RF |
 | S-parameter / two-port extraction | ❌ | |
 | Stability / loop-gain (middlebrook, Tian) | ❌ | |

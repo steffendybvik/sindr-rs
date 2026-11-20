@@ -113,8 +113,12 @@ fn dc_sweep_diode_matches_shockley_root() {
             // sindr's 1e-12 S GMIN shunt at `out` conducts, and nothing else.
             let i = (vs - got) / r;
             let want = IS * ((got / V_T).exp() - 1.0) + 1e-12 * got;
+            // 1e-18 A: at Vs = 0 the sweep, seeded from the point before,
+            // stops a few 1e-19 V from exactly 0, far inside Newton's
+            // tolerance, where the relative check alone would ask for 0.1 %
+            // of 1e-30 A.
             assert!(
-                (i - want).abs() <= 1e-3 * want.abs(),
+                (i - want).abs() <= 1e-3 * want.abs() + 1e-18,
                 "Vs = {vs}: I = {i}, want {want}"
             );
             continue;
