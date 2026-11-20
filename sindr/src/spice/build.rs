@@ -150,6 +150,7 @@ fn build_element(
                     id: raw.id.clone(),
                     nodes,
                     inductance: v,
+                    saturation: None,
                 }),
                 'c' => Ok(CircuitElement::Capacitor {
                     id: raw.id.clone(),

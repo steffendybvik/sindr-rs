@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Breaking:** saturating inductors. `CircuitElement::Inductor` has a new
+  `saturation: Option<InductorSaturation>` field (`None` keeps today's
+  linear inductor; struct literals need it, JSON may omit it). With
+  `Some`, the flux follows `L_sat·i + (L0 − L_sat)·I_sat·tanh(i/I_sat)`:
+  the transient integrates flux and solves for the current by Newton, and
+  AC and noise use the incremental inductance at the DC current. The
+  model lives in `sindr_devices::inductor`. No hysteresis or core loss,
+  and transformers stay linear.
 - Transient and Newton benchmarks (`cargo bench -p sindr --bench transient
   --bench newton`), with a CI job that fails a PR more than 25 % slower than
   its base, and a Performance section in the README with the numbers.

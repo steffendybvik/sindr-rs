@@ -353,6 +353,10 @@ impl<'a> Deck<'a> {
                 nodes, capacitance, ..
             } => self.two_terminal(&name, nodes, num(id, "capacitance", *capacitance)?),
             CircuitElement::Inductor {
+                saturation: Some(_),
+                ..
+            } => Err(unsupported("a saturating core has no SPICE3 primitive")),
+            CircuitElement::Inductor {
                 nodes, inductance, ..
             } => self.two_terminal(&name, nodes, num(id, "inductance", *inductance)?),
             CircuitElement::VoltageSource {
