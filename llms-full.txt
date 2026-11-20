@@ -3003,6 +3003,10 @@ impl Circuit {
     pub fn flatten(&self) -> Result<Circuit, DesignError> { … }
 
     /// [`flatten`](Self::flatten), borrowing `self` when it is already flat.
+    ///
+    /// # Errors
+    ///
+    /// As [`flatten`](Self::flatten).
     pub fn flattened(&self) -> Result<Cow<'_, Circuit>, DesignError> { … }
 }
 ```
@@ -4201,8 +4205,6 @@ pub use examples::{get_examples, ExampleCircuit};
 
 pub mod ac_analysis;
 
-pub mod import;
-
 pub mod circuit;
 
 pub mod csv;
@@ -4212,6 +4214,8 @@ pub mod dc_sweep;
 pub mod design;
 
 pub mod error;
+
+pub mod import;
 
 pub mod measure;
 
