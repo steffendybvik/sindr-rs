@@ -313,6 +313,11 @@ staged as `0.1.0-alpha.8`.
   NTC fed from a current source, until it gave up. Each part now takes a
   damped secant step, and runaway is reported only for a part still
   heating at the 1000 K limit.
+- AC, `.tf`, `.sens` and `.noise` now linearise a self-heated circuit at
+  the bias point `solve_circuit` reports, each device at its balanced
+  junction temperature. They solved the bias point at ambient, so a BJT
+  heated to 350 K kept its 300 K gm. Circuits without `Thermal` data are
+  unchanged.
 - AC analysis now includes a BJT's and a MOSFET's `parasitic_caps` (Cbe,
   Cbc, Cgs, Cgd). They were stamped in transient only, so a transistor
   amplifier's AC response had no Miller pole and stayed flat to any

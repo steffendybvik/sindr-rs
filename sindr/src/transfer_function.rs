@@ -9,7 +9,10 @@ use std::collections::HashMap;
 use nalgebra::DVector;
 use num_complex::Complex64;
 
-use crate::ac_analysis::{bias_point, linearize_at_dc, small_signal_system, SmallSignalSystem};
+use crate::ac_analysis::{
+    at_junction_temperatures, bias_point_with_result, linearize_at_dc, small_signal_system,
+    SmallSignalSystem,
+};
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
 use crate::node_map::NodeMap;
@@ -170,10 +173,10 @@ pub(crate) fn solve_tf_with(
     let circuit: &Circuit = &flat;
     // Name the bad port before paying for the bias point.
     check_ports(circuit, config)?;
-    let (node_map, dc_solution) = bias_point(circuit, opts)?;
+    let (node_map, dc_solution, op) = bias_point_with_result(circuit, opts)?;
     // The bias-point circuit, so an inductor is an exact short (a 0 V
     // source) rather than AC's large conductance at ω = 0.
-    let dc = crate::dc_equivalent(circuit);
+    let dc = crate::dc_equivalent(&at_junction_temperatures(circuit, &op));
     let ss_models = linearize_at_dc(&dc, &node_map, &dc_solution);
     let system = small_signal_system(&dc, &node_map, &dc_solution, &ss_models, 0.0);
 

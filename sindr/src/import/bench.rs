@@ -415,12 +415,5 @@ pub fn simulate(netlist: &Netlist, bench: &Bench) -> Result<Imported, BenchError
 /// The DC operating point with self-heating, whatever the circuit holds.
 fn operating_point(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
-    crate::validation::validate_circuit(&flat)?;
-    let dc = Circuit {
-        parts: flat.parts.clone(),
-        ..crate::dc_equivalent(&flat)
-    };
-    crate::solve_dc_heated(&dc, |c| {
-        crate::solve_dc_circuit(c, &crate::SolverOptions::default())
-    })
+    crate::solve_dc_operating_point(&flat, &crate::SolverOptions::default())
 }

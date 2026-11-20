@@ -76,7 +76,7 @@
 //! | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`) |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
-//! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
+//! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
 //! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 //! | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
@@ -572,17 +572,18 @@ pub(crate) fn solve_dc_heated(
     }
 }
 
-/// DC operating point of `circuit` with capacitors open and inductors
-/// shorted, whatever else it contains. [`solve_circuit`] sends any reactive
-/// circuit down the transient path, whose end state (5 τ) is only close to
-/// the bias point; small-signal analysis needs the bias point itself.
-/// `opts.nodeset` seeds Newton–Raphson.
+/// DC operating point of flat `circuit` with capacitors open and inductors
+/// shorted, whatever else it contains, at its self-heating balance (the
+/// junction temperatures [`solve_circuit`] reports). [`solve_circuit`]
+/// sends any reactive circuit down the transient path, whose end state
+/// (5 τ) is only close to the bias point; small-signal analysis needs the
+/// bias point itself. `opts.nodeset` seeds Newton–Raphson.
 pub(crate) fn solve_dc_operating_point(
     circuit: &Circuit,
     opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
     validation::validate_circuit(circuit)?;
-    solve_dc_circuit(&dc_equivalent(circuit), opts)
+    solve_dc_heated(&dc_equivalent(circuit), |dc| solve_dc_circuit(dc, opts))
 }
 
 /// The DC solution of `dc`, a circuit with no reactive elements left (as
@@ -609,7 +610,8 @@ pub(crate) fn solve_dc_circuit(
 
 /// `circuit` as it stands at DC: capacitors and varactors open (a 1 TΩ leak), inductors and
 /// transformer windings shorted (0 V sources). The bias point and the `.tf`
-/// small-signal system are both solved on it.
+/// small-signal system are both solved on it. It keeps `circuit`'s part
+/// data, which carries the thermal data the heated bias point needs.
 pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
     Circuit {
         ground_node: circuit.ground_node.clone(),
@@ -660,6 +662,8 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
                 }]
             })
             .collect(),
+        parts: circuit.parts.clone(),
+        globals: circuit.globals.clone(),
         ..Default::default()
     }
 }
