@@ -17,12 +17,13 @@ use crate::error::{SimError, SolvePoint};
 pub use crate::integration::IntegrationMethod;
 use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
-use crate::newton_raphson::{self, MAX_NR_ITERATIONS};
+use crate::newton_raphson;
 use crate::node_map::NodeMap;
 use crate::results::{
     BjtResult, ComponentResult, MosfetResult, SimulationResult, TimestepSnapshot, TransientData,
     TransientStats,
 };
+use crate::solver::SolverOptions;
 use crate::stamp::{
     stamp_bjt_companion, stamp_cccs, stamp_ccvs, stamp_current_source, stamp_diode_companion,
     stamp_igbt_companion, stamp_jfet_companion, stamp_mosfet_companion, stamp_resistor,
@@ -1475,9 +1476,6 @@ fn default_adaptive() -> bool {
     true
 }
 
-/// Most steps one transient run may take.
-const MAX_STEPS: f64 = 1e7;
-
 impl TransientConfig {
     /// Simulate from 0 to `tstop` seconds in steps of `tstep` seconds.
     pub fn new(tstop: f64, tstep: f64) -> Self {
@@ -1627,7 +1625,8 @@ impl TransientConfig {
         self.tmax.map_or(self.tstep, |tmax| self.tstep.min(tmax))
     }
 
-    pub(crate) fn validate(&self) -> Result<(), SimError> {
+    pub(crate) fn validate(&self, max_steps: u64) -> Result<(), SimError> {
+        let max_steps = max_steps as f64;
         let invalid = |msg: String| Err(SimError::InvalidComponent(format!("transient: {msg}")));
         for (name, value) in [
             ("tstop", Some(self.tstop)),
@@ -1652,9 +1651,9 @@ impl TransientConfig {
                 self.tstep, self.tstop
             ));
         }
-        if self.tstop / self.step() > MAX_STEPS {
+        if self.tstop / self.step() > max_steps {
             return invalid(format!(
-                "tstop / step = {:.3e} steps is more than the {MAX_STEPS:e} allowed",
+                "tstop / step = {:.3e} steps is more than the {max_steps:e} allowed",
                 self.tstop / self.step()
             ));
         }
@@ -1730,15 +1729,24 @@ pub fn solve_transient(
     circuit: &Circuit,
     config: &TransientConfig,
 ) -> Result<SimulationResult, SimError> {
+    solve_transient_with(circuit, config, &SolverOptions::default())
+}
+
+/// [`solve_transient`] with `opts`.
+pub(crate) fn solve_transient_with(
+    circuit: &Circuit,
+    config: &TransientConfig,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    config.validate()?;
+    config.validate(opts.max_transient_steps)?;
     crate::validation::validate_circuit(circuit)?;
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
     let num_vsources = circuit.count_voltage_sources();
-    let mut result = run_transient(circuit, &node_map, num_nodes, num_vsources, config)?;
+    let mut result = run_transient(circuit, &node_map, num_nodes, num_vsources, config, opts)?;
     crate::composite::fold(original, &mut result);
     Ok(result)
 }
@@ -1752,6 +1760,7 @@ pub(crate) fn run_transient(
     num_nodes: usize,
     num_vsources: usize,
     config: &TransientConfig,
+    opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
     let tstop = config.tstop;
     let h_max = config.step();
@@ -1764,7 +1773,7 @@ pub(crate) fn run_transient(
     // conditions with uncharged caps (0 V) and inductors at rest (0 A)
     // elsewhere, as if the circuit were switched on at t = 0.
     let start = match config.start {
-        TransientStart::OperatingPoint => operating_point_start(circuit, config)?,
+        TransientStart::OperatingPoint => operating_point_start(circuit, config, opts)?,
         TransientStart::InitialConditions => Start {
             voltages: config.initial_voltages.clone(),
             currents: config.initial_currents.clone(),
@@ -1870,7 +1879,7 @@ pub(crate) fn run_transient(
     // The accepted step before this one; `None` until the first is taken.
     let mut h_prev: Option<f64> = None;
 
-    let fixed_step = StepSolver::new(circuit, node_map, num_nodes, num_vsources);
+    let fixed_step = StepSolver::new(circuit, node_map, num_nodes, num_vsources, opts);
 
     // Self-heating: a working copy of the circuit whose junction
     // temperatures follow each part's thermal RC, advanced after every
@@ -1887,9 +1896,10 @@ pub(crate) fn run_transient(
     // Each breakpoint forces a step of its own, so they count against the
     // step budget together with the tstep grid.
     let steps = (tstop / h_max).ceil() + breakpoints.len() as f64;
-    if steps > MAX_STEPS {
+    let max_steps = opts.max_transient_steps as f64;
+    if steps > max_steps {
         return Err(SimError::InvalidComponent(format!(
-            "transient: {:.3e} grid steps plus {} waveform breakpoints is more than the {MAX_STEPS:e} steps allowed",
+            "transient: {:.3e} grid steps plus {} waveform breakpoints is more than the {max_steps:e} steps allowed",
             (tstop / h_max).ceil(),
             breakpoints.len()
         )));
@@ -1979,7 +1989,7 @@ pub(crate) fn run_transient(
         let heated_step;
         let (step, stepped) = match &work {
             Some(work) => {
-                heated_step = StepSolver::new(work, node_map, num_nodes, num_vsources);
+                heated_step = StepSolver::new(work, node_map, num_nodes, num_vsources, opts);
                 (&heated_step, work)
             }
             None => (&fixed_step, circuit),
@@ -2000,7 +2010,7 @@ pub(crate) fn run_transient(
         // Accept or reject by local truncation error, and size the next step.
         let mut grow = 2.0;
         if config.adaptive {
-            if let Some(ratio) = lte_ratio(&integ, &recent, t_next, &next, num_nodes) {
+            if let Some(ratio) = lte_ratio(&integ, &recent, t_next, &next, num_nodes, opts) {
                 let k = f64::from(integ.order + 1);
                 let factor = 0.9 * ratio.powf(-1.0 / k);
                 if ratio > 1.0 && dt > h_min {
@@ -2130,7 +2140,11 @@ const IC_CONDUCTANCE: f64 = 1e10;
 /// validated `circuit`, with each source at its t = 0 value, each
 /// `initial_voltages` node held there and each inductor in
 /// `initial_currents` carrying its current.
-fn operating_point_start(circuit: &Circuit, config: &TransientConfig) -> Result<Start, SimError> {
+fn operating_point_start(
+    circuit: &Circuit,
+    config: &TransientConfig,
+    opts: &SolverOptions,
+) -> Result<Start, SimError> {
     let mut dc = crate::dc_equivalent(circuit);
     for component in &mut dc.components {
         match component {
@@ -2196,7 +2210,10 @@ fn operating_point_start(circuit: &Circuit, config: &TransientConfig) -> Result<
         });
     }
 
-    let op = crate::solve_dc_circuit(&dc, &config.initial_voltages).map_err(|e| match e {
+    // The `.ic` values seed Newton too, over any nodeset.
+    let mut op_opts = opts.clone();
+    op_opts.nodeset.extend(config.initial_voltages.clone());
+    let op = crate::solve_dc_circuit(&dc, &op_opts).map_err(|e| match e {
         SimError::InvalidComponent(msg) => {
             SimError::InvalidComponent(format!("transient operating point: {msg}"))
         }
@@ -2249,12 +2266,6 @@ fn operating_point_start(circuit: &Circuit, config: &TransientConfig) -> Result<
 /// by this, so the unchecked backward-Euler step that starts the integration
 /// is short.
 const RESTART_FRACTION: f64 = 100.0;
-
-/// SPICE's default transient tolerances: the local truncation error of a
-/// node voltage may be up to `TRTOL·(RELTOL·|v| + VNTOL)`.
-const RELTOL: f64 = 1e-3;
-const VNTOL: f64 = 1e-6;
-const TRTOL: f64 = 7.0;
 
 /// Rejects an initial condition that would otherwise be ignored or surface
 /// later as a bare `InvalidSolution`: a node or inductor id the circuit
@@ -2372,6 +2383,7 @@ fn lte_ratio(
     t: f64,
     v: &DVector<f64>,
     num_nodes: usize,
+    opts: &SolverOptions,
 ) -> Option<f64> {
     let k = integ.order as usize;
     if recent.len() < k + 1 {
@@ -2393,7 +2405,7 @@ fn lte_ratio(
         let derivative = factorial * dd[k + 1];
         let lte = integ.error_constant * h.powi(k as i32 + 1) * derivative.abs();
         let previous = pts[k].1[node];
-        let tol = TRTOL * (RELTOL * v[node].abs().max(previous.abs()) + VNTOL);
+        let tol = opts.trtol * (opts.reltol * v[node].abs().max(previous.abs()) + opts.vntol);
         worst = worst.max(lte / tol);
     }
     Some(worst)
@@ -2409,6 +2421,7 @@ struct StepSolver<'a> {
     nonlinear: bool,
     diode_info: Vec<newton_raphson::DiodeLimitInfo>,
     igbt_info: Vec<newton_raphson::IgbtLimitInfo>,
+    opts: &'a SolverOptions,
 }
 
 impl<'a> StepSolver<'a> {
@@ -2417,6 +2430,7 @@ impl<'a> StepSolver<'a> {
         node_map: &'a NodeMap,
         num_nodes: usize,
         num_vsources: usize,
+        opts: &'a SolverOptions,
     ) -> Self {
         let nonlinear = circuit.has_nonlinear_elements();
         Self {
@@ -2431,6 +2445,7 @@ impl<'a> StepSolver<'a> {
                 Vec::new()
             },
             igbt_info: newton_raphson::collect_igbt_info(circuit, node_map),
+            opts,
         }
     }
 
@@ -2468,7 +2483,7 @@ impl<'a> StepSolver<'a> {
 
         let mut v_prev = start.clone();
         let mut last_step = (f64::INFINITY, None);
-        for _ in 0..MAX_NR_ITERATIONS {
+        for _ in 0..self.opts.max_iterations {
             let mut system = stamp(&v_prev)?;
             newton_raphson::add_gmin_shunts(&mut system, self.num_nodes);
             let v_new = system.solve()?;
@@ -2479,7 +2494,13 @@ impl<'a> StepSolver<'a> {
                 newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &self.igbt_info);
 
             if !igbt_limited
-                && newton_raphson::converged(&v_prev, &v_limited, self.num_nodes, &self.diode_info)
+                && newton_raphson::converged(
+                    &v_prev,
+                    &v_limited,
+                    self.num_nodes,
+                    &self.diode_info,
+                    self.opts,
+                )
             {
                 return Ok(v_limited);
             }
@@ -2491,6 +2512,7 @@ impl<'a> StepSolver<'a> {
             self.node_map,
             last_step,
             SolvePoint::Transient { time: t },
+            self.opts.max_iterations,
         ))
     }
 }

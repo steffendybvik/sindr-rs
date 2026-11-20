@@ -76,7 +76,7 @@
 //! | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
 //! | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`) |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
-//! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
+//! | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 //! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
 //! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 //! | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
@@ -283,6 +283,7 @@ mod op_amp;
 pub mod ratings;
 pub mod results;
 pub mod sensitivity;
+pub mod solver;
 #[cfg(feature = "spice")]
 #[cfg_attr(docsrs, doc(cfg(feature = "spice")))]
 pub mod spice;
@@ -312,6 +313,7 @@ pub use results::{
     SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
 pub use sensitivity::{solve_sensitivity, SensConfig, SensEntry, SensParameter, SensResult};
+pub use solver::{Solver, SolverOptions};
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
 pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
 pub use transient::{solve_transient, IntegrationMethod, TransientConfig, TransientStart};
@@ -433,16 +435,22 @@ pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, C
 
 /// The automatic transient config [`solve_circuit`] runs, checked like a
 /// user's: a circuit whose time constants and waveforms ask for more than
-/// 10⁷ steps gets an error naming them, not a run that never ends.
-fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError> {
+/// `opts.max_transient_steps` gets an error naming them, not a run that
+/// never ends.
+fn auto_transient_config(
+    circuit: &Circuit,
+    opts: &SolverOptions,
+) -> Result<TransientConfig, SimError> {
     let config = TransientConfig::auto(circuit);
-    config.validate().map_err(|e| match e {
-        SimError::InvalidComponent(msg) => SimError::InvalidComponent(format!(
-            "{msg} (automatic span {} s and step {} s; set them with solve_transient)",
-            config.tstop, config.tstep
-        )),
-        other => other,
-    })?;
+    config
+        .validate(opts.max_transient_steps)
+        .map_err(|e| match e {
+            SimError::InvalidComponent(msg) => SimError::InvalidComponent(format!(
+                "{msg} (automatic span {} s and step {} s; set them with solve_transient)",
+                config.tstop, config.tstep
+            )),
+            other => other,
+        })?;
     Ok(config)
 }
 
@@ -500,13 +508,24 @@ fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError>
 /// assert!((r1.current_through.abs() - 0.005).abs() < 1e-9);
 /// ```
 pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
-    let mut result = solve_circuit_parts(circuit)?;
+    solve_circuit_with(circuit, &SolverOptions::default())
+}
+
+/// [`solve_circuit`] with `opts`.
+pub(crate) fn solve_circuit_with(
+    circuit: &Circuit,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
+    let mut result = solve_circuit_parts(circuit, opts)?;
     composite::fold(circuit, &mut result);
     Ok(result)
 }
 
-/// [`solve_circuit`], with composite elements still in their parts.
-fn solve_circuit_parts(circuit: &Circuit) -> Result<SimulationResult, SimError> {
+/// [`solve_circuit_with`], with composite elements still in their parts.
+fn solve_circuit_parts(
+    circuit: &Circuit,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     validation::validate_circuit(circuit)?;
@@ -516,13 +535,21 @@ fn solve_circuit_parts(circuit: &Circuit) -> Result<SimulationResult, SimError> 
     let num_vsources = circuit.count_voltage_sources();
 
     if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
-        let config = auto_transient_config(circuit)?;
-        return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
+        // The transient path doesn't consume the nodeset.
+        let config = auto_transient_config(circuit, opts)?;
+        return transient::run_transient(
+            circuit,
+            &node_map,
+            num_nodes,
+            num_vsources,
+            &config,
+            opts,
+        );
     }
 
     solve_dc_heated(circuit, |circuit| {
         if circuit.has_nonlinear_elements() {
-            newton_raphson::solve_nonlinear(circuit, &node_map, num_nodes, num_vsources)
+            newton_raphson::solve_nonlinear(circuit, &node_map, num_nodes, num_vsources, opts)
         } else {
             let mut system = MnaSystem::new(num_nodes, num_vsources);
             stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
@@ -550,33 +577,27 @@ pub(crate) fn solve_dc_heated(
 /// shorted, whatever else it contains. [`solve_circuit`] sends any reactive
 /// circuit down the transient path, whose end state (5 τ) is only close to
 /// the bias point; small-signal analysis needs the bias point itself.
-/// `initial_voltages` seeds Newton–Raphson, as `.nodeset`.
+/// `opts.nodeset` seeds Newton–Raphson.
 pub(crate) fn solve_dc_operating_point(
     circuit: &Circuit,
-    initial_voltages: &std::collections::HashMap<String, f64>,
+    opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
     validation::validate_circuit(circuit)?;
-    solve_dc_circuit(&dc_equivalent(circuit), initial_voltages)
+    solve_dc_circuit(&dc_equivalent(circuit), opts)
 }
 
 /// The DC solution of `dc`, a circuit with no reactive elements left (as
-/// [`dc_equivalent`] gives), without self-heating. `initial_voltages` seeds
+/// [`dc_equivalent`] gives), without self-heating. `opts.nodeset` seeds
 /// Newton–Raphson.
 pub(crate) fn solve_dc_circuit(
     dc: &Circuit,
-    initial_voltages: &std::collections::HashMap<String, f64>,
+    opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
     let node_map = NM::from_circuit(dc);
     let num_nodes = node_map.num_nodes();
     let num_vsources = dc.count_voltage_sources();
     if dc.has_nonlinear_elements() {
-        newton_raphson::solve_nonlinear_with_initial_voltages(
-            dc,
-            &node_map,
-            num_nodes,
-            num_vsources,
-            initial_voltages,
-        )
+        newton_raphson::solve_nonlinear(dc, &node_map, num_nodes, num_vsources, opts)
     } else {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
         stamp::stamp_circuit(dc, &mut system, &node_map, None)?;
@@ -645,100 +666,22 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
 }
 
 /// Like [`solve_circuit`] but seeds the Newton–Raphson initial guess with
-/// the supplied per-node voltages (V), keyed by node name. Equivalent to
-/// SPICE's `.NODESET` directive — useful when a circuit has multiple
-/// operating points (e.g. Schmitt triggers, latches) or when the default
-/// heuristic fails to converge.
-///
-/// Only consulted when the circuit contains nonlinear elements; for purely
-/// linear DC and for transient analysis the seed is ignored. Unknown node
-/// names in `initial_voltages` are silently skipped.
+/// the supplied per-node voltages (V), keyed by node name, as SPICE's
+/// `.NODESET`. Use a [`Solver`] whose [`SolverOptions::nodeset`] holds them.
 ///
 /// # Errors
 ///
 /// As [`solve_circuit`].
-///
-/// # Example
-///
-/// ```
-/// use std::collections::HashMap;
-/// use sindr::{Circuit, CircuitElement, solve_circuit_with_initial_voltages};
-///
-/// let circuit = Circuit {
-///     ground_node: "0".into(),
-///     components: vec![
-///         CircuitElement::VoltageSource {
-///             id: "V1".into(),
-///             nodes: ["vcc".into(), "0".into()],
-///             voltage: 5.0,
-///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
-///             id: "R1".into(),
-///             nodes: ["vcc".into(), "n1".into()],
-///             resistance: 1_000.0,
-///         },
-///         CircuitElement::Diode {
-///             id: "D1".into(),
-///             nodes: ["n1".into(), "0".into()],
-///             temperature: 300.15,
-///             model: None,
-///         },
-///     ],
-///     ..Default::default()
-/// };
-///
-/// let mut nodeset = HashMap::new();
-/// nodeset.insert("n1".to_string(), 0.7); // hint forward-bias diode drop
-/// let result = solve_circuit_with_initial_voltages(&circuit, &nodeset).unwrap();
-/// assert!(result.node_voltages["n1"] > 0.5);
-/// ```
+#[deprecated(
+    since = "0.2.0",
+    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).circuit(..)`"
+)]
 pub fn solve_circuit_with_initial_voltages(
     circuit: &Circuit,
     initial_voltages: &std::collections::HashMap<String, f64>,
 ) -> Result<SimulationResult, SimError> {
-    let mut result = solve_circuit_with_initial_voltages_parts(circuit, initial_voltages)?;
-    composite::fold(circuit, &mut result);
-    Ok(result)
-}
-
-/// [`solve_circuit_with_initial_voltages`], with composite elements still
-/// in their parts.
-fn solve_circuit_with_initial_voltages_parts(
-    circuit: &Circuit,
-    initial_voltages: &std::collections::HashMap<String, f64>,
-) -> Result<SimulationResult, SimError> {
-    let flat = crate::solver_circuit(circuit)?;
-    let circuit: &Circuit = &flat;
-    validation::validate_circuit(circuit)?;
-
-    let node_map = NM::from_circuit(circuit);
-    let num_nodes = node_map.num_nodes();
-    let num_vsources = circuit.count_voltage_sources();
-
-    if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
-        // The transient path doesn't consume the seed.
-        let config = auto_transient_config(circuit)?;
-        return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
-    }
-
-    solve_dc_heated(circuit, |circuit| {
-        if circuit.has_nonlinear_elements() {
-            newton_raphson::solve_nonlinear_with_initial_voltages(
-                circuit,
-                &node_map,
-                num_nodes,
-                num_vsources,
-                initial_voltages,
-            )
-        } else {
-            // Linear DC: initial guess has no effect on the result.
-            let mut system = MnaSystem::new(num_nodes, num_vsources);
-            stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
-            let solution = system.solve()?;
-            Ok(results::extract_results(
-                circuit, &node_map, &solution, num_nodes,
-            ))
-        }
-    })
+    solve_circuit_with(
+        circuit,
+        &SolverOptions::default().with_nodeset(initial_voltages.clone()),
+    )
 }

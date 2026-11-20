@@ -10,10 +10,11 @@
 //! and a [`SourceMap`] maps each flattened node back to its instance path.
 //! [`to_netlist`] writes blocks back as `.subckt`s.
 //!
-//! `.ic` and `.nodeset` cards land in [`ParsedNetlist::initial_conditions`]
-//! and [`ParsedNetlist::nodesets`]; pass them to
-//! [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages)
-//! and [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages).
+//! `.ic` cards land in [`ParsedNetlist::initial_conditions`], which
+//! [`ParsedNetlist::transient_config`] passes on. `.options` (`RELTOL`,
+//! `VNTOL`, `TRTOL`, `ITL1`) and `.nodeset` cards land in
+//! [`ParsedNetlist::options`]; [`ParsedNetlist::solver`] runs the deck's
+//! analyses with them.
 //!
 //! Enable the optional `spice` feature to pull this module in
 //! (`sindr = { version = "0.2", features = ["spice"] }`); it is off by
@@ -226,13 +227,15 @@ pub struct ParsedNetlist {
     /// Only top-level cards are read.
     pub initial_conditions: HashMap<String, f64>,
     /// `.nodeset` node voltages (V), keyed by node name: a starting guess for
-    /// the DC operating point. Pass them to
-    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages),
-    /// [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages),
-    /// [`solve_tf_with_initial_voltages`](crate::transfer_function::solve_tf_with_initial_voltages)
-    /// or [`solve_sensitivity_with_initial_voltages`](crate::sensitivity::solve_sensitivity_with_initial_voltages).
-    /// Only top-level cards are read.
+    /// the DC operating point. [`Self::options`] carries them too, as its
+    /// [`nodeset`](crate::SolverOptions::nodeset). Only top-level cards are
+    /// read.
     pub nodesets: HashMap<String, f64>,
+    /// The deck's `.options` (`reltol`, `vntol`, `trtol`, `itl1`) over the
+    /// defaults, with its `.nodeset` cards as the nodeset. Run the deck's
+    /// analyses through [`Self::solver`] to use them. Only top-level cards
+    /// are read.
+    pub options: crate::SolverOptions,
     /// `.meas` / `.measure` cards, in source order. Only top-level cards are
     /// read.
     pub measurements: Vec<MeasureRequest>,
@@ -247,6 +250,23 @@ pub struct ParsedNetlist {
 }
 
 impl ParsedNetlist {
+    /// A [`Solver`](crate::Solver) with the deck's [`options`](Self::options).
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* opts\nV1 in 0 5\nR1 in a 1k\nD1 a 0 dmod\n.model dmod D\n\
+    ///             .options reltol=1e-6 itl1=200\n.nodeset v(a)=0.7\n.op\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// assert_eq!(netlist.options.max_iterations, 200);
+    /// let op = netlist.solver().circuit(&netlist.circuit)?;
+    /// assert!((op.node_voltages["a"] - 0.7).abs() < 0.1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn solver(&self) -> crate::Solver {
+        crate::Solver::new(self.options.clone())
+    }
+
     /// The [`TransientConfig`](crate::TransientConfig) for the deck's first
     /// `.tran`, with its `.ic` cards as
     /// [`initial_voltages`](crate::TransientConfig::initial_voltages), so

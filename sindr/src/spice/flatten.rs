@@ -59,10 +59,15 @@ pub(crate) struct Flattened {
     pub node_values: Vec<NodeValueCard>,
     /// Top-level `.meas` cards, in source order.
     pub measures: Vec<(RawMeasure, Span)>,
+    /// Top-level `.options` cards, in source order.
+    pub options: Vec<OptionsCard>,
     /// Snapshot of the outer-most parameter scope after top-level `.param`
     /// evaluation. Analysis directive arguments are evaluated against this.
     pub top_params: HashMap<String, f64>,
 }
+
+/// A `.options` card: its `name=value` pairs and flags, and its span.
+pub(crate) type OptionsCard = (Vec<(String, Option<ParamExpr>)>, Span);
 
 /// A `.ic` / `.nodeset` card: its kind, `V(node)=value` pairs and span.
 pub(crate) type NodeValueCard = (NodeValueKind, Vec<(String, ParamExpr)>, Span);
@@ -115,6 +120,7 @@ pub(crate) fn flatten(
     let mut top_analyses: Vec<(RawAnalysis, Span)> = Vec::new();
     let mut top_node_values = Vec::new();
     let mut top_measures: Vec<(RawMeasure, Span)> = Vec::new();
+    let mut top_options: Vec<OptionsCard> = Vec::new();
     let mut top_elements: Vec<RawElement> = Vec::new();
 
     for card in cards {
@@ -129,6 +135,7 @@ pub(crate) fn flatten(
             RawCard::Analysis(a, span) => top_analyses.push((a, span)),
             RawCard::NodeValues(kind, values, span) => top_node_values.push((kind, values, span)),
             RawCard::Measure(m, span) => top_measures.push((m, span)),
+            RawCard::Options(o, span) => top_options.push((o, span)),
             RawCard::Element(e) => top_elements.push(e),
             RawCard::Ends(_) => {
                 // The parser collects `.ends` into its parent subckt; an
@@ -194,6 +201,7 @@ pub(crate) fn flatten(
         analyses: top_analyses,
         node_values: top_node_values,
         measures: top_measures,
+        options: top_options,
         top_params: top_params_snapshot,
     })
 }
@@ -348,6 +356,7 @@ fn expand_instance(
             RawCard::Analysis(..)
             | RawCard::NodeValues(..)
             | RawCard::Measure(..)
+            | RawCard::Options(..)
             | RawCard::Ends(_) => {
                 // Ignore inside subckt bodies.
             }

@@ -110,6 +110,9 @@ pub(crate) fn build_netlist(
         }
     }
 
+    let mut options = build_options(&flat.options, &top_scope, strict, warnings)?;
+    options.nodeset.clone_from(&nodesets);
+
     let measurements = flat
         .measures
         .iter()
@@ -121,6 +124,7 @@ pub(crate) fn build_netlist(
         analyses,
         initial_conditions,
         nodesets,
+        options,
         measurements,
         warnings: warnings.clone(),
         source_map: flat.source_map,
@@ -587,6 +591,65 @@ fn assemble(
         blocks,
         ..Circuit::default()
     }
+}
+
+/// The [`SolverOptions`](crate::SolverOptions) the deck's `.options`
+/// cards set; a later card overrides an earlier one. `reltol`, `vntol`,
+/// `trtol` and `itl1` are read. Any other option isn't modelled: an error in
+/// strict mode, a warning (and ignored) otherwise.
+fn build_options(
+    cards: &[crate::spice::flatten::OptionsCard],
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<crate::SolverOptions, SpiceParseError> {
+    let mut options = crate::SolverOptions::default();
+    for (pairs, span) in cards {
+        for (name, expr) in pairs {
+            let key = name.to_ascii_lowercase();
+            let value = |what: &str| -> Result<f64, SpiceParseError> {
+                let expr = expr.as_ref().ok_or_else(|| {
+                    card_error(format!("`.options` {what} needs a value: `{what}=<value>`"))
+                })?;
+                let v = eval_finite(expr, scope, ".options", what)?;
+                if v <= 0.0 {
+                    return Err(card_error(format!(
+                        "`.options` {what} must be positive (got {v})"
+                    )));
+                }
+                Ok(v)
+            };
+            match key.as_str() {
+                "reltol" => options.reltol = value("reltol").map_err(|e| e.locate(span))?,
+                "vntol" => options.vntol = value("vntol").map_err(|e| e.locate(span))?,
+                "trtol" => options.trtol = value("trtol").map_err(|e| e.locate(span))?,
+                "itl1" => {
+                    let v = value("itl1").map_err(|e| e.locate(span))?;
+                    if v.fract() != 0.0 {
+                        return Err(card_error(format!(
+                            "`.options` itl1 must be a whole number of iterations (got {v})"
+                        ))
+                        .locate(span));
+                    }
+                    options.max_iterations = v as usize;
+                }
+                _ => {
+                    let message = format!(
+                        "`.options` {name} isn't supported; sindr reads reltol, vntol, trtol and itl1"
+                    );
+                    if strict {
+                        return Err(card_error(message).locate(span));
+                    }
+                    warnings.push(ParseWarning {
+                        message,
+                        span: Some((span.start, span.end - span.start).into()),
+                        file: Some(span.file.to_string()),
+                    });
+                }
+            }
+        }
+    }
+    Ok(options)
 }
 
 fn card_error(message: String) -> SpiceParseError {

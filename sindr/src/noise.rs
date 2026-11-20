@@ -195,7 +195,7 @@ struct Generator {
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 pub fn solve_noise(circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResult, SimError> {
-    solve_noise_with_initial_voltages(circuit, config, &HashMap::new())
+    solve_noise_with(circuit, config, &crate::SolverOptions::default())
 }
 
 /// [`solve_noise`], seeding the bias point's Newton–Raphson solve as
@@ -204,10 +204,27 @@ pub fn solve_noise(circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResul
 /// # Errors
 ///
 /// As [`solve_noise`].
+#[deprecated(
+    since = "0.2.0",
+    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).noise(..)`"
+)]
 pub fn solve_noise_with_initial_voltages(
     circuit: &Circuit,
     config: &NoiseConfig,
     initial_voltages: &HashMap<String, f64>,
+) -> Result<NoiseResult, SimError> {
+    solve_noise_with(
+        circuit,
+        config,
+        &crate::SolverOptions::default().with_nodeset(initial_voltages.clone()),
+    )
+}
+
+/// [`solve_noise`] with `opts`.
+pub(crate) fn solve_noise_with(
+    circuit: &Circuit,
+    config: &NoiseConfig,
+    opts: &crate::SolverOptions,
 ) -> Result<NoiseResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
@@ -247,7 +264,7 @@ pub fn solve_noise_with_initial_voltages(
         )));
     }
 
-    let (node_map, dc_solution, dc) = bias_point_with_result(circuit, initial_voltages)?;
+    let (node_map, dc_solution, dc) = bias_point_with_result(circuit, opts)?;
     let circuit = &crate::ac_analysis::incremental_inductors(circuit, &dc);
     let ss_models = linearize_at_dc(circuit, &node_map, &dc_solution);
     let generators = generators(circuit, &node_map, &dc);

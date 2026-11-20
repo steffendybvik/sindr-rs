@@ -1,7 +1,5 @@
 //! The test bench: what a schematic leaves out, and the analysis to run.
 
-use std::collections::HashMap;
-
 use super::{parse_value, ImportError, ImportedCircuit, Netlist, Pin};
 use crate::ac_analysis::{solve_ac, AcConfig, AcResult};
 use crate::circuit::{Circuit, CircuitElement};
@@ -422,5 +420,7 @@ fn operating_point(circuit: &Circuit) -> Result<SimulationResult, SimError> {
         parts: flat.parts.clone(),
         ..crate::dc_equivalent(&flat)
     };
-    crate::solve_dc_heated(&dc, |c| crate::solve_dc_circuit(c, &HashMap::new()))
+    crate::solve_dc_heated(&dc, |c| {
+        crate::solve_dc_circuit(c, &crate::SolverOptions::default())
+    })
 }

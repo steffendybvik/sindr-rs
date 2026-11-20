@@ -283,7 +283,9 @@ fn nodeset_round_trip_with_parsed_netlist() {
     let nl = parse_str(src).expect("parse");
     let mut hint = HashMap::new();
     hint.insert("n1".to_string(), 2.5);
-    let result = sindr::solve_circuit_with_initial_voltages(&nl.circuit, &hint).expect("solve");
+    let result = sindr::Solver::new(sindr::SolverOptions::default().with_nodeset(hint.clone()))
+        .circuit(&nl.circuit)
+        .expect("solve");
     assert_relative_eq!(result.node_voltages["n1"], 2.5, epsilon = 1e-6);
 }
 
