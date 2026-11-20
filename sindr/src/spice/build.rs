@@ -212,6 +212,8 @@ fn build_element(
                         "fc" => model.fc = value,
                         "tt" => model.tt = value,
                         "bv" => model.bv = Some(value),
+                        "kf" => model.kf = value,
+                        "af" => model.af = value,
                         _ => model.ibv = value,
                     }
                 }
@@ -280,6 +282,8 @@ fn build_element(
                     "br" => model.br = value,
                     "nf" => model.nf = value,
                     "nr" => model.nr = value,
+                    "kf" => model.kf = value,
+                    "af" => model.af = value,
                     _ => model.vaf = value,
                 }
             }
@@ -407,7 +411,9 @@ fn translate_waveform(
 
 /// A syntax error with no span of its own: the caller locates it on the card.
 /// `.model D` parameters sindr's diode uses.
-const DIODE_KEYS: &[&str] = &["is", "n", "rs", "cjo", "vj", "m", "fc", "tt", "bv", "ibv"];
+const DIODE_KEYS: &[&str] = &[
+    "is", "n", "rs", "cjo", "vj", "m", "fc", "tt", "bv", "ibv", "kf", "af",
+];
 
 /// SPICE's alternative names for `.model` parameters, and the name sindr
 /// reads them as.
@@ -420,7 +426,7 @@ const KEY_ALIASES: &[(&str, &str)] = &[
 ];
 
 /// `.model NPN`/`PNP` parameters sindr's Ebers–Moll transistor uses.
-const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf"];
+const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf", "kf", "af"];
 
 /// `.model` parameters that describe the part rather than its behaviour
 /// (LTspice and vendor libraries add them). They are dropped without a word,
@@ -710,6 +716,47 @@ fn build_analysis(
             output: output.clone(),
             input: input.clone(),
         }),
+        RawAnalysis::Noise {
+            node,
+            reference,
+            input,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        } => {
+            let pts = eval_finite(points, scope, ".noise", "points")?;
+            if pts < 1.0 || pts > MAX_AC_POINTS as f64 {
+                return Err(card_error(format!(
+                    "`.noise` points must be a positive integer in 1..={MAX_AC_POINTS} (got {pts})"
+                )));
+            }
+            let fstart = eval_finite(fstart, scope, ".noise", "fstart")?;
+            let fstop = eval_finite(fstop, scope, ".noise", "fstop")?;
+            if fstart <= 0.0 {
+                return Err(card_error(format!(
+                    "`.noise` fstart must be above 0, where flicker noise is finite (got {fstart})"
+                )));
+            }
+            if fstart > fstop {
+                return Err(card_error(format!(
+                    "`.noise` fstart {fstart} is above fstop {fstop}"
+                )));
+            }
+            Ok(AnalysisRequest::Noise {
+                node: node.clone(),
+                reference: reference.clone(),
+                input: input.clone(),
+                sweep: match sweep {
+                    AcSweepKind::Dec => AcSweep::Dec,
+                    AcSweepKind::Oct => AcSweep::Oct,
+                    AcSweepKind::Lin => AcSweep::Lin,
+                },
+                points: pts as usize,
+                fstart,
+                fstop,
+            })
+        }
         RawAnalysis::Ac {
             sweep,
             points,
@@ -1532,7 +1579,8 @@ mod tests {
                         br: 3.0,
                         nf: 1.1,
                         nr: 1.2,
-                        vaf: 80.0
+                        vaf: 80.0,
+                        ..BjtModel::default()
                     })
                 );
             }
@@ -1568,7 +1616,7 @@ mod tests {
     #[test]
     fn unused_parameters_warn_once_per_card_in_lenient_mode() {
         let cards = vec![
-            model_card("m", "D", &[("IS", 1e-12), ("KF", 1e-16), ("EG", 0.69)]),
+            model_card("m", "D", &[("IS", 1e-12), ("EG", 0.69), ("XTI", 2.0)]),
             diode_card("D1", "m"),
             diode_card("D2", "m"),
         ];
@@ -1578,7 +1626,7 @@ mod tests {
             .filter(|w| w.message.contains(".model m"))
             .collect();
         assert_eq!(about_card.len(), 1, "{warnings:?}");
-        assert!(about_card[0].message.contains("KF, EG"), "{warnings:?}");
+        assert!(about_card[0].message.contains("EG, XTI"), "{warnings:?}");
         // What is used still applies.
         assert!(matches!(
             &netlist.circuit.components[1],

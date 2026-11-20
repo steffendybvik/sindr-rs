@@ -66,6 +66,11 @@ pub struct DiodeModel {
     pub bv: Option<f64>,
     /// Current at `−BV`, IBV (A), positive. Default 1 mA.
     pub ibv: f64,
+    /// Flicker-noise coefficient KF, zero or positive: noise analysis puts
+    /// `KF·|Id|^AF / f` (A²/Hz) across the junction. Default 0.
+    pub kf: f64,
+    /// Flicker-noise exponent AF, positive. Default 1.
+    pub af: f64,
 }
 
 impl Default for DiodeModel {
@@ -81,6 +86,8 @@ impl Default for DiodeModel {
             tt: 0.0,
             bv: None,
             ibv: 1e-3,
+            kf: 0.0,
+            af: 1.0,
         }
     }
 }
@@ -117,6 +124,11 @@ pub struct BjtModel {
     /// through SPICE's Gummel–Poon base charge, so results differ slightly
     /// from SPICE's when it is set.
     pub vaf: f64,
+    /// Flicker-noise coefficient KF, zero or positive: noise analysis puts
+    /// `KF·|Ib|^AF / f` (A²/Hz) across base–emitter. Default 0.
+    pub kf: f64,
+    /// Flicker-noise exponent AF, positive. Default 1.
+    pub af: f64,
 }
 
 impl Default for BjtModel {
@@ -127,6 +139,8 @@ impl Default for BjtModel {
             nf: 1.0,
             nr: 1.0,
             vaf: 0.0,
+            kf: 0.0,
+            af: 1.0,
         }
     }
 }

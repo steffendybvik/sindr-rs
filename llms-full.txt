@@ -77,7 +77,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs and `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 
@@ -93,7 +93,7 @@ Pre-release alpha (`0.1.0-alpha.8`), [published on crates.io](https://crates.io/
 
 ### Scope & limitations
 
-sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, noise/Monte-Carlo/pole-zero analyses, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
+sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, Monte-Carlo/pole-zero analyses, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
 To work on sindr itself, see [`CONTRIBUTING.md`](./CONTRIBUTING.md). AI coding agents (Claude Code, Codex, Cursor, etc.) should also read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
 
@@ -148,7 +148,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -538,6 +538,32 @@ for e in &sens.entries {
 ```
 
 Entries cover resistance, voltage and current source values, VCVS gain and VCCS gm. Other components get no entry: device-model parameters, CCVS and CCCS gains, capacitors and inductors. There is no AC sensitivity.
+
+### Noise
+
+SPICE's `.noise`: thermal noise of resistances and FET channels, shot noise of junction currents, and flicker (1/f) noise where a model sets `KF`, at an output voltage and referred back to an input source. One adjoint solve per frequency gives every source's share.
+
+```rust
+use sindr::{solve_noise, NoiseConfig};
+use sindr::ac_analysis::FrequencySpacing;
+
+let noise = solve_noise(&circuit, &NoiseConfig {
+    output: "out".into(),
+    reference: None,
+    input_source: "V1".into(),
+    f_start: 10.0,
+    f_stop: 100e3,
+    num_points: 41,
+    spacing: FrequencySpacing::Logarithmic,
+})?;
+
+println!("{:.2} µV rms at the output", noise.total_output_noise * 1e6);
+for (source, total) in noise.sources.iter().zip(&noise.source_totals) {
+    println!("  {} ({:?}): {:.2} µV", source.component, source.kind, total * 1e6);
+}
+```
+
+Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C. Sources, controlled sources, op-amps, regulators and a diode's series resistance are noiseless.
 
 ### DC sweep
 
@@ -979,7 +1005,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage and behavioural (`B`) sources are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, noise terms, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib` — into a `Circuit`. Full SPICE3 coverage and behavioural (`B`) sources are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards are written. sindr's parser reads back only the R, L, C, V, I, D, Q part.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data (`sindr-core`), and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation. The parser doesn't read `.global`, although export writes it.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
@@ -995,7 +1021,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
 | `.temp` (temperature sweep) | ✅ | junction-device temp parameter |
-| `.noise` (noise analysis) | ❌ | no thermal/shot/flicker noise stamps |
+| `.noise` (noise analysis) | ✅ | thermal, shot and flicker (`solve_noise`), at 27 °C. Op-amps, regulators, controlled sources and a diode's `RS` are noiseless; no BJT base-resistance noise |
 | `.disto` / harmonic distortion | ❌ | |
 | `.pz` (pole-zero) | ❌ | |
 | `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
@@ -1800,6 +1826,7 @@ hierarchy is [`SimError::Design`].
 | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
+| Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
 | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`) |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
@@ -1807,7 +1834,7 @@ hierarchy is [`SimError::Design`].
 | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 
-Not available: noise, distortion, pole-zero, AC sensitivity, Monte Carlo,
+Not available: distortion, pole-zero, AC sensitivity, Monte Carlo,
 periodic steady state, S-parameters, variable-order integration.
 
 #### Device models
@@ -1975,6 +2002,8 @@ pub mod newton_raphson;
 
 pub mod node_map;
 
+pub mod noise;
+
 pub mod ratings;
 
 pub mod results;
@@ -2006,6 +2035,8 @@ pub use error::SimError;
 pub use mna::MnaSystem;
 
 pub use node_map::NodeMap;
+
+pub use noise::{solve_noise, NoiseConfig, NoiseResult};
 
 pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 
@@ -2372,6 +2403,173 @@ impl NodeMap {
     /// Reverse lookup: get the node name for a given matrix index.
     pub fn node_name(&self, index: usize) -> Option<&str> { … }
 }
+```
+
+## `sindr/src/noise.rs`
+
+Noise analysis, SPICE's `.noise`: thermal, shot and flicker noise at an
+output voltage, and referred back to an input source.
+
+Every noise source is a current between two nodes with a power spectral
+density (A²/Hz), set by the DC operating point:
+
+| Component | Source | Between | PSD |
+|---|---|---|---|
+| resistor, potentiometer (each half), thermistor, photoresistor | thermal | its terminals | `4kT/R` |
+| diode, LED, Schottky, Zener, photodiode | shot | anode–cathode | `2q·\|I\|` |
+| diode with a `model` | flicker | anode–cathode | `KF·\|I\|^AF / f` |
+| BJT | shot | collector–emitter, base–emitter | `2q·\|Ic\|`, `2q·\|Ib\|` |
+| BJT with a `model` | flicker | base–emitter | `KF·\|Ib\|^AF / f` |
+| MOSFET | channel thermal | drain–source | `(8/3)·kT·gm` |
+| MOSFET | flicker | drain–source | `KF·\|Id\|^AF / f` |
+| JFET | channel thermal | drain–source | `(8/3)·kT·gm` |
+
+`T` is 300.15 K (27 °C), as in SPICE, except that a thermistor's thermal
+noise uses its own temperature. Sources, controlled sources, op-amps,
+regulators, switches, fuses, IGBTs and a diode's series resistance are
+noiseless.
+
+At each frequency one adjoint solve, `Aᵀ·y = e_out`, gives the transfer
+from a unit current at every node to the output. Each source then adds
+`|y_p − y_q|²·PSD` to the output's PSD. One forward solve from the input
+source gives the gain that refers the output noise back to the input.
+Integrated noise assumes each PSD follows a power law between points, as
+ngspice does.
+
+```rust
+/// Noise analysis configuration: SPICE's
+/// `.noise V(output[,reference]) input_source {dec|lin} points f_start f_stop`.
+pub struct NoiseConfig {
+    /// The output node.
+    pub output: String,
+    /// The node the output is measured against; ground when `None`.
+    pub reference: Option<String>,
+    /// The independent voltage or current source noise is referred back to.
+    pub input_source: String,
+    /// Start frequency (Hz), above 0: flicker noise is infinite at DC.
+    pub f_start: f64,
+    /// Stop frequency (Hz).
+    pub f_stop: f64,
+    /// Number of frequency points, both ends included.
+    pub num_points: usize,
+    /// Frequency spacing; logarithmic is `num_points` in total.
+    pub spacing: FrequencySpacing,
+}
+
+/// The physical mechanism behind a noise source.
+pub enum NoiseKind {
+    /// Johnson–Nyquist noise of a resistance, or a FET channel's.
+    Thermal,
+    /// Shot noise of a current crossing a junction.
+    Shot,
+    /// Flicker (1/f) noise.
+    Flicker,
+}
+
+/// One noise source in the circuit.
+pub struct NoiseSource {
+    /// Component id (flattened).
+    pub component: String,
+    /// Which mechanism.
+    pub kind: NoiseKind,
+    /// Which current it sits on, for parts with more than one: `"ic"`,
+    /// `"ib"`, `"top"`/`"bottom"` for a potentiometer; empty otherwise.
+    pub branch: &'static str,
+}
+
+/// Noise at one frequency.
+pub struct NoisePoint {
+    /// Frequency (Hz).
+    pub frequency: f64,
+    /// Output noise power spectral density (V²/Hz).
+    pub output_psd: f64,
+    /// Noise referred to the input source (V²/Hz for a voltage source,
+    /// A²/Hz for a current source): `output_psd / |gain|²`. Infinite where
+    /// the gain is zero.
+    pub input_psd: f64,
+    /// The gain from the input source to the output, `|V(out)/input|`.
+    pub gain: f64,
+    /// Each source's share of `output_psd` (V²/Hz), in the order of
+    /// [`NoiseResult::sources`].
+    pub contributions: Vec<f64>,
+}
+
+impl NoisePoint {
+    /// Output noise density (V/√Hz), what ngspice calls `onoise_spectrum`.
+    pub fn output_density(&self) -> f64 { … }
+
+    /// Input-referred noise density (V/√Hz or A/√Hz): `inoise_spectrum`.
+    pub fn input_density(&self) -> f64 { … }
+}
+
+/// Result of a noise analysis.
+pub struct NoiseResult {
+    /// Every noise source, in the order of [`NoisePoint::contributions`].
+    pub sources: Vec<NoiseSource>,
+    /// One point per frequency.
+    pub points: Vec<NoisePoint>,
+    /// Output noise integrated over the band (V rms): `onoise_total`.
+    pub total_output_noise: f64,
+    /// Input-referred noise integrated over the band (V or A rms):
+    /// `inoise_total`.
+    pub total_input_noise: f64,
+    /// Each source's output noise integrated over the band (V rms), in the
+    /// order of [`sources`](Self::sources).
+    pub source_totals: Vec<f64>,
+    /// Configuration used to produce this result.
+    pub config: NoiseConfig,
+}
+
+/// Runs a noise analysis, as SPICE's `.noise`. See the [module docs](self)
+/// for the sources and the method.
+///
+/// # Errors
+///
+/// - [`SimError::InvalidComponent`] if the input isn't an independent
+///   voltage or current source, an output node isn't in the circuit, or
+///   the frequencies are invalid (`f_start` must be above 0)
+/// - Any [`SimError`] from the DC operating point
+/// - [`SimError::SingularMatrix`] if the linearised system is singular
+///
+/// # Example
+///
+/// ```
+/// use sindr::{Circuit, CircuitElement};
+/// use sindr::ac_analysis::FrequencySpacing;
+/// use sindr::noise::{solve_noise, NoiseConfig};
+///
+/// // A 1 kΩ / 1 µF low-pass: the output noise integrates to √(kT/C).
+/// let circuit = Circuit::new("0", vec![
+///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None },
+///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
+///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+/// ]);
+/// let noise = solve_noise(&circuit, &NoiseConfig {
+///     output: "out".into(),
+///     reference: None,
+///     input_source: "V1".into(),
+///     f_start: 0.01,
+///     f_stop: 1e7,
+///     num_points: 91,
+///     spacing: FrequencySpacing::Logarithmic,
+/// })?;
+/// let kt_over_c = (1.380649e-23 * 300.15 / 1e-6_f64).sqrt();
+/// assert!((noise.total_output_noise / kt_over_c - 1.0).abs() < 0.01);
+/// # Ok::<(), sindr::SimError>(())
+/// ```
+pub fn solve_noise(circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResult, SimError> { … }
+
+/// [`solve_noise`], seeding the bias point's Newton–Raphson solve as
+/// `.nodeset` does.
+///
+/// # Errors
+///
+/// As [`solve_noise`].
+pub fn solve_noise_with_initial_voltages(
+    circuit: &Circuit,
+    config: &NoiseConfig,
+    initial_voltages: &HashMap<String, f64>,
+) -> Result<NoiseResult, SimError> { … }
 ```
 
 ## `sindr/src/ratings.rs`
@@ -2955,7 +3153,7 @@ These are returned in [`crate::spice::ParsedNetlist::analyses`]. They map 1-to-1
 onto the analyses that `sindr` knows how to run.
 
 ```rust
-/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`).
+/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`).
 pub enum AnalysisRequest {
     /// `.op` — DC operating-point analysis.
     Op,
@@ -3021,6 +3219,25 @@ pub enum AnalysisRequest {
     Sens {
         /// The output whose sensitivities are wanted.
         output: crate::TfOutput,
+    },
+    /// `.noise v(node[,ref]) source <sweep> points fstart fstop` — noise
+    /// analysis. The parser checks `points` as `.ac` does, and that
+    /// `fstart` is above 0.
+    Noise {
+        /// Output node.
+        node: String,
+        /// Reference node; ground when `None`.
+        reference: Option<String>,
+        /// The source noise is referred back to.
+        input: String,
+        /// Sweep style (decade / octave / linear).
+        sweep: AcSweep,
+        /// Points per decade or octave, or the total for linear.
+        points: usize,
+        /// Start frequency in Hz.
+        fstart: f64,
+        /// Stop frequency in Hz.
+        fstop: f64,
     },
 }
 
@@ -3110,6 +3327,25 @@ impl AnalysisRequest {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn tf_config(&self) -> Option<crate::TfConfig> { … }
+
+    /// The [`NoiseConfig`](crate::NoiseConfig) for a `.noise` request, to
+    /// pass to [`solve_noise`](crate::solve_noise); `None` for any other
+    /// analysis. A `dec` or `oct` sweep's per-decade or per-octave count
+    /// becomes the total over the band, both ends included.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 0\nR1 in out 1k\nC1 out 0 1u\n.noise v(out) v1 dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].noise_config().unwrap();
+    /// assert_eq!(config.num_points, 51);
+    /// let noise = sindr::solve_noise(&netlist.circuit, &config)?;
+    /// // 1 kΩ's thermal noise, √(4kTR), well below the pole.
+    /// assert!((noise.points[0].output_density() - 4.0713e-9).abs() < 1e-12);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn noise_config(&self) -> Option<crate::NoiseConfig> { … }
 
     /// The [`SensConfig`](crate::SensConfig) for a `.sens` request, to pass
     /// to [`solve_sensitivity`](crate::solve_sensitivity); `None` for any
@@ -3219,7 +3455,7 @@ pub enum SpiceParseError {
     #[error("unknown control card '.{card}'")]
     #[diagnostic(
         code(sindr::spice::unknown_card),
-        help("supported cards: .subckt/.ends, .model, .param, .include, .lib, .tran, .dc, .ac, .op, .end")
+        help("supported cards: .subckt/.ends, .model, .param, .include, .lib, .tran, .dc, .ac, .op, .tf, .sens, .noise, .ic, .nodeset, .end")
     )]
     UnknownCard {
         /// The card name without its leading `.`.
@@ -3670,7 +3906,7 @@ use sindr::spice::{parse_file, AnalysisRequest};
 let netlist = parse_file("amp.cir")?;
 println!("parsed `{}` ({} components)", netlist.title, netlist.circuit.components.len());
 
-// `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf` / `.sens`
+// `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf` / `.sens` / `.noise`
 // directives, in source order. The parser does not run them — you do.
 for analysis in &netlist.analyses {
     match analysis {
@@ -3704,6 +3940,10 @@ for analysis in &netlist.analyses {
         AnalysisRequest::Sens { .. } => {
             let sens = sindr::solve_sensitivity(&netlist.circuit, &analysis.sens_config().unwrap())?;
             println!("sens: {} parameters", sens.entries.len());
+        }
+        AnalysisRequest::Noise { .. } => {
+            let noise = sindr::solve_noise(&netlist.circuit, &analysis.noise_config().unwrap())?;
+            println!("noise: {} V rms at the output", noise.total_output_noise);
         }
         AnalysisRequest::Tf { .. } => {
             let tf = sindr::solve_tf(&netlist.circuit, &analysis.tf_config().unwrap())?;
@@ -4845,6 +5085,11 @@ pub struct DiodeModel {
     pub bv: Option<f64>,
     /// Current at `−BV`, IBV (A), positive. Default 1 mA.
     pub ibv: f64,
+    /// Flicker-noise coefficient KF, zero or positive: noise analysis puts
+    /// `KF·|Id|^AF / f` (A²/Hz) across the junction. Default 0.
+    pub kf: f64,
+    /// Flicker-noise exponent AF, positive. Default 1.
+    pub af: f64,
 }
 
 impl DiodeModel {
@@ -4874,6 +5119,11 @@ pub struct BjtModel {
     /// through SPICE's Gummel–Poon base charge, so results differ slightly
     /// from SPICE's when it is set.
     pub vaf: f64,
+    /// Flicker-noise coefficient KF, zero or positive: noise analysis puts
+    /// `KF·|Ib|^AF / f` (A²/Hz) across base–emitter. Default 0.
+    pub kf: f64,
+    /// Flicker-noise exponent AF, positive. Default 1.
+    pub af: f64,
 }
 
 /// MOSFET gate parasitic capacitances. All values in Farads.
@@ -6686,6 +6936,14 @@ pub struct MosfetParams {
     pub gamma: f64,
     /// Surface potential (V). SPICE PHI parameter.
     pub phi: f64,
+    /// Flicker-noise coefficient. Noise analysis puts `KF·|Id|^AF / f`
+    /// (A²/Hz) across drain–source. sindr has no channel geometry, so this
+    /// is SPICE's `KF/(Cox·L²)`. Default 0: no flicker noise.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub kf: f64,
+    /// Flicker-noise current exponent AF. Default 1.
+    #[cfg_attr(feature = "serde", serde(default = "default_af"))]
+    pub af: f64,
 }
 
 impl MosfetParams {
@@ -7343,6 +7601,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let config = analysis.sens_config().ok_or("not a .sens")?;
                 let sens = sindr::solve_sensitivity(&netlist.circuit, &config)?;
                 println!("sens: {} parameters", sens.entries.len());
+            }
+            AnalysisRequest::Noise { .. } => {
+                let config = analysis.noise_config().ok_or("not a .noise")?;
+                let noise = sindr::solve_noise(&netlist.circuit, &config)?;
+                println!("noise: {} points", noise.points.len());
             }
             AnalysisRequest::Tf { .. } => {
                 let config = analysis.tf_config().ok_or("not a .tf")?;

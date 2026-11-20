@@ -30,7 +30,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -420,6 +420,32 @@ for e in &sens.entries {
 ```
 
 Entries cover resistance, voltage and current source values, VCVS gain and VCCS gm. Other components get no entry: device-model parameters, CCVS and CCCS gains, capacitors and inductors. There is no AC sensitivity.
+
+## Noise
+
+SPICE's `.noise`: thermal noise of resistances and FET channels, shot noise of junction currents, and flicker (1/f) noise where a model sets `KF`, at an output voltage and referred back to an input source. One adjoint solve per frequency gives every source's share.
+
+```rust
+use sindr::{solve_noise, NoiseConfig};
+use sindr::ac_analysis::FrequencySpacing;
+
+let noise = solve_noise(&circuit, &NoiseConfig {
+    output: "out".into(),
+    reference: None,
+    input_source: "V1".into(),
+    f_start: 10.0,
+    f_stop: 100e3,
+    num_points: 41,
+    spacing: FrequencySpacing::Logarithmic,
+})?;
+
+println!("{:.2} µV rms at the output", noise.total_output_noise * 1e6);
+for (source, total) in noise.sources.iter().zip(&noise.source_totals) {
+    println!("  {} ({:?}): {:.2} µV", source.component, source.kind, total * 1e6);
+}
+```
+
+Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C. Sources, controlled sources, op-amps, regulators and a diode's series resistance are noiseless.
 
 ## DC sweep
 

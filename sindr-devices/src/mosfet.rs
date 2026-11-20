@@ -74,6 +74,19 @@ pub struct MosfetParams {
     pub gamma: f64,
     /// Surface potential (V). SPICE PHI parameter.
     pub phi: f64,
+    /// Flicker-noise coefficient. Noise analysis puts `KF·|Id|^AF / f`
+    /// (A²/Hz) across drain–source. sindr has no channel geometry, so this
+    /// is SPICE's `KF/(Cox·L²)`. Default 0: no flicker noise.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub kf: f64,
+    /// Flicker-noise current exponent AF. Default 1.
+    #[cfg_attr(feature = "serde", serde(default = "default_af"))]
+    pub af: f64,
+}
+
+#[cfg(feature = "serde")]
+fn default_af() -> f64 {
+    1.0
 }
 
 impl MosfetParams {
@@ -85,6 +98,8 @@ impl MosfetParams {
             lambda: 0.02, // 0.02 /V
             gamma: 0.4,   // 0.4 V^0.5
             phi: 0.6,     // 0.6V
+            kf: 0.0,
+            af: 1.0,
         }
     }
 
@@ -96,6 +111,8 @@ impl MosfetParams {
             lambda: 0.02,
             gamma: 0.4,
             phi: 0.6,
+            kf: 0.0,
+            af: 1.0,
         }
     }
 }
@@ -337,6 +354,7 @@ mod tests {
             lambda: 0.02,
             gamma: 0.4,
             phi: 0.6,
+            ..MosfetParams::default()
         };
         let comp = mosfet_companion(3.0, 5.0, 0.0, &params);
         assert_eq!(comp.region, MosfetRegion::Saturation);
