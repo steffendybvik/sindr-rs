@@ -1331,6 +1331,7 @@ mod tests {
                 id: "L1".into(),
                 nodes: ["n1".into(), "0".into()],
                 inductance: 10e-3,
+                saturation: None,
             }],
             ..Default::default()
         };
@@ -1357,6 +1358,7 @@ mod tests {
                     id: "L1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     inductance: 1e-3,
+                    saturation: None,
                 },
                 CircuitElement::Resistor {
                     id: "R1".into(),

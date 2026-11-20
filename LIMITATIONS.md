@@ -73,7 +73,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No JFET parasitic capacitances.** (BJT and MOSFET have optional Cbe/Cbc and Cgs/Cgd; JFET doesn't.)
 - **No power-MOSFET reverse body diode** as a separate stamped element (must be added explicitly as a `Diode`).
 - **No SiC / GaN device models.**
-- **No magnetics with saturation / hysteresis.** `Transformer` is linear coupled inductors. No B-H curve, no core loss, no saturating inductor, no gapped core.
+- **Magnetics: a saturating inductor, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), but there's no hysteresis, remanence, core loss or temperature dependence, and SPICE export refuses a saturating inductor. `Transformer` is linear coupled inductors: no shared saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
 - **No crystal / quartz resonator macromodel** (must be built from L/C/R by hand).
 - **No piezo / MEMS / electro-mechanical coupling.**

@@ -293,6 +293,24 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
+        CircuitElement::Inductor {
+            inductance,
+            saturation: Some(sat),
+            ..
+        } => {
+            positive("inductance", *inductance, " H")?;
+            positive("saturation.i_sat", sat.i_sat, " A")?;
+            positive("saturation.l_sat", sat.l_sat, " H")?;
+            if sat.l_sat > *inductance {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: saturation.l_sat {} H must not exceed the inductance {} H",
+                    comp.id(),
+                    sat.l_sat,
+                    inductance
+                )));
+            }
+            Ok(())
+        }
         // Only the noise fields: the rest of a MOSFET's parameters have
         // never been checked here.
         CircuitElement::Mosfet { params, .. } => {

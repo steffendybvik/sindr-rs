@@ -351,6 +351,7 @@ fn reactive_parts_get_no_entry_and_leave_the_rest_right() {
         id: "L1".into(),
         nodes: ["mid".into(), "out".into()],
         inductance: 1e-3,
+        saturation: None,
     });
     c.components.push(CircuitElement::Capacitor {
         id: "C1".into(),

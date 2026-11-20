@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use nalgebra::DVector;
 
 use sindr_devices::bjt::{self, BjtKind};
+use sindr_devices::inductor;
 use sindr_devices::mosfet::{self, MosfetKind};
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -244,9 +245,27 @@ fn stamp_circuit_transient(
                 cap_index += 1;
             }
             CircuitElement::Inductor {
-                nodes, inductance, ..
+                nodes,
+                inductance,
+                saturation,
+                ..
             } => {
-                let (g, i_hist) = integ.inductor(*inductance, &inds[ind_index]);
+                let history = &inds[ind_index];
+                let (g, i_hist) = match saturation {
+                    None => integ.inductor(*inductance, history),
+                    Some(sat) => {
+                        // Its history holds fluxes. At the Newton iterate's
+                        // voltage the step ends at flux λ(v), carrying
+                        // i(λ); di/dv = (dλ/dv)/L(i).
+                        let v = node_voltage(&nodes[0], node_map, v_prev)
+                            - node_voltage(&nodes[1], node_map, v_prev);
+                        let lambda = integ.flux(v, history);
+                        let i = inductor::current_from_flux(lambda, *inductance, sat);
+                        let l = inductor::incremental_inductance(i, *inductance, sat);
+                        let g = integ.flux_per_volt() / l;
+                        (g, i - g * v)
+                    }
+                };
                 stamp_companion(system, node_map, nodes, g, i_hist);
                 ind_index += 1;
             }
@@ -690,14 +709,25 @@ fn extract_timestep_results(
                 id,
                 nodes,
                 inductance,
+                saturation,
             } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
                 let history = inds_prev[ind_index];
-                let (g, i_hist) = integ.inductor(*inductance, &history);
-                let i_now = g * v_across + i_hist;
-                new_inds.push(history.push(i_now, v_across));
+                let i_now = match saturation {
+                    None => {
+                        let (g, i_hist) = integ.inductor(*inductance, &history);
+                        let i_now = g * v_across + i_hist;
+                        new_inds.push(history.push(i_now, v_across));
+                        i_now
+                    }
+                    Some(sat) => {
+                        let lambda = integ.flux(v_across, &history);
+                        new_inds.push(history.push(lambda, v_across));
+                        inductor::current_from_flux(lambda, *inductance, sat)
+                    }
+                };
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_across,
@@ -1113,21 +1143,12 @@ fn extract_timestep_results(
                 idss,
                 vp,
             } => {
-                use sindr_devices::jfet::{jfet_companion, JfetKind};
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
-                let (vgs_eff, vds_eff) = match kind {
-                    JfetKind::NChannel => (vg - vs, vd - vs),
-                    JfetKind::PChannel => (vs - vg, vs - vd),
-                };
-                let comp = jfet_companion(vgs_eff, vds_eff, *kind, *idss, *vp);
-                let sign = match kind {
-                    JfetKind::NChannel => 1.0,
-                    JfetKind::PChannel => -1.0,
-                };
                 let vds_phys = vd - vs;
-                let id_current = sign * (comp.gm * vgs_eff + comp.gds * vds_eff + comp.i_eq);
+                let id_current =
+                    crate::results::jfet_drain_current(vg - vs, vds_phys, *kind, *idss, *vp);
                 let power = (id_current * vds_phys).abs();
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -1718,7 +1739,19 @@ pub(crate) fn run_transient(
             CircuitElement::Capacitor { nodes, .. } | CircuitElement::Varactor { nodes, .. } => {
                 caps.push(across(&nodes[0], &nodes[1]));
             }
-            CircuitElement::Inductor { id, .. } => inds.push(current(id)),
+            CircuitElement::Inductor {
+                id,
+                inductance,
+                saturation,
+                ..
+            } => {
+                let start = current(id);
+                // A saturating inductor's history holds fluxes.
+                inds.push(match saturation {
+                    None => start,
+                    Some(sat) => History::at(inductor::flux(start.x1, *inductance, sat)),
+                });
+            }
             CircuitElement::Relay { id, inductance, .. } if *inductance > 0.0 => {
                 inds.push(current(id));
             }
@@ -1993,6 +2026,8 @@ pub(crate) fn run_transient(
     let last = work.as_ref().unwrap_or(circuit);
     let bjt_results = extract_bjt_results_from_snapshot(last, final_snapshot);
     let mosfet_results = extract_mosfet_results_from_snapshot(last, final_snapshot);
+    let (op_amp_results, relay_results) =
+        crate::results::op_amp_and_relay_results(last, &final_snapshot.node_voltages);
 
     Ok(SimulationResult {
         node_voltages: final_snapshot.node_voltages.clone(),
@@ -2000,8 +2035,8 @@ pub(crate) fn run_transient(
         component_results: final_snapshot.component_results.clone(),
         bjt_results,
         mosfet_results,
-        op_amp_results: vec![],
-        relay_results: vec![],
+        op_amp_results,
+        relay_results,
         mcu_results: vec![],
         convergence_aid: None,
         junction_temperatures: final_snapshot.junction_temperatures.clone(),
@@ -2778,6 +2813,7 @@ mod tests {
                     id: "L1".into(),
                     nodes: ["n2".into(), "0".into()],
                     inductance: 0.5,
+                    saturation: None,
                 },
             ],
             ..Default::default()

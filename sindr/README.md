@@ -82,10 +82,24 @@ Every component has an `id` (arbitrary string) and `nodes` (node names as string
 ```rust
 CircuitElement::Resistor   { id, nodes: [String; 2], resistance: f64 }
 CircuitElement::Capacitor  { id, nodes: [String; 2], capacitance: f64 }
-CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64 }
+CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64, saturation: Option<InductorSaturation> }
 ```
 
 Capacitors and inductors trigger transient analysis automatically. In pure DC (no reactive elements, no waveforms), they are treated as open circuits.
+
+An inductor with `saturation: Some(InductorSaturation { i_sat, l_sat })` has a core that saturates: its flux is `λ(i) = l_sat·i + (inductance − l_sat)·i_sat·tanh(i/i_sat)`, so its inductance falls from `inductance` at zero current towards `l_sat` past `i_sat` (to 42 % of the way at `i_sat`, 7 % at `2·i_sat`). A datasheet's saturation current, where L has dropped 20–30 %, is about `0.6·i_sat`. The transient integrates the flux, and AC and noise use the incremental inductance `dλ/di` at the DC current. There's no hysteresis or core loss; add a resistor for loss.
+
+```rust
+use sindr_devices::inductor::InductorSaturation;
+
+// 10 µH that saturates around 3 A, keeping 1 µH when saturated.
+let l1 = CircuitElement::Inductor {
+    id: "L1".into(),
+    nodes: ["sw".into(), "out".into()],
+    inductance: 10e-6,
+    saturation: Some(InductorSaturation { i_sat: 3.0 / 0.6, l_sat: 1e-6 }),
+};
+```
 
 ### Sources
 

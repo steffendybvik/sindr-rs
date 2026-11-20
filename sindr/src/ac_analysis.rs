@@ -439,6 +439,28 @@ pub(crate) fn bias_point(
     Ok((node_map, dc_solution))
 }
 
+/// `circuit` with each saturating inductor replaced by a linear one at its
+/// incremental inductance `dλ/di` at the DC current `dc` carries through it
+/// (the DC equivalent shorts it with a 0 V source of the same id).
+pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationResult) -> Circuit {
+    let mut out = circuit.clone();
+    for element in &mut out.components {
+        if let CircuitElement::Inductor {
+            id,
+            inductance,
+            saturation,
+            ..
+        } = element
+        {
+            if let Some(sat) = saturation.take() {
+                let i = dc.branch_currents.get(id.as_str()).copied().unwrap_or(0.0);
+                *inductance = sindr_devices::inductor::incremental_inductance(i, *inductance, &sat);
+            }
+        }
+    }
+    out
+}
+
 /// [`bias_point`], with the operating-point result it came from (device
 /// currents for noise analysis).
 pub(crate) fn bias_point_with_result(
@@ -1142,7 +1164,8 @@ pub fn solve_ac_with_initial_voltages(
         )));
     }
 
-    let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;
+    let (node_map, dc_solution, dc) = bias_point_with_result(circuit, initial_voltages)?;
+    let circuit = &incremental_inductors(circuit, &dc);
     let num_nodes = node_map.num_nodes();
     let ss_models = linearize_at_dc(circuit, &node_map, &dc_solution);
 
@@ -1688,6 +1711,7 @@ mod tests {
                     id: "L1".into(),
                     nodes: ["vcc".into(), "x".into()],
                     inductance: 1e-3,
+                    saturation: None,
                 });
             } else {
                 // Keep `in` connected so both circuits have the same nodes.

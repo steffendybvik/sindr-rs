@@ -812,18 +812,8 @@ pub fn extract_results(
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
-                let vgs = vg - vs;
                 let vds = vd - vs;
-                // Compute drain current from companion model at final solution point
-                let c = jfet::jfet_companion(vgs, vds, *kind, *idss, *vp);
-                // P-channel companions come back in the mirrored N-channel
-                // frame: same gm and gds, Norton term negated (see
-                // stamp_jfet_companion).
-                let i_eq = match kind {
-                    jfet::JfetKind::NChannel => c.i_eq,
-                    jfet::JfetKind::PChannel => -c.i_eq,
-                };
-                let id_current = c.gm * vgs + c.gds * vds + i_eq;
+                let id_current = jfet_drain_current(vg - vs, vds, *kind, *idss, *vp);
                 let power = (id_current * vds).abs();
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -899,6 +889,67 @@ pub fn extract_results(
         junction_temperatures: HashMap::new(),
         transient: None,
     }
+}
+
+/// The op-amp and relay results a transient's last step implies: the same
+/// fields the DC path fills, read from the step's node voltages.
+pub(crate) fn op_amp_and_relay_results(
+    circuit: &Circuit,
+    node_voltages: &HashMap<String, f64>,
+) -> (Vec<OpAmpResult>, Vec<RelayResult>) {
+    let v = |n: &String| node_voltages.get(n).copied().unwrap_or(0.0);
+    let mut op_amps = Vec::new();
+    let mut relays = Vec::new();
+    for component in &circuit.components {
+        match component {
+            CircuitElement::OpAmp { id, nodes, .. }
+            | CircuitElement::Comparator { id, nodes, .. } => {
+                let (v_in_plus, v_in_minus) = (v(&nodes[0]), v(&nodes[1]));
+                op_amps.push(OpAmpResult {
+                    id: id.clone(),
+                    v_in_plus,
+                    v_in_minus,
+                    v_differential: v_in_plus - v_in_minus,
+                    v_out: v(&nodes[2]),
+                });
+            }
+            CircuitElement::Relay {
+                id,
+                nodes,
+                pickup_voltage,
+                ..
+            } => {
+                let coil_voltage = v(&nodes[0]) - v(&nodes[1]);
+                relays.push(RelayResult {
+                    id: id.clone(),
+                    coil_voltage,
+                    contact_closed: coil_voltage.abs() >= *pickup_voltage,
+                });
+            }
+            _ => {}
+        }
+    }
+    (op_amps, relays)
+}
+
+/// A JFET's drain current (A, into the drain) at physical `vgs` and `vds`.
+///
+/// `jfet_companion` mirrors a P-channel into the N-channel frame itself and
+/// returns the same gm and gds with the Norton term negated (see
+/// `stamp_jfet_companion`), so the voltages go in unmirrored.
+pub(crate) fn jfet_drain_current(
+    vgs: f64,
+    vds: f64,
+    kind: jfet::JfetKind,
+    idss: f64,
+    vp: f64,
+) -> f64 {
+    let c = jfet::jfet_companion(vgs, vds, kind, idss, vp);
+    let i_eq = match kind {
+        jfet::JfetKind::NChannel => c.i_eq,
+        jfet::JfetKind::PChannel => -c.i_eq,
+    };
+    c.gm * vgs + c.gds * vds + i_eq
 }
 
 #[cfg(test)]
