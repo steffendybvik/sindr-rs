@@ -223,3 +223,57 @@ fn thermal_without_a_resistance_is_rejected() {
         Err(SimError::InvalidComponent(msg)) if msg.contains("D1")
     ));
 }
+
+/// A 10 kΩ NTC fed 5 mA from a current source, 2000 K/W to ambient.
+/// Heating lowers its resistance, so its power I²·R falls as it warms: a
+/// stable, negative-feedback loop. Its loop gain at the balance is about
+/// −1.8, so a plain `T ← ambient + P(T)·Rθ` iteration swings wider every
+/// pass instead of settling.
+fn fed_ntc(cth: Option<f64>) -> Circuit {
+    let mut c = Circuit::new(
+        "0",
+        vec![
+            CircuitElement::CurrentSource {
+                id: "I1".into(),
+                nodes: ["0".into(), "a".into()],
+                current: 5e-3,
+                waveform: None,
+            },
+            CircuitElement::Thermistor {
+                id: "TH1".into(),
+                nodes: ["a".into(), "0".into()],
+                temperature: AMBIENT,
+            },
+        ],
+    );
+    c.parts.insert(
+        "TH1".into(),
+        heated(Thermal {
+            cth,
+            ..Thermal::junction_to_ambient(2000.0)
+        }),
+    );
+    c
+}
+
+#[test]
+fn ntc_with_strong_negative_feedback_balances_in_dc() {
+    let dc = solve_circuit(&fed_ntc(None)).unwrap();
+    let tj = dc.junction_temperatures["TH1"];
+    let p = dc
+        .component_results
+        .iter()
+        .find(|r| r.id == "TH1")
+        .unwrap()
+        .power;
+    assert!((tj - (AMBIENT + p * 2000.0)).abs() < 1e-2, "Tj {tj}, P {p}");
+    assert!(tj > AMBIENT + 30.0 && tj < AMBIENT + 80.0, "Tj {tj}");
+
+    // A transient of the same part (Rθ·Cθ = 2 s) settles where DC balanced.
+    let result = solve_transient(&fed_ntc(Some(1e-3)), &TransientConfig::new(20.0, 1e-2)).unwrap();
+    let settled = result.junction_temperatures["TH1"];
+    assert!(
+        (settled - tj).abs() < 0.05,
+        "transient {settled} K, DC {tj} K"
+    );
+}

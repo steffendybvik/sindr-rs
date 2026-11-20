@@ -307,6 +307,12 @@ staged as `0.1.0-alpha.8`.
 
 ### Fixed
 
+- The DC self-heating balance no longer reports a stable part as
+  `ThermalRunaway`. Its plain `T ← ambient + P·Rθ` update swung wider on
+  every pass when negative feedback was stronger than −1, as in a heated
+  NTC fed from a current source, until it gave up. Each part now takes a
+  damped secant step, and runaway is reported only for a part still
+  heating at the 1000 K limit.
 - AC analysis now includes a BJT's and a MOSFET's `parasitic_caps` (Cbe,
   Cbc, Cgs, Cgd). They were stamped in transient only, so a transistor
   amplifier's AC response had no Miller pole and stayed flat to any
