@@ -3977,7 +3977,7 @@ pub enum RatingKind {
     Voltage,
     /// Current through the part (A).
     Current,
-    /// Diode reverse voltage (V).
+    /// Reverse voltage (V): a diode's, or a polarised capacitor's.
     ReverseVoltage,
     /// Diode forward current (A).
     ForwardCurrent,
@@ -7650,7 +7650,10 @@ pub struct Ratings {
     /// Current through the part (A): an inductor's saturation current.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub current: Option<f64>,
-    /// Diode reverse voltage, cathode above anode (V).
+    /// Reverse voltage (V): a diode's cathode above its anode, or a
+    /// polarised capacitor's `nodes[1]` above its `nodes[0]` (the `+`
+    /// terminal). Most electrolytics allow 1 V or less; set it on a
+    /// polarised capacitor's part to have reverse bias flagged.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub reverse_voltage: Option<f64>,
     /// Diode forward current, anode to cathode (A).
