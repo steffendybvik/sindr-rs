@@ -20,6 +20,10 @@ staged as `0.1.0-alpha.8`.
   on a capacitor's part and `check_ratings` flags `nodes[1]` (the `-`
   terminal) rising above `nodes[0]` (the `+`) by more than it, the way it
   does a diode's reverse voltage.
+- `examples/vs_ngspice.rs` (feature `spice`): sindr against ngspice on
+  the same decks, per call, in parallel and by size. The README's
+  "Against ngspice" quotes it, and LIMITATIONS gives the transient
+  ceiling.
 - **Breaking:** three new `CircuitElement`s. `SwitchSpdt` (`[common, a,
   b]`, `position: SpdtPosition`), `Crystal` (`CrystalParams`: the
   Butterworth–Van Dyke model from frequency, ESR, C0 and Cm) and

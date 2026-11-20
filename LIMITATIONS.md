@@ -77,9 +77,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Crystals and ferrite beads are linear networks.** A crystal is the Butterworth–Van Dyke model: no overtones, spurious modes, drive-level dependence or aging. A ferrite bead is R + L ∥ R (∥ C) with no DC-bias derating, so its impedance doesn't fall with current as a real bead's does.
 - **Magnetics: a saturating inductor, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), but there's no hysteresis, remanence, core loss or temperature dependence, and SPICE export refuses a saturating inductor. `Transformer` is linear coupled inductors: no shared saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
-- **No crystal / quartz resonator macromodel** (must be built from L/C/R by hand).
 - **No piezo / MEMS / electro-mechanical coupling.**
-- **No batteries with state-of-charge / equivalent-circuit aging.** Only ideal voltage/current sources.
 - **No switched-capacitor primitives** (sample-and-hold, charge-redistribution).
 
 ### Solver & numerics
@@ -91,7 +89,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **A transient starts switched on at t = 0 unless asked otherwise:** `TransientConfig::new` starts from the initial conditions alone (SPICE's `UIC`), where SPICE starts from the DC operating point. `TransientStart::OperatingPoint` does what SPICE does, and a deck's `.tran` maps onto it (`uic` onto the other). The operating point it starts from is solved without self-heating. Initial winding currents on a transformer can't be set, and inductor `IC=` on SPICE element lines isn't parsed. With `tstart`, sindr's first snapshot is at `tstart` itself, where ngspice's is its first step past it.
 - **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), not per charge or flux, and the tolerances can't be changed yet. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
 - **No checkpointing / restart** of long transient runs.
-- **No multithreading** in the solver.
+- **Large transients are slower than ngspice.** On a 1 000-node RC ladder, 200 steps take 151 ms in sindr and about 29 ms in ngspice's solve (5×, `examples/vs_ngspice.rs`). Each step re-assembles and refactors the matrix. sindr wins up to a few hundred nodes, where ngspice's 14 ms start dominates, and on DC operating points at every size measured (a 3 000-diode chain: 27 ms against 82 ms). Long transients of thousands of nodes are ngspice's ground.
+- **No multithreading** inside one solve. Separate solves do run in parallel threads.
 - **No automatic differentiation.** Adjoint sensitivity exists for DC only, over the parameters in the table above.
 - **No interval / affine arithmetic** for guaranteed bounds.
 
