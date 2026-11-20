@@ -761,7 +761,7 @@ Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple
 | DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
 | Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
 
-A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes.
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
 
 Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
 

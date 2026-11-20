@@ -5,7 +5,7 @@
 //! nodes and `m` is the number of branch-current unknowns (independent
 //! voltage sources, controlled sources that introduce a branch, etc.).
 //!
-//! Components write themselves into this system via [`stamp`](crate::stamp);
+//! Components write themselves into this system via `stamp`;
 //! the linear DC, Newton–Raphson, and transient pipelines all build an
 //! [`MnaSystem`], stamp into it, and call [`MnaSystem::solve`].
 //!
@@ -110,12 +110,8 @@ impl<T: MnaScalar> MnaMatrix<T> {
         self.size
     }
 
-    /// Whether the matrix is stored sparsely.
-    pub fn is_sparse(&self) -> bool {
-        matches!(self.storage, Storage::Sparse { .. })
-    }
-
     /// The matrix as a dense nalgebra matrix.
+    #[cfg(any(test, feature = "internals"))]
     pub fn to_dense(&self) -> DMatrix<T> {
         match &self.storage {
             Storage::Dense(m) => m.clone(),
@@ -253,10 +249,6 @@ pub struct MnaSystem {
     pub a: MnaMatrix<f64>,
     /// (n+m) right-hand-side vector (amperes A in the node block, volts V in the source block).
     pub b: DVector<f64>,
-    /// Number of non-ground nodes (n).
-    pub num_nodes: usize,
-    /// Number of independent voltage sources contributing branch-current unknowns (m).
-    pub num_vsources: usize,
 }
 
 impl MnaSystem {
@@ -267,14 +259,13 @@ impl MnaSystem {
         Self {
             a: MnaMatrix::zeros(size),
             b: DVector::zeros(size),
-            num_nodes,
-            num_vsources,
         }
     }
 
     /// Total dimension of the system (n + m).
+    #[cfg(test)]
     pub fn size(&self) -> usize {
-        self.num_nodes + self.num_vsources
+        self.b.len()
     }
 
     /// Solve Ax = b: LU with partial pivoting, dense or sparse.

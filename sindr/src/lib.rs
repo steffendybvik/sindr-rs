@@ -268,9 +268,15 @@ mod device_params;
 pub mod error;
 mod integration;
 pub mod measure;
+// The matrix type is public only for sindr's own `mna_solve` bench, behind
+// the unstable `internals` feature.
+#[cfg(feature = "internals")]
+#[doc(hidden)]
 pub mod mna;
-pub mod newton_raphson;
-pub mod node_map;
+#[cfg(not(feature = "internals"))]
+mod mna;
+mod newton_raphson;
+mod node_map;
 pub mod noise;
 mod op_amp;
 pub mod ratings;
@@ -279,14 +285,17 @@ pub mod sensitivity;
 #[cfg(feature = "spice")]
 #[cfg_attr(docsrs, doc(cfg(feature = "spice")))]
 pub mod spice;
-pub mod stamp;
+mod stamp;
+#[cfg(test)]
+mod stamp_jacobian_tests;
 pub mod temp_sweep;
 mod thermal;
 pub mod transfer_function;
-pub mod transient;
+mod transient;
 pub mod validation;
 pub use sindr_core::waveform;
 
+pub use ac_analysis::{solve_ac, AcConfig, AcPoint, AcResult, FrequencySpacing};
 pub use circuit::{
     BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel, FerriteBeadParams, OpAmpModel,
     SpdtPosition,
@@ -295,8 +304,6 @@ pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::{SimError, SolvePoint};
 pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
-pub use mna::MnaSystem;
-pub use node_map::NodeMap;
 pub use noise::{solve_noise, NoiseConfig, NoiseResult};
 pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 pub use results::{
@@ -323,6 +330,7 @@ pub use sindr_devices::regulator;
 pub use sindr_devices::regulator::RegulatorParams;
 pub use sindr_devices::varactor::VaractorParams;
 
+pub(crate) use mna::MnaSystem;
 use node_map::NodeMap as NM;
 
 /// The circuit the solver runs: `circuit` flattened, with each

@@ -217,6 +217,15 @@ staged as `0.1.0-alpha.8`.
 
 ### Changed
 
+- **Breaking:** solver internals are private. `mna`, `stamp`,
+  `newton_raphson`, `node_map` and `transient` are no longer public
+  modules, and `MnaSystem` and `NodeMap` are gone from the root; every
+  analysis entry point and config is still re-exported there.
+  The backward-Euler `stamp_capacitor_companion` and
+  `stamp_inductor_companion`, which the solver didn't use, are removed.
+  `solve_ac`, `AcConfig`, `AcPoint`, `AcResult` and
+  `FrequencySpacing` are now re-exported at the root like the other
+  analyses.
 - **Breaking (results):** a `ZenerDiode` is now a SPICE diode with
   breakdown `BV = vz` at `IBV` = 5 mA and `RS` = 1 Ω, in every analysis.
   Its reverse knee used to be a piecewise `1/rz` clamp whose conductance
