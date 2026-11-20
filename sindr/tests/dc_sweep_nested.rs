@@ -27,6 +27,7 @@ fn nmos(params: MosfetParams) -> Circuit {
                 kind: MosfetKind::Nmos,
                 params,
                 parasitic_caps: None,
+                body_diode: None,
             },
         ],
     )

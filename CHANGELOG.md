@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   All of it is serde.
 - `TransientConfig`, `AcConfig` and `FrequencySpacing` derive
   `Serialize`/`Deserialize`, and `AcConfig` derives `PartialEq`.
+- **Breaking:** a power MOSFET's body diode. `CircuitElement::Mosfet` has
+  a new `body_diode: Option<DiodeModel>` field (struct literals need it,
+  JSON may omit it): source to drain for NMOS, drain to source for PMOS,
+  solved in every analysis as a diode `<id>.body` whose current the
+  results report. An ngspice golden (`dc_mosfet_body_diode`) checks it
+  freewheeling.
 - **Breaking:** `CircuitElement::Battery`, an equivalent-circuit cell:
   open-circuit voltage by state of charge behind a series resistance and
   an optional RC pair (`sindr::battery::BatteryParams`, with Li-ion/LiPo

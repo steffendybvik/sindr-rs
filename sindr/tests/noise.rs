@@ -144,6 +144,7 @@ fn mosfet_flicker_parameters_are_validated() {
                         ..MosfetParams::default_nmos()
                     },
                     parasitic_caps: None,
+                    body_diode: None,
                 },
             ],
         )

@@ -1211,6 +1211,7 @@ fn build_element(
                     _ => MosfetParams::default_pmos(),
                 },
                 parasitic_caps: None,
+                body_diode: None,
             }
         }
         K::Njfet | K::Pjfet => {

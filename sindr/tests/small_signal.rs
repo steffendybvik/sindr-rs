@@ -294,6 +294,7 @@ fn mosfet(kind: MosfetKind, params: MosfetParams) -> CircuitElement {
         kind,
         params,
         parasitic_caps: None,
+        body_diode: None,
     }
 }
 
