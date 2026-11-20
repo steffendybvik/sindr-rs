@@ -114,7 +114,7 @@ fn dc_reported_device_current_obeys_kcl_off_nominal_temperature() {
     for t in TEMPERATURES {
         for device in devices(t) {
             // The Schottky and photodiode don't converge in DC behind 5 V / 1 kΩ
-            // at any temperature yet (SIN-16); the transient test still covers them.
+            // at any temperature yet; the transient test still covers them.
             if matches!(
                 device,
                 CircuitElement::SchottkyDiode { .. } | CircuitElement::Photodiode { .. }

@@ -110,7 +110,7 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 | Transient | `tran_rc_step`, `tran_rl_step`, `tran_op_start` (operating-point start), `tran_ic_op` and `tran_ic_uic` (`.ic` without and with `UIC`), `tran_tstart`, `tran_halfwave` (sine into a diode and filter cap), `tran_bjt_switch` (pulse through an RC into an NPN; collector to 3 %, see below), `tran_rlc_ring`, `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
 | Temperature | `temp_diode` |
 
-None is ignored. `temp_diode` was, until SIN-15's temperature fix; it reads
+None is ignored. `temp_diode` was, until the diode temperature fix; it reads
 its deck and runs like the rest.
 
 Not covered, and why:

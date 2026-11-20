@@ -1764,7 +1764,7 @@ mod tests {
         let op = crate::solve_dc_operating_point(&stage(true), &crate::SolverOptions::default())
             .unwrap();
         let plain = crate::solve_circuit(&stage(false)).unwrap();
-        // Both are Newton solves stopped at RELTOL = 1e-3 (see SIN-14), so
+        // Both are Newton solves stopped at RELTOL = 1e-3, so
         // they agree to that precision, not to round-off.
         for node in ["b", "c"] {
             assert!(

@@ -1,5 +1,5 @@
 # cargo-deny: licences and advisories for everything sindr ships.
-# PCBCraft ships under MIT OR Apache-2.0, so every dependency's licence has
+# sindr ships under MIT OR Apache-2.0, so every dependency's licence has
 # to be compatible with both.
 #
 #     cargo deny check

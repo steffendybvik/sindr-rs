@@ -48,7 +48,7 @@ jobs:
       - run: cargo test --workspace --no-default-features
 
   wasm:
-    # PCBCraft's web app builds sindr for wasm32-unknown-unknown, where
+    # Browser apps build sindr for wasm32-unknown-unknown, where
     # std::time, threads and the file system fail at run time, not build time.
     name: wasm32
     runs-on: ubuntu-latest
