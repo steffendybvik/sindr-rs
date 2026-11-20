@@ -1,0 +1,12 @@
+op_exported_spdt: written by sindr::spice::to_netlist
+v1 in 0 DC 5
+r1 in com 100
+Rs1_a com a 0.01
+Rs1_b com b 1e9
+ra a 0 1000
+rb b 0 2000
+Rs2_a com c 1e9
+Rs2_b com d 0.01
+rc c 0 3000
+rd d 0 4000
+.end

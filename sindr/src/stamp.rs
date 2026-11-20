@@ -82,6 +82,14 @@ pub fn stamp_circuit(
 
     for component in &circuit.components {
         match component {
+            CircuitElement::SwitchSpdt { id, .. }
+            | CircuitElement::Crystal { id, .. }
+            | CircuitElement::FerriteBead { id, .. } => {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{id}` is stamped as its parts: pass the circuit through an analysis \
+                     entry point (solve_circuit, solve_transient, …), not stamp_circuit"
+                )));
+            }
             CircuitElement::Resistor {
                 id,
                 nodes,

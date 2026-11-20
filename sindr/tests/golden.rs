@@ -1453,3 +1453,90 @@ fn tran_diode_recovery() {
         "D1 at 110 ns: sindr {got:e}, ngspice {want:e}"
     );
 }
+
+/// An SPDT switch steering 5 V to one of two loads, and a second one in
+/// the other position. The deck is the two resistors each one exports as.
+#[test]
+fn op_exported_spdt() {
+    use sindr::circuit::SpdtPosition;
+    let spdt = |id: &str, nodes: [&str; 3], position| CircuitElement::SwitchSpdt {
+        id: id.into(),
+        nodes: nodes.map(String::from),
+        position,
+    };
+    let circuit = circuit(vec![
+        vsource("v1", "in", "0", 5.0),
+        resistor("r1", "in", "com", 100.0),
+        spdt("s1", ["com", "a", "b"], SpdtPosition::A),
+        resistor("ra", "a", "0", 1e3),
+        resistor("rb", "b", "0", 2e3),
+        spdt("s2", ["com", "c", "d"], SpdtPosition::B),
+        resistor("rc", "c", "0", 3e3),
+        resistor("rd", "d", "0", 4e3),
+    ]);
+    check_op(
+        "op_exported_spdt",
+        exported("op_exported_spdt", &circuit),
+        (OP_V, OP_I),
+    );
+}
+
+/// A 16 MHz crystal in series between 50 Ω source and load, through its
+/// series and parallel resonances.
+#[test]
+fn ac_exported_crystal() {
+    let circuit = circuit(vec![
+        vsource("v1", "in", "0", 0.0),
+        resistor("rs", "in", "a", 50.0),
+        CircuitElement::Crystal {
+            id: "y1".into(),
+            nodes: ["a".into(), "out".into()],
+            params: sindr::circuit::CrystalParams {
+                frequency: 16e6,
+                esr: 40.0,
+                c0: 5e-12,
+                cm: 20e-15,
+            },
+        },
+        resistor("rl", "out", "0", 50.0),
+    ]);
+    check_ac(
+        "ac_exported_crystal",
+        exported("ac_exported_crystal", &circuit),
+        "v1",
+        "out",
+        200,
+        (1e6, 1e8),
+        AC_LINEAR,
+    );
+}
+
+/// A ferrite bead with its parallel capacitance, between 50 Ω source and
+/// load, from 100 kHz past its self-resonance.
+#[test]
+fn ac_exported_ferrite_bead() {
+    let circuit = circuit(vec![
+        vsource("v1", "in", "0", 0.0),
+        resistor("rs", "in", "a", 50.0),
+        CircuitElement::FerriteBead {
+            id: "fb1".into(),
+            nodes: ["a".into(), "out".into()],
+            params: sindr::circuit::FerriteBeadParams {
+                r_dc: 0.1,
+                l: 1e-6,
+                r_ac: 600.0,
+                c: Some(1e-12),
+            },
+        },
+        resistor("rl", "out", "0", 50.0),
+    ]);
+    check_ac(
+        "ac_exported_ferrite_bead",
+        exported("ac_exported_ferrite_bead", &circuit),
+        "v1",
+        "out",
+        20,
+        (1e5, 1e10),
+        AC_LINEAR,
+    );
+}

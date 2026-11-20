@@ -304,6 +304,7 @@ pub fn dc_sweep(
     stop: f64,
     num_points: usize,
 ) -> Result<DcSweepResult, SimError> {
+    let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     let axis = DcSweepAxis::new(source_id, start, stop, num_points);
@@ -313,7 +314,11 @@ pub fn dc_sweep(
         ));
     }
     axis.check(circuit, 2)?;
-    sweep_curve(circuit, &axis, None)
+    let mut sweep = sweep_curve(circuit, &axis, None)?;
+    for point in &mut sweep.points {
+        crate::composite::fold(original, &mut point.result);
+    }
+    Ok(sweep)
 }
 
 /// A two-source DC sweep: one [`DcSweepResult`] along the inner source per
@@ -398,6 +403,7 @@ pub fn dc_sweep_nested(
     inner: &DcSweepAxis,
     outer: &DcSweepAxis,
 ) -> Result<NestedDcSweepResult, SimError> {
+    let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     inner.check(circuit, 2)?;
@@ -422,6 +428,9 @@ pub fn dc_sweep_nested(
             .map(|p| p.result.node_voltages.clone());
         let sweep = sweep_curve(&work, inner, seed.as_ref())?;
         curves.push(NestedDcSweepCurve { outer_value, sweep });
+    }
+    for point in curves.iter_mut().flat_map(|c| &mut c.sweep.points) {
+        crate::composite::fold(original, &mut point.result);
     }
     Ok(NestedDcSweepResult {
         outer_source_id: outer.source_id.clone(),

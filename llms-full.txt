@@ -265,6 +265,24 @@ CircuitElement::Pushbutton { id, nodes: [String; 2], closed: bool }
 
 Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 
+```rust
+CircuitElement::SwitchSpdt { id, nodes: [String; 3], position: SpdtPosition }  // [common, a, b]
+```
+
+A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default) or to `b`, each path a `Switch`. Its result is the path in use: common minus the selected throw, and the current from common into it.
+
+#### Crystal and ferrite bead
+
+```rust
+CircuitElement::Crystal     { id, nodes: [String; 2], params: CrystalParams }
+CircuitElement::FerriteBead { id, nodes: [String; 2], params: FerriteBeadParams }
+```
+
+- **Crystal:** the Butterworth–Van Dyke model, `Rm`–`Lm`–`Cm` in series beside `C0`, with `Lm` set by the series-resonant `frequency`. `CrystalParams::from_datasheet(frequency, esr, c0)` takes `Cm = C0/250`, typical of AT-cut crystals; set `cm` when you know it. Open at DC. Its result's `power` is what `Rm` dissipates, the drive level, which `Ratings::power` limits. The load capacitance a datasheet names is the two capacitors on your board, not part of the crystal.
+- **Ferrite bead:** `r_dc` in series with `l ∥ r_ac` (∥ `c`, when set). `FerriteBeadParams::from_datasheet(z_100mhz, r_dc)` fits `l` and `r_ac` to the impedance at 100 MHz; fit all four to the curve when the peak matters. `Ratings::current` is its rated current.
+
+Both, and the SPDT switch, are solved as those networks: results and ratings come back under the element's own id, and `to_netlist` writes the network.
+
 #### Diodes
 
 ```rust
@@ -1134,6 +1152,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No JFET parasitic capacitances.** (BJT and MOSFET have optional Cbe/Cbc and Cgs/Cgd; JFET doesn't.)
 - **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
 - **No SiC / GaN device models.**
+- **Crystals and ferrite beads are linear networks.** A crystal is the Butterworth–Van Dyke model: no overtones, spurious modes, drive-level dependence or aging. A ferrite bead is R + L ∥ R (∥ C) with no DC-bias derating, so its impedance doesn't fall with current as a real bead's does.
 - **Magnetics: a saturating inductor, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), but there's no hysteresis, remanence, core loss or temperature dependence, and SPICE export refuses a saturating inductor. `Transformer` is linear coupled inductors: no shared saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
 - **No crystal / quartz resonator macromodel** (must be built from L/C/R by hand).
@@ -1959,6 +1978,8 @@ periodic steady state, S-parameters, variable-order integration.
 | Transformer | Linear coupled inductors |
 | Battery | Open-circuit voltage by state of charge behind R0 and an optional R1‖C1; state of charge falls with charge drawn ([`battery::BatteryParams`]; Li-ion and CR2032 presets) |
 | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
+| Crystal | Butterworth–Van Dyke: `Rm`–`Lm`–`Cm` beside `C0` ([`CrystalParams`]) |
+| Ferrite bead | `R_dc` into `L ∥ R_ac` (∥ `C`) ([`FerriteBeadParams`]) |
 
 Parameters are Rust structs, not SPICE `.model` cards.
 
@@ -2133,7 +2154,7 @@ pub mod validation;
 
 pub use sindr_core::waveform;
 
-pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
+pub use circuit:: { … }
 
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 
@@ -4334,6 +4355,9 @@ pub enum ExportError {
 /// | `Vcvs`, `Vccs`, `Ccvs`, `Cccs` | `E`, `G`, `H`, `F` |
 /// | `Transformer` | two `L` and a `K` |
 /// | `Switch`, `Pushbutton`, `Fuse` | `R` at the resistance sindr stamps |
+/// | `SwitchSpdt` | two `R`, common to each throw |
+/// | `Crystal` | `R`, `L`, `C` in series (the motional arm) beside `C` (C0) |
+/// | `FerriteBead` | `R` (DC) into `L` ∥ `R` (∥ `C`) |
 /// | `Potentiometer` | two `R`, top–wiper and wiper–bottom |
 /// | `Photoresistor`, `Thermistor` | `R` at their resistance |
 /// | `Led`, `SchottkyDiode` | `D` with their Shockley parameters |
@@ -5818,6 +5842,74 @@ pub struct MosfetParasiticCaps {
     pub cgd: f64,
 }
 
+/// Which throw of a [`CircuitElement::SwitchSpdt`] the common terminal
+/// connects to.
+pub enum SpdtPosition {
+    /// Common to `nodes[1]`.
+    #[default]
+    A,
+    /// Common to `nodes[2]`.
+    B,
+}
+
+/// A quartz crystal's Butterworth–Van Dyke model, for
+/// [`CircuitElement::Crystal`]: a motional arm `Rm`–`Lm`–`Cm` in series,
+/// in parallel with the shunt capacitance `C0`. The series resonance is
+/// `frequency`, so `Lm = 1 / ((2π·frequency)²·Cm)`.
+///
+/// Datasheets give the frequency, the ESR (`Rm`) and the shunt capacitance;
+/// the motional capacitance is often only in an application note. The load
+/// capacitance a datasheet names isn't part of the crystal: it's the two
+/// capacitors on the board.
+pub struct CrystalParams {
+    /// Series-resonant frequency (Hz), positive.
+    pub frequency: f64,
+    /// Equivalent series resistance `Rm` (Ω), positive.
+    pub esr: f64,
+    /// Shunt capacitance `C0` (F), zero or positive.
+    pub c0: f64,
+    /// Motional capacitance `Cm` (F), positive.
+    pub cm: f64,
+}
+
+impl CrystalParams {
+    /// From a datasheet's frequency, ESR and shunt capacitance, with a
+    /// motional capacitance of `c0 / 250`, typical of AT-cut crystals in
+    /// the megahertz range.
+    pub fn from_datasheet(frequency: f64, esr: f64, c0: f64) -> Self { … }
+
+    /// Motional inductance `Lm` (H), from the frequency and `Cm`.
+    pub fn lm(&self) -> f64 { … }
+}
+
+/// A ferrite bead's circuit, for [`CircuitElement::FerriteBead`]: `r_dc`
+/// in series with `l ∥ r_ac` (and `c`, when set). Below its peak the bead
+/// is inductive, at the peak it's `r_ac`, and above it `c` takes over.
+pub struct FerriteBeadParams {
+    /// DC resistance (Ω), positive.
+    pub r_dc: f64,
+    /// Inductance (H), positive.
+    pub l: f64,
+    /// Parallel loss resistance (Ω), positive: about the impedance at the
+    /// peak.
+    pub r_ac: f64,
+    /// Parallel capacitance (F); `None` for none.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub c: Option<f64>,
+}
+
+impl FerriteBeadParams {
+    /// From a datasheet's impedance at 100 MHz and DC resistance. Takes the
+    /// bead as inductive up to 100 MHz, `l = z_100mhz / (2π·100 MHz)`, with
+    /// its loss resistance at the same impedance: a rough fit that matches
+    /// at 100 MHz and below. Fit `l`, `r_ac` and `c` to the impedance curve
+    /// when the peak matters.
+    pub fn from_datasheet(z_100mhz: f64, r_dc: f64) -> Self { … }
+}
+
 /// A single circuit component.
 ///
 /// Each variant carries an `id` (unique per circuit, used to look up results)
@@ -6412,6 +6504,48 @@ pub enum CircuitElement {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         model: Option<sindr_devices::regulator::RegulatorParams>,
+    },
+    /// Single-pole double-throw switch: `nodes: [common, a, b]`. The common
+    /// terminal connects to `a` or `b` as [`Switch`](Self::Switch) does
+    /// (0.01 Ω), and the other throw is open (1 GΩ). Its result is the path
+    /// in use: `voltage_across` from common to the selected throw and the
+    /// current from common into it.
+    #[cfg_attr(feature = "serde", serde(rename = "switch_spdt"))]
+    SwitchSpdt {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[common, a, b]`.
+        nodes: [String; 3],
+        /// Which throw the common terminal is switched to.
+        #[cfg_attr(feature = "serde", serde(default))]
+        position: SpdtPosition,
+    },
+
+    /// Quartz crystal: the Butterworth–Van Dyke model ([`CrystalParams`]).
+    /// An open circuit at DC. Its result's `power` is what the motional
+    /// resistance dissipates: the drive level a datasheet limits.
+    /// `nodes: [a, b]`
+    #[cfg_attr(feature = "serde", serde(rename = "crystal"))]
+    Crystal {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// The equivalent circuit.
+        params: CrystalParams,
+    },
+
+    /// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC,
+    /// lossy and inductive at high frequency. Its result's `power` is what
+    /// its two resistances dissipate. `nodes: [a, b]`
+    #[cfg_attr(feature = "serde", serde(rename = "ferrite_bead"))]
+    FerriteBead {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// The equivalent circuit.
+        params: FerriteBeadParams,
     },
 }
 

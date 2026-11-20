@@ -200,6 +200,10 @@ fn stamp_circuit_transient(
 
     for component in &circuit.components {
         match component {
+            // Split into their parts by `solver_circuit` first.
+            CircuitElement::SwitchSpdt { .. }
+            | CircuitElement::Crystal { .. }
+            | CircuitElement::FerriteBead { .. } => {}
             CircuitElement::Resistor {
                 id,
                 nodes,
@@ -635,6 +639,10 @@ fn extract_timestep_results(
 
     for component in &circuit.components {
         match component {
+            // Split into their parts by `solver_circuit` first.
+            CircuitElement::SwitchSpdt { .. }
+            | CircuitElement::Crystal { .. }
+            | CircuitElement::FerriteBead { .. } => {}
             // Needs its state's history; `battery::finish_step` reports it.
             CircuitElement::Battery { .. } => {}
             CircuitElement::Resistor {
@@ -1709,6 +1717,7 @@ pub fn solve_transient(
     circuit: &Circuit,
     config: &TransientConfig,
 ) -> Result<SimulationResult, SimError> {
+    let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     config.validate()?;
@@ -1716,7 +1725,9 @@ pub fn solve_transient(
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
     let num_vsources = circuit.count_voltage_sources();
-    run_transient(circuit, &node_map, num_nodes, num_vsources, config)
+    let mut result = run_transient(circuit, &node_map, num_nodes, num_vsources, config)?;
+    crate::composite::fold(original, &mut result);
+    Ok(result)
 }
 
 /// The stepper behind [`solve_transient`] and the transient

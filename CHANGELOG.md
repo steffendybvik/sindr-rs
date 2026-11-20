@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Breaking:** three new `CircuitElement`s. `SwitchSpdt` (`[common, a,
+  b]`, `position: SpdtPosition`), `Crystal` (`CrystalParams`: the
+  Butterworth–Van Dyke model from frequency, ESR, C0 and Cm) and
+  `FerriteBead` (`FerriteBeadParams`: R_dc into L ∥ R_ac, optional C,
+  with `from_datasheet(z_100mhz, r_dc)`). Each is solved as its network
+  in every analysis; results, ratings (crystal drive level as `power`,
+  bead `current`) and SPICE export use the element's own id. Checked
+  against ngspice. Exhaustive matches on `CircuitElement` need the new
+  arms.
 - **Breaking:** a power MOSFET's body diode. `CircuitElement::Mosfet` has
   a new `body_diode: Option<DiodeModel>` field (struct literals need it,
   JSON may omit it): source to drain for NMOS, drain to source for PMOS,

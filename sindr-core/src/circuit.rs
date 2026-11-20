@@ -206,6 +206,98 @@ pub struct MosfetParasiticCaps {
     pub cgd: f64,
 }
 
+/// Which throw of a [`CircuitElement::SwitchSpdt`] the common terminal
+/// connects to.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SpdtPosition {
+    /// Common to `nodes[1]`.
+    #[default]
+    A,
+    /// Common to `nodes[2]`.
+    B,
+}
+
+/// A quartz crystal's Butterworth–Van Dyke model, for
+/// [`CircuitElement::Crystal`]: a motional arm `Rm`–`Lm`–`Cm` in series,
+/// in parallel with the shunt capacitance `C0`. The series resonance is
+/// `frequency`, so `Lm = 1 / ((2π·frequency)²·Cm)`.
+///
+/// Datasheets give the frequency, the ESR (`Rm`) and the shunt capacitance;
+/// the motional capacitance is often only in an application note. The load
+/// capacitance a datasheet names isn't part of the crystal: it's the two
+/// capacitors on the board.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CrystalParams {
+    /// Series-resonant frequency (Hz), positive.
+    pub frequency: f64,
+    /// Equivalent series resistance `Rm` (Ω), positive.
+    pub esr: f64,
+    /// Shunt capacitance `C0` (F), zero or positive.
+    pub c0: f64,
+    /// Motional capacitance `Cm` (F), positive.
+    pub cm: f64,
+}
+
+impl CrystalParams {
+    /// From a datasheet's frequency, ESR and shunt capacitance, with a
+    /// motional capacitance of `c0 / 250`, typical of AT-cut crystals in
+    /// the megahertz range.
+    pub fn from_datasheet(frequency: f64, esr: f64, c0: f64) -> Self {
+        Self {
+            frequency,
+            esr,
+            c0,
+            cm: c0 / 250.0,
+        }
+    }
+
+    /// Motional inductance `Lm` (H), from the frequency and `Cm`.
+    pub fn lm(&self) -> f64 {
+        let w = 2.0 * std::f64::consts::PI * self.frequency;
+        1.0 / (w * w * self.cm)
+    }
+}
+
+/// A ferrite bead's circuit, for [`CircuitElement::FerriteBead`]: `r_dc`
+/// in series with `l ∥ r_ac` (and `c`, when set). Below its peak the bead
+/// is inductive, at the peak it's `r_ac`, and above it `c` takes over.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FerriteBeadParams {
+    /// DC resistance (Ω), positive.
+    pub r_dc: f64,
+    /// Inductance (H), positive.
+    pub l: f64,
+    /// Parallel loss resistance (Ω), positive: about the impedance at the
+    /// peak.
+    pub r_ac: f64,
+    /// Parallel capacitance (F); `None` for none.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub c: Option<f64>,
+}
+
+impl FerriteBeadParams {
+    /// From a datasheet's impedance at 100 MHz and DC resistance. Takes the
+    /// bead as inductive up to 100 MHz, `l = z_100mhz / (2π·100 MHz)`, with
+    /// its loss resistance at the same impedance: a rough fit that matches
+    /// at 100 MHz and below. Fit `l`, `r_ac` and `c` to the impedance curve
+    /// when the peak matters.
+    pub fn from_datasheet(z_100mhz: f64, r_dc: f64) -> Self {
+        Self {
+            r_dc,
+            l: z_100mhz / (2.0 * std::f64::consts::PI * 100e6),
+            r_ac: z_100mhz,
+            c: None,
+        }
+    }
+}
+
 /// A single circuit component.
 ///
 /// Each variant carries an `id` (unique per circuit, used to look up results)
@@ -804,6 +896,48 @@ pub enum CircuitElement {
         )]
         model: Option<sindr_devices::regulator::RegulatorParams>,
     },
+    /// Single-pole double-throw switch: `nodes: [common, a, b]`. The common
+    /// terminal connects to `a` or `b` as [`Switch`](Self::Switch) does
+    /// (0.01 Ω), and the other throw is open (1 GΩ). Its result is the path
+    /// in use: `voltage_across` from common to the selected throw and the
+    /// current from common into it.
+    #[cfg_attr(feature = "serde", serde(rename = "switch_spdt"))]
+    SwitchSpdt {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[common, a, b]`.
+        nodes: [String; 3],
+        /// Which throw the common terminal is switched to.
+        #[cfg_attr(feature = "serde", serde(default))]
+        position: SpdtPosition,
+    },
+
+    /// Quartz crystal: the Butterworth–Van Dyke model ([`CrystalParams`]).
+    /// An open circuit at DC. Its result's `power` is what the motional
+    /// resistance dissipates: the drive level a datasheet limits.
+    /// `nodes: [a, b]`
+    #[cfg_attr(feature = "serde", serde(rename = "crystal"))]
+    Crystal {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// The equivalent circuit.
+        params: CrystalParams,
+    },
+
+    /// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC,
+    /// lossy and inductive at high frequency. Its result's `power` is what
+    /// its two resistances dissipate. `nodes: [a, b]`
+    #[cfg_attr(feature = "serde", serde(rename = "ferrite_bead"))]
+    FerriteBead {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// The equivalent circuit.
+        params: FerriteBeadParams,
+    },
 }
 
 fn default_bf() -> f64 {
@@ -883,6 +1017,9 @@ impl CircuitElement {
             CircuitElement::Transformer { nodes, .. } => nodes,
             CircuitElement::Fuse { nodes, .. } => nodes,
             CircuitElement::VoltageRegulator { nodes, .. } => nodes,
+            CircuitElement::SwitchSpdt { nodes, .. } => nodes,
+            CircuitElement::Crystal { nodes, .. } => nodes,
+            CircuitElement::FerriteBead { nodes, .. } => nodes,
         }
     }
 
@@ -943,6 +1080,9 @@ impl CircuitElement {
             CircuitElement::Transformer { id, .. } => id,
             CircuitElement::Fuse { id, .. } => id,
             CircuitElement::VoltageRegulator { id, .. } => id,
+            CircuitElement::SwitchSpdt { id, .. } => id,
+            CircuitElement::Crystal { id, .. } => id,
+            CircuitElement::FerriteBead { id, .. } => id,
         }
     }
 
@@ -998,6 +1138,9 @@ impl CircuitElement {
             CircuitElement::Transformer { nodes, .. } => nodes,
             CircuitElement::Fuse { nodes, .. } => nodes,
             CircuitElement::VoltageRegulator { nodes, .. } => nodes,
+            CircuitElement::SwitchSpdt { nodes, .. } => nodes,
+            CircuitElement::Crystal { nodes, .. } => nodes,
+            CircuitElement::FerriteBead { nodes, .. } => nodes,
         }
     }
 
@@ -1035,6 +1178,9 @@ impl CircuitElement {
             CircuitElement::Transformer { id, .. } => id,
             CircuitElement::Fuse { id, .. } => id,
             CircuitElement::VoltageRegulator { id, .. } => id,
+            CircuitElement::SwitchSpdt { id, .. } => id,
+            CircuitElement::Crystal { id, .. } => id,
+            CircuitElement::FerriteBead { id, .. } => id,
         }
     }
 

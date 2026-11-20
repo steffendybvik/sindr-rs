@@ -147,6 +147,24 @@ CircuitElement::Pushbutton { id, nodes: [String; 2], closed: bool }
 
 Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 
+```rust
+CircuitElement::SwitchSpdt { id, nodes: [String; 3], position: SpdtPosition }  // [common, a, b]
+```
+
+A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default) or to `b`, each path a `Switch`. Its result is the path in use: common minus the selected throw, and the current from common into it.
+
+### Crystal and ferrite bead
+
+```rust
+CircuitElement::Crystal     { id, nodes: [String; 2], params: CrystalParams }
+CircuitElement::FerriteBead { id, nodes: [String; 2], params: FerriteBeadParams }
+```
+
+- **Crystal:** the Butterworth–Van Dyke model, `Rm`–`Lm`–`Cm` in series beside `C0`, with `Lm` set by the series-resonant `frequency`. `CrystalParams::from_datasheet(frequency, esr, c0)` takes `Cm = C0/250`, typical of AT-cut crystals; set `cm` when you know it. Open at DC. Its result's `power` is what `Rm` dissipates, the drive level, which `Ratings::power` limits. The load capacitance a datasheet names is the two capacitors on your board, not part of the crystal.
+- **Ferrite bead:** `r_dc` in series with `l ∥ r_ac` (∥ `c`, when set). `FerriteBeadParams::from_datasheet(z_100mhz, r_dc)` fits `l` and `r_ac` to the impedance at 100 MHz; fit all four to the curve when the peak matters. `Ratings::current` is its rated current.
+
+Both, and the SPDT switch, are solved as those networks: results and ratings come back under the element's own id, and `to_netlist` writes the network.
+
 ### Diodes
 
 ```rust
