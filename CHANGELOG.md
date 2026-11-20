@@ -235,6 +235,11 @@ staged as `0.1.0-alpha.8`.
 
 ### Changed
 
+- **Breaking:** `SimError`, `SolvePoint` and `spice::ParseOptions` are
+  `#[non_exhaustive]`, so new error variants and parser options can come
+  in a minor release. Match `SimError` with a `_` arm, and build
+  `ParseOptions` with `ParseOptions::default().with_strict(false)` and
+  `.with_include_search_path(dir)` instead of a struct literal.
 - **Breaking (results):** `Vccs` and `Cccs` drive their current the way
   `CurrentSource` and SPICE's `G` and `F` do: a positive `gm·V_control` or
   `alpha·I_control` flows through the source from `nodes[0]` to
@@ -314,6 +319,8 @@ staged as `0.1.0-alpha.8`.
 
 - **Breaking:** `newton_raphson::I_ABSTOL`, which nothing read. Newton
   converges on node voltages (`V_ABSTOL`, `RELTOL`).
+- **Breaking:** `McuResult` and `SimulationResult::mcu_results`. No
+  element ever filled them: sindr has no microcontroller element.
 
 ### Fixed
 

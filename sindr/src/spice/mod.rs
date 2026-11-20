@@ -145,7 +145,7 @@
 //! use sindr::spice::{parse_str_with_options, ParseOptions};
 //! # let deck = "* deck\nV1 n1 0 1\nR1 n1 0 1k\n.end\n";
 //!
-//! let opts = ParseOptions { strict: false, include_search_path: None };
+//! let opts = ParseOptions::default().with_strict(false);
 //! let netlist = parse_str_with_options(deck, opts)?;
 //! for warning in &netlist.warnings {
 //!     eprintln!("warning: {warning:?}");
@@ -303,9 +303,12 @@ impl ParsedNetlist {
 
 /// Knobs controlling parser strictness and include-path resolution.
 ///
-/// Start from [`Default`] (strict, no include-path override) and set the
-/// fields you need, or write the struct literal.
+/// Start from [`Default`] (strict, no include-path override) and set what
+/// you need with [`with_strict`](Self::with_strict) and
+/// [`with_include_search_path`](Self::with_include_search_path). It is
+/// `#[non_exhaustive]`, so new options can come without breaking callers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ParseOptions {
     /// If `true` (default), any unsupported card/device or syntax error is
     /// fatal. If `false`, recoverable unsupported items are skipped and
@@ -326,6 +329,24 @@ impl Default for ParseOptions {
             strict: true,
             include_search_path: None,
         }
+    }
+}
+
+impl ParseOptions {
+    /// Set [`strict`](Self::strict): `false` turns recoverable unsupported
+    /// items into [`ParseWarning`]s instead of errors.
+    #[must_use]
+    pub fn with_strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+
+    /// Set [`include_search_path`](Self::include_search_path), the base
+    /// directory for relative `.include` / `.lib` paths.
+    #[must_use]
+    pub fn with_include_search_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.include_search_path = Some(path.into());
+        self
     }
 }
 

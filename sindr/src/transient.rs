@@ -2087,7 +2087,6 @@ pub(crate) fn run_transient(
         mosfet_results,
         op_amp_results,
         relay_results,
-        mcu_results: vec![],
         convergence_aid: None,
         junction_temperatures: final_snapshot.junction_temperatures.clone(),
         state_of_charge: final_snapshot.state_of_charge.clone(),

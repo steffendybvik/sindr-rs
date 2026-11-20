@@ -24,10 +24,7 @@ fuzz_target!(|data: &[u8]| {
     if reads_files {
         return;
     }
-    let opts = ParseOptions {
-        strict: mode & 1 == 0,
-        ..ParseOptions::default()
-    };
+    let opts = ParseOptions::default().with_strict(mode & 1 == 0);
     let Ok(parsed) = parse_str_with_options(src, opts) else {
         return;
     };

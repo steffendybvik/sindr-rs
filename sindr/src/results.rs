@@ -117,21 +117,6 @@ pub struct RelayResult {
     pub contact_closed: bool,
 }
 
-/// Per-microcontroller results: per-pin GPIO output currents.
-///
-/// Never filled: sindr has no microcontroller element, so
-/// [`SimulationResult::mcu_results`] is always empty.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
-pub struct McuResult {
-    /// Component id.
-    pub id: String,
-    /// Current sourced/sunk by each GPIO pin (A), in pin index order.
-    pub pin_currents: Vec<f64>,
-    /// GPIO logic-high voltage used for this MCU (V).
-    pub gpio_voltage: f64,
-}
-
 /// One timestep of a transient simulation: time, node voltages, per-component
 /// state at that instant.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -205,7 +190,6 @@ pub struct TransientStats {
 /// - `mosfet_results` — for [`Mosfet`](crate::CircuitElement::Mosfet)
 /// - `op_amp_results` — for op-amps and comparators
 /// - `relay_results` — for relays
-/// - `mcu_results` — always empty: sindr has no microcontroller element
 /// - `transient` — for circuits with capacitors, inductors, or waveform
 ///   sources (DC analysis returns `None`)
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -258,12 +242,6 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub relay_results: Vec<RelayResult>,
-    /// Detailed per-microcontroller results.
-    #[cfg_attr(
-        feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
-    )]
-    pub mcu_results: Vec<McuResult>,
     /// Transient time-series, present only when the circuit has reactive
     /// elements or waveform sources.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -920,7 +898,6 @@ pub fn extract_results(
         mosfet_results: mosfet_results_vec,
         op_amp_results: op_amp_results_vec,
         relay_results: relay_results_vec,
-        mcu_results: vec![],
         convergence_aid: None,
         junction_temperatures: HashMap::new(),
         state_of_charge: circuit
@@ -1016,7 +993,6 @@ mod tests {
             mosfet_results: vec![],
             op_amp_results: vec![],
             relay_results: vec![],
-            mcu_results: vec![],
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
             state_of_charge: HashMap::new(),
@@ -1039,7 +1015,6 @@ mod tests {
             mosfet_results: vec![],
             op_amp_results: vec![],
             relay_results: vec![],
-            mcu_results: vec![],
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
             state_of_charge: HashMap::new(),

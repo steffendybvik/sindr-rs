@@ -152,10 +152,7 @@ fn strict_mode_unsupported_device_errors() {
 #[test]
 fn lenient_mode_unsupported_device_warns() {
     let src = "* title\nV1 d 0 1\nR1 d 0 1k\nM1 d g s nm\n.end\n";
-    let opts = ParseOptions {
-        strict: false,
-        include_search_path: None,
-    };
+    let opts = ParseOptions::default().with_strict(false);
     let nl = parse_str_with_options(src, opts).expect("lenient should not error");
     assert!(
         !nl.warnings.is_empty(),
@@ -413,10 +410,7 @@ fn global_nets_reach_into_subckts() {
                R2 p vee 2k\n\
                .ends\n\
                .end\n";
-    let lenient = ParseOptions {
-        strict: false,
-        ..ParseOptions::default()
-    };
+    let lenient = ParseOptions::default().with_strict(false);
     for nl in [
         parse_str(src).expect("strict parse"),
         parse_str_with_options(src, lenient).expect("lenient parse"),
