@@ -119,6 +119,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [uic]`), and `transient_config()` starts from the operating point unless
   `uic` is given, as ngspice does. `uic` used to be dropped without a word,
   and a `tmax` was a parse error.
+- `.tran`'s `tstart` is applied: `TransientConfig::tstart` and
+  `with_tstart(t)` integrate from 0 as before but keep only the steps from
+  `t` on, with one landing on `t`. It used to be read and ignored.
+- `ParsedNetlist::transient_config()`: the deck's first `.tran` with its
+  `.ic` cards as initial voltages, so a deck runs as ngspice runs it.
+- ngspice goldens `tran_ic_op` and `tran_ic_uic` (`.ic` without and with
+  `UIC`, on the same deck) and `tran_tstart`, run from the deck's own
+  `.tran` and `.ic`.
 - Two-source DC sweeps: `dc_sweep_nested(circuit, inner, outer)` with
   `DcSweepAxis` gives a `DcSweepResult` along the inner source for each
   value of the outer one, for device curve families. SPICE `.dc` takes a
