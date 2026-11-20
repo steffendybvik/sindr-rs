@@ -11,10 +11,9 @@ This page is the documentation side.
 | Reader | Where they look | What has to be there |
 |---|---|---|
 | docs.rs | `sindr/src/lib.rs` crate docs | Quick start, the **Capabilities** tables (analyses with entry points, device models, convergence aids, SPICE subset), feature flags, link to LIMITATIONS |
-| docs.rs | `sindr-core/src/lib.rs` crate docs | What the data model holds, quick example |
 | docs.rs | `sindr-devices/src/lib.rs` crate docs | Device/model table, quick example |
 | docs.rs | Every public item | A doc comment with units (V, A, Ω, F, H, s, K) and sign conventions; `# Errors` on fallible functions |
-| GitHub, crates.io | `README.md`, `sindr/README.md`, `sindr-core/README.md`, `sindr-devices/README.md` | Install snippet, element reference, examples |
+| GitHub, crates.io | `README.md`, `sindr/README.md`, `sindr-devices/README.md` | Install snippet, element reference, examples |
 | Everyone | `LIMITATIONS.md` | What sindr does **not** do. This is what stops readers, and LLMs, assuming features that don't exist |
 | Users and contributors | `ROADMAP.md` | The 1.0 gate and what comes next, in themes. No dates, no internal tracker ids, no names of users |
 | LLMs | `llms.txt` | Short index: summary, key facts for generating code, links |
@@ -78,5 +77,5 @@ On the staging branch, before its PR into `main`:
 8. **Read it.** Open `target/doc/sindr/index.html` and skim the front page,
    the `spice` badge and a few element docs as a docs.rs reader would. Skim
    `llms.txt` as an LLM would: could you write a working circuit from it?
-9. **Publish** `sindr-devices` first, then `sindr-core`, then `sindr`. After docs.rs has built,
+9. **Publish** `sindr-devices` first, then `sindr`. After docs.rs has built,
    check the published pages render and show the feature badges.

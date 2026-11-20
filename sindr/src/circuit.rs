@@ -196,6 +196,7 @@ impl Default for OpAmpModel {
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+/// Optional gate capacitances of a MOSFET, for transient and AC.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MosfetParasiticCaps {
     /// Gate-Source capacitance (F). Typical: 100–500 pF for power MOSFETs.
@@ -1215,7 +1216,7 @@ impl CircuitElement {
 /// # Example
 ///
 /// ```
-/// use sindr_core::{Circuit, CircuitElement};
+/// use sindr::{Circuit, CircuitElement};
 ///
 /// let circuit = Circuit::new(
 ///     "0",

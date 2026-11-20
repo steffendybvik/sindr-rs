@@ -53,9 +53,8 @@
 //!
 //! # Data model and hierarchy
 //!
-//! [`Circuit`] and everything in it comes from the [`sindr_core`] crate,
-//! re-exported here as [`circuit`], [`design`] and [`waveform`]. Design tools
-//! can depend on `sindr-core` alone. Besides its flat `components`, a
+//! [`Circuit`] and everything in it lives in [`circuit`], [`design`] and
+//! [`waveform`]. Besides its flat `components`, a
 //! circuit can place [`Block`]s through [`Instance`]s, name `globals`, and
 //! carry [`Part`] data (reference, symbol, footprint) the solver ignores.
 //! Every analysis flattens the hierarchy first ([`Circuit::flatten`]: `X1.R1`,
@@ -259,14 +258,14 @@ pub use examples::{get_examples, ExampleCircuit};
 
 pub mod ac_analysis;
 mod battery_state;
-pub mod import;
-pub use sindr_core::circuit;
-pub use sindr_core::design;
+pub mod circuit;
 mod composite;
 pub mod csv;
 pub mod dc_sweep;
+pub mod design;
 mod device_params;
 pub mod error;
+pub mod import;
 mod integration;
 pub mod measure;
 // The matrix type is public only for sindr's own `mna_solve` bench, behind
@@ -295,7 +294,7 @@ mod thermal;
 pub mod transfer_function;
 mod transient;
 pub mod validation;
-pub use sindr_core::waveform;
+pub mod waveform;
 
 pub use ac_analysis::{solve_ac, AcConfig, AcPoint, AcResult, FrequencySpacing};
 pub use circuit::{

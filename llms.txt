@@ -1,6 +1,6 @@
 # sindr
 
-> Analog circuit simulator in pure Rust: a SPICE-style modified nodal analysis (MNA) solver with built-in semiconductor device models. Build a `Circuit` (a list of `CircuitElement`s plus a ground node name, optionally with blocks and instances) in Rust or JSON, or parse a SPICE3 subset, then run DC operating point, transient (Gear-2 by default, or trapezoidal or backward Euler), AC small-signal, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep or temperature sweep. Three crates: `sindr` (solver), `sindr-core` (the `Circuit` data model and design hierarchy, re-exported by `sindr`) and `sindr-devices` (device companion models). Version 0.2: plain 0.x until 1.0, where a minor bump is breaking.
+> Analog circuit simulator in pure Rust: a SPICE-style modified nodal analysis (MNA) solver with built-in semiconductor device models. Build a `Circuit` (a list of `CircuitElement`s plus a ground node name, optionally with blocks and instances) in Rust or JSON, or parse a SPICE3 subset, then run DC operating point, transient (Gear-2 by default, or trapezoidal or backward Euler), AC small-signal, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep or temperature sweep. Two crates: `sindr` (the solver and the `Circuit` data model with its design hierarchy) and `sindr-devices` (device companion models). Version 0.1: plain 0.x until 1.0, where a minor bump is breaking.
 
 Key facts for generating code:
 
@@ -21,7 +21,6 @@ Key facts for generating code:
 
 - [README](https://github.com/steffendybvik/sindr-rs/blob/main/README.md): workspace overview
 - [sindr README](https://github.com/steffendybvik/sindr-rs/blob/main/sindr/README.md): every `CircuitElement`, analyses, results, JSON format
-- [sindr-core README](https://github.com/steffendybvik/sindr-rs/blob/main/sindr-core/README.md): data model, blocks, instances and part data
 - [sindr-devices README](https://github.com/steffendybvik/sindr-rs/blob/main/sindr-devices/README.md): device models and companion functions
 - [LIMITATIONS](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md): what sindr does not do; read this before assuming a feature exists
 - [sindr on docs.rs](https://docs.rs/sindr): API reference, with a capability table on the front page

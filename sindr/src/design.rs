@@ -13,7 +13,7 @@
 //! never prefixed.
 //!
 //! ```
-//! use sindr_core::{Block, Circuit, CircuitElement, Instance};
+//! use sindr::{Block, Circuit, CircuitElement, Instance};
 //!
 //! let divider = Block {
 //!     ports: vec!["top".into(), "out".into()],
@@ -326,6 +326,10 @@ impl Circuit {
     }
 
     /// [`flatten`](Self::flatten), borrowing `self` when it is already flat.
+    ///
+    /// # Errors
+    ///
+    /// As [`flatten`](Self::flatten).
     pub fn flattened(&self) -> Result<Cow<'_, Circuit>, DesignError> {
         if self.is_flat() {
             return Ok(Cow::Borrowed(self));

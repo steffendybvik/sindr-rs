@@ -250,7 +250,7 @@ impl Waveform {
     /// edge between two steps isn't stepped over.
     ///
     /// ```
-    /// use sindr_core::Waveform;
+    /// use sindr::Waveform;
     ///
     /// let pulse = Waveform::Pulse {
     ///     v1: 0.0, v2: 5.0, delay: 1e-3, rise_time: 1e-9, fall_time: 1e-9,

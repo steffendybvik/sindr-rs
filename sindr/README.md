@@ -4,7 +4,7 @@ MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circu
 
 Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
-Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices). The data model (`Circuit`, elements, waveforms, blocks, instances, parts) lives in [`sindr-core`](../sindr-core) and is re-exported here.
+Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
 ## Add to your project
 
@@ -349,6 +349,49 @@ CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
 
 `VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin; without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
+
+## Hierarchy and part data
+
+A `Block` is a reusable definition, what `.subckt` is in SPICE. An `Instance` places one and binds its ports to the caller's nets. Inside a block a net is a port, ground, a global (`Circuit::globals`) or local to each instance. `Circuit::flatten` expands it all, naming elements and local nets with the instance path (`X1.R1`, `X1.mid`). Every analysis flattens for you.
+
+```rust
+use sindr::{Block, Circuit, CircuitElement, Instance, Part};
+
+let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+    id: id.into(),
+    nodes: [a.into(), b.into()],
+    resistance: 1e3,
+};
+
+let mut circuit = Circuit::new(
+    "0",
+    vec![CircuitElement::VoltageSource {
+        id: "V1".into(),
+        nodes: ["in".into(), "0".into()],
+        voltage: 10.0,
+        waveform: None,
+    }],
+);
+circuit.blocks.insert(
+    "divider".into(),
+    Block {
+        ports: vec!["top".into(), "out".into()],
+        components: vec![r("R1", "top", "out"), r("R2", "out", "0")],
+        ..Block::default()
+    },
+);
+circuit.instances.push(Instance::new("X1", "divider", ["in", "mid"]));
+circuit.parts.insert(
+    "V1".into(),
+    Part { symbol: Some("Simulation_SPICE:VDC".into()), ..Part::default() },
+);
+
+let flat = circuit.flatten().unwrap();
+let ids: Vec<&str> = flat.components.iter().map(|c| c.id()).collect();
+assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
+```
+
+`Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
 
 ## Reading results
 

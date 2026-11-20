@@ -27,7 +27,7 @@ A circuit simulator you embed in Rust: build a circuit as a typed value, solve i
 
 ```toml
 [dependencies]
-sindr = "0.1.0-alpha.8"
+sindr = "0.1"
 ```
 
 How much current does a red LED draw from 5 V through 220 Ω?
@@ -54,13 +54,12 @@ More in [`sindr/examples/`](./sindr/examples): RC transient, BJT amplifier, Bode
 
 | Crate | Purpose |
 |-------|---------|
-| [`sindr`](./sindr) | The simulator: operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.meas`, ratings checks, SPICE front end |
-| [`sindr-core`](./sindr-core) | Data model: `Circuit`, elements, waveforms, design hierarchy (blocks, instances) and part data, with no solver |
+| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.meas`, ratings checks, SPICE front end |
 | [`sindr-devices`](./sindr-devices) | Device physics: diode family, BJT, MOSFET, JFET, IGBT, varactor, thermistor and photoresistor models |
 
-`sindr` depends on `sindr-core`, which depends on `sindr-devices`. The split lets design tools use `Circuit` without the solver, and lets you use the device-physics models with your own solver, without the `nalgebra` linear-algebra stack. `sindr` re-exports `sindr-core`, so most code needs only `sindr`.
+`sindr` depends on `sindr-devices`. The split lets you use the device-physics models with your own solver, without the `nalgebra` linear-algebra stack.
 
-All three build for `wasm32-unknown-unknown`, with default and all features, so sindr runs in a browser. CI builds them and solves an operating point, an AC sweep, a transient and a SPICE deck under Node on every pull request.
+Both build for `wasm32-unknown-unknown`, with default and all features, so sindr runs in a browser. CI builds them and solves an operating point, an AC sweep, a transient and a SPICE deck under Node on every pull request.
 
 ### Accuracy
 
@@ -198,7 +197,7 @@ MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circu
 
 Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
-Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices). The data model (`Circuit`, elements, waveforms, blocks, instances, parts) lives in [`sindr-core`](../sindr-core) and is re-exported here.
+Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
 ### Add to your project
 
@@ -543,6 +542,49 @@ CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
 
 `VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin; without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
+
+### Hierarchy and part data
+
+A `Block` is a reusable definition, what `.subckt` is in SPICE. An `Instance` places one and binds its ports to the caller's nets. Inside a block a net is a port, ground, a global (`Circuit::globals`) or local to each instance. `Circuit::flatten` expands it all, naming elements and local nets with the instance path (`X1.R1`, `X1.mid`). Every analysis flattens for you.
+
+```rust
+use sindr::{Block, Circuit, CircuitElement, Instance, Part};
+
+let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+    id: id.into(),
+    nodes: [a.into(), b.into()],
+    resistance: 1e3,
+};
+
+let mut circuit = Circuit::new(
+    "0",
+    vec![CircuitElement::VoltageSource {
+        id: "V1".into(),
+        nodes: ["in".into(), "0".into()],
+        voltage: 10.0,
+        waveform: None,
+    }],
+);
+circuit.blocks.insert(
+    "divider".into(),
+    Block {
+        ports: vec!["top".into(), "out".into()],
+        components: vec![r("R1", "top", "out"), r("R2", "out", "0")],
+        ..Block::default()
+    },
+);
+circuit.instances.push(Instance::new("X1", "divider", ["in", "mid"]));
+circuit.parts.insert(
+    "V1".into(),
+    Part { symbol: Some("Simulation_SPICE:VDC".into()), ..Part::default() },
+);
+
+let flat = circuit.flatten().unwrap();
+let ids: Vec<&str> = flat.components.iter().map(|c| c.id()).collect();
+assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
+```
+
+`Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
 
 ### Reading results
 
@@ -979,70 +1021,6 @@ With the default `serde` feature, `Circuit` and `SimulationResult` (and all nest
 Fields with defaults (`bf`, `temperature`, `k`, `coil_resistance`, `position`, `v_pos`, `v_neg`, `parasitic_caps`) can be omitted from JSON and will take their defaults.
 
 
-# Crate `sindr-core` README (sindr-core/README.md)
-
-## sindr-core
-
-[![crates.io](https://img.shields.io/crates/v/sindr-core.svg)](https://crates.io/crates/sindr-core)
-[![docs.rs](https://docs.rs/sindr-core/badge.svg)](https://docs.rs/sindr-core)
-
-The circuit and design data model behind [`sindr`](https://crates.io/crates/sindr), without the solver. It holds `Circuit`, every `CircuitElement`, `Waveform`, and the design layer: blocks and instances, net scoping, and part data (reference, value, symbol, footprint). It depends on `sindr-devices` (device parameter types), `thiserror` and optional `serde`. There is no linear algebra.
-
-Use it to build, store or exchange circuits in a design tool. `sindr` re-exports all of it, so `sindr::Circuit` is the same type and simulates directly.
-
-```toml
-[dependencies]
-sindr-core = "0.1"
-```
-
-### Hierarchy
-
-A `Block` is a reusable definition, what `.subckt` is in SPICE. An `Instance` places one and binds its ports to the caller's nets. Inside a block a net is a port, ground, a global (`Circuit::globals`) or local to each instance. `Circuit::flatten` expands it all, naming elements and local nets with the instance path (`X1.R1`, `X1.mid`). sindr's analyses flatten for you.
-
-```rust
-use sindr_core::{Block, Circuit, CircuitElement, Instance, Part};
-
-let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
-    id: id.into(),
-    nodes: [a.into(), b.into()],
-    resistance: 1e3,
-};
-
-let mut circuit = Circuit::new(
-    "0",
-    vec![CircuitElement::VoltageSource {
-        id: "V1".into(),
-        nodes: ["in".into(), "0".into()],
-        voltage: 10.0,
-        waveform: None,
-    }],
-);
-circuit.blocks.insert(
-    "divider".into(),
-    Block {
-        ports: vec!["top".into(), "out".into()],
-        components: vec![r("R1", "top", "out"), r("R2", "out", "0")],
-        ..Block::default()
-    },
-);
-circuit.instances.push(Instance::new("X1", "divider", ["in", "mid"]));
-circuit.parts.insert(
-    "V1".into(),
-    Part { symbol: Some("Simulation_SPICE:VDC".into()), ..Part::default() },
-);
-
-let flat = circuit.flatten().unwrap();
-let ids: Vec<&str> = flat.components.iter().map(|c| c.id()).collect();
-assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
-```
-
-`Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `sindr::check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
-
-### License
-
-MIT OR Apache-2.0.
-
-
 # Crate `sindr-devices` README (sindr-devices/README.md)
 
 ## sindr-devices
@@ -1231,7 +1209,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, plus `.subckt`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. Full SPICE3 coverage and behavioural (`B`) sources are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards are written. sindr's parser reads back only the R, L, C, V, I, D, Q part.
-- **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data (`sindr-core`), and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation. The parser doesn't read `.global`, although export writes it.
+- **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation. The parser doesn't read `.global`, although export writes it.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
 - **No Verilog-A / behavioural device language.** Adding a new device means writing a Rust companion model.
 
@@ -1489,6 +1467,984 @@ pub fn solve_ac_with_initial_voltages(
     config: &AcConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<AcResult, SimError> { … }
+```
+
+## `sindr/src/circuit.rs`
+
+Circuit input format.
+
+[`Circuit`] is the root struct sindr's analyses take: a list of
+[`CircuitElement`]s plus the name of the ground node, and optionally a
+design hierarchy (see [`crate::design`]). Components share a node by
+referencing the same node-name string; there are no separate "wire" or
+"net" objects.
+
+[`CircuitElement`] is the open-ended enum of supported component types
+(resistors, sources, semiconductors, magnetics, …). Each variant carries
+its own parameters and a fixed-size `nodes` array; sign conventions are
+documented per variant.
+
+```rust
+/// BJT parasitic capacitances. All values in Farads. Default 0.0 disables each cap.
+pub struct BjtParasiticCaps {
+    /// Base-Emitter junction capacitance (F). Typical: 5–50 pF.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub cbe: f64,
+    /// Base-Collector junction capacitance (F). Typical: 1–10 pF.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub cbc: f64,
+}
+
+/// Parameters of a [`CircuitElement::Diode`], as a SPICE `.model D` card
+/// gives them: Shockley (IS, N, RS), charge storage (CJO, VJ, M, FC, TT) and
+/// reverse breakdown (BV, IBV). Values are at the nominal 27 °C; the
+/// element's `temperature` scales `is` from there, and only `is`.
+///
+/// The default is sindr's built-in silicon diode. With serde, a missing field
+/// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
+pub struct DiodeModel {
+    /// Saturation current IS (A), positive. Default 1e-14.
+    pub is: f64,
+    /// Emission coefficient N, positive. Default 1.
+    pub n: f64,
+    /// Series resistance RS (Ω), zero or positive. Default 0.
+    pub rs: f64,
+    /// Zero-bias depletion capacitance CJO (F), zero or positive. Default 0.
+    pub cjo: f64,
+    /// Junction potential VJ (V), positive. Default 1.
+    pub vj: f64,
+    /// Grading coefficient M, in `[0, 0.9]`. Default 0.5.
+    pub m: f64,
+    /// Forward-bias depletion capacitance coefficient FC, in `[0, 0.95]`.
+    /// Default 0.5.
+    pub fc: f64,
+    /// Transit time TT (s), zero or positive: the diffusion charge is
+    /// `TT·I_d`, which sets reverse recovery. Default 0.
+    pub tt: f64,
+    /// Reverse breakdown voltage BV (V), positive. Default `None`: no
+    /// breakdown, as in SPICE without `BV`.
+    pub bv: Option<f64>,
+    /// Current at `−BV`, IBV (A), positive. Default 1 mA.
+    pub ibv: f64,
+    /// Flicker-noise coefficient KF, zero or positive: noise analysis puts
+    /// `KF·|Id|^AF / f` (A²/Hz) across the junction. Default 0.
+    pub kf: f64,
+    /// Flicker-noise exponent AF, positive. Default 1.
+    pub af: f64,
+}
+
+impl DiodeModel {
+    /// Whether the diode stores charge (CJO or TT set), which makes the
+    /// circuit reactive.
+    pub fn stores_charge(&self) -> bool { … }
+}
+
+/// Ebers–Moll parameters of a [`CircuitElement::Bjt`], as a SPICE
+/// `.model NPN`/`PNP` card gives them. The forward gain is the element's own
+/// `bf`. Values are at the nominal 27 °C; the element's `temperature` scales
+/// `is` from there.
+///
+/// The default is sindr's built-in transistor. With serde, a missing field
+/// takes its default.
+pub struct BjtModel {
+    /// Transport saturation current IS (A), positive. Default 1e-14.
+    pub is: f64,
+    /// Reverse current gain BR, positive. Default 1.
+    pub br: f64,
+    /// Forward emission coefficient NF, positive. Default 1.
+    pub nf: f64,
+    /// Reverse emission coefficient NR, positive. Default 1.
+    pub nr: f64,
+    /// Forward Early voltage VAF (V), zero or positive; 0 turns the Early
+    /// effect off. Default 0. sindr applies it as `ic·(1 + vce/VAF)`, not
+    /// through SPICE's Gummel–Poon base charge, so results differ slightly
+    /// from SPICE's when it is set.
+    pub vaf: f64,
+    /// Flicker-noise coefficient KF, zero or positive: noise analysis puts
+    /// `KF·|Ib|^AF / f` (A²/Hz) across base–emitter. Default 0.
+    pub kf: f64,
+    /// Flicker-noise exponent AF, positive. Default 1.
+    pub af: f64,
+}
+
+/// MOSFET gate parasitic capacitances. All values in Farads.
+/// Op-amp macromodel parameters, for [`CircuitElement::OpAmp`]'s `model`.
+///
+/// The gain stage is a first-order lag towards `gain · (v₊ − v₋ + offset)`,
+/// clamped to the rails, with time constant `gain / (2π · gbw)`: open-loop
+/// gain `gain / (1 + s·τ)`, so a non-inverting stage of gain G has its
+/// −3 dB point near `gbw / G`. Its rate is limited to `slew_rate`. The
+/// output is that stage's voltage behind `r_out`.
+///
+/// The pole and the slew limit act in transient and AC analyses. At DC the
+/// stage sits at its clamped target. The op-amp's state doesn't count as
+/// reactive, so [`solve_circuit`]-style automatic routing still picks DC
+/// for a circuit whose only dynamics are op-amps; run a transient
+/// explicitly to see them. Like capacitors, the stage starts from rest
+/// (0 V) at t = 0.
+///
+/// [`solve_circuit`]: https://docs.rs/sindr/latest/sindr/fn.solve_circuit.html
+pub struct OpAmpModel {
+    /// Open-loop DC gain (V/V), positive. Default 1e5 (100 dB).
+    pub gain: f64,
+    /// Gain-bandwidth product (Hz), positive; `None` for no pole. Default
+    /// 1 MHz.
+    pub gbw: Option<f64>,
+    /// Slew rate (V/s), positive; `None` for no limit. Needs `gbw`.
+    /// Default 0.5 V/µs.
+    pub slew_rate: Option<f64>,
+    /// Output resistance (Ω), zero or positive. Default 0.
+    pub r_out: f64,
+    /// Input offset voltage (V), added to `v₊ − v₋`. Default 0.
+    pub offset_voltage: f64,
+    /// Input bias current (A) drawn by each input, to ground. Default 0.
+    pub bias_current: f64,
+}
+
+/// Optional gate capacitances of a MOSFET, for transient and AC.
+pub struct MosfetParasiticCaps {
+    /// Gate-Source capacitance (F). Typical: 100–500 pF for power MOSFETs.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub cgs: f64,
+    /// Gate-Drain capacitance (Miller capacitance) (F). Typical: 10–100 pF.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub cgd: f64,
+}
+
+/// Which throw of a [`CircuitElement::SwitchSpdt`] the common terminal
+/// connects to.
+pub enum SpdtPosition {
+    /// Common to `nodes[1]`.
+    #[default]
+    A,
+    /// Common to `nodes[2]`.
+    B,
+}
+
+/// A quartz crystal's Butterworth–Van Dyke model, for
+/// [`CircuitElement::Crystal`]: a motional arm `Rm`–`Lm`–`Cm` in series,
+/// in parallel with the shunt capacitance `C0`. The series resonance is
+/// `frequency`, so `Lm = 1 / ((2π·frequency)²·Cm)`.
+///
+/// Datasheets give the frequency, the ESR (`Rm`) and the shunt capacitance;
+/// the motional capacitance is often only in an application note. The load
+/// capacitance a datasheet names isn't part of the crystal: it's the two
+/// capacitors on the board.
+pub struct CrystalParams {
+    /// Series-resonant frequency (Hz), positive.
+    pub frequency: f64,
+    /// Equivalent series resistance `Rm` (Ω), positive.
+    pub esr: f64,
+    /// Shunt capacitance `C0` (F), zero or positive.
+    pub c0: f64,
+    /// Motional capacitance `Cm` (F), positive.
+    pub cm: f64,
+}
+
+impl CrystalParams {
+    /// From a datasheet's frequency, ESR and shunt capacitance, with a
+    /// motional capacitance of `c0 / 250`, typical of AT-cut crystals in
+    /// the megahertz range.
+    pub fn from_datasheet(frequency: f64, esr: f64, c0: f64) -> Self { … }
+
+    /// Motional inductance `Lm` (H), from the frequency and `Cm`.
+    pub fn lm(&self) -> f64 { … }
+}
+
+/// A ferrite bead's circuit, for [`CircuitElement::FerriteBead`]: `r_dc`
+/// in series with `l ∥ r_ac` (and `c`, when set). Below its peak the bead
+/// is inductive, at the peak it's `r_ac`, and above it `c` takes over.
+pub struct FerriteBeadParams {
+    /// DC resistance (Ω), positive.
+    pub r_dc: f64,
+    /// Inductance (H), positive.
+    pub l: f64,
+    /// Parallel loss resistance (Ω), positive: about the impedance at the
+    /// peak.
+    pub r_ac: f64,
+    /// Parallel capacitance (F); `None` for none.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub c: Option<f64>,
+}
+
+impl FerriteBeadParams {
+    /// From a datasheet's impedance at 100 MHz and DC resistance. Takes the
+    /// bead as inductive up to 100 MHz, `l = z_100mhz / (2π·100 MHz)`, with
+    /// its loss resistance at the same impedance: a rough fit that matches
+    /// at 100 MHz and below. Fit `l`, `r_ac` and `c` to the impedance curve
+    /// when the peak matters.
+    pub fn from_datasheet(z_100mhz: f64, r_dc: f64) -> Self { … }
+}
+
+/// A single circuit component.
+///
+/// Each variant carries an `id` (unique per circuit, used to look up results)
+/// and a `nodes` array naming its terminals. Node names are arbitrary
+/// strings — components share a node by referencing the same string.
+///
+/// # Sign conventions
+///
+/// - **Two-terminal components** (resistor, source, capacitor, …):
+///   `nodes[0]` is the positive / first terminal, `nodes[1]` is the
+///   negative / second.
+/// - **Polarised components** (voltage/current sources, diodes, BJTs, …):
+///   exact terminal order is documented per variant.
+/// - **Currents** are reported as flowing from `nodes[0]` to `nodes[1]` for
+///   two-terminal components.
+///
+/// # Serde
+///
+/// With the default `serde` feature enabled, `CircuitElement` serialises
+/// using a `type` discriminator: `{"type": "resistor", "id": "R1", ...}`.
+pub enum CircuitElement {
+    /// Resistor between two nodes.
+    #[cfg_attr(feature = "serde", serde(rename = "resistor"))]
+    Resistor {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// Resistance (Ω).
+        resistance: f64,
+    },
+
+    /// Independent voltage source. `nodes[0]` is the positive terminal,
+    /// `nodes[1]` is the negative terminal.
+    #[cfg_attr(feature = "serde", serde(rename = "voltage_source"))]
+    VoltageSource {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[positive, negative]`.
+        nodes: [String; 2],
+        /// DC voltage (V); also the offset added to any `waveform`.
+        voltage: f64,
+        /// Optional time-varying waveform added on top of `voltage`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        waveform: Option<Waveform>,
+    },
+
+    /// Independent current source. Current flows from `nodes[0]` toward
+    /// `nodes[1]`.
+    #[cfg_attr(feature = "serde", serde(rename = "current_source"))]
+    CurrentSource {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[from, to]`; current flows from `nodes[0]` to `nodes[1]`.
+        nodes: [String; 2],
+        /// DC current (A); also the offset added to any `waveform`.
+        current: f64,
+        /// Optional time-varying waveform added on top of `current`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        waveform: Option<Waveform>,
+    },
+
+    /// Switch between two nodes. Modeled as a resistor with very low (closed)
+    /// or very high (open) resistance for DC analysis.
+    #[cfg_attr(feature = "serde", serde(rename = "switch"))]
+    Switch {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// When true the switch conducts (closed); when false it is open.
+        closed: bool,
+    },
+
+    /// Capacitor. Open-circuit in DC analysis; charges/discharges in
+    /// transient. `voltage_across` is reported as `nodes[0] − nodes[1]`.
+    #[cfg_attr(feature = "serde", serde(rename = "capacitor"))]
+    Capacitor {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// Capacitance (F).
+        capacitance: f64,
+    },
+
+    /// A battery: open-circuit voltage by state of charge behind a series
+    /// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
+    /// its open-circuit voltage at `state_of_charge` behind `R0 + R1`. In
+    /// transient the RC pair charges and the state of charge falls with the
+    /// charge drawn, reported per step in `state_of_charge`. In AC it is
+    /// the impedance `R0 + R1‖C1`. `current_through` flows
+    /// `nodes[0] → nodes[1]` inside the cell, so it is negative while the
+    /// battery discharges, as for a voltage source.
+    ///
+    /// [`BatteryParams`]: sindr_devices::battery::BatteryParams
+    #[cfg_attr(feature = "serde", serde(rename = "battery"))]
+    Battery {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[positive, negative]`.
+        nodes: [String; 2],
+        /// The cell's equivalent circuit.
+        params: sindr_devices::battery::BatteryParams,
+        /// State of charge at the start, 0 (empty) to 1 (full).
+        state_of_charge: f64,
+    },
+
+    /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
+    /// solves DC as a single algebraic step, not as t→∞ of a transient);
+    /// integrates `dI/dt` properly during transient. The DC bias point that
+    /// AC, `.tf` and `.sens` linearise around shorts it instead. `voltage_across` is
+    /// reported as `nodes[0] − nodes[1]`, `current_through` flows
+    /// `nodes[0] → nodes[1]`. To get steady-state current, run a
+    /// transient long enough to settle.
+    #[cfg_attr(feature = "serde", serde(rename = "inductor"))]
+    Inductor {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`; `current_through` flows `nodes[0] → nodes[1]`.
+        nodes: [String; 2],
+        /// Inductance (H): the small-signal value, at zero current.
+        inductance: f64,
+        /// Core saturation: the inductance falls towards `l_sat` as the
+        /// current passes `i_sat`. `None` is a linear inductor.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        saturation: Option<sindr_devices::inductor::InductorSaturation>,
+    },
+
+    /// Diode (Shockley model, silicon unless `model` says otherwise).
+    /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
+    /// positive `voltage_across` corresponds to forward bias.
+    #[cfg_attr(feature = "serde", serde(rename = "diode"))]
+    Diode {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[anode, cathode]`.
+        nodes: [String; 2],
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
+        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
+        temperature: f64,
+        /// Model parameters (IS, N, RS). `None` is the built-in silicon diode,
+        /// the same as `Some(DiodeModel::default())`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<DiodeModel>,
+    },
+
+    /// LED. `nodes: [anode, cathode]`. Forward voltage drop depends on
+    /// `color` (e.g. `"red"` ≈ 1.8 V, `"blue"` ≈ 3.2 V).
+    #[cfg_attr(feature = "serde", serde(rename = "led"))]
+    Led {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[anode, cathode]`.
+        nodes: [String; 2],
+        /// Emission colour (e.g. `"red"`, `"blue"`); sets the forward voltage drop.
+        color: String,
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
+        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
+        temperature: f64,
+    },
+
+    /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
+    /// DC, transient and AC.
+    #[cfg_attr(feature = "serde", serde(rename = "bjt"))]
+    Bjt {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[base, collector, emitter]`.
+        nodes: [String; 3], // [base, collector, emitter]
+        /// Polarity (NPN or PNP).
+        kind: BjtKind,
+        /// Forward current gain β (unitless), positive and finite. Default 100.
+        #[cfg_attr(feature = "serde", serde(default = "default_bf"))]
+        bf: f64,
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
+        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
+        temperature: f64,
+        /// Optional parasitic capacitances (Cbe, Cbc). None = no parasitic caps (default).
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        parasitic_caps: Option<BjtParasiticCaps>,
+        /// Ebers–Moll parameters besides `bf` (IS, BR, NF, NR, VAF). `None`
+        /// is the built-in transistor, the same as `Some(BjtModel::default())`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<BjtModel>,
+    },
+
+    /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
+    /// to the source).
+    #[cfg_attr(feature = "serde", serde(rename = "mosfet"))]
+    Mosfet {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[gate, drain, source]`.
+        nodes: [String; 3], // [gate, drain, source]
+        /// Channel type (NMOS or PMOS).
+        kind: MosfetKind,
+        /// Model parameters (threshold voltage, transconductance, etc.).
+        #[cfg_attr(feature = "serde", serde(default))]
+        params: MosfetParams,
+        /// Optional parasitic capacitances (Cgs, Cgd). None = no parasitic caps (default).
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        parasitic_caps: Option<MosfetParasiticCaps>,
+        /// A power MOSFET's body diode, as a SPICE diode card: anode at the
+        /// source and cathode at the drain for NMOS, the other way round for
+        /// PMOS. It conducts when the drain is pulled past the source, as
+        /// in a bridge's freewheeling interval. Every analysis solves it as
+        /// a [`CircuitElement::Diode`] with id `<id>.body`, which is where
+        /// its current is reported. `None` (default) is no body diode.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        body_diode: Option<DiodeModel>,
+    },
+
+    /// N-channel or P-channel JFET (Shockley square-law model).
+    /// nodes: [gate, drain, source]
+    #[cfg_attr(feature = "serde", serde(rename = "jfet"))]
+    Jfet {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[gate, drain, source]`.
+        nodes: [String; 3], // [gate, drain, source]
+        /// Channel type (N-channel or P-channel).
+        kind: JfetKind,
+        /// Drain saturation current at Vgs=0 (A). Typical: 1–20 mA.
+        #[cfg_attr(feature = "serde", serde(default = "default_jfet_idss"))]
+        idss: f64,
+        /// Pinch-off voltage (V, negative for N-channel, e.g. -2.0).
+        #[cfg_attr(feature = "serde", serde(default = "default_jfet_vp"))]
+        vp: f64,
+    },
+
+    /// Voltage-Controlled Voltage Source: V_out = mu * V_control.
+    /// nodes: [out+, out-], control_nodes: [ctrl+, ctrl-]
+    #[cfg_attr(feature = "serde", serde(rename = "vcvs"))]
+    Vcvs {
+        /// Unique component identifier.
+        id: String,
+        /// Output terminals `[out+, out-]`.
+        nodes: [String; 2],
+        /// Sensing terminals `[ctrl+, ctrl-]`.
+        control_nodes: [String; 2],
+        /// Voltage gain μ (V/V): `V_out = gain * V_control`.
+        gain: f64, // mu
+    },
+
+    /// Voltage-Controlled Current Source: I_out = gm * V_control.
+    /// nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-]
+    #[cfg_attr(feature = "serde", serde(rename = "vccs"))]
+    Vccs {
+        /// Unique component identifier.
+        id: String,
+        /// Output terminals `[out_from, out_to]`.
+        nodes: [String; 2],
+        /// Sensing terminals `[ctrl+, ctrl-]`.
+        control_nodes: [String; 2],
+        /// Transconductance gm (A/V): `I_out = gm * V_control`.
+        gm: f64,
+    },
+
+    /// Current-Controlled Voltage Source: V_out = rm * I_control.
+    /// nodes: [out+, out-], control_source: id of controlling voltage source
+    #[cfg_attr(feature = "serde", serde(rename = "ccvs"))]
+    Ccvs {
+        /// Unique component identifier.
+        id: String,
+        /// Output terminals `[out+, out-]`.
+        nodes: [String; 2],
+        /// Id of the voltage source whose current is sensed.
+        control_source: String,
+        /// Transresistance rm (Ω): `V_out = rm * I_control`.
+        rm: f64,
+    },
+
+    /// Current-Controlled Current Source: I_out = alpha * I_control.
+    /// nodes: [out_from, out_to], control_source: id of controlling voltage source
+    #[cfg_attr(feature = "serde", serde(rename = "cccs"))]
+    Cccs {
+        /// Unique component identifier.
+        id: String,
+        /// Output terminals `[out_from, out_to]`.
+        nodes: [String; 2],
+        /// Id of the voltage source whose current is sensed.
+        control_source: String,
+        /// Current gain α (A/A): `I_out = alpha * I_control`.
+        alpha: f64,
+    },
+
+    /// Pushbutton (momentary switch): identical behaviour to Switch.
+    /// When closed = true, current flows; when false, open circuit.
+    #[cfg_attr(feature = "serde", serde(rename = "pushbutton"))]
+    Pushbutton {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// When true the button conducts (pressed); when false it is open.
+        closed: bool,
+    },
+
+    /// Relay: 4-terminal component with a coil and a contact pair.
+    /// nodes: [coil+, coil-, contact1, contact2]
+    /// Contact closes when |V_coil| >= pickup_voltage. AC and `.tf` take the
+    /// contact as open or closed at the DC bias point.
+    #[cfg_attr(feature = "serde", serde(rename = "relay"))]
+    Relay {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[coil+, coil-, contact1, contact2]`.
+        nodes: [String; 4],
+        /// Coil resistance (Ω). Default 500.
+        #[cfg_attr(feature = "serde", serde(default = "default_relay_coil_resistance"))]
+        coil_resistance: f64,
+        /// Coil voltage magnitude at which the contact closes (V).
+        pickup_voltage: f64,
+        /// Coil inductance in Henry, in series with `coil_resistance` in
+        /// transient. 0.0 = purely resistive coil.
+        #[cfg_attr(feature = "serde", serde(default))]
+        inductance: f64,
+    },
+
+    /// Photoresistor (LDR): resistance varies logarithmically with light.
+    /// light_level = 0.0 → ~1 MΩ (dark), 1.0 → ~1 kΩ (bright).
+    #[cfg_attr(feature = "serde", serde(rename = "photoresistor"))]
+    Photoresistor {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// Incident light level, 0.0 (dark, ~1 MΩ) to 1.0 (bright, ~1 kΩ).
+        light_level: f64,
+    },
+
+    /// Potentiometer: 3-terminal voltage divider.
+    /// nodes: [top, wiper, bottom]
+    /// position = 0.0 → wiper at top, 1.0 → wiper at bottom.
+    #[cfg_attr(feature = "serde", serde(rename = "potentiometer"))]
+    Potentiometer {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[top, wiper, bottom]`.
+        nodes: [String; 3],
+        /// End-to-end resistance (Ω).
+        resistance: f64,
+        /// Wiper position, 0.0 (at top) to 1.0 (at bottom).
+        position: f64,
+    },
+
+    /// Zener diode between two nodes: a silicon diode with SPICE reverse
+    /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
+    /// (the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`), so it holds about
+    /// `vz` at a small zener's 5 mA test current and rises 1 V per amp past
+    /// it. For another knee, use a [`CircuitElement::Diode`] with a
+    /// [`DiodeModel`] setting `bv` and `ibv`.
+    /// nodes: [anode, cathode]
+    #[cfg_attr(feature = "serde", serde(rename = "zener_diode"))]
+    ZenerDiode {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[anode, cathode]`.
+        nodes: [String; 2],
+        /// Reverse breakdown (Zener) voltage (V).
+        vz: f64,
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
+        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
+        temperature: f64,
+    },
+
+    /// Op-amp, output referred to ground.
+    ///
+    /// With `model: None` it is the near-ideal VCVS sindr has always used:
+    /// gain 1e5, no frequency response, no output resistance, and `v_pos` /
+    /// `v_neg` not enforced. With an [`OpAmpModel`] it gets a dominant pole
+    /// from the gain-bandwidth product, slew-rate limiting, output
+    /// resistance, input offset and bias current, and an output clamped to
+    /// `v_pos`/`v_neg`.
+    #[cfg_attr(feature = "serde", serde(rename = "op_amp"))]
+    OpAmp {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[in_plus, in_minus, out]`.
+        nodes: [String; 3], // [in_plus, in_minus, out]
+        /// Positive supply rail (V): the output's upper limit with a
+        /// `model`. Default 15.
+        #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
+        v_pos: f64,
+        /// Negative supply rail (V): the output's lower limit with a
+        /// `model`. Default -15.
+        #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
+        v_neg: f64,
+        /// Macromodel parameters; `None` for the near-ideal VCVS.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<OpAmpModel>,
+    },
+
+    /// Ideal comparator (same VCVS stamp as OpAmp; output saturates to supply rails).
+    /// nodes: [in_plus, in_minus, out]
+    #[cfg_attr(feature = "serde", serde(rename = "comparator"))]
+    Comparator {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[in_plus, in_minus, out]`.
+        nodes: [String; 3], // [in_plus, in_minus, out]
+        /// Positive supply rail / output high level (V). Default 15.
+        #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
+        v_pos: f64,
+        /// Negative supply rail / output low level (V). Default -15.
+        #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
+        v_neg: f64,
+    },
+
+    /// Schottky diode: lower forward voltage (~0.3V) than silicon diode.
+    /// nodes: [anode, cathode]
+    #[cfg_attr(feature = "serde", serde(rename = "schottky_diode"))]
+    SchottkyDiode {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[anode, cathode]`.
+        nodes: [String; 2],
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
+        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
+        temperature: f64,
+    },
+
+    /// NTC thermistor: resistance varies with temperature (passive, no NR).
+    /// nodes: [n1, n2]
+    #[cfg_attr(feature = "serde", serde(rename = "thermistor"))]
+    Thermistor {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[n1, n2]`.
+        nodes: [String; 2],
+        /// Temperature in Kelvin, positive and finite. Default: 298.15 K (25°C).
+        #[cfg_attr(feature = "serde", serde(default = "default_temperature"))]
+        temperature: f64,
+    },
+
+    /// Photodiode: diode + photocurrent source driven by irradiance.
+    /// nodes: [anode, cathode]
+    #[cfg_attr(feature = "serde", serde(rename = "photodiode"))]
+    Photodiode {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[anode, cathode]`.
+        nodes: [String; 2],
+        /// Incident irradiance in W (optical power, not W/m²).
+        /// 0.0 = dark, 0.1 = ~50mA photocurrent with default responsivity.
+        #[cfg_attr(feature = "serde", serde(default))]
+        irradiance: f64,
+        /// Junction temperature (K), positive and finite. Default 300.15 K.
+        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
+        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
+        temperature: f64,
+    },
+
+    /// Varactor diode: voltage-dependent junction capacitance.
+    /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
+    /// transient; in AC, its capacitance at the DC bias point.
+    /// nodes: [anode, cathode]
+    #[cfg_attr(feature = "serde", serde(rename = "varactor"))]
+    Varactor {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[anode, cathode]`.
+        nodes: [String; 2],
+        /// Model parameters (zero-bias capacitance, grading, etc.).
+        #[cfg_attr(feature = "serde", serde(default))]
+        params: sindr_devices::varactor::VaractorParams,
+    },
+
+    /// IGBT: MOSFET gate control + BJT output characteristics.
+    /// Nonlinear element — requires Newton-Raphson iteration.
+    /// nodes: [gate, collector, emitter]
+    #[cfg_attr(feature = "serde", serde(rename = "igbt"))]
+    Igbt {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[gate, collector, emitter]`.
+        nodes: [String; 3],
+        /// Model parameters (threshold voltage, transconductance, etc.).
+        #[cfg_attr(feature = "serde", serde(default))]
+        params: sindr_devices::igbt::IgbtParams,
+    },
+
+    /// Ideal transformer with coupled inductors.
+    ///
+    /// nodes: [p1, q1, p2, q2] where:
+    ///   - [p1, q1]: primary winding (+ and - terminals)
+    ///   - [p2, q2]: secondary winding (+ and - terminals)
+    ///
+    /// Coupling: M = k * sqrt(L1 * L2) where k ∈ [0, 1).
+    /// k=1 is ideal (no leakage), but mathematically singular — use k<=0.999.
+    ///
+    /// In DC analysis: both windings stamped as short circuits; the bias point
+    /// for AC, `.tf` and `.sens` shorts each with a 0 V source.
+    /// In AC: the coupled pair `V = jω·[[L1, M], [M, L2]]·I`.
+    /// In transient: coupled-inductor companion with 2 branch current unknowns,
+    /// each winding `V = L·dI/dt` plus the mutual term. The windings start at
+    /// 0 A; an initial current on a transformer is rejected.
+    #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
+    Transformer {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[p1, q1, p2, q2]`: primary `[p1, q1]`, secondary `[p2, q2]`.
+        nodes: [String; 4], // [p1, q1, p2, q2]
+        /// Primary winding inductance (H).
+        l1: f64, // Primary inductance (H)
+        /// Secondary winding inductance (H).
+        l2: f64, // Secondary inductance (H)
+        /// Coupling coefficient (unitless) in `[0, 0.999]`. Default 0.999 (near-ideal).
+        #[cfg_attr(feature = "serde", serde(default = "default_coupling"))]
+        k: f64, // Coupling coefficient [0, 0.999]. Default 0.999 (near-ideal).
+    },
+
+    /// Fuse between two nodes.
+    ///
+    /// Intact (blown=false): stamped as 0.001 Ω (1 mΩ) — negligible voltage drop.
+    /// Blown (blown=true): stamped as 1e9 Ω — effectively open circuit.
+    ///
+    /// NOTE: Do NOT use 0 Ω — that would cause a singular MNA matrix.
+    /// rating is stored for display purposes only (v1 — no auto-blow logic).
+    #[cfg_attr(feature = "serde", serde(rename = "fuse"))]
+    Fuse {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// Current rating in Amperes (display only — no auto-blow logic in v1).
+        #[cfg_attr(feature = "serde", serde(default = "default_fuse_rating"))]
+        rating: f64,
+        /// When true, fuse is blown (open circuit). User-settable, like switch.closed.
+        #[cfg_attr(feature = "serde", serde(default))]
+        blown: bool,
+    },
+
+    /// Linear voltage regulator: holds the output at `voltage` above its
+    /// ground pin while it has headroom, and draws its output current plus
+    /// its quiescent current from the input.
+    ///
+    /// Piecewise linear (see `sindr_devices::regulator`): out of headroom
+    /// the output follows the input down by the dropout; past the current
+    /// limit it holds the current. `model` sets dropout, quiescent current,
+    /// current limit and line and load regulation;
+    /// `RegulatorParams::lm7805()` and `::ams1117()` are datasheet presets.
+    /// Its result is the pass element: `Vin − Vout`, the output current,
+    /// and the power it dissipates.
+    ///
+    /// `nodes: [input, output, gnd]`
+    #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
+    VoltageRegulator {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[input, output, gnd]`.
+        nodes: [String; 3], // [input, output, gnd]
+        /// Regulated output voltage (V). E.g. 5.0 for a 7805.
+        voltage: f64,
+        /// Dropout, quiescent current, limit and regulation. `None` is an
+        /// ideal regulator that still can't put out more than it gets in.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<sindr_devices::regulator::RegulatorParams>,
+    },
+    /// Single-pole double-throw switch: `nodes: [common, a, b]`. The common
+    /// terminal connects to `a` or `b` as [`Switch`](Self::Switch) does
+    /// (0.01 Ω), and the other throw is open (1 GΩ). Its result is the path
+    /// in use: `voltage_across` from common to the selected throw and the
+    /// current from common into it.
+    #[cfg_attr(feature = "serde", serde(rename = "switch_spdt"))]
+    SwitchSpdt {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[common, a, b]`.
+        nodes: [String; 3],
+        /// Which throw the common terminal is switched to.
+        #[cfg_attr(feature = "serde", serde(default))]
+        position: SpdtPosition,
+    },
+
+    /// Quartz crystal: the Butterworth–Van Dyke model ([`CrystalParams`]).
+    /// An open circuit at DC. Its result's `power` is what the motional
+    /// resistance dissipates: the drive level a datasheet limits.
+    /// `nodes: [a, b]`
+    #[cfg_attr(feature = "serde", serde(rename = "crystal"))]
+    Crystal {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// The equivalent circuit.
+        params: CrystalParams,
+    },
+
+    /// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC,
+    /// lossy and inductive at high frequency. Its result's `power` is what
+    /// its two resistances dissipate. `nodes: [a, b]`
+    #[cfg_attr(feature = "serde", serde(rename = "ferrite_bead"))]
+    FerriteBead {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[a, b]`.
+        nodes: [String; 2],
+        /// The equivalent circuit.
+        params: FerriteBeadParams,
+    },
+}
+
+impl CircuitElement {
+    /// Returns a reference to the node array for this component.
+    pub fn nodes(&self) -> &[String] { … }
+
+    /// Returns all node names referenced by this component, including control nodes.
+    pub fn all_nodes(&self) -> Vec<&String> { … }
+
+    /// Returns the component identifier.
+    pub fn id(&self) -> &str { … }
+
+    /// Extra MNA unknowns the element adds after the node voltages: one
+    /// branch current for a voltage-type source, two for a transformer
+    /// (one per winding), and two for an op-amp with an [`OpAmpModel`]
+    /// (its output current, then its internal gain-stage voltage).
+    pub fn branch_slots(&self) -> usize { … }
+
+    /// Mutable [`nodes`](Self::nodes), for renaming nets.
+    pub fn nodes_mut(&mut self) -> &mut [String] { … }
+
+    /// Mutable [`id`](Self::id), for renaming.
+    pub fn id_mut(&mut self) -> &mut String { … }
+
+    /// The control-net pair of a VCVS or VCCS.
+    pub fn control_nodes_mut(&mut self) -> Option<&mut [String; 2]> { … }
+
+    /// The controlling source id of a CCVS or CCCS.
+    pub fn control_source_mut(&mut self) -> Option<&mut String> { … }
+}
+
+/// A circuit: components, nets, and optionally a design hierarchy.
+///
+/// The top level is a list of [`CircuitElement`]s plus the name of the
+/// ground net. Components share a net by referencing the same net-name
+/// string. A design can also place [`Block`]s through [`Instance`]s and
+/// carry [`Part`] data (reference, symbol, footprint) that the simulator
+/// ignores. [`Circuit::flatten`] expands the hierarchy; sindr's analyses
+/// do that themselves.
+///
+/// # Example
+///
+/// ```
+/// use sindr::{Circuit, CircuitElement};
+///
+/// let circuit = Circuit::new(
+///     "0",
+///     vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["n1".into(), "0".into()],
+///             voltage: 9.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["n1".into(), "0".into()],
+///             resistance: 1_000.0,
+///         },
+///     ],
+/// );
+/// assert!(circuit.is_flat());
+/// ```
+pub struct Circuit {
+    /// Top-level components. Order has no semantic meaning.
+    pub components: Vec<CircuitElement>,
+    /// Name of the reference (0 V) net. Must match the net string used by
+    /// at least one component (typically `"0"` or `"gnd"`). It is the same
+    /// net inside every block.
+    pub ground_node: String,
+    /// Top-level block instances.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub instances: Vec<Instance>,
+    /// Block definitions, by name.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub blocks: BTreeMap<String, Block>,
+    /// Part data for top-level components and instances, keyed by their id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub parts: BTreeMap<String, Part>,
+    /// Nets visible inside every block under the same name (supply rails),
+    /// besides ground. Never prefixed when flattening.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub globals: Vec<String>,
+}
+
+impl Circuit {
+    /// A flat circuit: `components` referencing `ground_node`, no hierarchy.
+    pub fn new(ground_node: impl Into<String>, components: Vec<CircuitElement>) -> Self { … }
+
+    /// `true` when there are no instances to expand.
+    pub fn is_flat(&self) -> bool { … }
+
+    /// Every net named at the top level: component and instance nodes plus
+    /// ground, sorted and without repeats. Nets local to block instances
+    /// show up only after [`flatten`](Self::flatten).
+    pub fn nets(&self) -> Vec<&str> { … }
+
+    /// Count the number of independent voltage sources in the circuit.
+    /// Also counts VCVS, CCVS, OpAmp, and Comparator which need branch currents.
+    /// Transformer adds 2 branch current unknowns (one per winding).
+    pub fn count_voltage_sources(&self) -> usize { … }
+
+    /// Returns true if the circuit contains any nonlinear elements.
+    pub fn has_nonlinear_elements(&self) -> bool { … }
+
+    /// Returns true if the circuit contains any reactive elements (Capacitor, Inductor, or
+    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET with non-zero parasitic caps,
+    /// or a diode whose model stores charge).
+    pub fn has_reactive_elements(&self) -> bool { … }
+
+    /// Returns true if any source has a time-varying waveform.
+    pub fn has_waveform_sources(&self) -> bool { … }
+
+    /// Find the branch index for a voltage source by its ID.
+    /// Returns None if not found.
+    pub fn vsource_branch_index(&self, source_id: &str) -> Option<usize> { … }
+}
 ```
 
 ## `sindr/src/csv.rs`
@@ -1774,6 +2730,283 @@ pub fn dc_sweep_nested(
 ) -> Result<NestedDcSweepResult, SimError> { … }
 ```
 
+## `sindr/src/design.rs`
+
+Design hierarchy and part data: [`Block`], [`Instance`], [`Part`], and
+[`Circuit::flatten`].
+
+A [`Block`] is a reusable definition, what `.subckt` is in SPICE. An
+[`Instance`] places a block and binds its ports to the caller's nets,
+what an `X` line is. Inside a block a net name is a port, ground
+([`Circuit::ground_node`]), a global ([`Circuit::globals`]), or local to
+each instance.
+
+Flattening names things the way the SPICE parser always has: elements
+and local nets get the instance path joined with `.` (`x1.x2.r1`,
+`x1.mid`), ports become the caller's net, and ground and globals are
+never prefixed.
+
+```
+use sindr::{Block, Circuit, CircuitElement, Instance};
+
+let divider = Block {
+    ports: vec!["top".into(), "out".into()],
+    components: vec![
+        CircuitElement::Resistor { id: "R1".into(), nodes: ["top".into(), "out".into()], resistance: 1e3 },
+        CircuitElement::Resistor { id: "R2".into(), nodes: ["out".into(), "0".into()], resistance: 1e3 },
+    ],
+    ..Block::default()
+};
+let mut circuit = Circuit::new(
+    "0",
+    vec![CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 10.0, waveform: None }],
+);
+circuit.blocks.insert("divider".into(), divider);
+circuit.instances.push(Instance::new("X1", "divider", ["in", "mid"]));
+
+let flat = circuit.flatten().unwrap();
+assert!(flat.is_flat());
+assert_eq!(flat.components[1].id(), "X1.R1");
+assert_eq!(flat.components[2].nodes(), ["mid", "0"]);
+```
+
+```rust
+/// Separator between instance-path segments in flattened names.
+pub const PATH_SEPARATOR: char = '.';
+
+/// A reusable block definition: what `.subckt` is in SPICE.
+pub struct Block {
+    /// Port nets, in the order [`Instance::nodes`] binds them.
+    pub ports: Vec<String>,
+    /// Components inside the block, named in the block's own scope.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub components: Vec<CircuitElement>,
+    /// Instances of other blocks placed inside this one.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub instances: Vec<Instance>,
+    /// Part data for the block's components and instances, keyed by id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub parts: BTreeMap<String, Part>,
+}
+
+/// One placement of a [`Block`]: what an `X` line is in SPICE.
+pub struct Instance {
+    /// Instance id, unique in its scope (`"X1"`). Prefixes everything inside
+    /// it when flattened.
+    pub id: String,
+    /// Name of the block it places, a key of [`Circuit::blocks`].
+    pub block: String,
+    /// The caller's nets, bound to [`Block::ports`] by position.
+    pub nodes: Vec<String>,
+}
+
+impl Instance {
+    /// An instance of `block` with `nodes` bound to its ports in order.
+    pub fn new<S: Into<String>>(
+        id: impl Into<String>,
+        block: impl Into<String>,
+        nodes: impl IntoIterator<Item = S>,
+    ) -> Self { … }
+}
+
+/// Part data for a component or instance: what a schematic or BOM needs.
+/// The simulator ignores it.
+pub struct Part {
+    /// Reference designator (`"R1"`). `None` means the element id is the
+    /// reference.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub reference: Option<String>,
+    /// Display value (`"10k"`, `"BC547"`).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub value: Option<String>,
+    /// Schematic symbol, in whatever form the design tool uses
+    /// (`"Device:R"`).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub symbol: Option<String>,
+    /// PCB footprint (`"Resistor_SMD:R_0603_1608Metric"`).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub footprint: Option<String>,
+    /// Any other fields: manufacturer, MPN, tolerance, …
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
+    pub fields: BTreeMap<String, String>,
+    /// Absolute maximum ratings from the datasheet. `sindr::check_ratings`
+    /// compares a simulation against them.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Ratings::is_empty"))]
+    pub ratings: Ratings,
+    /// How the part sheds heat. When set, the solver heats its junction by
+    /// the power it dissipates; see [`Thermal`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub thermal: Option<Thermal>,
+}
+
+/// A part's thermal path to ambient, for self-heating.
+///
+/// With it, the part's junction runs at `ambient + P·Rθ` in DC, or follows
+/// `Cθ·dT/dt = P − (T − ambient)/Rθ` in a transient, and the solver feeds
+/// that temperature back into the device (IS and kT/q for diodes, LEDs and
+/// BJTs; the thermistor's resistance). The element's own `temperature`
+/// field is then ignored.
+///
+/// Rθ is [`rth_jc`](Self::rth_jc) + [`rth_ca`](Self::rth_ca) when both are
+/// set (a part on a heatsink), otherwise [`rth_ja`](Self::rth_ja).
+pub struct Thermal {
+    /// Junction to ambient (K/W), the datasheet's Rθja for the part on its
+    /// own.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_ja: Option<f64>,
+    /// Junction to case (K/W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_jc: Option<f64>,
+    /// Case to ambient through what the part is mounted on: interface pad
+    /// plus heatsink (K/W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_ca: Option<f64>,
+    /// Thermal capacitance (J/K). `None` in a transient means the junction
+    /// follows its power with no lag.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub cth: Option<f64>,
+    /// Ambient temperature (K). Default 300.15 K (27 °C).
+    pub ambient: f64,
+}
+
+impl Thermal {
+    /// A free-standing part: junction to ambient `rth_ja` (K/W).
+    pub fn junction_to_ambient(rth_ja: f64) -> Self { … }
+
+    /// A part on a heatsink: junction to case `rth_jc` plus case to ambient
+    /// `rth_ca` (K/W).
+    pub fn on_heatsink(rth_jc: f64, rth_ca: f64) -> Self { … }
+
+    /// The thermal resistance from junction to ambient (K/W) the solver
+    /// uses, or `None` when neither path is set.
+    pub fn resistance(&self) -> Option<f64> { … }
+}
+
+/// Absolute maximum ratings: the datasheet limits a part must never pass.
+///
+/// Every limit is a magnitude in SI units and `None` when unknown. A rating
+/// a part needs but doesn't have is reported as unverified, never as a
+/// pass. Which ratings a component needs depends on its kind; see
+/// `sindr::ratings`.
+pub struct Ratings {
+    /// Power dissipation (W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub power: Option<f64>,
+    /// Voltage across the part (V): a capacitor's rated voltage, a
+    /// resistor's working voltage.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub voltage: Option<f64>,
+    /// Current through the part (A): an inductor's saturation current.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current: Option<f64>,
+    /// Reverse voltage (V): a diode's cathode above its anode, or a
+    /// polarised capacitor's `nodes[1]` above its `nodes[0]` (the `+`
+    /// terminal). Most electrolytics allow 1 V or less; set it on a
+    /// polarised capacitor's part to have reverse bias flagged.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub reverse_voltage: Option<f64>,
+    /// Diode forward current, anode to cathode (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub forward_current: Option<f64>,
+    /// BJT or IGBT collector–emitter voltage, `|Vce|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vce: Option<f64>,
+    /// BJT collector–base voltage, `|Vcb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vcb: Option<f64>,
+    /// BJT emitter–base voltage, `|Veb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub veb: Option<f64>,
+    /// BJT or IGBT collector current, `|Ic|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub ic: Option<f64>,
+    /// MOSFET or JFET drain–source voltage, `|Vds|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vds: Option<f64>,
+    /// MOSFET or JFET gate–source voltage, `|Vgs|`; an IGBT's gate–emitter
+    /// voltage (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vgs: Option<f64>,
+    /// MOSFET or JFET drain current, `|Id|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub id: Option<f64>,
+    /// Maximum junction temperature (K): 423.15 K for a 150 °C part. Checked
+    /// against the junction temperature self-heating reports, so it needs
+    /// [`Part::thermal`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub tj_max: Option<f64>,
+}
+
+impl Ratings {
+    /// `true` when no limit is set.
+    pub fn is_empty(&self) -> bool { … }
+}
+
+/// Why a design can't be flattened.
+pub enum DesignError {
+    /// An instance names a block that isn't in [`Circuit::blocks`].
+    #[error("instance `{instance}` places block `{block}`, which is not defined")]
+    UnknownBlock {
+        /// Full path of the instance (`x1.x2`).
+        instance: String,
+        /// The missing block.
+        block: String,
+    },
+    /// An instance binds a different number of nets than the block has ports.
+    #[error("instance `{instance}` connects {got} nets, but block `{block}` has {expected} ports")]
+    PortCount {
+        /// Full path of the instance.
+        instance: String,
+        /// The block it places.
+        block: String,
+        /// Ports the block declares.
+        expected: usize,
+        /// Nets the instance binds.
+        got: usize,
+    },
+    /// A block places itself, directly or through other blocks.
+    #[error("instance `{instance}` places block `{block}` inside itself")]
+    RecursiveBlock {
+        /// Full path of the instance that closes the loop.
+        instance: String,
+        /// The block that recurses.
+        block: String,
+    },
+    /// Two components or instances in one scope share an id.
+    #[error("id `{id}` is used twice in {scope}")]
+    DuplicateId {
+        /// The repeated id.
+        id: String,
+        /// `"the top level"` or `"block `name`"`.
+        scope: String,
+    },
+}
+
+impl Circuit {
+    /// Expand every instance into a flat circuit with no instances or
+    /// blocks. Names follow the module docs; `parts` keys get the same
+    /// prefix as their element, and `globals` carry over.
+    ///
+    /// Top-level components come first, then each instance's expansion in
+    /// order, depth-first.
+    ///
+    /// # Errors
+    ///
+    /// [`DesignError`] for an unknown block, a port-count mismatch, a
+    /// recursive block, or a repeated id in one scope.
+    pub fn flatten(&self) -> Result<Circuit, DesignError> { … }
+
+    /// [`flatten`](Self::flatten), borrowing `self` when it is already flat.
+    pub fn flattened(&self) -> Result<Cow<'_, Circuit>, DesignError> { … }
+}
+```
+
 ## `sindr/src/error.rs`
 
 Error type returned by the solver.
@@ -1806,7 +3039,7 @@ pub enum SimError {
     /// The design hierarchy can't be flattened: an unknown block, a
     /// port-count mismatch, a recursive block or a repeated id.
     #[error("{0}")]
-    Design(#[from] sindr_core::DesignError),
+    Design(#[from] crate::DesignError),
 
     /// No ground node was defined. Every circuit needs a reference node.
     #[error(
@@ -2775,9 +4008,8 @@ assert!((led.current_through - 3.2 / 220.0).abs() < 1.5e-3);
 
 ### Data model and hierarchy
 
-[`Circuit`] and everything in it comes from the [`sindr_core`] crate,
-re-exported here as [`circuit`], [`design`] and [`waveform`]. Design tools
-can depend on `sindr-core` alone. Besides its flat `components`, a
+[`Circuit`] and everything in it lives in [`circuit`], [`design`] and
+[`waveform`]. Besides its flat `components`, a
 circuit can place [`Block`]s through [`Instance`]s, name `globals`, and
 carry [`Part`] data (reference, symbol, footprint) the solver ignores.
 Every analysis flattens the hierarchy first ([`Circuit::flatten`]: `X1.R1`,
@@ -2971,13 +4203,13 @@ pub mod ac_analysis;
 
 pub mod import;
 
-pub use sindr_core::circuit;
-
-pub use sindr_core::design;
+pub mod circuit;
 
 pub mod csv;
 
 pub mod dc_sweep;
+
+pub mod design;
 
 pub mod error;
 
@@ -5836,1311 +7068,7 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> { … }
 ```
 
-
-# Public API of `sindr-core`
-
-## `sindr-core/src/circuit.rs`
-
-Circuit input format.
-
-[`Circuit`] is the root struct sindr's analyses take: a list of
-[`CircuitElement`]s plus the name of the ground node, and optionally a
-design hierarchy (see [`crate::design`]). Components share a node by
-referencing the same node-name string; there are no separate "wire" or
-"net" objects.
-
-[`CircuitElement`] is the open-ended enum of supported component types
-(resistors, sources, semiconductors, magnetics, …). Each variant carries
-its own parameters and a fixed-size `nodes` array; sign conventions are
-documented per variant.
-
-```rust
-/// BJT parasitic capacitances. All values in Farads. Default 0.0 disables each cap.
-pub struct BjtParasiticCaps {
-    /// Base-Emitter junction capacitance (F). Typical: 5–50 pF.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub cbe: f64,
-    /// Base-Collector junction capacitance (F). Typical: 1–10 pF.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub cbc: f64,
-}
-
-/// Parameters of a [`CircuitElement::Diode`], as a SPICE `.model D` card
-/// gives them: Shockley (IS, N, RS), charge storage (CJO, VJ, M, FC, TT) and
-/// reverse breakdown (BV, IBV). Values are at the nominal 27 °C; the
-/// element's `temperature` scales `is` from there, and only `is`.
-///
-/// The default is sindr's built-in silicon diode. With serde, a missing field
-/// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
-pub struct DiodeModel {
-    /// Saturation current IS (A), positive. Default 1e-14.
-    pub is: f64,
-    /// Emission coefficient N, positive. Default 1.
-    pub n: f64,
-    /// Series resistance RS (Ω), zero or positive. Default 0.
-    pub rs: f64,
-    /// Zero-bias depletion capacitance CJO (F), zero or positive. Default 0.
-    pub cjo: f64,
-    /// Junction potential VJ (V), positive. Default 1.
-    pub vj: f64,
-    /// Grading coefficient M, in `[0, 0.9]`. Default 0.5.
-    pub m: f64,
-    /// Forward-bias depletion capacitance coefficient FC, in `[0, 0.95]`.
-    /// Default 0.5.
-    pub fc: f64,
-    /// Transit time TT (s), zero or positive: the diffusion charge is
-    /// `TT·I_d`, which sets reverse recovery. Default 0.
-    pub tt: f64,
-    /// Reverse breakdown voltage BV (V), positive. Default `None`: no
-    /// breakdown, as in SPICE without `BV`.
-    pub bv: Option<f64>,
-    /// Current at `−BV`, IBV (A), positive. Default 1 mA.
-    pub ibv: f64,
-    /// Flicker-noise coefficient KF, zero or positive: noise analysis puts
-    /// `KF·|Id|^AF / f` (A²/Hz) across the junction. Default 0.
-    pub kf: f64,
-    /// Flicker-noise exponent AF, positive. Default 1.
-    pub af: f64,
-}
-
-impl DiodeModel {
-    /// Whether the diode stores charge (CJO or TT set), which makes the
-    /// circuit reactive.
-    pub fn stores_charge(&self) -> bool { … }
-}
-
-/// Ebers–Moll parameters of a [`CircuitElement::Bjt`], as a SPICE
-/// `.model NPN`/`PNP` card gives them. The forward gain is the element's own
-/// `bf`. Values are at the nominal 27 °C; the element's `temperature` scales
-/// `is` from there.
-///
-/// The default is sindr's built-in transistor. With serde, a missing field
-/// takes its default.
-pub struct BjtModel {
-    /// Transport saturation current IS (A), positive. Default 1e-14.
-    pub is: f64,
-    /// Reverse current gain BR, positive. Default 1.
-    pub br: f64,
-    /// Forward emission coefficient NF, positive. Default 1.
-    pub nf: f64,
-    /// Reverse emission coefficient NR, positive. Default 1.
-    pub nr: f64,
-    /// Forward Early voltage VAF (V), zero or positive; 0 turns the Early
-    /// effect off. Default 0. sindr applies it as `ic·(1 + vce/VAF)`, not
-    /// through SPICE's Gummel–Poon base charge, so results differ slightly
-    /// from SPICE's when it is set.
-    pub vaf: f64,
-    /// Flicker-noise coefficient KF, zero or positive: noise analysis puts
-    /// `KF·|Ib|^AF / f` (A²/Hz) across base–emitter. Default 0.
-    pub kf: f64,
-    /// Flicker-noise exponent AF, positive. Default 1.
-    pub af: f64,
-}
-
-/// MOSFET gate parasitic capacitances. All values in Farads.
-/// Op-amp macromodel parameters, for [`CircuitElement::OpAmp`]'s `model`.
-///
-/// The gain stage is a first-order lag towards `gain · (v₊ − v₋ + offset)`,
-/// clamped to the rails, with time constant `gain / (2π · gbw)`: open-loop
-/// gain `gain / (1 + s·τ)`, so a non-inverting stage of gain G has its
-/// −3 dB point near `gbw / G`. Its rate is limited to `slew_rate`. The
-/// output is that stage's voltage behind `r_out`.
-///
-/// The pole and the slew limit act in transient and AC analyses. At DC the
-/// stage sits at its clamped target. The op-amp's state doesn't count as
-/// reactive, so [`solve_circuit`]-style automatic routing still picks DC
-/// for a circuit whose only dynamics are op-amps; run a transient
-/// explicitly to see them. Like capacitors, the stage starts from rest
-/// (0 V) at t = 0.
-///
-/// [`solve_circuit`]: https://docs.rs/sindr/latest/sindr/fn.solve_circuit.html
-pub struct OpAmpModel {
-    /// Open-loop DC gain (V/V), positive. Default 1e5 (100 dB).
-    pub gain: f64,
-    /// Gain-bandwidth product (Hz), positive; `None` for no pole. Default
-    /// 1 MHz.
-    pub gbw: Option<f64>,
-    /// Slew rate (V/s), positive; `None` for no limit. Needs `gbw`.
-    /// Default 0.5 V/µs.
-    pub slew_rate: Option<f64>,
-    /// Output resistance (Ω), zero or positive. Default 0.
-    pub r_out: f64,
-    /// Input offset voltage (V), added to `v₊ − v₋`. Default 0.
-    pub offset_voltage: f64,
-    /// Input bias current (A) drawn by each input, to ground. Default 0.
-    pub bias_current: f64,
-}
-
-pub struct MosfetParasiticCaps {
-    /// Gate-Source capacitance (F). Typical: 100–500 pF for power MOSFETs.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub cgs: f64,
-    /// Gate-Drain capacitance (Miller capacitance) (F). Typical: 10–100 pF.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub cgd: f64,
-}
-
-/// Which throw of a [`CircuitElement::SwitchSpdt`] the common terminal
-/// connects to.
-pub enum SpdtPosition {
-    /// Common to `nodes[1]`.
-    #[default]
-    A,
-    /// Common to `nodes[2]`.
-    B,
-}
-
-/// A quartz crystal's Butterworth–Van Dyke model, for
-/// [`CircuitElement::Crystal`]: a motional arm `Rm`–`Lm`–`Cm` in series,
-/// in parallel with the shunt capacitance `C0`. The series resonance is
-/// `frequency`, so `Lm = 1 / ((2π·frequency)²·Cm)`.
-///
-/// Datasheets give the frequency, the ESR (`Rm`) and the shunt capacitance;
-/// the motional capacitance is often only in an application note. The load
-/// capacitance a datasheet names isn't part of the crystal: it's the two
-/// capacitors on the board.
-pub struct CrystalParams {
-    /// Series-resonant frequency (Hz), positive.
-    pub frequency: f64,
-    /// Equivalent series resistance `Rm` (Ω), positive.
-    pub esr: f64,
-    /// Shunt capacitance `C0` (F), zero or positive.
-    pub c0: f64,
-    /// Motional capacitance `Cm` (F), positive.
-    pub cm: f64,
-}
-
-impl CrystalParams {
-    /// From a datasheet's frequency, ESR and shunt capacitance, with a
-    /// motional capacitance of `c0 / 250`, typical of AT-cut crystals in
-    /// the megahertz range.
-    pub fn from_datasheet(frequency: f64, esr: f64, c0: f64) -> Self { … }
-
-    /// Motional inductance `Lm` (H), from the frequency and `Cm`.
-    pub fn lm(&self) -> f64 { … }
-}
-
-/// A ferrite bead's circuit, for [`CircuitElement::FerriteBead`]: `r_dc`
-/// in series with `l ∥ r_ac` (and `c`, when set). Below its peak the bead
-/// is inductive, at the peak it's `r_ac`, and above it `c` takes over.
-pub struct FerriteBeadParams {
-    /// DC resistance (Ω), positive.
-    pub r_dc: f64,
-    /// Inductance (H), positive.
-    pub l: f64,
-    /// Parallel loss resistance (Ω), positive: about the impedance at the
-    /// peak.
-    pub r_ac: f64,
-    /// Parallel capacitance (F); `None` for none.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub c: Option<f64>,
-}
-
-impl FerriteBeadParams {
-    /// From a datasheet's impedance at 100 MHz and DC resistance. Takes the
-    /// bead as inductive up to 100 MHz, `l = z_100mhz / (2π·100 MHz)`, with
-    /// its loss resistance at the same impedance: a rough fit that matches
-    /// at 100 MHz and below. Fit `l`, `r_ac` and `c` to the impedance curve
-    /// when the peak matters.
-    pub fn from_datasheet(z_100mhz: f64, r_dc: f64) -> Self { … }
-}
-
-/// A single circuit component.
-///
-/// Each variant carries an `id` (unique per circuit, used to look up results)
-/// and a `nodes` array naming its terminals. Node names are arbitrary
-/// strings — components share a node by referencing the same string.
-///
-/// # Sign conventions
-///
-/// - **Two-terminal components** (resistor, source, capacitor, …):
-///   `nodes[0]` is the positive / first terminal, `nodes[1]` is the
-///   negative / second.
-/// - **Polarised components** (voltage/current sources, diodes, BJTs, …):
-///   exact terminal order is documented per variant.
-/// - **Currents** are reported as flowing from `nodes[0]` to `nodes[1]` for
-///   two-terminal components.
-///
-/// # Serde
-///
-/// With the default `serde` feature enabled, `CircuitElement` serialises
-/// using a `type` discriminator: `{"type": "resistor", "id": "R1", ...}`.
-pub enum CircuitElement {
-    /// Resistor between two nodes.
-    #[cfg_attr(feature = "serde", serde(rename = "resistor"))]
-    Resistor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// Resistance (Ω).
-        resistance: f64,
-    },
-
-    /// Independent voltage source. `nodes[0]` is the positive terminal,
-    /// `nodes[1]` is the negative terminal.
-    #[cfg_attr(feature = "serde", serde(rename = "voltage_source"))]
-    VoltageSource {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[positive, negative]`.
-        nodes: [String; 2],
-        /// DC voltage (V); also the offset added to any `waveform`.
-        voltage: f64,
-        /// Optional time-varying waveform added on top of `voltage`.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        waveform: Option<Waveform>,
-    },
-
-    /// Independent current source. Current flows from `nodes[0]` toward
-    /// `nodes[1]`.
-    #[cfg_attr(feature = "serde", serde(rename = "current_source"))]
-    CurrentSource {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[from, to]`; current flows from `nodes[0]` to `nodes[1]`.
-        nodes: [String; 2],
-        /// DC current (A); also the offset added to any `waveform`.
-        current: f64,
-        /// Optional time-varying waveform added on top of `current`.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        waveform: Option<Waveform>,
-    },
-
-    /// Switch between two nodes. Modeled as a resistor with very low (closed)
-    /// or very high (open) resistance for DC analysis.
-    #[cfg_attr(feature = "serde", serde(rename = "switch"))]
-    Switch {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// When true the switch conducts (closed); when false it is open.
-        closed: bool,
-    },
-
-    /// Capacitor. Open-circuit in DC analysis; charges/discharges in
-    /// transient. `voltage_across` is reported as `nodes[0] − nodes[1]`.
-    #[cfg_attr(feature = "serde", serde(rename = "capacitor"))]
-    Capacitor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// Capacitance (F).
-        capacitance: f64,
-    },
-
-    /// A battery: open-circuit voltage by state of charge behind a series
-    /// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
-    /// its open-circuit voltage at `state_of_charge` behind `R0 + R1`. In
-    /// transient the RC pair charges and the state of charge falls with the
-    /// charge drawn, reported per step in `state_of_charge`. In AC it is
-    /// the impedance `R0 + R1‖C1`. `current_through` flows
-    /// `nodes[0] → nodes[1]` inside the cell, so it is negative while the
-    /// battery discharges, as for a voltage source.
-    ///
-    /// [`BatteryParams`]: sindr_devices::battery::BatteryParams
-    #[cfg_attr(feature = "serde", serde(rename = "battery"))]
-    Battery {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[positive, negative]`.
-        nodes: [String; 2],
-        /// The cell's equivalent circuit.
-        params: sindr_devices::battery::BatteryParams,
-        /// State of charge at the start, 0 (empty) to 1 (full).
-        state_of_charge: f64,
-    },
-
-    /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
-    /// solves DC as a single algebraic step, not as t→∞ of a transient);
-    /// integrates `dI/dt` properly during transient. The DC bias point that
-    /// AC, `.tf` and `.sens` linearise around shorts it instead. `voltage_across` is
-    /// reported as `nodes[0] − nodes[1]`, `current_through` flows
-    /// `nodes[0] → nodes[1]`. To get steady-state current, run a
-    /// transient long enough to settle.
-    #[cfg_attr(feature = "serde", serde(rename = "inductor"))]
-    Inductor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`; `current_through` flows `nodes[0] → nodes[1]`.
-        nodes: [String; 2],
-        /// Inductance (H): the small-signal value, at zero current.
-        inductance: f64,
-        /// Core saturation: the inductance falls towards `l_sat` as the
-        /// current passes `i_sat`. `None` is a linear inductor.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        saturation: Option<sindr_devices::inductor::InductorSaturation>,
-    },
-
-    /// Diode (Shockley model, silicon unless `model` says otherwise).
-    /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
-    /// positive `voltage_across` corresponds to forward bias.
-    #[cfg_attr(feature = "serde", serde(rename = "diode"))]
-    Diode {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-        /// Model parameters (IS, N, RS). `None` is the built-in silicon diode,
-        /// the same as `Some(DiodeModel::default())`.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        model: Option<DiodeModel>,
-    },
-
-    /// LED. `nodes: [anode, cathode]`. Forward voltage drop depends on
-    /// `color` (e.g. `"red"` ≈ 1.8 V, `"blue"` ≈ 3.2 V).
-    #[cfg_attr(feature = "serde", serde(rename = "led"))]
-    Led {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Emission colour (e.g. `"red"`, `"blue"`); sets the forward voltage drop.
-        color: String,
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-    },
-
-    /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
-    /// DC, transient and AC.
-    #[cfg_attr(feature = "serde", serde(rename = "bjt"))]
-    Bjt {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[base, collector, emitter]`.
-        nodes: [String; 3], // [base, collector, emitter]
-        /// Polarity (NPN or PNP).
-        kind: BjtKind,
-        /// Forward current gain β (unitless), positive and finite. Default 100.
-        #[cfg_attr(feature = "serde", serde(default = "default_bf"))]
-        bf: f64,
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-        /// Optional parasitic capacitances (Cbe, Cbc). None = no parasitic caps (default).
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        parasitic_caps: Option<BjtParasiticCaps>,
-        /// Ebers–Moll parameters besides `bf` (IS, BR, NF, NR, VAF). `None`
-        /// is the built-in transistor, the same as `Some(BjtModel::default())`.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        model: Option<BjtModel>,
-    },
-
-    /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
-    /// to the source).
-    #[cfg_attr(feature = "serde", serde(rename = "mosfet"))]
-    Mosfet {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[gate, drain, source]`.
-        nodes: [String; 3], // [gate, drain, source]
-        /// Channel type (NMOS or PMOS).
-        kind: MosfetKind,
-        /// Model parameters (threshold voltage, transconductance, etc.).
-        #[cfg_attr(feature = "serde", serde(default))]
-        params: MosfetParams,
-        /// Optional parasitic capacitances (Cgs, Cgd). None = no parasitic caps (default).
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        parasitic_caps: Option<MosfetParasiticCaps>,
-        /// A power MOSFET's body diode, as a SPICE diode card: anode at the
-        /// source and cathode at the drain for NMOS, the other way round for
-        /// PMOS. It conducts when the drain is pulled past the source, as
-        /// in a bridge's freewheeling interval. Every analysis solves it as
-        /// a [`CircuitElement::Diode`] with id `<id>.body`, which is where
-        /// its current is reported. `None` (default) is no body diode.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        body_diode: Option<DiodeModel>,
-    },
-
-    /// N-channel or P-channel JFET (Shockley square-law model).
-    /// nodes: [gate, drain, source]
-    #[cfg_attr(feature = "serde", serde(rename = "jfet"))]
-    Jfet {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[gate, drain, source]`.
-        nodes: [String; 3], // [gate, drain, source]
-        /// Channel type (N-channel or P-channel).
-        kind: JfetKind,
-        /// Drain saturation current at Vgs=0 (A). Typical: 1–20 mA.
-        #[cfg_attr(feature = "serde", serde(default = "default_jfet_idss"))]
-        idss: f64,
-        /// Pinch-off voltage (V, negative for N-channel, e.g. -2.0).
-        #[cfg_attr(feature = "serde", serde(default = "default_jfet_vp"))]
-        vp: f64,
-    },
-
-    /// Voltage-Controlled Voltage Source: V_out = mu * V_control.
-    /// nodes: [out+, out-], control_nodes: [ctrl+, ctrl-]
-    #[cfg_attr(feature = "serde", serde(rename = "vcvs"))]
-    Vcvs {
-        /// Unique component identifier.
-        id: String,
-        /// Output terminals `[out+, out-]`.
-        nodes: [String; 2],
-        /// Sensing terminals `[ctrl+, ctrl-]`.
-        control_nodes: [String; 2],
-        /// Voltage gain μ (V/V): `V_out = gain * V_control`.
-        gain: f64, // mu
-    },
-
-    /// Voltage-Controlled Current Source: I_out = gm * V_control.
-    /// nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-]
-    #[cfg_attr(feature = "serde", serde(rename = "vccs"))]
-    Vccs {
-        /// Unique component identifier.
-        id: String,
-        /// Output terminals `[out_from, out_to]`.
-        nodes: [String; 2],
-        /// Sensing terminals `[ctrl+, ctrl-]`.
-        control_nodes: [String; 2],
-        /// Transconductance gm (A/V): `I_out = gm * V_control`.
-        gm: f64,
-    },
-
-    /// Current-Controlled Voltage Source: V_out = rm * I_control.
-    /// nodes: [out+, out-], control_source: id of controlling voltage source
-    #[cfg_attr(feature = "serde", serde(rename = "ccvs"))]
-    Ccvs {
-        /// Unique component identifier.
-        id: String,
-        /// Output terminals `[out+, out-]`.
-        nodes: [String; 2],
-        /// Id of the voltage source whose current is sensed.
-        control_source: String,
-        /// Transresistance rm (Ω): `V_out = rm * I_control`.
-        rm: f64,
-    },
-
-    /// Current-Controlled Current Source: I_out = alpha * I_control.
-    /// nodes: [out_from, out_to], control_source: id of controlling voltage source
-    #[cfg_attr(feature = "serde", serde(rename = "cccs"))]
-    Cccs {
-        /// Unique component identifier.
-        id: String,
-        /// Output terminals `[out_from, out_to]`.
-        nodes: [String; 2],
-        /// Id of the voltage source whose current is sensed.
-        control_source: String,
-        /// Current gain α (A/A): `I_out = alpha * I_control`.
-        alpha: f64,
-    },
-
-    /// Pushbutton (momentary switch): identical behaviour to Switch.
-    /// When closed = true, current flows; when false, open circuit.
-    #[cfg_attr(feature = "serde", serde(rename = "pushbutton"))]
-    Pushbutton {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// When true the button conducts (pressed); when false it is open.
-        closed: bool,
-    },
-
-    /// Relay: 4-terminal component with a coil and a contact pair.
-    /// nodes: [coil+, coil-, contact1, contact2]
-    /// Contact closes when |V_coil| >= pickup_voltage. AC and `.tf` take the
-    /// contact as open or closed at the DC bias point.
-    #[cfg_attr(feature = "serde", serde(rename = "relay"))]
-    Relay {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[coil+, coil-, contact1, contact2]`.
-        nodes: [String; 4],
-        /// Coil resistance (Ω). Default 500.
-        #[cfg_attr(feature = "serde", serde(default = "default_relay_coil_resistance"))]
-        coil_resistance: f64,
-        /// Coil voltage magnitude at which the contact closes (V).
-        pickup_voltage: f64,
-        /// Coil inductance in Henry, in series with `coil_resistance` in
-        /// transient. 0.0 = purely resistive coil.
-        #[cfg_attr(feature = "serde", serde(default))]
-        inductance: f64,
-    },
-
-    /// Photoresistor (LDR): resistance varies logarithmically with light.
-    /// light_level = 0.0 → ~1 MΩ (dark), 1.0 → ~1 kΩ (bright).
-    #[cfg_attr(feature = "serde", serde(rename = "photoresistor"))]
-    Photoresistor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// Incident light level, 0.0 (dark, ~1 MΩ) to 1.0 (bright, ~1 kΩ).
-        light_level: f64,
-    },
-
-    /// Potentiometer: 3-terminal voltage divider.
-    /// nodes: [top, wiper, bottom]
-    /// position = 0.0 → wiper at top, 1.0 → wiper at bottom.
-    #[cfg_attr(feature = "serde", serde(rename = "potentiometer"))]
-    Potentiometer {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[top, wiper, bottom]`.
-        nodes: [String; 3],
-        /// End-to-end resistance (Ω).
-        resistance: f64,
-        /// Wiper position, 0.0 (at top) to 1.0 (at bottom).
-        position: f64,
-    },
-
-    /// Zener diode between two nodes: a silicon diode with SPICE reverse
-    /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
-    /// (the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`), so it holds about
-    /// `vz` at a small zener's 5 mA test current and rises 1 V per amp past
-    /// it. For another knee, use a [`CircuitElement::Diode`] with a
-    /// [`DiodeModel`] setting `bv` and `ibv`.
-    /// nodes: [anode, cathode]
-    #[cfg_attr(feature = "serde", serde(rename = "zener_diode"))]
-    ZenerDiode {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Reverse breakdown (Zener) voltage (V).
-        vz: f64,
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-    },
-
-    /// Op-amp, output referred to ground.
-    ///
-    /// With `model: None` it is the near-ideal VCVS sindr has always used:
-    /// gain 1e5, no frequency response, no output resistance, and `v_pos` /
-    /// `v_neg` not enforced. With an [`OpAmpModel`] it gets a dominant pole
-    /// from the gain-bandwidth product, slew-rate limiting, output
-    /// resistance, input offset and bias current, and an output clamped to
-    /// `v_pos`/`v_neg`.
-    #[cfg_attr(feature = "serde", serde(rename = "op_amp"))]
-    OpAmp {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[in_plus, in_minus, out]`.
-        nodes: [String; 3], // [in_plus, in_minus, out]
-        /// Positive supply rail (V): the output's upper limit with a
-        /// `model`. Default 15.
-        #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
-        v_pos: f64,
-        /// Negative supply rail (V): the output's lower limit with a
-        /// `model`. Default -15.
-        #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
-        v_neg: f64,
-        /// Macromodel parameters; `None` for the near-ideal VCVS.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        model: Option<OpAmpModel>,
-    },
-
-    /// Ideal comparator (same VCVS stamp as OpAmp; output saturates to supply rails).
-    /// nodes: [in_plus, in_minus, out]
-    #[cfg_attr(feature = "serde", serde(rename = "comparator"))]
-    Comparator {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[in_plus, in_minus, out]`.
-        nodes: [String; 3], // [in_plus, in_minus, out]
-        /// Positive supply rail / output high level (V). Default 15.
-        #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
-        v_pos: f64,
-        /// Negative supply rail / output low level (V). Default -15.
-        #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
-        v_neg: f64,
-    },
-
-    /// Schottky diode: lower forward voltage (~0.3V) than silicon diode.
-    /// nodes: [anode, cathode]
-    #[cfg_attr(feature = "serde", serde(rename = "schottky_diode"))]
-    SchottkyDiode {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-    },
-
-    /// NTC thermistor: resistance varies with temperature (passive, no NR).
-    /// nodes: [n1, n2]
-    #[cfg_attr(feature = "serde", serde(rename = "thermistor"))]
-    Thermistor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[n1, n2]`.
-        nodes: [String; 2],
-        /// Temperature in Kelvin, positive and finite. Default: 298.15 K (25°C).
-        #[cfg_attr(feature = "serde", serde(default = "default_temperature"))]
-        temperature: f64,
-    },
-
-    /// Photodiode: diode + photocurrent source driven by irradiance.
-    /// nodes: [anode, cathode]
-    #[cfg_attr(feature = "serde", serde(rename = "photodiode"))]
-    Photodiode {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Incident irradiance in W (optical power, not W/m²).
-        /// 0.0 = dark, 0.1 = ~50mA photocurrent with default responsivity.
-        #[cfg_attr(feature = "serde", serde(default))]
-        irradiance: f64,
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-    },
-
-    /// Varactor diode: voltage-dependent junction capacitance.
-    /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
-    /// transient; in AC, its capacitance at the DC bias point.
-    /// nodes: [anode, cathode]
-    #[cfg_attr(feature = "serde", serde(rename = "varactor"))]
-    Varactor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Model parameters (zero-bias capacitance, grading, etc.).
-        #[cfg_attr(feature = "serde", serde(default))]
-        params: sindr_devices::varactor::VaractorParams,
-    },
-
-    /// IGBT: MOSFET gate control + BJT output characteristics.
-    /// Nonlinear element — requires Newton-Raphson iteration.
-    /// nodes: [gate, collector, emitter]
-    #[cfg_attr(feature = "serde", serde(rename = "igbt"))]
-    Igbt {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[gate, collector, emitter]`.
-        nodes: [String; 3],
-        /// Model parameters (threshold voltage, transconductance, etc.).
-        #[cfg_attr(feature = "serde", serde(default))]
-        params: sindr_devices::igbt::IgbtParams,
-    },
-
-    /// Ideal transformer with coupled inductors.
-    ///
-    /// nodes: [p1, q1, p2, q2] where:
-    ///   - [p1, q1]: primary winding (+ and - terminals)
-    ///   - [p2, q2]: secondary winding (+ and - terminals)
-    ///
-    /// Coupling: M = k * sqrt(L1 * L2) where k ∈ [0, 1).
-    /// k=1 is ideal (no leakage), but mathematically singular — use k<=0.999.
-    ///
-    /// In DC analysis: both windings stamped as short circuits; the bias point
-    /// for AC, `.tf` and `.sens` shorts each with a 0 V source.
-    /// In AC: the coupled pair `V = jω·[[L1, M], [M, L2]]·I`.
-    /// In transient: coupled-inductor companion with 2 branch current unknowns,
-    /// each winding `V = L·dI/dt` plus the mutual term. The windings start at
-    /// 0 A; an initial current on a transformer is rejected.
-    #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
-    Transformer {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[p1, q1, p2, q2]`: primary `[p1, q1]`, secondary `[p2, q2]`.
-        nodes: [String; 4], // [p1, q1, p2, q2]
-        /// Primary winding inductance (H).
-        l1: f64, // Primary inductance (H)
-        /// Secondary winding inductance (H).
-        l2: f64, // Secondary inductance (H)
-        /// Coupling coefficient (unitless) in `[0, 0.999]`. Default 0.999 (near-ideal).
-        #[cfg_attr(feature = "serde", serde(default = "default_coupling"))]
-        k: f64, // Coupling coefficient [0, 0.999]. Default 0.999 (near-ideal).
-    },
-
-    /// Fuse between two nodes.
-    ///
-    /// Intact (blown=false): stamped as 0.001 Ω (1 mΩ) — negligible voltage drop.
-    /// Blown (blown=true): stamped as 1e9 Ω — effectively open circuit.
-    ///
-    /// NOTE: Do NOT use 0 Ω — that would cause a singular MNA matrix.
-    /// rating is stored for display purposes only (v1 — no auto-blow logic).
-    #[cfg_attr(feature = "serde", serde(rename = "fuse"))]
-    Fuse {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// Current rating in Amperes (display only — no auto-blow logic in v1).
-        #[cfg_attr(feature = "serde", serde(default = "default_fuse_rating"))]
-        rating: f64,
-        /// When true, fuse is blown (open circuit). User-settable, like switch.closed.
-        #[cfg_attr(feature = "serde", serde(default))]
-        blown: bool,
-    },
-
-    /// Linear voltage regulator: holds the output at `voltage` above its
-    /// ground pin while it has headroom, and draws its output current plus
-    /// its quiescent current from the input.
-    ///
-    /// Piecewise linear (see `sindr_devices::regulator`): out of headroom
-    /// the output follows the input down by the dropout; past the current
-    /// limit it holds the current. `model` sets dropout, quiescent current,
-    /// current limit and line and load regulation;
-    /// `RegulatorParams::lm7805()` and `::ams1117()` are datasheet presets.
-    /// Its result is the pass element: `Vin − Vout`, the output current,
-    /// and the power it dissipates.
-    ///
-    /// `nodes: [input, output, gnd]`
-    #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
-    VoltageRegulator {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[input, output, gnd]`.
-        nodes: [String; 3], // [input, output, gnd]
-        /// Regulated output voltage (V). E.g. 5.0 for a 7805.
-        voltage: f64,
-        /// Dropout, quiescent current, limit and regulation. `None` is an
-        /// ideal regulator that still can't put out more than it gets in.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        model: Option<sindr_devices::regulator::RegulatorParams>,
-    },
-    /// Single-pole double-throw switch: `nodes: [common, a, b]`. The common
-    /// terminal connects to `a` or `b` as [`Switch`](Self::Switch) does
-    /// (0.01 Ω), and the other throw is open (1 GΩ). Its result is the path
-    /// in use: `voltage_across` from common to the selected throw and the
-    /// current from common into it.
-    #[cfg_attr(feature = "serde", serde(rename = "switch_spdt"))]
-    SwitchSpdt {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[common, a, b]`.
-        nodes: [String; 3],
-        /// Which throw the common terminal is switched to.
-        #[cfg_attr(feature = "serde", serde(default))]
-        position: SpdtPosition,
-    },
-
-    /// Quartz crystal: the Butterworth–Van Dyke model ([`CrystalParams`]).
-    /// An open circuit at DC. Its result's `power` is what the motional
-    /// resistance dissipates: the drive level a datasheet limits.
-    /// `nodes: [a, b]`
-    #[cfg_attr(feature = "serde", serde(rename = "crystal"))]
-    Crystal {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// The equivalent circuit.
-        params: CrystalParams,
-    },
-
-    /// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC,
-    /// lossy and inductive at high frequency. Its result's `power` is what
-    /// its two resistances dissipate. `nodes: [a, b]`
-    #[cfg_attr(feature = "serde", serde(rename = "ferrite_bead"))]
-    FerriteBead {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// The equivalent circuit.
-        params: FerriteBeadParams,
-    },
-}
-
-impl CircuitElement {
-    /// Returns a reference to the node array for this component.
-    pub fn nodes(&self) -> &[String] { … }
-
-    /// Returns all node names referenced by this component, including control nodes.
-    pub fn all_nodes(&self) -> Vec<&String> { … }
-
-    /// Returns the component identifier.
-    pub fn id(&self) -> &str { … }
-
-    /// Extra MNA unknowns the element adds after the node voltages: one
-    /// branch current for a voltage-type source, two for a transformer
-    /// (one per winding), and two for an op-amp with an [`OpAmpModel`]
-    /// (its output current, then its internal gain-stage voltage).
-    pub fn branch_slots(&self) -> usize { … }
-
-    /// Mutable [`nodes`](Self::nodes), for renaming nets.
-    pub fn nodes_mut(&mut self) -> &mut [String] { … }
-
-    /// Mutable [`id`](Self::id), for renaming.
-    pub fn id_mut(&mut self) -> &mut String { … }
-
-    /// The control-net pair of a VCVS or VCCS.
-    pub fn control_nodes_mut(&mut self) -> Option<&mut [String; 2]> { … }
-
-    /// The controlling source id of a CCVS or CCCS.
-    pub fn control_source_mut(&mut self) -> Option<&mut String> { … }
-}
-
-/// A circuit: components, nets, and optionally a design hierarchy.
-///
-/// The top level is a list of [`CircuitElement`]s plus the name of the
-/// ground net. Components share a net by referencing the same net-name
-/// string. A design can also place [`Block`]s through [`Instance`]s and
-/// carry [`Part`] data (reference, symbol, footprint) that the simulator
-/// ignores. [`Circuit::flatten`] expands the hierarchy; sindr's analyses
-/// do that themselves.
-///
-/// # Example
-///
-/// ```
-/// use sindr_core::{Circuit, CircuitElement};
-///
-/// let circuit = Circuit::new(
-///     "0",
-///     vec![
-///         CircuitElement::VoltageSource {
-///             id: "V1".into(),
-///             nodes: ["n1".into(), "0".into()],
-///             voltage: 9.0,
-///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
-///             id: "R1".into(),
-///             nodes: ["n1".into(), "0".into()],
-///             resistance: 1_000.0,
-///         },
-///     ],
-/// );
-/// assert!(circuit.is_flat());
-/// ```
-pub struct Circuit {
-    /// Top-level components. Order has no semantic meaning.
-    pub components: Vec<CircuitElement>,
-    /// Name of the reference (0 V) net. Must match the net string used by
-    /// at least one component (typically `"0"` or `"gnd"`). It is the same
-    /// net inside every block.
-    pub ground_node: String,
-    /// Top-level block instances.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Vec::is_empty")
-    )]
-    pub instances: Vec<Instance>,
-    /// Block definitions, by name.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "BTreeMap::is_empty")
-    )]
-    pub blocks: BTreeMap<String, Block>,
-    /// Part data for top-level components and instances, keyed by their id.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "BTreeMap::is_empty")
-    )]
-    pub parts: BTreeMap<String, Part>,
-    /// Nets visible inside every block under the same name (supply rails),
-    /// besides ground. Never prefixed when flattening.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Vec::is_empty")
-    )]
-    pub globals: Vec<String>,
-}
-
-impl Circuit {
-    /// A flat circuit: `components` referencing `ground_node`, no hierarchy.
-    pub fn new(ground_node: impl Into<String>, components: Vec<CircuitElement>) -> Self { … }
-
-    /// `true` when there are no instances to expand.
-    pub fn is_flat(&self) -> bool { … }
-
-    /// Every net named at the top level: component and instance nodes plus
-    /// ground, sorted and without repeats. Nets local to block instances
-    /// show up only after [`flatten`](Self::flatten).
-    pub fn nets(&self) -> Vec<&str> { … }
-
-    /// Count the number of independent voltage sources in the circuit.
-    /// Also counts VCVS, CCVS, OpAmp, and Comparator which need branch currents.
-    /// Transformer adds 2 branch current unknowns (one per winding).
-    pub fn count_voltage_sources(&self) -> usize { … }
-
-    /// Returns true if the circuit contains any nonlinear elements.
-    pub fn has_nonlinear_elements(&self) -> bool { … }
-
-    /// Returns true if the circuit contains any reactive elements (Capacitor, Inductor, or
-    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET with non-zero parasitic caps,
-    /// or a diode whose model stores charge).
-    pub fn has_reactive_elements(&self) -> bool { … }
-
-    /// Returns true if any source has a time-varying waveform.
-    pub fn has_waveform_sources(&self) -> bool { … }
-
-    /// Find the branch index for a voltage source by its ID.
-    /// Returns None if not found.
-    pub fn vsource_branch_index(&self, source_id: &str) -> Option<usize> { … }
-}
-```
-
-## `sindr-core/src/design.rs`
-
-Design hierarchy and part data: [`Block`], [`Instance`], [`Part`], and
-[`Circuit::flatten`].
-
-A [`Block`] is a reusable definition, what `.subckt` is in SPICE. An
-[`Instance`] places a block and binds its ports to the caller's nets,
-what an `X` line is. Inside a block a net name is a port, ground
-([`Circuit::ground_node`]), a global ([`Circuit::globals`]), or local to
-each instance.
-
-Flattening names things the way the SPICE parser always has: elements
-and local nets get the instance path joined with `.` (`x1.x2.r1`,
-`x1.mid`), ports become the caller's net, and ground and globals are
-never prefixed.
-
-```
-use sindr_core::{Block, Circuit, CircuitElement, Instance};
-
-let divider = Block {
-    ports: vec!["top".into(), "out".into()],
-    components: vec![
-        CircuitElement::Resistor { id: "R1".into(), nodes: ["top".into(), "out".into()], resistance: 1e3 },
-        CircuitElement::Resistor { id: "R2".into(), nodes: ["out".into(), "0".into()], resistance: 1e3 },
-    ],
-    ..Block::default()
-};
-let mut circuit = Circuit::new(
-    "0",
-    vec![CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 10.0, waveform: None }],
-);
-circuit.blocks.insert("divider".into(), divider);
-circuit.instances.push(Instance::new("X1", "divider", ["in", "mid"]));
-
-let flat = circuit.flatten().unwrap();
-assert!(flat.is_flat());
-assert_eq!(flat.components[1].id(), "X1.R1");
-assert_eq!(flat.components[2].nodes(), ["mid", "0"]);
-```
-
-```rust
-/// Separator between instance-path segments in flattened names.
-pub const PATH_SEPARATOR: char = '.';
-
-/// A reusable block definition: what `.subckt` is in SPICE.
-pub struct Block {
-    /// Port nets, in the order [`Instance::nodes`] binds them.
-    pub ports: Vec<String>,
-    /// Components inside the block, named in the block's own scope.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub components: Vec<CircuitElement>,
-    /// Instances of other blocks placed inside this one.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Vec::is_empty")
-    )]
-    pub instances: Vec<Instance>,
-    /// Part data for the block's components and instances, keyed by id.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "BTreeMap::is_empty")
-    )]
-    pub parts: BTreeMap<String, Part>,
-}
-
-/// One placement of a [`Block`]: what an `X` line is in SPICE.
-pub struct Instance {
-    /// Instance id, unique in its scope (`"X1"`). Prefixes everything inside
-    /// it when flattened.
-    pub id: String,
-    /// Name of the block it places, a key of [`Circuit::blocks`].
-    pub block: String,
-    /// The caller's nets, bound to [`Block::ports`] by position.
-    pub nodes: Vec<String>,
-}
-
-impl Instance {
-    /// An instance of `block` with `nodes` bound to its ports in order.
-    pub fn new<S: Into<String>>(
-        id: impl Into<String>,
-        block: impl Into<String>,
-        nodes: impl IntoIterator<Item = S>,
-    ) -> Self { … }
-}
-
-/// Part data for a component or instance: what a schematic or BOM needs.
-/// The simulator ignores it.
-pub struct Part {
-    /// Reference designator (`"R1"`). `None` means the element id is the
-    /// reference.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub reference: Option<String>,
-    /// Display value (`"10k"`, `"BC547"`).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub value: Option<String>,
-    /// Schematic symbol, in whatever form the design tool uses
-    /// (`"Device:R"`).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub symbol: Option<String>,
-    /// PCB footprint (`"Resistor_SMD:R_0603_1608Metric"`).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub footprint: Option<String>,
-    /// Any other fields: manufacturer, MPN, tolerance, …
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
-    pub fields: BTreeMap<String, String>,
-    /// Absolute maximum ratings from the datasheet. `sindr::check_ratings`
-    /// compares a simulation against them.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Ratings::is_empty"))]
-    pub ratings: Ratings,
-    /// How the part sheds heat. When set, the solver heats its junction by
-    /// the power it dissipates; see [`Thermal`].
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub thermal: Option<Thermal>,
-}
-
-/// A part's thermal path to ambient, for self-heating.
-///
-/// With it, the part's junction runs at `ambient + P·Rθ` in DC, or follows
-/// `Cθ·dT/dt = P − (T − ambient)/Rθ` in a transient, and the solver feeds
-/// that temperature back into the device (IS and kT/q for diodes, LEDs and
-/// BJTs; the thermistor's resistance). The element's own `temperature`
-/// field is then ignored.
-///
-/// Rθ is [`rth_jc`](Self::rth_jc) + [`rth_ca`](Self::rth_ca) when both are
-/// set (a part on a heatsink), otherwise [`rth_ja`](Self::rth_ja).
-pub struct Thermal {
-    /// Junction to ambient (K/W), the datasheet's Rθja for the part on its
-    /// own.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub rth_ja: Option<f64>,
-    /// Junction to case (K/W).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub rth_jc: Option<f64>,
-    /// Case to ambient through what the part is mounted on: interface pad
-    /// plus heatsink (K/W).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub rth_ca: Option<f64>,
-    /// Thermal capacitance (J/K). `None` in a transient means the junction
-    /// follows its power with no lag.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub cth: Option<f64>,
-    /// Ambient temperature (K). Default 300.15 K (27 °C).
-    pub ambient: f64,
-}
-
-impl Thermal {
-    /// A free-standing part: junction to ambient `rth_ja` (K/W).
-    pub fn junction_to_ambient(rth_ja: f64) -> Self { … }
-
-    /// A part on a heatsink: junction to case `rth_jc` plus case to ambient
-    /// `rth_ca` (K/W).
-    pub fn on_heatsink(rth_jc: f64, rth_ca: f64) -> Self { … }
-
-    /// The thermal resistance from junction to ambient (K/W) the solver
-    /// uses, or `None` when neither path is set.
-    pub fn resistance(&self) -> Option<f64> { … }
-}
-
-/// Absolute maximum ratings: the datasheet limits a part must never pass.
-///
-/// Every limit is a magnitude in SI units and `None` when unknown. A rating
-/// a part needs but doesn't have is reported as unverified, never as a
-/// pass. Which ratings a component needs depends on its kind; see
-/// `sindr::ratings`.
-pub struct Ratings {
-    /// Power dissipation (W).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub power: Option<f64>,
-    /// Voltage across the part (V): a capacitor's rated voltage, a
-    /// resistor's working voltage.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub voltage: Option<f64>,
-    /// Current through the part (A): an inductor's saturation current.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub current: Option<f64>,
-    /// Reverse voltage (V): a diode's cathode above its anode, or a
-    /// polarised capacitor's `nodes[1]` above its `nodes[0]` (the `+`
-    /// terminal). Most electrolytics allow 1 V or less; set it on a
-    /// polarised capacitor's part to have reverse bias flagged.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub reverse_voltage: Option<f64>,
-    /// Diode forward current, anode to cathode (A).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub forward_current: Option<f64>,
-    /// BJT or IGBT collector–emitter voltage, `|Vce|` (V).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub vce: Option<f64>,
-    /// BJT collector–base voltage, `|Vcb|` (V).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub vcb: Option<f64>,
-    /// BJT emitter–base voltage, `|Veb|` (V).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub veb: Option<f64>,
-    /// BJT or IGBT collector current, `|Ic|` (A).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub ic: Option<f64>,
-    /// MOSFET or JFET drain–source voltage, `|Vds|` (V).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub vds: Option<f64>,
-    /// MOSFET or JFET gate–source voltage, `|Vgs|`; an IGBT's gate–emitter
-    /// voltage (V).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub vgs: Option<f64>,
-    /// MOSFET or JFET drain current, `|Id|` (A).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub id: Option<f64>,
-    /// Maximum junction temperature (K): 423.15 K for a 150 °C part. Checked
-    /// against the junction temperature self-heating reports, so it needs
-    /// [`Part::thermal`].
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub tj_max: Option<f64>,
-}
-
-impl Ratings {
-    /// `true` when no limit is set.
-    pub fn is_empty(&self) -> bool { … }
-}
-
-/// Why a design can't be flattened.
-pub enum DesignError {
-    /// An instance names a block that isn't in [`Circuit::blocks`].
-    #[error("instance `{instance}` places block `{block}`, which is not defined")]
-    UnknownBlock {
-        /// Full path of the instance (`x1.x2`).
-        instance: String,
-        /// The missing block.
-        block: String,
-    },
-    /// An instance binds a different number of nets than the block has ports.
-    #[error("instance `{instance}` connects {got} nets, but block `{block}` has {expected} ports")]
-    PortCount {
-        /// Full path of the instance.
-        instance: String,
-        /// The block it places.
-        block: String,
-        /// Ports the block declares.
-        expected: usize,
-        /// Nets the instance binds.
-        got: usize,
-    },
-    /// A block places itself, directly or through other blocks.
-    #[error("instance `{instance}` places block `{block}` inside itself")]
-    RecursiveBlock {
-        /// Full path of the instance that closes the loop.
-        instance: String,
-        /// The block that recurses.
-        block: String,
-    },
-    /// Two components or instances in one scope share an id.
-    #[error("id `{id}` is used twice in {scope}")]
-    DuplicateId {
-        /// The repeated id.
-        id: String,
-        /// `"the top level"` or `"block `name`"`.
-        scope: String,
-    },
-}
-
-impl Circuit {
-    /// Expand every instance into a flat circuit with no instances or
-    /// blocks. Names follow the module docs; `parts` keys get the same
-    /// prefix as their element, and `globals` carry over.
-    ///
-    /// Top-level components come first, then each instance's expansion in
-    /// order, depth-first.
-    ///
-    /// # Errors
-    ///
-    /// [`DesignError`] for an unknown block, a port-count mismatch, a
-    /// recursive block, or a repeated id in one scope.
-    pub fn flatten(&self) -> Result<Circuit, DesignError> { … }
-
-    /// [`flatten`](Self::flatten), borrowing `self` when it is already flat.
-    pub fn flattened(&self) -> Result<Cow<'_, Circuit>, DesignError> { … }
-}
-```
-
-## `sindr-core/src/lib.rs`
-
-The circuit and design data model behind
-[`sindr`](https://crates.io/crates/sindr), without the solver.
-
-- [`circuit`]: [`Circuit`] and every [`CircuitElement`] sindr simulates
-- [`design`]: hierarchy ([`Block`], [`Instance`]), part data ([`Part`])
-  and [`Circuit::flatten`]
-- [`waveform`]: time-varying source [`Waveform`]s
-
-The only dependencies are `sindr-devices` (device parameter types),
-`thiserror` and, behind the default `serde` feature, `serde`. Design
-tools can build and exchange circuits with this crate alone; `sindr`
-re-exports all of it and simulates them.
-
-```
-use sindr_core::{Circuit, CircuitElement, Part};
-
-let mut circuit = Circuit::new(
-    "0",
-    vec![CircuitElement::Resistor {
-        id: "R1".into(),
-        nodes: ["in".into(), "0".into()],
-        resistance: 10e3,
-    }],
-);
-circuit.parts.insert(
-    "R1".into(),
-    Part { value: Some("10k".into()), footprint: Some("R_0603".into()), ..Part::default() },
-);
-assert_eq!(circuit.nets(), ["0", "in"]);
-```
-
-```rust
-pub mod circuit;
-
-pub mod design;
-
-pub mod waveform;
-
-pub use circuit:: { … }
-
-pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
-
-pub use waveform::Waveform;
-```
-
-## `sindr-core/src/waveform.rs`
+## `sindr/src/waveform.rs`
 
 Time-varying waveform definitions for voltage/current sources.
 
@@ -7262,7 +7190,7 @@ impl Waveform {
     /// edge between two steps isn't stepped over.
     ///
     /// ```
-    /// use sindr_core::Waveform;
+    /// use sindr::Waveform;
     ///
     /// let pulse = Waveform::Pulse {
     ///     v1: 0.0, v2: 5.0, delay: 1e-3, rise_time: 1e-9, fall_time: 1e-9,

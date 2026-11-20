@@ -20,7 +20,7 @@ A circuit simulator you embed in Rust: build a circuit as a typed value, solve i
 
 ```toml
 [dependencies]
-sindr = "0.1.0-alpha.8"
+sindr = "0.1"
 ```
 
 How much current does a red LED draw from 5 V through 220 Ω?
@@ -47,13 +47,12 @@ More in [`sindr/examples/`](./sindr/examples): RC transient, BJT amplifier, Bode
 
 | Crate | Purpose |
 |-------|---------|
-| [`sindr`](./sindr) | The simulator: operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.meas`, ratings checks, SPICE front end |
-| [`sindr-core`](./sindr-core) | Data model: `Circuit`, elements, waveforms, design hierarchy (blocks, instances) and part data, with no solver |
+| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.meas`, ratings checks, SPICE front end |
 | [`sindr-devices`](./sindr-devices) | Device physics: diode family, BJT, MOSFET, JFET, IGBT, varactor, thermistor and photoresistor models |
 
-`sindr` depends on `sindr-core`, which depends on `sindr-devices`. The split lets design tools use `Circuit` without the solver, and lets you use the device-physics models with your own solver, without the `nalgebra` linear-algebra stack. `sindr` re-exports `sindr-core`, so most code needs only `sindr`.
+`sindr` depends on `sindr-devices`. The split lets you use the device-physics models with your own solver, without the `nalgebra` linear-algebra stack.
 
-All three build for `wasm32-unknown-unknown`, with default and all features, so sindr runs in a browser. CI builds them and solves an operating point, an AC sweep, a transient and a SPICE deck under Node on every pull request.
+Both build for `wasm32-unknown-unknown`, with default and all features, so sindr runs in a browser. CI builds them and solves an operating point, an AC sweep, a transient and a SPICE deck under Node on every pull request.
 
 ## Accuracy
 

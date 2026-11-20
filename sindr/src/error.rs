@@ -30,7 +30,7 @@ pub enum SimError {
     /// The design hierarchy can't be flattened: an unknown block, a
     /// port-count mismatch, a recursive block or a repeated id.
     #[error("{0}")]
-    Design(#[from] sindr_core::DesignError),
+    Design(#[from] crate::DesignError),
 
     /// No ground node was defined. Every circuit needs a reference node.
     #[error(
