@@ -32,6 +32,7 @@ Key facts for generating code:
 
 ## Optional
 
+- [ROADMAP](https://github.com/steffendybvik/sindr-rs/blob/main/ROADMAP.md): where sindr is heading on the way to 1.0; planned, not shipped
 - [CHANGELOG](https://github.com/steffendybvik/sindr-rs/blob/main/CHANGELOG.md): changes per release, including breaking ones
 - [AGENTS.md](https://github.com/steffendybvik/sindr-rs/blob/main/AGENTS.md): orientation for agents working on the repo itself
 - [CONTRIBUTING](https://github.com/steffendybvik/sindr-rs/blob/main/CONTRIBUTING.md): development setup and conventions

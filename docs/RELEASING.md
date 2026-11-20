@@ -16,6 +16,7 @@ This page is the documentation side.
 | docs.rs | Every public item | A doc comment with units (V, A, Ω, F, H, s, K) and sign conventions; `# Errors` on fallible functions |
 | GitHub, crates.io | `README.md`, `sindr/README.md`, `sindr-core/README.md`, `sindr-devices/README.md` | Install snippet, element reference, examples |
 | Everyone | `LIMITATIONS.md` | What sindr does **not** do. This is what stops readers, and LLMs, assuming features that don't exist |
+| Users and contributors | `ROADMAP.md` | The 1.0 gate and what comes next, in themes. No dates, no internal tracker ids, no names of users |
 | LLMs | `llms.txt` | Short index: summary, key facts for generating code, links |
 | LLMs | `llms-full.txt` | Generated: READMEs, LIMITATIONS, public API with docs, examples |
 | Agents working on the repo | `AGENTS.md` | Orientation, "Common pitfalls when generating circuits via this API", "Things NOT to do" |
