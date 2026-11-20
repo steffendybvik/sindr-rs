@@ -965,17 +965,18 @@ pub(crate) fn small_signal_system(
                 let cq = node_map.index(&control_nodes[1]);
                 let g = Complex64::new(*gm, 0.0);
 
-                if let (Some(ti), Some(cpi)) = (to, cp) {
-                    a[(ti, cpi)] += g;
-                }
-                if let (Some(ti), Some(cqi)) = (to, cq) {
-                    a[(ti, cqi)] -= g;
-                }
+                // Same direction as the DC stamp: out of `from`, into `to`.
                 if let (Some(fi), Some(cpi)) = (from, cp) {
-                    a[(fi, cpi)] -= g;
+                    a[(fi, cpi)] += g;
                 }
                 if let (Some(fi), Some(cqi)) = (from, cq) {
-                    a[(fi, cqi)] += g;
+                    a[(fi, cqi)] -= g;
+                }
+                if let (Some(ti), Some(cpi)) = (to, cp) {
+                    a[(ti, cpi)] -= g;
+                }
+                if let (Some(ti), Some(cqi)) = (to, cq) {
+                    a[(ti, cqi)] += g;
                 }
             }
             CircuitElement::Ccvs {
@@ -1018,11 +1019,11 @@ pub(crate) fn small_signal_system(
                 let gain = Complex64::new(*alpha, 0.0);
 
                 if let Some(cb) = circuit.vsource_branch_index(control_source) {
-                    if let Some(ti) = to {
-                        a[(ti, num_nodes + cb)] += gain;
-                    }
                     if let Some(fi) = from {
-                        a[(fi, num_nodes + cb)] -= gain;
+                        a[(fi, num_nodes + cb)] += gain;
+                    }
+                    if let Some(ti) = to {
+                        a[(ti, num_nodes + cb)] -= gain;
                     }
                 }
             }

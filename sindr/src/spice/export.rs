@@ -521,15 +521,15 @@ impl<'a> Deck<'a> {
                 gain,
                 ..
             } => self.controlled(&name, nodes, control_nodes, num(id, "gain", *gain)?),
-            // sindr's VCCS and CCCS push their current out of `nodes[0]`
-            // into the circuit; SPICE's G and F draw it in at `n+`. Checked
-            // against ngspice by the `op_exported_controlled` golden.
+            // VCCS and CCCS share SPICE's G and F direction, so their nodes
+            // go out as they are. Checked against ngspice by the
+            // `op_exported_controlled` golden.
             CircuitElement::Vccs {
                 nodes,
                 control_nodes,
                 gm,
                 ..
-            } => self.controlled(&name, &swapped(nodes), control_nodes, num(id, "gm", *gm)?),
+            } => self.controlled(&name, nodes, control_nodes, num(id, "gm", *gm)?),
             CircuitElement::Ccvs {
                 nodes,
                 control_source,
@@ -546,7 +546,7 @@ impl<'a> Deck<'a> {
                 ..
             } => {
                 let value = num(id, "alpha", *alpha)?;
-                self.current_controlled(&name, id, &swapped(nodes), control_source, value)
+                self.current_controlled(&name, id, nodes, control_source, value)
             }
             CircuitElement::Transformer {
                 nodes, l1, l2, k, ..
@@ -700,10 +700,6 @@ impl<'a> Deck<'a> {
         self.line(format!("{name} {out} {control} {value}"));
         Ok(())
     }
-}
-
-fn swapped([a, b]: &[String; 2]) -> [String; 2] {
-    [b.clone(), a.clone()]
 }
 
 /// The SPICE element letter an element is written as.

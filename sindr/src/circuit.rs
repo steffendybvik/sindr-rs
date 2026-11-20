@@ -576,6 +576,10 @@ pub enum CircuitElement {
 
     /// Voltage-Controlled Current Source: I_out = gm * V_control.
     /// nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-]
+    ///
+    /// Like [`CircuitElement::CurrentSource`] and SPICE's `G n+ n-`, a
+    /// positive `I_out` flows through the source from `nodes[0]` to
+    /// `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`.
     #[cfg_attr(feature = "serde", serde(rename = "vccs"))]
     Vccs {
         /// Unique component identifier.
@@ -604,6 +608,11 @@ pub enum CircuitElement {
 
     /// Current-Controlled Current Source: I_out = alpha * I_control.
     /// nodes: [out_from, out_to], control_source: id of controlling voltage source
+    ///
+    /// Like [`CircuitElement::CurrentSource`] and SPICE's `F n+ n-`, a
+    /// positive `I_out` flows through the source from `nodes[0]` to
+    /// `nodes[1]`. `I_control` is the controlling source's branch current,
+    /// positive from its `+` terminal through it to `-`, as in SPICE.
     #[cfg_attr(feature = "serde", serde(rename = "cccs"))]
     Cccs {
         /// Unique component identifier.

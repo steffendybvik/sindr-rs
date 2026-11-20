@@ -974,7 +974,7 @@ fn op_exported_controlled() {
         control_nodes: ["a".into(), "0".into()],
         gain: 3.0,
     });
-    let (id, nodes) = two("g1", ["g", "0"]);
+    let (id, nodes) = two("g1", ["0", "g"]);
     components.push(CircuitElement::Vccs {
         id,
         nodes,
@@ -988,7 +988,7 @@ fn op_exported_controlled() {
         control_source: "v1".into(),
         rm: 100.0,
     });
-    let (id, nodes) = two("f1", ["f", "0"]);
+    let (id, nodes) = two("f1", ["0", "f"]);
     components.push(CircuitElement::Cccs {
         id,
         nodes,

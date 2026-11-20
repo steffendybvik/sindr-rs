@@ -72,7 +72,9 @@ fn vcvs_output_is_gain_times_control_voltage() {
 
 #[test]
 fn vccs_load_current_is_gm_times_control_voltage() {
-    // I_out = gm * V(c) = 0.002 S * 2 V = 4 mA, across a 500 Ω load -> 2 V.
+    // I_out = gm * V(c) = 0.002 S * 2 V = 4 mA. As in SPICE's `G out 0`, it
+    // flows through the source from `out` to ground, so it pulls 4 mA out of
+    // the 500 Ω load: V(out) = -2 V.
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
@@ -89,7 +91,43 @@ fn vccs_load_current_is_gm_times_control_voltage() {
     };
     let r = solve_circuit(&circuit).expect("solve vccs");
     assert_relative_eq!(comp_current(&r, "Rload").abs(), 0.002 * 2.0, epsilon = 1e-6);
-    assert_relative_eq!(node(&r, "out").abs(), 0.002 * 2.0 * 500.0, epsilon = 1e-6);
+    assert_relative_eq!(node(&r, "out"), -0.002 * 2.0 * 500.0, epsilon = 1e-6);
+}
+
+#[test]
+fn vccs_drives_current_the_way_a_current_source_does() {
+    // The same nodes and the same current must give the same circuit,
+    // whichever of the two sources sets it.
+    let with = |source: CircuitElement| Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            vsrc("V1", "c", "0", 2.0),
+            resistor("Rc", "c", "0", 1_000.0),
+            source,
+            resistor("Rload", "out", "0", 500.0),
+        ],
+        ..Default::default()
+    };
+    let vccs = with(CircuitElement::Vccs {
+        id: "G1".into(),
+        nodes: ["out".into(), "0".into()],
+        control_nodes: ["c".into(), "0".into()],
+        gm: 0.002,
+    });
+    let isrc = with(CircuitElement::CurrentSource {
+        id: "I1".into(),
+        nodes: ["out".into(), "0".into()],
+        current: 0.004,
+        waveform: None,
+    });
+    let a = solve_circuit(&vccs).expect("solve vccs");
+    let b = solve_circuit(&isrc).expect("solve current source");
+    assert_relative_eq!(node(&a, "out"), node(&b, "out"), epsilon = 1e-9);
+    assert_relative_eq!(
+        comp_current(&a, "G1"),
+        comp_current(&b, "I1"),
+        epsilon = 1e-9
+    );
 }
 
 #[test]
@@ -118,7 +156,10 @@ fn ccvs_output_is_rm_times_control_current() {
 
 #[test]
 fn cccs_output_current_is_alpha_times_control_current() {
-    // I_ctrl = 10 mA, alpha = 5 -> I_out = 50 mA across a 40 Ω load -> |V_out| = 2 V.
+    // V1 delivers 10 mA, so its SPICE branch current (+ to - through the
+    // source) is -10 mA. alpha = 5 gives -50 mA from `out` to ground through
+    // the source, as SPICE's `F out 0 V1 5` does: 50 mA into the 40 Ω load,
+    // V(out) = +2 V.
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
@@ -136,7 +177,7 @@ fn cccs_output_current_is_alpha_times_control_current() {
     };
     let r = solve_circuit(&circuit).expect("solve cccs");
     assert_relative_eq!(comp_current(&r, "Rload").abs(), 5.0 * 0.01, epsilon = 1e-6);
-    assert_relative_eq!(node(&r, "out").abs(), 5.0 * 0.01 * 40.0, epsilon = 1e-6);
+    assert_relative_eq!(node(&r, "out"), 5.0 * 0.01 * 40.0, epsilon = 1e-6);
 }
 
 // ----- Voltage regulator --------------------------------------------------

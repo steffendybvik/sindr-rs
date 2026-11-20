@@ -366,7 +366,7 @@ fn names_get_their_spice_letter_and_ground_becomes_0() {
     let deck = to_netlist(&circuit, "names").unwrap();
     assert_eq!(
         deck,
-        "names\nVsupply in 0 DC 1\nr_load in 0 50\nFmirror 0 in Vsupply 2\n.end\n"
+        "names\nVsupply in 0 DC 1\nr_load in 0 50\nFmirror in 0 Vsupply 2\n.end\n"
     );
 }
 

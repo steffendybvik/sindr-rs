@@ -981,21 +981,20 @@ pub fn stamp_vccs(
     let cp = node_map.index(&control_nodes[0]);
     let cq = node_map.index(&control_nodes[1]);
 
-    // I = gm * (V(cp) - V(cq))
-    // Stamps into G matrix:
-    // Row to: += gm*V(cp) - gm*V(cq)
-    // Row from: -= gm*V(cp) - gm*V(cq)
-    if let (Some(ti), Some(cpi)) = (to, cp) {
-        system.a[(ti, cpi)] += gm;
-    }
-    if let (Some(ti), Some(cqi)) = (to, cq) {
-        system.a[(ti, cqi)] -= gm;
-    }
+    // I = gm * (V(cp) - V(cq)) flows through the source from `from` to
+    // `to`, as in SPICE's `G n+ n-` and sindr's `CurrentSource`: it leaves
+    // node `from` (+ on its KCL row) and enters node `to` (−).
     if let (Some(fi), Some(cpi)) = (from, cp) {
-        system.a[(fi, cpi)] -= gm;
+        system.a[(fi, cpi)] += gm;
     }
     if let (Some(fi), Some(cqi)) = (from, cq) {
-        system.a[(fi, cqi)] += gm;
+        system.a[(fi, cqi)] -= gm;
+    }
+    if let (Some(ti), Some(cpi)) = (to, cp) {
+        system.a[(ti, cpi)] -= gm;
+    }
+    if let (Some(ti), Some(cqi)) = (to, cq) {
+        system.a[(ti, cqi)] += gm;
     }
 }
 
@@ -1051,13 +1050,13 @@ pub fn stamp_cccs(
     let from = node_map.index(&nodes[0]);
     let to = node_map.index(&nodes[1]);
 
-    // I_out = alpha * I_ctrl (branch current variable at ctrl_branch)
-    // Stamps: row(to) += alpha * I_ctrl, row(from) -= alpha * I_ctrl
-    if let Some(ti) = to {
-        system.a[(ti, ctrl_branch)] += alpha;
-    }
+    // I_out = alpha * I_ctrl flows through the source from `from` to `to`,
+    // as in SPICE's `F n+ n-`: it leaves `from` and enters `to`.
     if let Some(fi) = from {
-        system.a[(fi, ctrl_branch)] -= alpha;
+        system.a[(fi, ctrl_branch)] += alpha;
+    }
+    if let Some(ti) = to {
+        system.a[(ti, ctrl_branch)] -= alpha;
     }
 }
 
