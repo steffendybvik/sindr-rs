@@ -301,6 +301,7 @@ fn stamp_circuit_transient(
                 kind,
                 params,
                 parasitic_caps,
+                ..
             } => {
                 stamp_mosfet_companion(system, node_map, nodes, v_prev, params, *kind);
                 if let Some(pc) = parasitic_caps {

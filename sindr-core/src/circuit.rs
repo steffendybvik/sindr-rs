@@ -407,6 +407,17 @@ pub enum CircuitElement {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         parasitic_caps: Option<MosfetParasiticCaps>,
+        /// A power MOSFET's body diode, as a SPICE diode card: anode at the
+        /// source and cathode at the drain for NMOS, the other way round for
+        /// PMOS. It conducts when the drain is pulled past the source, as
+        /// in a bridge's freewheeling interval. Every analysis solves it as
+        /// a [`CircuitElement::Diode`] with id `<id>.body`, which is where
+        /// its current is reported. `None` (default) is no body diode.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        body_diode: Option<DiodeModel>,
     },
 
     /// N-channel or P-channel JFET (Shockley square-law model).
@@ -1341,6 +1352,7 @@ mod tests {
                     cgs: 100e-12,
                     cgd: 50e-12,
                 }),
+                body_diode: None,
             }],
             ..Default::default()
         };

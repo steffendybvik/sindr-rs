@@ -71,7 +71,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
 - **No JFET parasitic capacitances.** (BJT and MOSFET have optional Cbe/Cbc and Cgs/Cgd; JFET doesn't.)
-- **No power-MOSFET reverse body diode** as a separate stamped element (must be added explicitly as a `Diode`).
+- **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
 - **No SiC / GaN device models.**
 - **No magnetics with saturation / hysteresis.** `Transformer` is linear coupled inductors. No B-H curve, no core loss, no saturating inductor, no gapped core.
 - **No transmission lines** (lossless or lossy / W-element).

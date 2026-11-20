@@ -275,6 +275,7 @@ fn op_mosfet_cs() {
                     kind: MosfetKind::Nmos,
                     params: MosfetParams::default_nmos(),
                     parasitic_caps: None,
+                    body_diode: None,
                 },
             ]),
         ),
@@ -300,6 +301,7 @@ fn op_mosfet_follower() {
                     kind: MosfetKind::Nmos,
                     params: MosfetParams::default_nmos(),
                     parasitic_caps: None,
+                    body_diode: None,
                 },
             ]),
         ),
@@ -324,6 +326,7 @@ fn op_pmos_highside() {
                     kind: MosfetKind::Pmos,
                     params: MosfetParams::default_pmos(),
                     parasitic_caps: None,
+                    body_diode: None,
                 },
             ]),
         ),
@@ -650,6 +653,7 @@ fn ac_mosfet_cs() {
                 cgs: 10e-12,
                 cgd: 2e-12,
             }),
+            body_diode: None,
         },
     ]);
     check_ac("ac_mosfet_cs", &circuit, "vg", "d", 5, (1e3, 1e9), OP_V);
@@ -1216,6 +1220,74 @@ fn dc_zener() {
         },
     );
     check.finish();
+}
+
+/// An NMOS held off, its drain pulled below its source through 10 Ω: the
+/// body diode carries the current, as in a bridge's freewheeling interval.
+/// The gate sits at −5 V so the channel stays off even with source and
+/// drain swapped; at 0 V it would turn on near VTO, where ngspice's body
+/// effect (bulk at node 0) and sindr's 3-terminal model part ways.
+/// ngspice's level-1 bulk junctions are switched off (`IS=1e-30`) and the
+/// body diode is an explicit `D` with the card sindr's `body_diode` holds.
+#[test]
+fn dc_mosfet_body_diode() {
+    let golden = Golden::load("dc_mosfet_body_diode");
+    let body = sindr::DiodeModel {
+        is: 1e-12,
+        n: 1.2,
+        rs: 0.05,
+        bv: Some(60.0),
+        ibv: 250e-6,
+        ..Default::default()
+    };
+    let circuit = circuit(vec![
+        vsource("v1", "a", "0", 0.0),
+        vsource("vg", "g", "0", -5.0),
+        resistor("r1", "a", "d", 10.0),
+        CircuitElement::Mosfet {
+            id: "m1".into(),
+            nodes: ["g".into(), "d".into(), "0".into()],
+            kind: MosfetKind::Nmos,
+            params: MosfetParams::default_nmos(),
+            parasitic_caps: None,
+            body_diode: Some(body),
+        },
+    ]);
+    let sweep = dc_sweep(&circuit, "v1", -5.0, 5.0, 41).unwrap();
+    let scale = golden.scale();
+    let vd: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["d"])
+        .collect();
+    let i: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| source_current(&p.result, "v1"))
+        .collect();
+    let mut check = Check::new("dc_mosfet_body_diode");
+    check.series("v(d)", &scale, &vd, &golden.column("v(d)"), OP_V);
+    // Off, both carry picoamps; ngspice adds GMIN leakage sindr doesn't.
+    check.series(
+        "i(v1)",
+        &scale,
+        &i,
+        &golden.column("i(v1)"),
+        Tol {
+            rel: 1e-4,
+            abs: 1e-9,
+        },
+    );
+    check.finish();
+    // The body diode's current is reported under `m1.body`.
+    let on = &sweep.points[0].result;
+    let body_current = on
+        .component_results
+        .iter()
+        .find(|c| c.id == "m1.body")
+        .expect("m1.body result")
+        .current_through;
+    assert!((body_current - golden.column("i(v1)")[0]).abs() < 1e-3);
 }
 
 /// sindr's small-signal admittance of a diode at each bias of ngspice's

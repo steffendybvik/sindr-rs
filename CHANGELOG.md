@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Breaking:** a power MOSFET's body diode. `CircuitElement::Mosfet` has
+  a new `body_diode: Option<DiodeModel>` field (struct literals need it,
+  JSON may omit it): source to drain for NMOS, drain to source for PMOS,
+  solved in every analysis as a diode `<id>.body` whose current the
+  results report. An ngspice golden (`dc_mosfet_body_diode`) checks it
+  freewheeling.
 - Transient and Newton benchmarks (`cargo bench -p sindr --bench transient
   --bench newton`), with a CI job that fails a PR more than 25 % slower than
   its base, and a Performance section in the README with the numbers.
