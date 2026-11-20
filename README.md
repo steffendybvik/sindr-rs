@@ -83,6 +83,38 @@ Medians on an Apple M1 Pro, release build, one thread ([details](./sindr/README.
 
 CI fails a pull request that makes any benchmark more than 25 % slower.
 
+### Against ngspice
+
+The same netlists in both, at their default tolerances, on the same M1 Pro
+with ngspice 47 ([`vs_ngspice`](./sindr/examples/vs_ngspice.rs); needs
+ngspice, so it isn't in CI). sindr is called in-process. ngspice is either
+spawned per run with `ngspice -b`, or driven by one `.control` loop.
+
+| Per call | sindr | ngspice -b |
+|---|---:|---:|
+| Operating point, BJT stage | 7 µs | 14 ms (all but < 1 ms is startup) |
+| AC, series RLC, 61 points | 48 µs | 14 ms (same) |
+| Transient, 5 ms of a rectifier | 35 ms | 56 ms (42 ms solving) |
+
+| 1 000 op points, base resistor ±10 % | Time | Op points/s |
+|---|---:|---:|
+| sindr, 1 thread | 8.8 ms | 114 000 |
+| sindr, 4 threads, one process | 3.4 ms | 290 000 |
+| ngspice, one process, `.control` loop | 36 ms | 28 000 |
+| ngspice -b per point, 10 at once | 2.0 s | 500 |
+
+| Size | sindr | ngspice, solve only |
+|---|---:|---:|
+| Operating point, 1 000-diode chain | 8.6 ms | 16 ms |
+| Operating point, 3 000-diode chain | 27 ms | 82 ms |
+| Transient, 1 000-stage RC ladder, 200 steps | 151 ms | 29 ms |
+| Transient, 3 000-stage RC ladder, 200 steps | 462 ms | 85 ms |
+
+Embedded, a small solve costs microseconds against ngspice's 14 ms start,
+and sindr has no global state, so solves run in parallel threads. ngspice
+solves large transients about five times faster: past a few hundred nodes,
+a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics)).
+
 ## Compared with
 
 | | sindr | [`thevenin`](https://crates.io/crates/thevenin) | ngspice bindings (`ngspice-sys`, `elektron_ngspice`, …) |

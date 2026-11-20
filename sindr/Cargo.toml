@@ -57,6 +57,10 @@ required-features = ["examples"]
 name = "parse_netlist"
 required-features = ["spice"]
 
+[[example]]
+name = "vs_ngspice"
+required-features = ["spice"]
+
 [[bench]]
 name = "mna_solve"
 harness = false
