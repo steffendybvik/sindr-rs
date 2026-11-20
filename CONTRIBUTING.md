@@ -8,6 +8,15 @@ architecture, how to add a circuit element or device model, and conventions.
 
 - **MSRV is Rust 1.89** (`rust-version` in both crate manifests). CI tests on
   1.89 and on stable, so don't use std or language features newer than 1.89.
+- **Raise the MSRV only in a minor release** (0.x → 0.x+1 before 1.0), with
+  a CHANGELOG line, never in a patch: `sindr = "0.2"` users get patches
+  through `cargo update` and mustn't need a newer compiler for them.
+- **Dependencies** must be licensed compatibly with MIT OR Apache-2.0 and free
+  of security advisories: CI runs `cargo deny check` against `deny.toml`. To
+  allow a new licence, add it there with the reason in the PR.
+- **API breaks** follow the version: CI's semver job runs
+  `cargo-semver-checks` against crates.io, so a patch release that breaks the
+  public API fails it.
 - Edition 2021. No `unsafe`, and no `unwrap()`/`expect()` outside tests:
   return a `SimError`.
 

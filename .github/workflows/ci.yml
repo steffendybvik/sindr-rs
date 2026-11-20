@@ -75,6 +75,30 @@ jobs:
           cargo test -p sindr --target wasm32-unknown-unknown --test wasm
           cargo test -p sindr --all-features --target wasm32-unknown-unknown --test wasm
 
+  deny:
+    # Licences compatible with MIT OR Apache-2.0, no advisories (deny.toml).
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  semver:
+    # Plain 0.x: a patch release must not break callers. Compares each
+    # crate's public API with its last version on crates.io, and fails on a
+    # break the version bump doesn't allow (pre-1.0, only a minor bump may).
+    name: semver checks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          feature-group: all-features
+          # sindr-core has no published version to compare with until 0.2.0
+          # ships. Drop this line then.
+          exclude: sindr-core
+
   docs:
     name: rustdoc
     runs-on: ubuntu-latest
