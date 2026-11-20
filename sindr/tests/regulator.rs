@@ -247,3 +247,67 @@ fn input_ripple_reaches_the_output_through_line_regulation() {
     // In dropout all of it does.
     assert!((ripple(6.0) - 1.0).abs() < 1e-6, "{}", ripple(6.0));
 }
+
+/// A 7905: the LM7805 characteristic set to −5 V, fed from −12 V. It sinks
+/// its load current in at the output pin and regulates in DC and transient.
+#[test]
+fn negative_regulator_holds_minus_five_from_minus_twelve() {
+    // A 0.5 A load pulled up to ground: current flows out of ground, through
+    // the load and in at the output pin.
+    let c = regulator(-12.0, -5.0, RegulatorParams::lm7805(), load_i(-0.5));
+    let r = solve_circuit(&c).unwrap();
+    assert!((vout(&r) + 5.0).abs() < 0.05, "{}", vout(&r));
+    // The input carries the load plus the quiescent current, all negative.
+    assert!((iin(&r) + 0.5043).abs() < 1e-6, "{}", iin(&r));
+    let pass = u1(&r);
+    assert!(pass.power > 0.0, "dissipation {}", pass.power);
+
+    // Out of headroom at −6 V in: the output follows the input up by 2 V.
+    let r = solve_circuit(&regulator(
+        -6.0,
+        -5.0,
+        RegulatorParams::lm7805(),
+        load_i(-1.0),
+    ))
+    .unwrap();
+    assert!((vout(&r) + 4.0).abs() < 1e-6, "{}", vout(&r));
+
+    // A resistive load in transient settles on the DC answer.
+    let c = regulator(-12.0, -5.0, RegulatorParams::lm7805(), load_r(10.0));
+    let dc = vout(&solve_circuit(&c).unwrap());
+    assert!((dc + 5.0).abs() < 0.05, "{dc}");
+    let tran = sindr::solve_transient(&c, &sindr::TransientConfig::new(1e-4, 1e-5))
+        .unwrap()
+        .transient
+        .unwrap();
+    for step in &tran.timesteps {
+        let v = step.node_voltages["out"];
+        assert!((v - dc).abs() < 1e-6, "t = {}: {v}", step.time);
+    }
+}
+
+#[test]
+fn negative_regulator_current_limit_holds_a_short() {
+    let r = solve_circuit(&regulator(
+        -12.0,
+        -5.0,
+        RegulatorParams::lm7805(),
+        load_r(1e-3),
+    ))
+    .unwrap();
+    let i = u1(&r).current_through;
+    assert!((i + 2.2).abs() < 0.03, "short-circuit current {i}");
+    assert!(vout(&r).abs() < 0.01);
+}
+
+#[test]
+fn zero_regulator_voltage_is_rejected() {
+    let err = solve_circuit(&regulator(
+        12.0,
+        0.0,
+        RegulatorParams::lm7805(),
+        load_r(10.0),
+    ))
+    .unwrap_err();
+    assert!(err.to_string().contains("non-zero"), "{err}");
+}

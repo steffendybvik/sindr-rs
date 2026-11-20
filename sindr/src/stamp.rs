@@ -493,7 +493,8 @@ pub(crate) fn regulator_state(
 }
 
 /// The linear piece of a regulator's characteristic at `solution`, or the
-/// regulating piece at no load without one.
+/// regulating piece at no load without one (unbounded headroom on the side
+/// of the set voltage, so a negative regulator starts regulating too).
 pub(crate) fn regulator_piece_at(
     node_map: &NodeMap,
     nodes: &[String; 3],
@@ -504,7 +505,9 @@ pub(crate) fn regulator_piece_at(
 ) -> RegulatorLinear {
     let params = model.unwrap_or_default();
     let (vin, iout) = regulator_state(node_map, nodes, branch, solution)
-        .map_or((f64::INFINITY, 0.0), |(vin, _, iout)| (vin, iout));
+        .map_or((f64::INFINITY.copysign(voltage), 0.0), |(vin, _, iout)| {
+            (vin, iout)
+        });
     regulator_piece(&params, voltage, vin, iout)
 }
 
@@ -513,7 +516,8 @@ pub(crate) fn regulator_piece_at(
 ///
 /// Branch row: `Vout − Vg = offset + d_vin·(Vin − Vg) + d_iout·Iout`, with
 /// `Iout = −i_branch`. KCL: the output pin takes `i_branch`, the input
-/// gives `Iout + Iq`, and the quiescent current returns through ground.
+/// gives `Iout + Iq`, and the quiescent current returns through ground
+/// (all mirrored for a negative `voltage`).
 pub(crate) fn stamp_regulator(
     system: &mut MnaSystem,
     node_map: &NodeMap,
@@ -524,7 +528,9 @@ pub(crate) fn stamp_regulator(
     v_prev: Option<&DVector<f64>>,
 ) {
     let piece = regulator_piece_at(node_map, nodes, voltage, model, branch, v_prev);
-    let iq = model.map_or(0.0, |m| m.quiescent_current);
+    // A negative regulator's quiescent current runs the other way: in at
+    // the ground pin, out at the (negative) input.
+    let iq = model.map_or(0.0, |m| m.quiescent_current).copysign(voltage);
     let input = node_map.index(&nodes[0]);
     let out = node_map.index(&nodes[1]);
     let gnd = node_map.index(&nodes[2]);

@@ -280,7 +280,13 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             finite("model.bias_current", model.bias_current, " A")
         }
         CircuitElement::VoltageRegulator { voltage, model, .. } => {
-            positive("voltage", *voltage, " V")?;
+            // Negative for a 79xx-style regulator; zero regulates nothing.
+            if !voltage.is_finite() || *voltage == 0.0 {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: voltage {voltage} V must be a non-zero, finite number",
+                    comp.id()
+                )));
+            }
             if let Some(m) = model {
                 non_negative("model.dropout", m.dropout, " V")?;
                 non_negative("model.dropout_resistance", m.dropout_resistance, " Ω")?;

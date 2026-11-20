@@ -890,7 +890,9 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[input, output, gnd]`.
         nodes: [String; 3], // [input, output, gnd]
-        /// Regulated output voltage (V). E.g. 5.0 for a 7805.
+        /// Regulated output voltage (V) from the ground pin. E.g. 5.0 for a
+        /// 7805, or −5.0 for a 7905, whose input sits below ground and whose
+        /// output current flows in at the output pin.
         voltage: f64,
         /// Dropout, quiescent current, limit and regulation. `None` is an
         /// ideal regulator that still can't put out more than it gets in.

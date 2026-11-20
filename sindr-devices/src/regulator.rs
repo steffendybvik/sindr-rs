@@ -12,6 +12,10 @@
 //! whichever is lower. Past the current limit the output falls steeply, so
 //! the current stays within 1 % of the limit into any load, short circuits
 //! included. The input draws `Iout + Iq`.
+//!
+//! A negative set voltage is a negative regulator (7905, 7912): the same
+//! characteristic mirrored through the ground pin, so `Vin`, `Vout` and
+//! `Iout` all change sign, and "lower" above reads "nearer zero".
 
 /// How steeply the output falls past the current limit: the full set
 /// voltage over this fraction of the limit current.
@@ -118,6 +122,14 @@ pub fn regulator_piece(
     vin: f64,
     iout: f64,
 ) -> RegulatorLinear {
+    if voltage < 0.0 {
+        // Mirror through the ground pin: −Vout = f(−Vin, −Iout).
+        let p = regulator_piece(params, -voltage, -vin, -iout);
+        return RegulatorLinear {
+            offset: -p.offset,
+            ..p
+        };
+    }
     let regulating = RegulatorLinear {
         offset: voltage - params.line_regulation * (voltage + params.dropout),
         d_vin: params.line_regulation,
@@ -148,10 +160,11 @@ pub fn regulator_piece(
     piece
 }
 
-/// Power the regulator dissipates (W): `(Vin − Vout)·Iout + Vin·Iq`, with
-/// voltages from the ground pin.
+/// Power the regulator dissipates (W): `(Vin − Vout)·Iout + |Vin|·Iq`, with
+/// voltages from the ground pin. Both terms are positive for a negative
+/// regulator too, where `Vin`, `Vout` and `Iout` are all negative.
 pub fn regulator_dissipation(params: &RegulatorParams, vin: f64, vout: f64, iout: f64) -> f64 {
-    (vin - vout) * iout + vin * params.quiescent_current
+    (vin - vout) * iout + vin.abs() * params.quiescent_current
 }
 
 #[cfg(test)]
@@ -186,6 +199,23 @@ mod tests {
         let piece = regulator_piece(&p, 5.0, 3.0, 0.1);
         assert_eq!(piece.region, RegulatorRegion::Dropout);
         assert_eq!(piece.vout(3.0, 0.1), 3.0);
+    }
+
+    #[test]
+    fn negative_regulator_mirrors_the_positive_one() {
+        let p = RegulatorParams::lm7805();
+        for (vin, iout) in [(12.0, 0.5), (6.0, 0.5), (12.0, 3.0), (3.0, 0.0)] {
+            let pos = regulator_piece(&p, 5.0, vin, iout);
+            let neg = regulator_piece(&p, -5.0, -vin, -iout);
+            assert_eq!(neg.region, pos.region);
+            assert_eq!(neg.limiting, pos.limiting);
+            assert!((neg.vout(-vin, -iout) + pos.vout(vin, iout)).abs() < 1e-12);
+        }
+        let piece = regulator_piece(&p, -5.0, -12.0, -0.5);
+        assert_eq!(piece.region, RegulatorRegion::Regulating);
+        assert!((piece.vout(-12.0, -0.5) + 5.0).abs() < 0.05);
+        let pd = regulator_dissipation(&p, -12.0, -5.0, -0.5);
+        assert!((pd - (3.5 + 12.0 * 4.3e-3)).abs() < 1e-12, "{pd}");
     }
 
     impl RegulatorLinear {

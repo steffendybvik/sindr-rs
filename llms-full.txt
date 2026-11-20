@@ -1238,7 +1238,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **Op-amp macromodel: single pole.** `OpAmpModel` gives open-loop gain, a dominant pole from GBW, slew rate, output resistance, input offset and bias current, and a rail clamp. There is no second pole or phase margin, no output current limit, no supply current, no input common-mode range, no noise and no CMRR/PSRR. Vendor op-amp models can't be loaded. Without a `model` the op-amp is a gain-1e5 VCVS with no rail clamp.
 - **Batteries are an equivalent circuit, with no chemistry.** `Battery` has an open-circuit voltage curve, a series resistance and one RC pair. Capacity doesn't fall at high current (Peukert) or in the cold, resistance doesn't rise as the cell empties, and there's no aging, self-discharge, charging limit or hysteresis between charge and discharge curves. A battery is noiseless in `.noise`, and SPICE export refuses it.
-- **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. No references, adjustable regulators (LM317 with its divider) or DC-DC controllers.
+- **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, positive or negative (a negative `voltage` mirrors the characteristic, for a 79xx), but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. No references, adjustable regulators (LM317 with its divider) or DC-DC controllers.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
@@ -2268,7 +2268,9 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[input, output, gnd]`.
         nodes: [String; 3], // [input, output, gnd]
-        /// Regulated output voltage (V). E.g. 5.0 for a 7805.
+        /// Regulated output voltage (V) from the ground pin. E.g. 5.0 for a
+        /// 7805, or −5.0 for a 7905, whose input sits below ground and whose
+        /// output current flows in at the output pin.
         voltage: f64,
         /// Dropout, quiescent current, limit and regulation. `None` is an
         /// ideal regulator that still can't put out more than it gets in.
@@ -8135,6 +8137,10 @@ whichever is lower. Past the current limit the output falls steeply, so
 the current stays within 1 % of the limit into any load, short circuits
 included. The input draws `Iout + Iq`.
 
+A negative set voltage is a negative regulator (7905, 7912): the same
+characteristic mirrored through the ground pin, so `Vin`, `Vout` and
+`Iout` all change sign, and "lower" above reads "nearer zero".
+
 ```rust
 /// Regulator parameters. [`Default`] is ideal: no dropout, no quiescent
 /// current, no limit, perfect regulation, but never more out than in.
@@ -8213,8 +8219,9 @@ pub fn regulator_piece(
     iout: f64,
 ) -> RegulatorLinear { … }
 
-/// Power the regulator dissipates (W): `(Vin − Vout)·Iout + Vin·Iq`, with
-/// voltages from the ground pin.
+/// Power the regulator dissipates (W): `(Vin − Vout)·Iout + |Vin|·Iq`, with
+/// voltages from the ground pin. Both terms are positive for a negative
+/// regulator too, where `Vin`, `Vout` and `Iout` are all negative.
 pub fn regulator_dissipation(params: &RegulatorParams, vin: f64, vout: f64, iout: f64) -> f64 { … }
 ```
 
