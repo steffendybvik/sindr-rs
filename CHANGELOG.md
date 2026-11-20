@@ -17,6 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   solved in every analysis as a diode `<id>.body` whose current the
   results report. An ngspice golden (`dc_mosfet_body_diode`) checks it
   freewheeling.
+- **Breaking:** `CircuitElement::Battery`, an equivalent-circuit cell:
+  open-circuit voltage by state of charge behind a series resistance and
+  an optional RC pair (`sindr::battery::BatteryParams`, with Li-ion/LiPo
+  and CR2032 presets). DC, transient and AC take it. In transient the
+  state of charge falls with the charge drawn, and `TimestepSnapshot`
+  and `SimulationResult` have a new `state_of_charge` map by battery id.
+  Exhaustive matches on `CircuitElement` and struct literals of those
+  result types need updating.
+- **Breaking:** saturating inductors. `CircuitElement::Inductor` has a new
+  `saturation: Option<InductorSaturation>` field (`None` keeps today's
+  linear inductor; struct literals need it, JSON may omit it). With
+  `Some`, the flux follows `L_sat·i + (L0 − L_sat)·I_sat·tanh(i/I_sat)`:
+  the transient integrates flux and solves for the current by Newton, and
+  AC and noise use the incremental inductance at the DC current. The
+  model lives in `sindr_devices::inductor`. No hysteresis or core loss,
+  and transformers stay linear.
 - Transient and Newton benchmarks (`cargo bench -p sindr --bench transient
   --bench newton`), with a CI job that fails a PR more than 25 % slower than
   its base, and a Performance section in the README with the numbers.
@@ -229,6 +245,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LED's Vf, so Vf rose with temperature and a self-heated LED drew less
   current as it warmed. Each colour now has an effective EG fitted to
   −2 mV/K. Temperature sweeps and self-heated results for LEDs change.
+- A P-channel JFET's current and power in a transient were wrong: the
+  transient mirrored its voltages into the N-channel frame before the model,
+  which mirrors them again. A self-biased P-JFET reported 12.7 mA where it
+  conducted 4.0 mA. Node voltages were right; only the reported
+  `current_through` and `power` were off. Transient and DC now share one
+  calculation.
+- `solve_transient` (and `solve_circuit` when it routes to transient) left
+  `op_amp_results` and `relay_results` empty. They now hold the last step's
+  values, as DC does.
 - A `.model` card stopped at the first parameter it couldn't read and kept
   the ones before it, so `d(is=1e-10, n=2)` (commas, as many vendor
   libraries write them) silently lost `n`, and `is=` with no value or a

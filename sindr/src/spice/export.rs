@@ -346,12 +346,19 @@ impl<'a> Deck<'a> {
             reason: reason.to_string(),
         };
         match component {
+            CircuitElement::Battery { .. } => Err(unsupported(
+                "a battery's state of charge has no SPICE3 primitive",
+            )),
             CircuitElement::Resistor {
                 nodes, resistance, ..
             } => self.two_terminal(&name, nodes, num(id, "resistance", *resistance)?),
             CircuitElement::Capacitor {
                 nodes, capacitance, ..
             } => self.two_terminal(&name, nodes, num(id, "capacitance", *capacitance)?),
+            CircuitElement::Inductor {
+                saturation: Some(_),
+                ..
+            } => Err(unsupported("a saturating core has no SPICE3 primitive")),
             CircuitElement::Inductor {
                 nodes, inductance, ..
             } => self.two_terminal(&name, nodes, num(id, "inductance", *inductance)?),

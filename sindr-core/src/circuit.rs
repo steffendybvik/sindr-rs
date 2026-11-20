@@ -301,6 +301,28 @@ pub enum CircuitElement {
         capacitance: f64,
     },
 
+    /// A battery: open-circuit voltage by state of charge behind a series
+    /// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
+    /// its open-circuit voltage at `state_of_charge` behind `R0 + R1`. In
+    /// transient the RC pair charges and the state of charge falls with the
+    /// charge drawn, reported per step in `state_of_charge`. In AC it is
+    /// the impedance `R0 + R1‖C1`. `current_through` flows
+    /// `nodes[0] → nodes[1]` inside the cell, so it is negative while the
+    /// battery discharges, as for a voltage source.
+    ///
+    /// [`BatteryParams`]: sindr_devices::battery::BatteryParams
+    #[cfg_attr(feature = "serde", serde(rename = "battery"))]
+    Battery {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[positive, negative]`.
+        nodes: [String; 2],
+        /// The cell's equivalent circuit.
+        params: sindr_devices::battery::BatteryParams,
+        /// State of charge at the start, 0 (empty) to 1 (full).
+        state_of_charge: f64,
+    },
+
     /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
     /// solves DC as a single algebraic step, not as t→∞ of a transient);
     /// integrates `dI/dt` properly during transient. The DC bias point that
@@ -314,8 +336,15 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[a, b]`; `current_through` flows `nodes[0] → nodes[1]`.
         nodes: [String; 2],
-        /// Inductance (H).
+        /// Inductance (H): the small-signal value, at zero current.
         inductance: f64,
+        /// Core saturation: the inductance falls towards `l_sat` as the
+        /// current passes `i_sat`. `None` is a linear inductor.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        saturation: Option<sindr_devices::inductor::InductorSaturation>,
     },
 
     /// Diode (Shockley model, silicon unless `model` says otherwise).
@@ -847,6 +876,7 @@ impl CircuitElement {
             CircuitElement::Comparator { nodes, .. } => nodes,
             CircuitElement::SchottkyDiode { nodes, .. } => nodes,
             CircuitElement::Thermistor { nodes, .. } => nodes,
+            CircuitElement::Battery { nodes, .. } => nodes,
             CircuitElement::Photodiode { nodes, .. } => nodes,
             CircuitElement::Varactor { nodes, .. } => nodes,
             CircuitElement::Igbt { nodes, .. } => nodes,
@@ -906,6 +936,7 @@ impl CircuitElement {
             CircuitElement::Comparator { id, .. } => id,
             CircuitElement::SchottkyDiode { id, .. } => id,
             CircuitElement::Thermistor { id, .. } => id,
+            CircuitElement::Battery { id, .. } => id,
             CircuitElement::Photodiode { id, .. } => id,
             CircuitElement::Varactor { id, .. } => id,
             CircuitElement::Igbt { id, .. } => id,
@@ -960,6 +991,7 @@ impl CircuitElement {
             CircuitElement::Comparator { nodes, .. } => nodes,
             CircuitElement::SchottkyDiode { nodes, .. } => nodes,
             CircuitElement::Thermistor { nodes, .. } => nodes,
+            CircuitElement::Battery { nodes, .. } => nodes,
             CircuitElement::Photodiode { nodes, .. } => nodes,
             CircuitElement::Varactor { nodes, .. } => nodes,
             CircuitElement::Igbt { nodes, .. } => nodes,
@@ -996,6 +1028,7 @@ impl CircuitElement {
             CircuitElement::Comparator { id, .. } => id,
             CircuitElement::SchottkyDiode { id, .. } => id,
             CircuitElement::Thermistor { id, .. } => id,
+            CircuitElement::Battery { id, .. } => id,
             CircuitElement::Photodiode { id, .. } => id,
             CircuitElement::Varactor { id, .. } => id,
             CircuitElement::Igbt { id, .. } => id,
@@ -1144,6 +1177,10 @@ impl Circuit {
             matches!(
                 c,
                 CircuitElement::OpAmp { model: Some(_), .. }
+                    | CircuitElement::Inductor {
+                        saturation: Some(_),
+                        ..
+                    }
                     | CircuitElement::Diode { .. }
                     | CircuitElement::Led { .. }
                     | CircuitElement::Bjt { .. }
@@ -1170,6 +1207,7 @@ impl Circuit {
             | CircuitElement::Varactor { .. }
             | CircuitElement::Transformer { .. } => true,
             CircuitElement::Relay { inductance, .. } if *inductance > 0.0 => true,
+            CircuitElement::Battery { params, .. } => params.rc.is_some(),
             CircuitElement::Bjt {
                 parasitic_caps: Some(caps),
                 ..
@@ -1244,6 +1282,7 @@ mod tests {
                 id: "L1".into(),
                 nodes: ["n1".into(), "0".into()],
                 inductance: 10e-3,
+                saturation: None,
             }],
             ..Default::default()
         };

@@ -9,7 +9,7 @@ Status: pre-release alpha (`0.1.0-alpha.8`). Anything below may change.
 - DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
-- Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation)
+- Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
 - Programmatic Rust API + serde JSON for circuits and results
 
 If your problem is "given an analog topology built in Rust, what are the node voltages and branch currents (possibly over time, frequency, or temperature)?", sindr is in scope.
@@ -66,6 +66,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 ### Device models
 
 - **Op-amp macromodel: single pole.** `OpAmpModel` gives open-loop gain, a dominant pole from GBW, slew rate, output resistance, input offset and bias current, and a rail clamp. There is no second pole or phase margin, no output current limit, no supply current, no input common-mode range, no noise and no CMRR/PSRR. Vendor op-amp models can't be loaded. Without a `model` the op-amp is a gain-1e5 VCVS with no rail clamp.
+- **Batteries are an equivalent circuit, with no chemistry.** `Battery` has an open-circuit voltage curve, a series resistance and one RC pair. Capacity doesn't fall at high current (Peukert) or in the cold, resistance doesn't rise as the cell empties, and there's no aging, self-discharge, charging limit or hysteresis between charge and discharge curves. A battery is noiseless in `.noise`, and SPICE export refuses it.
 - **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. No references, adjustable regulators (LM317 with its divider) or DC-DC controllers.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
@@ -73,7 +74,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No JFET parasitic capacitances.** (BJT and MOSFET have optional Cbe/Cbc and Cgs/Cgd; JFET doesn't.)
 - **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
 - **No SiC / GaN device models.**
-- **No magnetics with saturation / hysteresis.** `Transformer` is linear coupled inductors. No B-H curve, no core loss, no saturating inductor, no gapped core.
+- **Magnetics: a saturating inductor, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), but there's no hysteresis, remanence, core loss or temperature dependence, and SPICE export refuses a saturating inductor. `Transformer` is linear coupled inductors: no shared saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
 - **No crystal / quartz resonator macromodel** (must be built from L/C/R by hand).
 - **No piezo / MEMS / electro-mechanical coupling.**

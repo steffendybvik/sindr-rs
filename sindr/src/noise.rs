@@ -243,6 +243,7 @@ pub fn solve_noise_with_initial_voltages(
     }
 
     let (node_map, dc_solution, dc) = bias_point_with_result(circuit, initial_voltages)?;
+    let circuit = &crate::ac_analysis::incremental_inductors(circuit, &dc);
     let ss_models = linearize_at_dc(circuit, &node_map, &dc_solution);
     let generators = generators(circuit, &node_map, &dc);
 

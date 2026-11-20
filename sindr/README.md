@@ -82,10 +82,24 @@ Every component has an `id` (arbitrary string) and `nodes` (node names as string
 ```rust
 CircuitElement::Resistor   { id, nodes: [String; 2], resistance: f64 }
 CircuitElement::Capacitor  { id, nodes: [String; 2], capacitance: f64 }
-CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64 }
+CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64, saturation: Option<InductorSaturation> }
 ```
 
 Capacitors and inductors trigger transient analysis automatically. In pure DC (no reactive elements, no waveforms), they are treated as open circuits.
+
+An inductor with `saturation: Some(InductorSaturation { i_sat, l_sat })` has a core that saturates: its flux is `λ(i) = l_sat·i + (inductance − l_sat)·i_sat·tanh(i/i_sat)`, so its inductance falls from `inductance` at zero current towards `l_sat` past `i_sat` (to 42 % of the way at `i_sat`, 7 % at `2·i_sat`). A datasheet's saturation current, where L has dropped 20–30 %, is about `0.6·i_sat`. The transient integrates the flux, and AC and noise use the incremental inductance `dλ/di` at the DC current. There's no hysteresis or core loss; add a resistor for loss.
+
+```rust
+use sindr_devices::inductor::InductorSaturation;
+
+// 10 µH that saturates around 3 A, keeping 1 µH when saturated.
+let l1 = CircuitElement::Inductor {
+    id: "L1".into(),
+    nodes: ["sw".into(), "out".into()],
+    inductance: 10e-6,
+    saturation: Some(InductorSaturation { i_sat: 3.0 / 0.6, l_sat: 1e-6 }),
+};
+```
 
 ### Sources
 
@@ -97,6 +111,32 @@ CircuitElement::CurrentSource { id, nodes: [String; 2], current: f64, waveform: 
 `nodes[0]` is the positive terminal for voltage sources; current flows from `nodes[0]` toward `nodes[1]` for current sources.
 
 A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
+
+### Battery
+
+```rust
+CircuitElement::Battery { id, nodes: [String; 2], params: BatteryParams, state_of_charge: f64 }
+```
+
+`nodes` are `[positive, negative]`. The cell is an equivalent circuit: open-circuit voltage by state of charge (`params.ocv`, interpolated), behind a series resistance `r_series` and an optional RC pair (`params.rc`) for the slow sag after a load step and the recovery after it. Its terminal voltage is `OCV(SoC) − R0·i − v1`.
+
+- **DC:** the open-circuit voltage at `state_of_charge` behind `R0 + R1`.
+- **Transient:** the RC pair charges, and the state of charge falls by the charge drawn, `dSoC/dt = −i/(3600·capacity)`. Each step's `state_of_charge` (and the result's, at the end) holds it by battery id. Below 0 the cell is over-discharged and holds its 0 % voltage. A battery with an RC pair makes `solve_circuit` run a transient.
+- **AC:** the impedance `R0 + R1‖C1`.
+
+`current_through` flows `nodes[0] → nodes[1]` inside the cell, as for a voltage source, so it is negative while discharging. Presets: `BatteryParams::lithium_ion(capacity_ah, r_series)` (a typical Li-ion/LiPo rest curve, 3.27–4.20 V), `BatteryParams::cr2032()` (a 225 mAh coin cell with its pulse-recovery pair) and `BatteryParams::constant(volts, capacity_ah, r_series)`.
+
+```rust
+use sindr::battery::BatteryParams;
+
+// A 500 mAh LiPo at 80 %, 0.15 Ω.
+let cell = CircuitElement::Battery {
+    id: "B1".into(),
+    nodes: ["vbat".into(), "0".into()],
+    params: BatteryParams::lithium_ion(0.5, 0.15),
+    state_of_charge: 0.8,
+};
+```
 
 ### Switches
 

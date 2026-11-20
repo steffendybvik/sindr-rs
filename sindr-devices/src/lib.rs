@@ -16,6 +16,7 @@
 //!
 //! | Module | Device | Model |
 //! |---|---|---|
+//! | [`battery`] | Battery | Open-circuit voltage by state of charge, series R, optional RC pair |
 //! | [`diode`] | Silicon diode | Shockley with series resistance, temperature IS scaling, breakdown and junction charge |
 //! | [`bjt`] | BJT (NPN/PNP) | Ebers–Moll with Early voltage |
 //! | [`mosfet`] | MOSFET (NMOS/PMOS) | Level-1 |
@@ -25,6 +26,7 @@
 //! | [`zener`] | Zener diode | Shockley + piecewise `1/rz` reverse-breakdown branch (sindr itself stamps a zener as a [`diode`] with `Breakdown`) |
 //! | [`schottky`] | Schottky diode | Shockley with low-N, low-IS parameters |
 //! | [`varactor`] | Varactor | Voltage-dependent junction capacitance |
+//! | [`inductor`] | Saturating inductor core | `λ(i) = L_sat·i + (L₀ − L_sat)·I_sat·tanh(i/I_sat)` |
 //! | [`thermistor`] | NTC thermistor | Beta model `R(T) = R₀·exp(β·(1/T − 1/T₀))` |
 //! | [`photodiode`] | Photodiode | Diode + photocurrent offset |
 //! | [`photoresistor`] | Photoresistor (LDR) | Light-level-dependent resistance |
@@ -62,9 +64,11 @@
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
 #![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
+pub mod battery;
 pub mod bjt;
 pub mod diode;
 pub mod igbt;
+pub mod inductor;
 pub mod jfet;
 pub mod led;
 pub mod mosfet;

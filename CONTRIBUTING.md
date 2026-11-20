@@ -47,6 +47,16 @@ python3 scripts/gen_llms_full.py --check
 - Parsers and evaluators get `proptest` properties (see `spice/si.rs` and
   `spice/param_eval.rs`). If one fails, proptest writes the shrunk case to
   `sindr/proptest-regressions/`; commit that file with the fix.
+- The `coverage` CI job reports per-file line coverage in the job summary,
+  and fails if `stamp.rs`, `transient.rs`, `newton_raphson.rs`, `mna.rs` or
+  the total drops below its floor in `scripts/coverage_floor.py`. Locally:
+
+  ```bash
+  cargo llvm-cov --workspace --all-features --summary-only > coverage.txt
+  python3 scripts/coverage_floor.py coverage.txt
+  ```
+
+  Raise a floor when coverage rises. Lower one only with a reason in the PR.
 - The SPICE parser has a fuzz target in `fuzz/` (cargo-fuzz, nightly). It
   feeds arbitrary text to `parse_str_with_options`, and for any deck that
   parses it validates the circuit and checks that `to_netlist`'s output
@@ -77,9 +87,6 @@ python3 scripts/gen_llms_full.py --check
 
   When a change makes something deliberately slower, say why in the PR. If
   the numbers move a lot, update the table in `sindr/README.md`.
-- The `coverage` CI job reports per-file line coverage in the job summary. It
-  only reports and never fails a build. Locally:
-  `cargo llvm-cov --workspace --all-features --summary-only`.
 
 ## Versions and the CHANGELOG
 

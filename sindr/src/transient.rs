@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use nalgebra::DVector;
 
 use sindr_devices::bjt::{self, BjtKind};
+use sindr_devices::inductor;
 use sindr_devices::mosfet::{self, MosfetKind};
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -52,6 +53,13 @@ pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) {
         match component {
             CircuitElement::Resistor { resistance, .. } => {
                 resistances.push(*resistance);
+            }
+            CircuitElement::Battery { params, .. } => {
+                resistances.push(params.r_series);
+                if let Some(pair) = params.rc {
+                    resistances.push(pair.r);
+                    capacitances.push(pair.c);
+                }
             }
             CircuitElement::Switch { closed, .. } => {
                 let r = if *closed {
@@ -243,10 +251,36 @@ fn stamp_circuit_transient(
                 stamp_companion(system, node_map, nodes, g, i_hist);
                 cap_index += 1;
             }
-            CircuitElement::Inductor {
-                nodes, inductance, ..
+            CircuitElement::Battery {
+                id, nodes, params, ..
             } => {
-                let (g, i_hist) = integ.inductor(*inductance, &inds[ind_index]);
+                let soc = parasitic_history(parasitic, id, crate::battery_state::SOC).x1;
+                let rc = parasitic_history(parasitic, id, crate::battery_state::RC);
+                let (g, i_hist) = crate::battery_state::step_norton(params, soc, &rc, integ);
+                stamp_companion(system, node_map, nodes, g, i_hist);
+            }
+            CircuitElement::Inductor {
+                nodes,
+                inductance,
+                saturation,
+                ..
+            } => {
+                let history = &inds[ind_index];
+                let (g, i_hist) = match saturation {
+                    None => integ.inductor(*inductance, history),
+                    Some(sat) => {
+                        // Its history holds fluxes. At the Newton iterate's
+                        // voltage the step ends at flux λ(v), carrying
+                        // i(λ); di/dv = (dλ/dv)/L(i).
+                        let v = node_voltage(&nodes[0], node_map, v_prev)
+                            - node_voltage(&nodes[1], node_map, v_prev);
+                        let lambda = integ.flux(v, history);
+                        let i = inductor::current_from_flux(lambda, *inductance, sat);
+                        let l = inductor::incremental_inductance(i, *inductance, sat);
+                        let g = integ.flux_per_volt() / l;
+                        (g, i - g * v)
+                    }
+                };
                 stamp_companion(system, node_map, nodes, g, i_hist);
                 ind_index += 1;
             }
@@ -601,6 +635,8 @@ fn extract_timestep_results(
 
     for component in &circuit.components {
         match component {
+            // Needs its state's history; `battery::finish_step` reports it.
+            CircuitElement::Battery { .. } => {}
             CircuitElement::Resistor {
                 id,
                 nodes,
@@ -691,14 +727,25 @@ fn extract_timestep_results(
                 id,
                 nodes,
                 inductance,
+                saturation,
             } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
                 let history = inds_prev[ind_index];
-                let (g, i_hist) = integ.inductor(*inductance, &history);
-                let i_now = g * v_across + i_hist;
-                new_inds.push(history.push(i_now, v_across));
+                let i_now = match saturation {
+                    None => {
+                        let (g, i_hist) = integ.inductor(*inductance, &history);
+                        let i_now = g * v_across + i_hist;
+                        new_inds.push(history.push(i_now, v_across));
+                        i_now
+                    }
+                    Some(sat) => {
+                        let lambda = integ.flux(v_across, &history);
+                        new_inds.push(history.push(lambda, v_across));
+                        inductor::current_from_flux(lambda, *inductance, sat)
+                    }
+                };
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_across,
@@ -1114,21 +1161,12 @@ fn extract_timestep_results(
                 idss,
                 vp,
             } => {
-                use sindr_devices::jfet::{jfet_companion, JfetKind};
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
-                let (vgs_eff, vds_eff) = match kind {
-                    JfetKind::NChannel => (vg - vs, vd - vs),
-                    JfetKind::PChannel => (vs - vg, vs - vd),
-                };
-                let comp = jfet_companion(vgs_eff, vds_eff, *kind, *idss, *vp);
-                let sign = match kind {
-                    JfetKind::NChannel => 1.0,
-                    JfetKind::PChannel => -1.0,
-                };
                 let vds_phys = vd - vs;
-                let id_current = sign * (comp.gm * vgs_eff + comp.gds * vds_eff + comp.i_eq);
+                let id_current =
+                    crate::results::jfet_drain_current(vg - vs, vds_phys, *kind, *idss, *vp);
                 let power = (id_current * vds_phys).abs();
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -1158,6 +1196,7 @@ fn extract_timestep_results(
         node_voltages,
         component_results,
         junction_temperatures: HashMap::new(),
+        state_of_charge: HashMap::new(),
     };
 
     (snapshot, new_caps, new_inds)
@@ -1719,7 +1758,19 @@ pub(crate) fn run_transient(
             CircuitElement::Capacitor { nodes, .. } | CircuitElement::Varactor { nodes, .. } => {
                 caps.push(across(&nodes[0], &nodes[1]));
             }
-            CircuitElement::Inductor { id, .. } => inds.push(current(id)),
+            CircuitElement::Inductor {
+                id,
+                inductance,
+                saturation,
+                ..
+            } => {
+                let start = current(id);
+                // A saturating inductor's history holds fluxes.
+                inds.push(match saturation {
+                    None => start,
+                    Some(sat) => History::at(inductor::flux(start.x1, *inductance, sat)),
+                });
+            }
             CircuitElement::Relay { id, inductance, .. } if *inductance > 0.0 => {
                 inds.push(current(id));
             }
@@ -1786,6 +1837,12 @@ pub(crate) fn run_transient(
             _ => {}
         }
     }
+    crate::battery_state::initial_histories(
+        circuit,
+        &start.voltages,
+        config.start == TransientStart::OperatingPoint,
+        &mut parasitic,
+    );
     // The accepted step before this one; `None` until the first is taken.
     let mut h_prev: Option<f64> = None;
 
@@ -1937,6 +1994,14 @@ pub(crate) fn run_transient(
         // At the temperatures this step solved at, before self-heating moves them.
         update_parasitic_histories(stepped, node_map, &next, &integ, &mut parasitic);
         add_diode_charge_currents(stepped, &parasitic, &mut snapshot.component_results);
+        snapshot.state_of_charge = crate::battery_state::finish_step(
+            stepped,
+            &snapshot.node_voltages,
+            &integ,
+            dt,
+            &mut parasitic,
+            &mut snapshot.component_results,
+        );
         if let (Some(heated), Some(work)) = (&heated, &mut work) {
             temps = heated.advance(&temps, &heated.powers(&snapshot.component_results), dt);
             heated.check_runaway(&temps)?;
@@ -1994,6 +2059,8 @@ pub(crate) fn run_transient(
     let last = work.as_ref().unwrap_or(circuit);
     let bjt_results = extract_bjt_results_from_snapshot(last, final_snapshot);
     let mosfet_results = extract_mosfet_results_from_snapshot(last, final_snapshot);
+    let (op_amp_results, relay_results) =
+        crate::results::op_amp_and_relay_results(last, &final_snapshot.node_voltages);
 
     Ok(SimulationResult {
         node_voltages: final_snapshot.node_voltages.clone(),
@@ -2001,11 +2068,12 @@ pub(crate) fn run_transient(
         component_results: final_snapshot.component_results.clone(),
         bjt_results,
         mosfet_results,
-        op_amp_results: vec![],
-        relay_results: vec![],
+        op_amp_results,
+        relay_results,
         mcu_results: vec![],
         convergence_aid: None,
         junction_temperatures: final_snapshot.junction_temperatures.clone(),
+        state_of_charge: final_snapshot.state_of_charge.clone(),
         transient: Some(TransientData {
             timesteps,
             time_step: config.tstep,
@@ -2779,6 +2847,7 @@ mod tests {
                     id: "L1".into(),
                     nodes: ["n2".into(), "0".into()],
                     inductance: 0.5,
+                    saturation: None,
                 },
             ],
             ..Default::default()

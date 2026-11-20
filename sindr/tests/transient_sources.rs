@@ -180,6 +180,7 @@ fn initial_conditions_that_name_nothing_are_errors() {
         id: "L1".into(),
         nodes: ["out".into(), "m".into()],
         inductance: 1e-3,
+        saturation: None,
     });
     circuit.components.push(resistor("R2", "m", "0", 1e3));
     circuit.components.push(CircuitElement::Transformer {

@@ -151,6 +151,14 @@ pub struct TimestepSnapshot {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub junction_temperatures: HashMap<String, f64>,
+    /// State of charge (0 to 1) of each battery at this instant, by
+    /// component id. Below 0 the cell is over-discharged; its voltage holds
+    /// the curve's 0 % value.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub state_of_charge: HashMap<String, f64>,
 }
 
 /// Time-series data from a transient simulation.
@@ -276,6 +284,13 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub junction_temperatures: HashMap<String, f64>,
+    /// State of charge (0 to 1) of each battery, by component id: the
+    /// starting value at DC, the last step's after a transient.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub state_of_charge: HashMap<String, f64>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -719,6 +734,23 @@ pub fn extract_results(
                     power: v_across * i_through,
                 });
             }
+            CircuitElement::Battery {
+                id,
+                nodes,
+                params,
+                state_of_charge,
+            } => {
+                let (g, i_hist) = crate::battery_state::dc_norton(params, *state_of_charge);
+                let v_across = node_voltage(&nodes[0], node_map, solution)
+                    - node_voltage(&nodes[1], node_map, solution);
+                let i_through = g * v_across + i_hist;
+                component_results.push(ComponentResult {
+                    id: id.clone(),
+                    voltage_across: v_across,
+                    current_through: i_through,
+                    power: v_across * i_through,
+                });
+            }
             CircuitElement::Thermistor {
                 id,
                 nodes,
@@ -812,18 +844,8 @@ pub fn extract_results(
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
-                let vgs = vg - vs;
                 let vds = vd - vs;
-                // Compute drain current from companion model at final solution point
-                let c = jfet::jfet_companion(vgs, vds, *kind, *idss, *vp);
-                // P-channel companions come back in the mirrored N-channel
-                // frame: same gm and gds, Norton term negated (see
-                // stamp_jfet_companion).
-                let i_eq = match kind {
-                    jfet::JfetKind::NChannel => c.i_eq,
-                    jfet::JfetKind::PChannel => -c.i_eq,
-                };
-                let id_current = c.gm * vgs + c.gds * vds + i_eq;
+                let id_current = jfet_drain_current(vg - vs, vds, *kind, *idss, *vp);
                 let power = (id_current * vds).abs();
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -897,8 +919,81 @@ pub fn extract_results(
         mcu_results: vec![],
         convergence_aid: None,
         junction_temperatures: HashMap::new(),
+        state_of_charge: circuit
+            .components
+            .iter()
+            .filter_map(|c| match c {
+                CircuitElement::Battery {
+                    id,
+                    state_of_charge,
+                    ..
+                } => Some((id.clone(), *state_of_charge)),
+                _ => None,
+            })
+            .collect(),
         transient: None,
     }
+}
+
+/// The op-amp and relay results a transient's last step implies: the same
+/// fields the DC path fills, read from the step's node voltages.
+pub(crate) fn op_amp_and_relay_results(
+    circuit: &Circuit,
+    node_voltages: &HashMap<String, f64>,
+) -> (Vec<OpAmpResult>, Vec<RelayResult>) {
+    let v = |n: &String| node_voltages.get(n).copied().unwrap_or(0.0);
+    let mut op_amps = Vec::new();
+    let mut relays = Vec::new();
+    for component in &circuit.components {
+        match component {
+            CircuitElement::OpAmp { id, nodes, .. }
+            | CircuitElement::Comparator { id, nodes, .. } => {
+                let (v_in_plus, v_in_minus) = (v(&nodes[0]), v(&nodes[1]));
+                op_amps.push(OpAmpResult {
+                    id: id.clone(),
+                    v_in_plus,
+                    v_in_minus,
+                    v_differential: v_in_plus - v_in_minus,
+                    v_out: v(&nodes[2]),
+                });
+            }
+            CircuitElement::Relay {
+                id,
+                nodes,
+                pickup_voltage,
+                ..
+            } => {
+                let coil_voltage = v(&nodes[0]) - v(&nodes[1]);
+                relays.push(RelayResult {
+                    id: id.clone(),
+                    coil_voltage,
+                    contact_closed: coil_voltage.abs() >= *pickup_voltage,
+                });
+            }
+            _ => {}
+        }
+    }
+    (op_amps, relays)
+}
+
+/// A JFET's drain current (A, into the drain) at physical `vgs` and `vds`.
+///
+/// `jfet_companion` mirrors a P-channel into the N-channel frame itself and
+/// returns the same gm and gds with the Norton term negated (see
+/// `stamp_jfet_companion`), so the voltages go in unmirrored.
+pub(crate) fn jfet_drain_current(
+    vgs: f64,
+    vds: f64,
+    kind: jfet::JfetKind,
+    idss: f64,
+    vp: f64,
+) -> f64 {
+    let c = jfet::jfet_companion(vgs, vds, kind, idss, vp);
+    let i_eq = match kind {
+        jfet::JfetKind::NChannel => c.i_eq,
+        jfet::JfetKind::PChannel => -c.i_eq,
+    };
+    c.gm * vgs + c.gds * vds + i_eq
 }
 
 #[cfg(test)]
@@ -920,6 +1015,7 @@ mod tests {
             mcu_results: vec![],
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
+            state_of_charge: HashMap::new(),
             transient: None,
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -942,6 +1038,7 @@ mod tests {
             mcu_results: vec![],
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
+            state_of_charge: HashMap::new(),
             transient: Some(TransientData {
                 timesteps: vec![
                     TimestepSnapshot {
@@ -949,12 +1046,14 @@ mod tests {
                         node_voltages: HashMap::from([("n1".into(), 0.0)]),
                         component_results: vec![],
                         junction_temperatures: HashMap::new(),
+                        state_of_charge: HashMap::new(),
                     },
                     TimestepSnapshot {
                         time: 0.001,
                         node_voltages: HashMap::from([("n1".into(), 3.2)]),
                         component_results: vec![],
                         junction_temperatures: HashMap::new(),
+                        state_of_charge: HashMap::new(),
                     },
                 ],
                 time_step: 0.001,
