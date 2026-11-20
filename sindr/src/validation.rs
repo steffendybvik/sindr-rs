@@ -157,6 +157,18 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             )))
         }
     };
+    // A dimensionless coefficient in `[0, max]`, as SPICE bounds M and FC:
+    // at 1 the junction charge divides by zero.
+    let within = |field: &str, value: f64, max: f64| {
+        if (0.0..=max).contains(&value) {
+            Ok(())
+        } else {
+            Err(SimError::InvalidComponent(format!(
+                "`{}`: {field} {value} must be between 0 and {max}",
+                comp.id()
+            )))
+        }
+    };
     match comp {
         CircuitElement::Diode {
             temperature,
@@ -166,7 +178,17 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             positive("temperature", *temperature, " K")?;
             positive("model.is", model.is, " A")?;
             positive("model.n", model.n, "")?;
-            non_negative("model.rs", model.rs, " Ω")
+            non_negative("model.rs", model.rs, " Ω")?;
+            non_negative("model.cjo", model.cjo, " F")?;
+            positive("model.vj", model.vj, " V")?;
+            within("model.m", model.m, 0.9)?;
+            within("model.fc", model.fc, 0.95)?;
+            non_negative("model.tt", model.tt, " s")?;
+            if let Some(bv) = model.bv {
+                positive("model.bv", bv, " V")?;
+                positive("model.ibv", model.ibv, " A")?;
+            }
+            Ok(())
         }
         CircuitElement::Diode { temperature, .. }
         | CircuitElement::Led { temperature, .. }
@@ -305,6 +327,20 @@ mod tests {
             (diode(crate::DiodeModel { is: -1.0, ..d }), "model.is"),
             (diode(crate::DiodeModel { rs: -10.0, ..d }), "model.rs"),
             (diode(crate::DiodeModel { rs: f64::NAN, ..d }), "model.rs"),
+            (diode(crate::DiodeModel { cjo: -1e-12, ..d }), "model.cjo"),
+            (diode(crate::DiodeModel { vj: 0.0, ..d }), "model.vj"),
+            (diode(crate::DiodeModel { m: 1.0, ..d }), "model.m"),
+            (diode(crate::DiodeModel { fc: 0.99, ..d }), "model.fc"),
+            (diode(crate::DiodeModel { tt: -1e-9, ..d }), "model.tt"),
+            (diode(crate::DiodeModel { bv: Some(0.0), ..d }), "model.bv"),
+            (
+                diode(crate::DiodeModel {
+                    bv: Some(100.0),
+                    ibv: 0.0,
+                    ..d
+                }),
+                "model.ibv",
+            ),
             (bjt(crate::BjtModel { br: 0.0, ..q }), "model.br"),
             (bjt(crate::BjtModel { nf: -1.0, ..q }), "model.nf"),
             (bjt(crate::BjtModel { nr: 0.0, ..q }), "model.nr"),

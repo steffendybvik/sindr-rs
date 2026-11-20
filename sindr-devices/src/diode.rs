@@ -34,6 +34,23 @@ pub struct DiodeParams {
     /// voltage [`DiodeParams::vt`]; `is` is used as given, so scale it with
     /// [`temperature_scale_is`] for a junction away from [`T_NOM`].
     pub temperature: f64,
+    /// Reverse breakdown (SPICE `BV`/`IBV`). `None`: the junction never
+    /// breaks down, as in SPICE without `BV`.
+    pub breakdown: Option<Breakdown>,
+}
+
+/// Reverse breakdown of a diode, as a SPICE card's `BV` and `IBV` give it.
+///
+/// Breakdown adds `−IS·exp(−(v_j + xbv)/(N·V_T))` to the junction current,
+/// with `xbv` fitted as ngspice fits it: the current at `v_j = −bv` is
+/// `−ibv`, less about `IS·bv/V_T` that ngspice's fit carries. Away from the
+/// knee this is the ngspice current to within `IS`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Breakdown {
+    /// Breakdown voltage BV (V), positive.
+    pub bv: f64,
+    /// Current at `−bv`, IBV (A), positive. SPICE's default is 1 mA.
+    pub ibv: f64,
 }
 
 impl DiodeParams {
@@ -49,6 +66,7 @@ impl DiodeParams {
             n: 1.0,
             rs: 0.0,
             temperature: 300.15,
+            breakdown: None,
         }
     }
 
@@ -64,6 +82,7 @@ impl DiodeParams {
             n,
             rs: 0.0,
             temperature: 300.15,
+            breakdown: None,
         }
     }
 
@@ -122,20 +141,14 @@ pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64, n: f
 /// Units and signs: `v_d` is anode − cathode (V), `g_d` is in S and `i_eq`
 /// in A, both for current flowing anode → cathode.
 pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) {
-    let nv_t = params.n * params.vt();
     let v_j = junction_voltage(v_d, params);
-    let exp_vj = (v_j / nv_t).exp();
+    let (i_d, g_j) = junction_current(v_j, params);
 
-    // Diode current at junction voltage: I_d = IS * (exp(V_j / (N*V_T)) - 1)
-    let i_d = params.is * (exp_vj - 1.0);
-
-    // Junction conductance g_j = (IS / (N*V_T)) * exp(V_j / (N*V_T)), seen
-    // through RS at the terminals: g_d = g_j / (1 + RS*g_j)
-    let g_j = (params.is / nv_t) * exp_vj;
-    // Floored at GMIN so the Jacobian never loses the diode in deep reverse.
-    // Written as 1/(1/g_j + RS) so an overflowing g_j gives 1/RS, not inf/inf.
-    // RS = 0 skips it so an overflowing g_j stays infinite rather than turning
-    // into NaN that the floor would quietly hide.
+    // Junction conductance seen through RS at the terminals:
+    // g_d = g_j / (1 + RS*g_j), floored at GMIN so the Jacobian never loses
+    // the diode in deep reverse. Written as 1/(1/g_j + RS) so an overflowing
+    // g_j gives 1/RS, not inf/inf. RS = 0 skips it so an overflowing g_j
+    // stays infinite rather than turning into NaN that the floor would hide.
     let g_d = if params.rs > 0.0 {
         1.0 / (1.0 / g_j + params.rs)
     } else {
@@ -154,21 +167,59 @@ pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) {
 /// Compute the diode current (A, anode → cathode) at terminal voltage
 /// `v_d` (V, anode − cathode), including the drop across `params.rs`.
 pub fn diode_current(v_d: f64, params: &DiodeParams) -> f64 {
+    junction_current(junction_voltage(v_d, params), params).0
+}
+
+/// Current (A) and conductance (S) of the junction itself at junction
+/// voltage `v_j`: Shockley, plus the breakdown branch when `params` has one.
+pub fn junction_current(v_j: f64, params: &DiodeParams) -> (f64, f64) {
     let nv_t = params.n * params.vt();
-    params.is * ((junction_voltage(v_d, params) / nv_t).exp() - 1.0)
+    let exp_vj = (v_j / nv_t).exp();
+    let mut i = params.is * (exp_vj - 1.0);
+    let mut g = params.is / nv_t * exp_vj;
+    if let Some(xbv) = breakdown_knee(params) {
+        let exp_bv = (-(v_j + xbv) / nv_t).exp();
+        i -= params.is * exp_bv;
+        g += params.is / nv_t * exp_bv;
+    }
+    (i, g)
+}
+
+/// `xbv`, the offset of the breakdown exponential, fitted so the current at
+/// `−bv` is `−ibv`. This is ngspice's fit (`DIOtemp`), including its floor
+/// on IBV, so knees match ngspice.
+fn breakdown_knee(params: &DiodeParams) -> Option<f64> {
+    let Breakdown { bv, ibv } = params.breakdown?;
+    let vt = params.vt();
+    let nv_t = params.n * vt;
+    let is = params.is;
+    if ibv < is * bv / vt {
+        return Some(bv);
+    }
+    let mut xbv = bv - nv_t * (1.0 + ibv / is).ln();
+    for _ in 0..25 {
+        xbv = bv - nv_t * (ibv / is + 1.0 - xbv / vt).ln();
+        let fit = is * (((bv - xbv) / nv_t).exp() - 1.0 + xbv / vt);
+        if (ibv - fit).abs() <= 1e-3 * ibv {
+            break;
+        }
+    }
+    Some(xbv)
 }
 
 /// Junction voltage `v_j` for terminal voltage `v_d`: the root of
-/// `f(v_j) = v_j + RS * IS * (exp(v_j / (N*V_T)) - 1) - v_d`.
+/// `f(v_j) = v_j + RS * I(v_j) - v_d`.
 ///
-/// `f` is increasing and convex, so Newton started above the root converges
-/// monotonically down to it without overshooting. The start is an upper bound:
-/// for `v_d >= 0` the current is at most `v_d / RS`, which bounds `v_j` by
-/// `N*V_T * ln(1 + v_d / (RS*IS))` (and by `v_d`); for `v_d < 0` the current is
-/// above `-IS`, so `v_j < v_d + RS*IS`, and the current is negative, so
-/// `v_j < 0`. Starting at the smaller of the two matters when `RS*IS` is large:
-/// from `v_d + RS*IS > 0` Newton crawls down one `N*V_T` per step, and past
-/// about 700 `N*V_T` the exponential overflows.
+/// `f` is increasing and the root lies between 0 and `v_d` (the current has
+/// the sign of `v_d`), so Newton is kept inside that bracket and falls back
+/// to bisection when a step leaves it or the exponential overflows. Newton
+/// starts from a bound on the root on the side it converges from without
+/// overshooting: for `v_d >= 0` the current is at most `v_d / RS`, which
+/// bounds `v_j` by `N*V_T * ln(1 + v_d / (RS*IS))`; for `v_d < 0`, the root
+/// is below `v_d + RS*IS` and below 0, or, with breakdown, above where the
+/// breakdown current alone reaches `|v_d| / RS`. A start on the far side of
+/// an exponential makes Newton crawl one `N*V_T` per step, and past about
+/// 700 `N*V_T` the exponential overflows.
 fn junction_voltage(v_d: f64, params: &DiodeParams) -> f64 {
     let rs = params.rs;
     if rs <= 0.0 {
@@ -176,23 +227,135 @@ fn junction_voltage(v_d: f64, params: &DiodeParams) -> f64 {
     }
     let is = params.is;
     let nv_t = params.n * params.vt();
+    let (mut lo, mut hi) = if v_d >= 0.0 { (0.0, v_d) } else { (v_d, 0.0) };
 
     let mut v_j = if v_d >= 0.0 {
         v_d.min(nv_t * (v_d / (rs * is)).ln_1p())
+    } else if let Some(xbv) = breakdown_knee(params) {
+        // In breakdown the current is at most |v_d| / RS too, which bounds
+        // v_j from below; from there Newton climbs to the root without
+        // overshooting into the exponential.
+        v_d.max(-xbv - nv_t * (-v_d / (rs * is)).ln_1p())
     } else {
         (v_d + rs * is).min(0.0)
     };
-    for _ in 0..100 {
-        let exp_vj = (v_j / nv_t).exp();
-        let f = v_j + rs * is * (exp_vj - 1.0) - v_d;
-        let df = 1.0 + rs * is / nv_t * exp_vj;
-        let step = f / df;
-        v_j -= step;
-        if step.abs() <= 1e-15 * (1.0 + v_j.abs()) {
+    for _ in 0..200 {
+        let (i, g) = junction_current(v_j, params);
+        let f = v_j + rs * i - v_d;
+        if f > 0.0 {
+            hi = v_j;
+        } else {
+            lo = v_j;
+        }
+        let next = v_j - f / (1.0 + rs * g);
+        let next = if next.is_finite() && next >= lo && next <= hi {
+            next
+        } else {
+            0.5 * (lo + hi)
+        };
+        let step = next - v_j;
+        v_j = next;
+        if step.abs() <= 1e-15 * (1.0 + v_j.abs()) || hi - lo <= 1e-15 * (1.0 + v_j.abs()) {
             break;
         }
     }
     v_j
+}
+
+/// Charge-storage parameters of a junction, as a SPICE diode card's `CJO`,
+/// `VJ`, `M`, `FC` and `TT` give them. The default stores no charge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JunctionCharge {
+    /// Zero-bias depletion capacitance CJO (F). Default 0.
+    pub cjo: f64,
+    /// Junction potential VJ (V). Default 1.
+    pub vj: f64,
+    /// Grading coefficient M, in `[0, 1)`. Default 0.5.
+    pub m: f64,
+    /// Forward-bias depletion coefficient FC, in `[0, 1)`: above `FC·VJ` the
+    /// depletion capacitance is continued linearly. Default 0.5.
+    pub fc: f64,
+    /// Transit time TT (s): the diffusion charge is `TT·I_d`. Default 0.
+    pub tt: f64,
+}
+
+impl Default for JunctionCharge {
+    fn default() -> Self {
+        Self {
+            cjo: 0.0,
+            vj: 1.0,
+            m: 0.5,
+            fc: 0.5,
+            tt: 0.0,
+        }
+    }
+}
+
+impl JunctionCharge {
+    /// Whether the junction stores any charge at all.
+    pub fn is_none(&self) -> bool {
+        self.cjo == 0.0 && self.tt == 0.0
+    }
+
+    /// Stored charge (C) and capacitance dQ/dV (F) at junction voltage `v`
+    /// (V), carrying current `i_d` (A) with conductance `g_d` (S).
+    ///
+    /// The SPICE junction charge: depletion `CJO·VJ·(1 − (1 − v/VJ)^(1−M))/(1−M)`
+    /// up to `FC·VJ`, continued with a linear capacitance above it so it
+    /// stays finite in forward bias, plus diffusion `TT·I_d`.
+    pub fn charge(&self, v: f64, i_d: f64, g_d: f64) -> (f64, f64) {
+        let (mut q, mut c) = (self.tt * i_d, self.tt * g_d);
+        if self.cjo > 0.0 {
+            let (vj, m, fc) = (self.vj, self.m, self.fc);
+            let v_fc = fc * vj;
+            if v < v_fc {
+                let arg = 1.0 - v / vj;
+                let sarg = arg.powf(-m);
+                q += self.cjo * vj * (1.0 - arg * sarg) / (1.0 - m);
+                c += self.cjo * sarg;
+            } else {
+                let f1 = vj * (1.0 - (1.0 - fc).powf(1.0 - m)) / (1.0 - m);
+                let f2 = (1.0 - fc).powf(1.0 + m);
+                let f3 = 1.0 - fc * (1.0 + m);
+                q += self.cjo
+                    * (f1 + (f3 * (v - v_fc) + m / (2.0 * vj) * (v * v - v_fc * v_fc)) / f2);
+                c += self.cjo / f2 * (f3 + m * v / vj);
+            }
+        }
+        (q, c)
+    }
+}
+
+/// The junction behind RS at terminal voltage `v_d` (V): its conductance
+/// `g_j` (S) and capacitance `c_j` (F). In AC the diode is RS in series with
+/// `g_j + jωC_j`.
+pub fn junction_small_signal(
+    v_d: f64,
+    params: &DiodeParams,
+    charge: &JunctionCharge,
+) -> (f64, f64) {
+    let v_j = junction_voltage(v_d, params);
+    let (i_d, g_j) = junction_current(v_j, params);
+    (g_j, charge.charge(v_j, i_d, g_j).1)
+}
+
+/// Stored charge (C) and its derivative with respect to the terminal
+/// voltage (F) of a diode at terminal voltage `v_d` (V, anode − cathode).
+///
+/// The charge is the junction's at the junction voltage the diode current
+/// sets across RS. The drop the charging current itself makes across RS is
+/// left out, so with RS > 0 the charge sits across the terminals.
+pub fn diode_charge(v_d: f64, params: &DiodeParams, charge: &JunctionCharge) -> (f64, f64) {
+    let v_j = junction_voltage(v_d, params);
+    let (i_d, g_j) = junction_current(v_j, params);
+    let (q, c_j) = charge.charge(v_j, i_d, g_j);
+    // dv_j/dv_d through RS; an overflowing g_j means v_j is pinned.
+    let dvj = if params.rs > 0.0 {
+        1.0 / (1.0 + params.rs * g_j)
+    } else {
+        1.0
+    };
+    (q, if dvj.is_finite() { c_j * dvj } else { 0.0 })
 }
 
 /// Critical voltage for voltage limiting.
@@ -545,5 +708,93 @@ mod tests {
             g_d > 0.05 && g_d < 0.1,
             "g_d {g_d} should approach 1/RS = 0.1 S"
         );
+    }
+
+    fn card_1n4148() -> (DiodeParams, JunctionCharge) {
+        (
+            DiodeParams {
+                is: 2.52e-9,
+                n: 1.752,
+                rs: 0.568,
+                temperature: T_NOM,
+                breakdown: Some(Breakdown {
+                    bv: 100.0,
+                    ibv: 100e-6,
+                }),
+            },
+            JunctionCharge {
+                cjo: 4e-12,
+                m: 0.4,
+                tt: 20e-9,
+                ..JunctionCharge::default()
+            },
+        )
+    }
+
+    #[test]
+    fn breakdown_passes_ibv_at_bv() {
+        let (mut p, _) = card_1n4148();
+        p.rs = 0.0;
+        let i = diode_current(-100.0, &p);
+        // ngspice's fit carries an extra `IS·xbv/V_T` (about 10 µA here), so
+        // at −BV the current is IBV less that, as the dc_diode_breakdown
+        // golden confirms.
+        let want = -(100e-6 - p.is * 100.0 / p.vt());
+        assert_relative_eq!(i, want, max_relative = 2e-3);
+        // Well short of breakdown the reverse current is IS.
+        assert_relative_eq!(diode_current(-50.0, &p), -p.is, max_relative = 1e-6);
+    }
+
+    #[test]
+    fn junction_voltage_solves_through_rs_in_breakdown() {
+        let (p, _) = card_1n4148();
+        for v_d in [-150.0, -100.5, -50.0, -0.3, 0.0, 0.4, 0.8, 1.5] {
+            let v_j = junction_voltage(v_d, &p);
+            let (i, _) = junction_current(v_j, &p);
+            assert!(
+                (v_j + p.rs * i - v_d).abs() <= 1e-9 * (1.0 + v_d.abs()),
+                "v_d {v_d}: v_j {v_j}, i {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn companion_slope_matches_the_current_in_breakdown() {
+        let (p, _) = card_1n4148();
+        for v_d in [-101.0, -100.2, -99.9] {
+            let (g, _) = diode_companion(v_d, &p);
+            let h = 1e-6;
+            let fd = (diode_current(v_d + h, &p) - diode_current(v_d - h, &p)) / (2.0 * h);
+            assert_relative_eq!(g, fd, max_relative = 1e-5);
+        }
+    }
+
+    #[test]
+    fn charge_is_continuous_at_fc_and_its_slope_is_the_capacitance() {
+        let (p, charge) = card_1n4148();
+        let v_fc = charge.fc * charge.vj;
+        let below = charge.charge(v_fc - 1e-12, 0.0, 0.0);
+        let above = charge.charge(v_fc + 1e-12, 0.0, 0.0);
+        assert_relative_eq!(below.0, above.0, max_relative = 1e-9);
+        assert_relative_eq!(below.1, above.1, max_relative = 1e-9);
+        // Zero bias stores no charge and has CJO.
+        assert_eq!(charge.charge(0.0, 0.0, 0.0), (0.0, charge.cjo));
+
+        for v_d in [-20.0, -1.0, 0.0, 0.3, 0.5, 0.6, 0.7, 0.9] {
+            let (_, c) = diode_charge(v_d, &p, &charge);
+            let h = 1e-6;
+            let fd = (diode_charge(v_d + h, &p, &charge).0 - diode_charge(v_d - h, &p, &charge).0)
+                / (2.0 * h);
+            assert_relative_eq!(c, fd, max_relative = 1e-5);
+        }
+    }
+
+    #[test]
+    fn reverse_capacitance_follows_the_grading() {
+        let (p, charge) = card_1n4148();
+        let (g_j, c_j) = junction_small_signal(-5.0, &p, &charge);
+        assert!(g_j < 1e-9);
+        // CJO / (1 + 5/VJ)^M, the diffusion part being negligible.
+        assert_relative_eq!(c_j, 4e-12 / 6.0_f64.powf(0.4), max_relative = 1e-6);
     }
 }

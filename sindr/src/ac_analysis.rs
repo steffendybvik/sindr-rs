@@ -684,9 +684,42 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
             }
+            // A diode's stored charge. The junction, g_j + jωC_j, sits
+            // behind RS; the small-signal model below already stamps its
+            // ω = 0 conductance g_d, so this adds the rest of
+            // 1/(RS + 1/(g_j + jωC_j)).
+            CircuitElement::Diode {
+                model,
+                nodes,
+                temperature,
+                ..
+            } => {
+                if let Some(charge) = device_params::diode_charge(model.as_ref()) {
+                    let params = device_params::diode(model.as_ref(), *temperature);
+                    let v_d = junction_voltage(nodes, node_map, dc_solution);
+                    let (g_j, c_j) = diode::junction_small_signal(v_d, &params, &charge);
+                    let (g_d, _) = diode::diode_companion(v_d, &params);
+                    let junction = Complex64::new(g_j, 0.0) + j_omega * c_j;
+                    let y = if params.rs > 0.0 {
+                        Complex64::new(1.0, 0.0) / (params.rs + 1.0 / junction)
+                    } else {
+                        junction
+                    } - g_d;
+                    let y = if y.is_finite() {
+                        y
+                    } else {
+                        Complex64::new(0.0, 0.0)
+                    };
+                    let p = node_map.index(&nodes[0]);
+                    let q = node_map.index(&nodes[1]);
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
+            }
             // Nonlinear elements: handled via small-signal models below
-            CircuitElement::Diode { .. }
-            | CircuitElement::Led { .. }
+            CircuitElement::Led { .. }
             | CircuitElement::Bjt { .. }
             | CircuitElement::Mosfet { .. }
             | CircuitElement::ZenerDiode { .. }

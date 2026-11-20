@@ -12,6 +12,7 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use num_complex::Complex64;
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 use sindr::spice::{parse_file, to_netlist};
 use sindr::{
@@ -761,4 +762,205 @@ fn temp_diode() {
     let mut check = Check::new("temp_diode");
     check.series("v(out)", &kelvin, &got, &golden.column("v(out)"), OP_V);
     check.finish();
+}
+
+// ---------------------------------------------------------------- diode charge and breakdown
+
+/// A 1N4148 card with CJO, M, TT, BV and IBV, through 1 kΩ, swept past its
+/// 100 V breakdown. ngspice adds a GMIN leakage (1e-12 S) that sindr leaves
+/// out, about 0.1 nA here, so currents get 1 nA; at the knee the two
+/// models' reverse terms differ by a few parts in 1e5.
+#[test]
+fn dc_diode_breakdown() {
+    let golden = Golden::load("dc_diode_breakdown");
+    let sweep = dc_sweep(&parse("dc_diode_breakdown"), "v1", 0.0, -150.0, 31).unwrap();
+    let scale = golden.scale();
+    let vb: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["b"])
+        .collect();
+    let i: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| source_current(&p.result, "v1"))
+        .collect();
+
+    let mut check = Check::new("dc_diode_breakdown");
+    check.series("v(b)", &scale, &vb, &golden.column("v(b)"), OP_V);
+    check.series(
+        "i(v1)",
+        &scale,
+        &i,
+        &golden.column("i(v1)"),
+        Tol {
+            rel: 1e-4,
+            abs: 1e-9,
+        },
+    );
+    check.finish();
+}
+
+/// sindr's small-signal admittance of a diode at each bias of ngspice's
+/// sweep, measured in AC at 1 MHz behind the deck's 1 Ω, against what
+/// ngspice's junction (`@d1[gd]`, `@d1[cd]`) gives behind the card's RS:
+/// `Y = 1/(RS + 1/(gd + jωCd))`. Conductance is compared only above
+/// `−3·N·V_T`: below it ngspice swaps Shockley's reverse current for a
+/// cubic that sindr doesn't model, which is a different (nA-scale) leakage,
+/// not a different charge. It gets 2 pS, since ngspice's gd includes its
+/// 1 pS GMIN.
+fn check_cv(case: &'static str) {
+    let golden = Golden::load(case);
+    let base = parse(case);
+    let card = base
+        .components
+        .iter()
+        .find_map(|c| match c {
+            CircuitElement::Diode { model: Some(m), .. } => Some(*m),
+            _ => None,
+        })
+        .expect("a diode with a card");
+    let rs = card.rs;
+    let shockley_from = -3.0 * card.n * sindr_devices::diode::V_T;
+    let bias = golden.scale();
+    let f = 1e6;
+    let omega = 2.0 * std::f64::consts::PI * f;
+    let want: Vec<Complex64> = golden
+        .column("@d1[gd]")
+        .iter()
+        .zip(golden.column("@d1[cd]"))
+        .map(|(&gd, cd)| 1.0 / (rs + 1.0 / Complex64::new(gd, omega * cd)))
+        .collect();
+    let got: Vec<Complex64> = bias
+        .iter()
+        .map(|&v| {
+            let mut circuit = base.clone();
+            for c in &mut circuit.components {
+                if let CircuitElement::VoltageSource { id, voltage, .. } = c {
+                    if id == "v1" {
+                        *voltage = v;
+                    }
+                }
+            }
+            let ac = solve_ac(
+                &circuit,
+                &AcConfig {
+                    f_start: f,
+                    f_stop: f,
+                    num_points: 1,
+                    spacing: FrequencySpacing::Linear,
+                    source_id: "v1".into(),
+                    ac_magnitude: 1.0,
+                },
+            )
+            .unwrap();
+            let vb = ac.points[0].node_voltages["b"];
+            // 1 V across 1 Ω and the diode: Y = I / V(b), I = (1 − V(b)) / 1 Ω.
+            (1.0 - vb) / vb
+        })
+        .collect();
+    let part = |ys: &[Complex64], f: fn(&Complex64) -> f64| ys.iter().map(f).collect::<Vec<_>>();
+    let mut check = Check::new(case);
+    check.series(
+        "C = Im(Y)/ω",
+        &bias,
+        &part(&got, |y| y.im / (2.0 * std::f64::consts::PI * 1e6)),
+        &part(&want, |y| y.im / (2.0 * std::f64::consts::PI * 1e6)),
+        Tol {
+            rel: 1e-3,
+            abs: 1e-16,
+        },
+    );
+    let forward: Vec<usize> = (0..bias.len())
+        .filter(|&i| bias[i] >= shockley_from)
+        .collect();
+    let pick = |xs: &[f64]| forward.iter().map(|&i| xs[i]).collect::<Vec<_>>();
+    check.series(
+        "G = Re(Y)",
+        &pick(&bias),
+        &pick(&part(&got, |y| y.re)),
+        &pick(&part(&want, |y| y.re)),
+        Tol {
+            rel: 1e-3,
+            abs: 2e-12,
+        },
+    );
+    check.finish();
+}
+
+#[test]
+fn cv_1n4148() {
+    check_cv("cv_1n4148");
+}
+
+#[test]
+fn cv_1n5819() {
+    check_cv("cv_1n5819");
+}
+
+/// A 1N4148 (TT = 20 ns, CJO = 4 pF) carried 4.3 mA forward, then switched to
+/// −5 V: the stored charge holds it on for about 15 ns of reverse current
+/// before it snaps off. ngspice runs the same deck with `uic`, from rest.
+#[test]
+fn tran_diode_recovery() {
+    let case = "tran_diode_recovery";
+    let golden = Golden::load(case);
+    let parsed = parse_file(case_path(case, "cir")).unwrap();
+    let config = parsed.analyses[0].transient_config().unwrap();
+    let tran = sindr::solve_transient(&parsed.circuit, &config)
+        .unwrap()
+        .transient
+        .expect("transient result");
+    let times: Vec<f64> = tran.timesteps.iter().map(|s| s.time).collect();
+    let scale = golden.scale();
+
+    let mut check = Check::new(case);
+    for (name, full_scale) in [("v(b)", 5.0), ("i(v1)", 5.6e-3)] {
+        let want_all = golden.column(name);
+        let got: Vec<f64> = tran
+            .timesteps
+            .iter()
+            .map(|s| {
+                if name == "v(b)" {
+                    s.node_voltages["b"]
+                } else {
+                    let c = s.component_results.iter().find(|c| c.id == "v1").unwrap();
+                    c.current_through
+                }
+            })
+            .collect();
+        let want: Vec<f64> = times
+            .iter()
+            .map(|&t| interpolate(&scale, &want_all, t))
+            .collect();
+        check.series(
+            name,
+            &times,
+            &got,
+            &want,
+            Tol {
+                rel: 0.0,
+                abs: 2e-2 * full_scale,
+            },
+        );
+    }
+    check.finish();
+
+    // The storage phase itself: reverse current through the diode at 110 ns,
+    // 9 ns into recovery, within 2 % of ngspice.
+    let at = |t: f64| {
+        let k = times.partition_point(|&x| x < t);
+        tran.timesteps[k]
+            .component_results
+            .iter()
+            .find(|c| c.id == "d1")
+            .unwrap()
+            .current_through
+    };
+    let want = -interpolate(&scale, &golden.column("i(v1)"), 110e-9);
+    let got = at(110e-9);
+    assert!(
+        (got - want).abs() <= 0.02 * want.abs(),
+        "D1 at 110 ns: sindr {got:e}, ngspice {want:e}"
+    );
 }
