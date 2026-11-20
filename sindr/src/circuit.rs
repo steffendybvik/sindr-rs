@@ -352,8 +352,9 @@ pub enum CircuitElement {
         waveform: Option<Waveform>,
     },
 
-    /// Independent current source. Current flows from `nodes[0]` toward
-    /// `nodes[1]`.
+    /// Independent current source. Current flows through it from `nodes[0]`
+    /// to `nodes[1]`: drawn out of `nodes[0]` and pushed into `nodes[1]`, as
+    /// SPICE's `I`.
     #[cfg_attr(feature = "serde", serde(rename = "current_source"))]
     CurrentSource {
         /// Unique component identifier.
@@ -865,14 +866,16 @@ pub enum CircuitElement {
     /// Blown (blown=true): stamped as 1e9 Ω — effectively open circuit.
     ///
     /// NOTE: Do NOT use 0 Ω — that would cause a singular MNA matrix.
-    /// rating is stored for display purposes only (v1 — no auto-blow logic).
+    /// `rating` is stored for display only: the fuse never blows by itself;
+    /// set `blown` to open it. To flag an overcurrent, put
+    /// [`Ratings::current`](crate::Ratings::current) on its part.
     #[cfg_attr(feature = "serde", serde(rename = "fuse"))]
     Fuse {
         /// Unique component identifier.
         id: String,
         /// Terminals `[a, b]`.
         nodes: [String; 2],
-        /// Current rating in Amperes (display only — no auto-blow logic in v1).
+        /// Current rating (A), for display only: the fuse never blows by itself.
         #[cfg_attr(feature = "serde", serde(default = "default_fuse_rating"))]
         rating: f64,
         /// When true, fuse is blown (open circuit). User-settable, like switch.closed.

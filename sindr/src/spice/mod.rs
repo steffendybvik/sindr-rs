@@ -106,13 +106,13 @@
 //!
 //! | Card | Parameters | Into |
 //! |---|---|---|
-//! | `D` | `IS`, `N`, `RS` | [`DiodeModel`](crate::DiodeModel) |
+//! | `D` | `IS`, `N`, `RS`, `CJO` (or `CJ0`, `CJ`), `VJ` (or `PB`), `M` (or `MJ`), `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` | [`DiodeModel`](crate::DiodeModel) |
 //! | `NPN`, `PNP` | `BF` | the element's `bf` |
-//! | `NPN`, `PNP` | `IS`, `BR`, `NF`, `NR`, `VAF` (or `VA`) | [`BjtModel`](crate::BjtModel) |
+//! | `NPN`, `PNP` | `IS`, `BR`, `NF`, `NR`, `VAF` (or `VA`), `KF`, `AF` | [`BjtModel`](crate::BjtModel) |
 //!
 //! sindr's BJT is Ebers–Moll, so its Early effect isn't SPICE's
 //! Gummel–Poon base charge: with `VAF` set, results differ slightly from
-//! SPICE's. Any other parameter (`CJO`, `TT`, `BV`, `VAR`, `IKF`, …) is an
+//! SPICE's. Any other parameter (`EG`, `XTI`, `CJE`, `VAR`, `IKF`, …) is an
 //! error in strict mode and a warning per card in lenient mode, naming them.
 //! Part annotations that don't affect the simulation (`MFG`, `TYPE`,
 //! `VCEO`, `ICRATING`, `IAVE`, `VPK`) are dropped without a word.
@@ -171,8 +171,9 @@
 //! # Export
 //!
 //! [`to_netlist`] writes a [`Circuit`](crate::Circuit) as a SPICE deck that
-//! ngspice runs and [`parse_str`] reads back; its docs list what each element
-//! is written as.
+//! ngspice runs; its docs list what each element is written as. [`parse_str`]
+//! reads back the R, L, C, V, I, D, Q and X lines, but not the E, G, F, H
+//! and K lines written for controlled sources and transformers.
 //!
 //! Known gaps against full SPICE3 are listed in the repository's
 //! [`LIMITATIONS.md`](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
@@ -302,9 +303,8 @@ impl ParsedNetlist {
 
 /// Knobs controlling parser strictness and include-path resolution.
 ///
-/// Constructed via [`Default`] for the strict / no-override defaults, then
-/// mutated field-by-field — this is `#[non_exhaustive]`-spirit but kept
-/// open for now since the type is alpha.
+/// Start from [`Default`] (strict, no include-path override) and set the
+/// fields you need, or write the struct literal.
 #[derive(Debug, Clone)]
 pub struct ParseOptions {
     /// If `true` (default), any unsupported card/device or syntax error is

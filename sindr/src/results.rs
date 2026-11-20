@@ -205,7 +205,7 @@ pub struct TransientStats {
 /// - `mosfet_results` — for [`Mosfet`](crate::CircuitElement::Mosfet)
 /// - `op_amp_results` — for op-amps and comparators
 /// - `relay_results` — for relays
-/// - `mcu_results` — for microcontrollers
+/// - `mcu_results` — always empty: sindr has no microcontroller element
 /// - `transient` — for circuits with capacitors, inductors, or waveform
 ///   sources (DC analysis returns `None`)
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

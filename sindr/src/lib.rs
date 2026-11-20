@@ -15,11 +15,13 @@
 //! - **Transient** — Gear-2 (or trapezoidal or backward-Euler) timestepping
 //!   when capacitors, inductors, or time-varying sources are present.
 //! - **AC small-signal** — sinusoidal-steady-state via [`ac_analysis::solve_ac`].
+//! - **Noise** — thermal, shot and flicker noise at an output (SPICE's
+//!   `.noise`) via [`solve_noise`].
 //! - **Transfer function** — DC small-signal gain, input and output
 //!   resistance (SPICE's `.tf`) via [`solve_tf`].
 //! - **DC sensitivity** — derivative of an output with respect to each
 //!   component parameter (SPICE's `.sens`) via [`solve_sensitivity`].
-//! - **DC sweep** — operating point at each value of a swept voltage source,
+//! - **DC sweep** — operating point at each value of a swept voltage or current source,
 //!   via [`fn@dc_sweep`].
 //! - **Temperature sweep** — operating-point sweep over junction temperature
 //!   via [`temperature_sweep`].
@@ -130,7 +132,7 @@
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
 //! and X elements; `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
-//! `.ic`, `.nodeset` and `.options`; and the analysis cards `.op`, `.dc`,
+//! `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
 //! `.ac`, `.tf`, `.sens`, `.noise` and `.tran`. `.model` cards fill in what
 //! sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 //! `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
