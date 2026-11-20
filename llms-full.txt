@@ -230,12 +230,12 @@ Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 ```rust
 CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
 CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"green"|"blue"|"yellow"|"white"
-CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage
+CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage at 5 mA
 CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
+All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 #### Varactor diode
 
@@ -1904,7 +1904,7 @@ periodic steady state, S-parameters, variable-order integration.
 | Device | Model |
 |---|---|
 | Diode, LED, Schottky, photodiode | Shockley; IS and V_T = kT/q follow each device's `temperature` (SPICE IS(T), XTI = 3) |
-| Zener | Shockley forward, linear breakdown at `vz` |
+| Zener | A SPICE diode with breakdown `BV = vz` at 5 mA and RS = 1 Ω |
 | BJT (NPN/PNP) | Ebers–Moll with Early voltage; not Gummel–Poon |
 | MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges), body tied to source, SPICE-signed VTO (negative for an enhancement PMOS); no BSIM |
 | JFET (N/P) | Shichman–Hodges square law |
@@ -6089,8 +6089,12 @@ pub enum CircuitElement {
         position: f64,
     },
 
-    /// Zener diode between two nodes.
-    /// Behaves as a normal diode in forward bias; clamps voltage at `vz` in reverse breakdown.
+    /// Zener diode between two nodes: a silicon diode with SPICE reverse
+    /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
+    /// (the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`), so it holds about
+    /// `vz` at a small zener's 5 mA test current and rises 1 V per amp past
+    /// it. For another knee, use a [`CircuitElement::Diode`] with a
+    /// [`DiodeModel`] setting `bv` and `ibv`.
     /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "zener_diode"))]
     ZenerDiode {
@@ -7396,7 +7400,7 @@ end-to-end simulator.
 | [`jfet`] | JFET (N/P-channel) | Shichman–Hodges |
 | [`igbt`] | IGBT | MOSFET gate control + BJT output conductance |
 | [`led`] | LED | Diode with colour-dependent forward voltage |
-| [`zener`] | Zener diode | Shockley + reverse-breakdown branch |
+| [`zener`] | Zener diode | Shockley + piecewise `1/rz` reverse-breakdown branch (sindr itself stamps a zener as a [`diode`] with `Breakdown`) |
 | [`schottky`] | Schottky diode | Shockley with low-N, low-IS parameters |
 | [`varactor`] | Varactor | Voltage-dependent junction capacitance |
 | [`thermistor`] | NTC thermistor | Beta model `R(T) = R₀·exp(β·(1/T − 1/T₀))` |

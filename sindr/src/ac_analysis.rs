@@ -219,9 +219,9 @@ pub(crate) fn linearize_at_dc(
                 ..
             } => {
                 // Same parameters as the DC stamp, including the IS scaling.
-                let params = device_params::zener(*vz, *temperature);
+                let params = device_params::zener_diode(*vz, *temperature);
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
-                let (g_d, _) = sindr_devices::zener::zener_companion(v_d, &params);
+                let (g_d, _) = diode::diode_companion(v_d, &params);
                 models.push(two_terminal(nodes, node_map, g_d));
             }
             CircuitElement::SchottkyDiode {
@@ -1110,7 +1110,7 @@ pub(crate) fn small_signal_system(
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     solve_ac_with_initial_voltages(circuit, config, &HashMap::new())
 }
@@ -1128,7 +1128,7 @@ pub fn solve_ac_with_initial_voltages(
     config: &AcConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<AcResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     validate_config(config)?;
     let drives_a_voltage_source = circuit

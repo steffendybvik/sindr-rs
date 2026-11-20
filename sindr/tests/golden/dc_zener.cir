@@ -1,0 +1,6 @@
+dc: 5.1 V zener shunt regulator through 1k, as sindr models a ZenerDiode (built in Rust on the sindr side)
+V1 a 0 0
+R1 a b 1k
+D1 0 b dz
+.model dz D(IS=1e-14 N=1 RS=1 BV=5.1 IBV=5m)
+.end

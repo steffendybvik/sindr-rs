@@ -13,7 +13,6 @@ use sindr_devices::diode::{
 use sindr_devices::led::{led_params_from_str, LedColor};
 use sindr_devices::photodiode::PhotodiodeParams;
 use sindr_devices::schottky::SchottkyParams;
-use sindr_devices::zener::ZenerParams;
 
 /// Silicon bandgap (eV).
 const EG_SI: f64 = 1.11;
@@ -105,11 +104,23 @@ pub(crate) fn schottky(temperature: f64) -> DiodeParams {
 }
 
 /// Zener diode with breakdown voltage `vz` at `temperature` (K).
-pub(crate) fn zener(vz: f64, temperature: f64) -> ZenerParams {
-    let mut params = ZenerParams::new(vz);
-    params.is = scale_is(params.is, temperature, 1.0);
-    params.temperature = temperature;
-    params
+/// The SPICE diode a [`CircuitElement::ZenerDiode`](crate::CircuitElement)
+/// stands for: breakdown `BV = vz` at `IBV` = 5 mA (the test current of
+/// small zeners such as the BZX84 series), and 1 Ω of series resistance
+/// for the dynamic resistance past the knee, with a silicon junction's IS
+/// and N. ngspice reads the same card.
+pub(crate) fn zener_model(vz: f64) -> DiodeModel {
+    DiodeModel {
+        rs: 1.0,
+        bv: Some(vz),
+        ibv: 5e-3,
+        ..DiodeModel::default()
+    }
+}
+
+/// A zener's junction at `temperature` (K): the diode for [`zener_model`].
+pub(crate) fn zener_diode(vz: f64, temperature: f64) -> DiodeParams {
+    diode(Some(&zener_model(vz)), temperature)
 }
 
 /// Photodiode at `temperature` (K). The dark current scales like a diode's;

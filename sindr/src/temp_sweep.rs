@@ -94,7 +94,7 @@ pub fn temperature_sweep(
     temp_end: f64,
     num_steps: usize,
 ) -> Result<TempSweepResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     if num_steps < 2 {
         return Err(SimError::InvalidComponent(

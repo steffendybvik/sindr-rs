@@ -543,8 +543,12 @@ pub enum CircuitElement {
         position: f64,
     },
 
-    /// Zener diode between two nodes.
-    /// Behaves as a normal diode in forward bias; clamps voltage at `vz` in reverse breakdown.
+    /// Zener diode between two nodes: a silicon diode with SPICE reverse
+    /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
+    /// (the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`), so it holds about
+    /// `vz` at a small zener's 5 mA test current and rises 1 V per amp past
+    /// it. For another knee, use a [`CircuitElement::Diode`] with a
+    /// [`DiodeModel`] setting `bv` and `ibv`.
     /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "zener_diode"))]
     ZenerDiode {
