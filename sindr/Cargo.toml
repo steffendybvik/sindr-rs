@@ -1,6 +1,6 @@
 [package]
 name = "sindr"
-version = "0.1.0-alpha.8"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.89"
 description = "Rust circuit simulator: SPICE-style MNA solver with built-in semiconductor device models. Transient, AC, DC sweep, temperature sweep."

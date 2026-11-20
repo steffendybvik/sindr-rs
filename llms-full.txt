@@ -69,7 +69,7 @@ A SPICE3 netlist parser ships inside `sindr` behind the optional, default-off `s
 
 ```toml
 [dependencies]
-sindr = { version = "0.1.0-alpha.8", features = ["spice"] }
+sindr = { version = "0.2", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -89,7 +89,7 @@ cargo run --example parse_netlist --features spice
 
 ### Status
 
-Pre-release alpha (`0.1.0-alpha.8`), [published on crates.io](https://crates.io/crates/sindr). API is liable to change.
+`0.2.0`, [published on crates.io](https://crates.io/crates/sindr). Until 1.0, a breaking change bumps the minor version (`0.3.0`) and anything else the patch (`0.2.1`), so `sindr = "0.2"` never breaks on `cargo update`. The road to 1.0 is in [`ROADMAP.md`](./ROADMAP.md).
 
 ### Scope & limitations
 
@@ -128,19 +128,19 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 
 ```toml
 [dependencies]
-sindr = "0.1.0-alpha.8"
+sindr = "0.2"
 ```
 
 Serde support is on by default. To disable:
 
 ```toml
-sindr = { version = "0.1.0-alpha.8", default-features = false }
+sindr = { version = "0.2", default-features = false }
 ```
 
 To parse SPICE netlists, enable the optional `spice` feature (off by default):
 
 ```toml
-sindr = { version = "0.1.0-alpha.8", features = ["spice"] }
+sindr = { version = "0.2", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -892,7 +892,7 @@ Use it to build, store or exchange circuits in a design tool. `sindr` re-exports
 
 ```toml
 [dependencies]
-sindr-core = "0.1.0-alpha.8"
+sindr-core = "0.2"
 ```
 
 ### Hierarchy
@@ -975,7 +975,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sindr-devices = "0.1.0-alpha.8"
+sindr-devices = "0.2"
 ```
 
 Two-terminal companions return `(g_eq, i_eq)`: the linearised conductance (S)
@@ -1085,7 +1085,7 @@ assert!(r_85c < 10_000.0 && r_dim > 1_000.0);
 | `serde` | `Serialize`/`Deserialize` on all param structs |
 
 ```toml
-sindr-devices = { version = "0.1.0-alpha.8", features = ["serde"] }
+sindr-devices = { version = "0.2", features = ["serde"] }
 ```
 
 
@@ -1095,7 +1095,7 @@ sindr-devices = { version = "0.1.0-alpha.8", features = ["serde"] }
 
 sindr is an **analog circuit simulator**: a SPICE-style MNA solver with semiconductor companion models, written in pure Rust. This document is the honest counterpart to the READMEs — it lists capabilities sindr does **not** have today, so you can decide whether it fits your use case before investing.
 
-Status: pre-release alpha (`0.1.0-alpha.8`). Anything below may change.
+Status: `0.2.0`, before 1.0. Anything below may change.
 
 ### What sindr is
 
@@ -2764,10 +2764,10 @@ The full list of what sindr doesn't do is in
 
 ```toml
 [dependencies]
-sindr = "0.1.0-alpha.8"
+sindr = "0.2"
 
 # No serde, no built-in examples:
-sindr = { version = "0.1.0-alpha.8", default-features = false }
+sindr = { version = "0.2", default-features = false }
 ```
 
 ### Transient results
@@ -2823,7 +2823,7 @@ out of the baseline build):
 
 ```toml
 [dependencies]
-sindr = { version = "0.1.0-alpha.8", features = ["spice"] }
+sindr = { version = "0.2", features = ["spice"] }
 ```
 
 (`no_run`: it reads `amp.cir`, which doesn't exist where doctests run.)
@@ -5208,7 +5208,7 @@ and [`ParsedNetlist::nodesets`]; pass them to
 and [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages).
 
 Enable the optional `spice` feature to pull this module in
-(`sindr = { version = "0.1.0-alpha.8", features = ["spice"] }`); it is off by
+(`sindr = { version = "0.2", features = ["spice"] }`); it is off by
 default so the parser dependencies stay out of the baseline build.
 
 ### Quick start
