@@ -206,6 +206,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LED's Vf, so Vf rose with temperature and a self-heated LED drew less
   current as it warmed. Each colour now has an effective EG fitted to
   −2 mV/K. Temperature sweeps and self-heated results for LEDs change.
+- A `.model` card stopped at the first parameter it couldn't read and kept
+  the ones before it, so `d(is=1e-10, n=2)` (commas, as many vendor
+  libraries write them) silently lost `n`, and `is=` with no value or a
+  stray word lost the rest of the card. Commas now separate parameters, and
+  anything else that isn't `name=value` is a syntax error. `.param` and
+  `.subckt` headers with trailing text are errors too, where they used to
+  drop it.
 - Validation now refuses values the models can't use, naming the
   component and field, before the solver turns them into a bare
   `InvalidSolution` or a wrong answer: a NaN or infinite resistance
