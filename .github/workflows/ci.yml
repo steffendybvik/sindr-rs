@@ -95,7 +95,7 @@ jobs:
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           feature-group: all-features
-          # sindr-core has no published version to compare with until 0.2.0
+          # sindr-core has no published version to compare with until 0.1.0
           # ships. Drop this line then.
           exclude: sindr-core
 

@@ -1169,7 +1169,7 @@ pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimErr
 ///
 /// As [`solve_ac`].
 #[deprecated(
-    since = "0.2.0",
+    since = "0.1.0",
     note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).ac(..)`"
 )]
 pub fn solve_ac_with_initial_voltages(

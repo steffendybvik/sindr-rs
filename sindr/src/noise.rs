@@ -205,7 +205,7 @@ pub fn solve_noise(circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResul
 ///
 /// As [`solve_noise`].
 #[deprecated(
-    since = "0.2.0",
+    since = "0.1.0",
     note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).noise(..)`"
 )]
 pub fn solve_noise_with_initial_voltages(

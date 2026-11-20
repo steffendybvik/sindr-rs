@@ -2,7 +2,7 @@
 
 sindr is an **analog circuit simulator**: a SPICE-style MNA solver with semiconductor companion models, written in pure Rust. This document is the honest counterpart to the READMEs — it lists capabilities sindr does **not** have today, so you can decide whether it fits your use case before investing.
 
-Status: `0.2.0`, before 1.0. Anything below may change.
+Status: `0.1.0`, before 1.0. Anything below may change.
 
 ## What sindr is
 

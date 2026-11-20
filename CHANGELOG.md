@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - Unreleased
+## [0.1.0] - Unreleased
 
 The first plain release. Versions are now `0.x` with no prereleases: a
 breaking change bumps the minor version, anything else the patch, so
-`sindr = "0.2"` keeps working through `cargo update`. This release was
+`sindr = "0.1"` keeps working through `cargo update`. This release was
 staged as `0.1.0-alpha.8`.
 
 ### Added
@@ -754,8 +754,8 @@ staged as `0.1.0-alpha.8`.
   semiconductor models (diode, BJT, MOSFET, JFET, IGBT, varactor, zener,
   Schottky, LED, photodiode, photoresistor, thermistor).
 
-[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.7...v0.2.0
+[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.7...v0.1.0
 [0.1.0-alpha.7]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.6...v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.5

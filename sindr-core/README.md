@@ -9,7 +9,7 @@ Use it to build, store or exchange circuits in a design tool. `sindr` re-exports
 
 ```toml
 [dependencies]
-sindr-core = "0.2"
+sindr-core = "0.1"
 ```
 
 ## Hierarchy
