@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cards. Any other card parameter is an error in strict mode and a warning
   per card in lenient mode, naming it; before, every parameter but `BF`
   was dropped silently, even in strict mode.
+- ngspice goldens for nonlinear transient and device AC:
+  `tran_halfwave` (sine into a rectifier with a filter cap),
+  `tran_bjt_switch` (pulse through an RC into an NPN switch),
+  `tran_rlc_ring`, `ac_diode` (a biased 1N4148 with its charge),
+  `ac_mosfet_cs`, `ac_bjt_caps` and `ac_jfet`.
 - `DiodeModel` (IS, N, RS) and `BjtModel` (IS, BR, NF, NR, VAF), as the
   optional `model` field of `CircuitElement::Diode` and `CircuitElement::Bjt`.
   DC, AC, transient, `.tf`, `.sens` and results all use them, so a diode's
@@ -201,6 +206,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AC analysis now includes a BJT's and a MOSFET's `parasitic_caps` (Cbe,
+  Cbc, Cgs, Cgd). They were stamped in transient only, so a transistor
+  amplifier's AC response had no Miller pole and stayed flat to any
+  frequency. `.noise` goes through the same small-signal system and changes
+  with it. New ngspice goldens `ac_bjt_caps` and `ac_mosfet_cs` pin them.
 - A hot LED's forward voltage now falls about 2 mV/K at its rated current,
   as a real one does. IS scaled with silicon's 1.11 eV bandgap, below every
   LED's Vf, so Vf rose with temperature and a self-heated LED drew less

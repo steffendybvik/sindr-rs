@@ -2490,7 +2490,7 @@ fn update_parasitic_histories(
 
 /// A BJT's parasitic capacitors as `(junction, C, terminal, terminal)`:
 /// Cbe base–emitter and Cbc base–collector, each only if > 0.
-fn bjt_parasitics(
+pub(crate) fn bjt_parasitics(
     nodes: &[String; 3],
     pc: &crate::circuit::BjtParasiticCaps,
 ) -> Vec<(&'static str, f64, String, String)> {
@@ -2503,7 +2503,7 @@ fn bjt_parasitics(
 
 /// A MOSFET's parasitic capacitors as `(junction, C, terminal, terminal)`:
 /// Cgs gate–source and Cgd gate–drain, each only if > 0.
-fn mosfet_parasitics(
+pub(crate) fn mosfet_parasitics(
     nodes: &[String; 3],
     pc: &crate::circuit::MosfetParasiticCaps,
 ) -> Vec<(&'static str, f64, String, String)> {

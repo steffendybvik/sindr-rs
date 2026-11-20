@@ -546,6 +546,34 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, p, q, -y);
                 stamp_complex_conductance(&mut a, q, p, -y);
             }
+            CircuitElement::Bjt {
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (_, c, p, q) in crate::transient::bjt_parasitics(nodes, pc) {
+                    let y = j_omega * c;
+                    let (p, q) = (node_map.index(&p), node_map.index(&q));
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
+            }
+            CircuitElement::Mosfet {
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (_, c, p, q) in crate::transient::mosfet_parasitics(nodes, pc) {
+                    let y = j_omega * c;
+                    let (p, q) = (node_map.index(&p), node_map.index(&q));
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
+            }
             CircuitElement::Varactor { nodes, params, .. } => {
                 // Small-signal capacitance at the DC bias.
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
