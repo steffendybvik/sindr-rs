@@ -16,6 +16,7 @@
 //!
 //! | Module | Device | Model |
 //! |---|---|---|
+//! | [`battery`] | Battery | Open-circuit voltage by state of charge, series R, optional RC pair |
 //! | [`diode`] | Silicon diode | Shockley with series resistance, temperature IS scaling, breakdown and junction charge |
 //! | [`bjt`] | BJT (NPN/PNP) | Ebers–Moll with Early voltage |
 //! | [`mosfet`] | MOSFET (NMOS/PMOS) | Level-1 |
@@ -62,6 +63,7 @@
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
 #![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
+pub mod battery;
 pub mod bjt;
 pub mod diode;
 pub mod igbt;

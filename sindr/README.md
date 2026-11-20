@@ -98,6 +98,32 @@ CircuitElement::CurrentSource { id, nodes: [String; 2], current: f64, waveform: 
 
 A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
 
+### Battery
+
+```rust
+CircuitElement::Battery { id, nodes: [String; 2], params: BatteryParams, state_of_charge: f64 }
+```
+
+`nodes` are `[positive, negative]`. The cell is an equivalent circuit: open-circuit voltage by state of charge (`params.ocv`, interpolated), behind a series resistance `r_series` and an optional RC pair (`params.rc`) for the slow sag after a load step and the recovery after it. Its terminal voltage is `OCV(SoC) − R0·i − v1`.
+
+- **DC:** the open-circuit voltage at `state_of_charge` behind `R0 + R1`.
+- **Transient:** the RC pair charges, and the state of charge falls by the charge drawn, `dSoC/dt = −i/(3600·capacity)`. Each step's `state_of_charge` (and the result's, at the end) holds it by battery id. Below 0 the cell is over-discharged and holds its 0 % voltage. A battery with an RC pair makes `solve_circuit` run a transient.
+- **AC:** the impedance `R0 + R1‖C1`.
+
+`current_through` flows `nodes[0] → nodes[1]` inside the cell, as for a voltage source, so it is negative while discharging. Presets: `BatteryParams::lithium_ion(capacity_ah, r_series)` (a typical Li-ion/LiPo rest curve, 3.27–4.20 V), `BatteryParams::cr2032()` (a 225 mAh coin cell with its pulse-recovery pair) and `BatteryParams::constant(volts, capacity_ah, r_series)`.
+
+```rust
+use sindr::battery::BatteryParams;
+
+// A 500 mAh LiPo at 80 %, 0.15 Ω.
+let cell = CircuitElement::Battery {
+    id: "B1".into(),
+    nodes: ["vbat".into(), "0".into()],
+    params: BatteryParams::lithium_ion(0.5, 0.15),
+    state_of_charge: 0.8,
+};
+```
+
 ### Switches
 
 ```rust

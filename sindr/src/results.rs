@@ -151,6 +151,14 @@ pub struct TimestepSnapshot {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub junction_temperatures: HashMap<String, f64>,
+    /// State of charge (0 to 1) of each battery at this instant, by
+    /// component id. Below 0 the cell is over-discharged; its voltage holds
+    /// the curve's 0 % value.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub state_of_charge: HashMap<String, f64>,
 }
 
 /// Time-series data from a transient simulation.
@@ -276,6 +284,13 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub junction_temperatures: HashMap<String, f64>,
+    /// State of charge (0 to 1) of each battery, by component id: the
+    /// starting value at DC, the last step's after a transient.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub state_of_charge: HashMap<String, f64>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -720,6 +735,23 @@ pub fn extract_results(
                     power: v_across * i_through,
                 });
             }
+            CircuitElement::Battery {
+                id,
+                nodes,
+                params,
+                state_of_charge,
+            } => {
+                let (g, i_hist) = crate::battery_state::dc_norton(params, *state_of_charge);
+                let v_across = node_voltage(&nodes[0], node_map, solution)
+                    - node_voltage(&nodes[1], node_map, solution);
+                let i_through = g * v_across + i_hist;
+                component_results.push(ComponentResult {
+                    id: id.clone(),
+                    voltage_across: v_across,
+                    current_through: i_through,
+                    power: v_across * i_through,
+                });
+            }
             CircuitElement::Thermistor {
                 id,
                 nodes,
@@ -898,6 +930,18 @@ pub fn extract_results(
         mcu_results: vec![],
         convergence_aid: None,
         junction_temperatures: HashMap::new(),
+        state_of_charge: circuit
+            .components
+            .iter()
+            .filter_map(|c| match c {
+                CircuitElement::Battery {
+                    id,
+                    state_of_charge,
+                    ..
+                } => Some((id.clone(), *state_of_charge)),
+                _ => None,
+            })
+            .collect(),
         transient: None,
     }
 }
@@ -921,6 +965,7 @@ mod tests {
             mcu_results: vec![],
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
+            state_of_charge: HashMap::new(),
             transient: None,
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -943,6 +988,7 @@ mod tests {
             mcu_results: vec![],
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
+            state_of_charge: HashMap::new(),
             transient: Some(TransientData {
                 timesteps: vec![
                     TimestepSnapshot {
@@ -950,12 +996,14 @@ mod tests {
                         node_voltages: HashMap::from([("n1".into(), 0.0)]),
                         component_results: vec![],
                         junction_temperatures: HashMap::new(),
+                        state_of_charge: HashMap::new(),
                     },
                     TimestepSnapshot {
                         time: 0.001,
                         node_voltages: HashMap::from([("n1".into(), 3.2)]),
                         component_results: vec![],
                         junction_temperatures: HashMap::new(),
+                        state_of_charge: HashMap::new(),
                     },
                 ],
                 time_step: 0.001,

@@ -112,6 +112,22 @@ pub fn stamp_circuit(
             // Open-circuit stubs -- simulation added in future phases
             CircuitElement::Capacitor { .. } => {}
             CircuitElement::Inductor { .. } => {}
+            CircuitElement::Battery {
+                nodes,
+                params,
+                state_of_charge,
+                ..
+            } => {
+                let (g, i_hist) = crate::battery_state::dc_norton(params, *state_of_charge);
+                stamp_resistor(system, node_map, nodes, 1.0 / g);
+                // The Norton current: −i_hist out of nodes[1] into nodes[0]'s side.
+                if let Some(p) = node_map.index(&nodes[0]) {
+                    system.b[p] -= i_hist;
+                }
+                if let Some(q) = node_map.index(&nodes[1]) {
+                    system.b[q] += i_hist;
+                }
+            }
             CircuitElement::Diode {
                 model,
                 nodes,

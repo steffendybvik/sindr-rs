@@ -216,6 +216,32 @@ CircuitElement::CurrentSource { id, nodes: [String; 2], current: f64, waveform: 
 
 A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
 
+#### Battery
+
+```rust
+CircuitElement::Battery { id, nodes: [String; 2], params: BatteryParams, state_of_charge: f64 }
+```
+
+`nodes` are `[positive, negative]`. The cell is an equivalent circuit: open-circuit voltage by state of charge (`params.ocv`, interpolated), behind a series resistance `r_series` and an optional RC pair (`params.rc`) for the slow sag after a load step and the recovery after it. Its terminal voltage is `OCV(SoC) − R0·i − v1`.
+
+- **DC:** the open-circuit voltage at `state_of_charge` behind `R0 + R1`.
+- **Transient:** the RC pair charges, and the state of charge falls by the charge drawn, `dSoC/dt = −i/(3600·capacity)`. Each step's `state_of_charge` (and the result's, at the end) holds it by battery id. Below 0 the cell is over-discharged and holds its 0 % voltage. A battery with an RC pair makes `solve_circuit` run a transient.
+- **AC:** the impedance `R0 + R1‖C1`.
+
+`current_through` flows `nodes[0] → nodes[1]` inside the cell, as for a voltage source, so it is negative while discharging. Presets: `BatteryParams::lithium_ion(capacity_ah, r_series)` (a typical Li-ion/LiPo rest curve, 3.27–4.20 V), `BatteryParams::cr2032()` (a 225 mAh coin cell with its pulse-recovery pair) and `BatteryParams::constant(volts, capacity_ah, r_series)`.
+
+```rust
+use sindr::battery::BatteryParams;
+
+// A 500 mAh LiPo at 80 %, 0.15 Ω.
+let cell = CircuitElement::Battery {
+    id: "B1".into(),
+    nodes: ["vbat".into(), "0".into()],
+    params: BatteryParams::lithium_ion(0.5, 0.15),
+    state_of_charge: 0.8,
+};
+```
+
 #### Switches
 
 ```rust
@@ -1012,7 +1038,7 @@ Status: pre-release alpha (`0.1.0-alpha.8`). Anything below may change.
 - DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
-- Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation)
+- Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
 - Programmatic Rust API + serde JSON for circuits and results
 
 If your problem is "given an analog topology built in Rust, what are the node voltages and branch currents (possibly over time, frequency, or temperature)?", sindr is in scope.
@@ -1069,6 +1095,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 #### Device models
 
 - **Op-amp macromodel: single pole.** `OpAmpModel` gives open-loop gain, a dominant pole from GBW, slew rate, output resistance, input offset and bias current, and a rail clamp. There is no second pole or phase margin, no output current limit, no supply current, no input common-mode range, no noise and no CMRR/PSRR. Vendor op-amp models can't be loaded. Without a `model` the op-amp is a gain-1e5 VCVS with no rail clamp.
+- **Batteries are an equivalent circuit, with no chemistry.** `Battery` has an open-circuit voltage curve, a series resistance and one RC pair. Capacity doesn't fall at high current (Peukert) or in the cold, resistance doesn't rise as the cell empties, and there's no aging, self-discharge, charging limit or hysteresis between charge and discharge curves. A battery is noiseless in `.noise`, and SPICE export refuses it.
 - **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. No references, adjustable regulators (LM317 with its divider) or DC-DC controllers.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
@@ -1899,6 +1926,7 @@ periodic steady state, S-parameters, variable-order integration.
 | Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
 | Comparator | VCVS of gain 1e5; no GBW or slew rate |
 | Transformer | Linear coupled inductors |
+| Battery | Open-circuit voltage by state of charge behind R0 and an optional R1‖C1; state of charge falls with charge drawn ([`battery::BatteryParams`]; Li-ion and CR2032 presets) |
 | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
 
 Parameters are Rust structs, not SPICE `.model` cards.
@@ -2105,6 +2133,9 @@ pub use transient::{solve_transient, IntegrationMethod, TransientConfig, Transie
 pub use validation::validate_circuit;
 
 pub use waveform::Waveform;
+
+/// Battery equivalent circuits and presets, for [`CircuitElement::Battery`].
+pub use sindr_devices::battery;
 
 pub use sindr_devices::bjt::BjtKind;
 
@@ -3330,6 +3361,14 @@ pub struct TimestepSnapshot {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub junction_temperatures: HashMap<String, f64>,
+    /// State of charge (0 to 1) of each battery at this instant, by
+    /// component id. Below 0 the cell is over-discharged; its voltage holds
+    /// the curve's 0 % value.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub state_of_charge: HashMap<String, f64>,
 }
 
 /// Time-series data from a transient simulation.
@@ -3448,6 +3487,13 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub junction_temperatures: HashMap<String, f64>,
+    /// State of charge (0 to 1) of each battery, by component id: the
+    /// starting value at DC, the last step's after a transient.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub state_of_charge: HashMap<String, f64>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -5759,6 +5805,28 @@ pub enum CircuitElement {
         capacitance: f64,
     },
 
+    /// A battery: open-circuit voltage by state of charge behind a series
+    /// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
+    /// its open-circuit voltage at `state_of_charge` behind `R0 + R1`. In
+    /// transient the RC pair charges and the state of charge falls with the
+    /// charge drawn, reported per step in `state_of_charge`. In AC it is
+    /// the impedance `R0 + R1‖C1`. `current_through` flows
+    /// `nodes[0] → nodes[1]` inside the cell, so it is negative while the
+    /// battery discharges, as for a voltage source.
+    ///
+    /// [`BatteryParams`]: sindr_devices::battery::BatteryParams
+    #[cfg_attr(feature = "serde", serde(rename = "battery"))]
+    Battery {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[positive, negative]`.
+        nodes: [String; 2],
+        /// The cell's equivalent circuit.
+        params: sindr_devices::battery::BatteryParams,
+        /// State of charge at the start, 0 (empty) to 1 (full).
+        state_of_charge: f64,
+    },
+
     /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
     /// solves DC as a single algebraic step, not as t→∞ of a transient);
     /// integrates `dI/dt` properly during transient. The DC bias point that
@@ -6816,6 +6884,81 @@ impl Waveform {
 
 # Public API of `sindr-devices`
 
+## `sindr-devices/src/battery.rs`
+
+Equivalent-circuit battery: open-circuit voltage by state of charge,
+series resistance and an optional RC pair.
+
+```text
+ +  ──[ R0 ]──┬──[ R1 ]──┬──(OCV(SoC))──  −
+              └──[ C1 ]──┘
+```
+
+The terminal voltage is `OCV(SoC) − R0·i − v1`, with `i` the discharge
+current (out of the positive terminal) and `v1` the RC pair's voltage,
+`C1·dv1/dt = i − v1/R1`. The pair gives the slow sag and recovery after
+a load step. State of charge falls as `dSoC/dt = −i/(3600·capacity)`.
+
+Aging, temperature and current-dependent capacity (Peukert) are not
+modelled.
+
+```rust
+/// The RC pair: the polarisation that makes a loaded cell sag over seconds
+/// and recover after the load goes.
+pub struct BatteryRc {
+    /// Polarisation resistance (Ω).
+    pub r: f64,
+    /// Polarisation capacitance (F).
+    pub c: f64,
+}
+
+/// A battery's equivalent circuit.
+pub struct BatteryParams {
+    /// Capacity (Ah): the charge from full (SoC 1) to empty (SoC 0).
+    pub capacity: f64,
+    /// Open-circuit (rest) voltage against state of charge: `(SoC, volts)`
+    /// pairs with SoC rising from 0 to 1, read by linear interpolation.
+    pub ocv: Vec<(f64, f64)>,
+    /// Series (ohmic) resistance (Ω), positive.
+    pub r_series: f64,
+    /// Optional RC pair for the slow part of the sag.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub rc: Option<BatteryRc>,
+}
+
+impl BatteryParams {
+    /// A cell with a flat `volts` at every state of charge.
+    pub fn constant(volts: f64, capacity: f64, r_series: f64) -> Self { … }
+
+    /// A single lithium-ion or lithium-polymer cell: a typical rest-voltage
+    /// curve, 3.27 V empty to 4.20 V full (3.84 V at half charge), with the
+    /// capacity (Ah) and series resistance (Ω) of the part. A small pouch
+    /// cell is around 0.1–0.3 Ω, an 18650 around 0.03–0.05 Ω.
+    pub fn lithium_ion(capacity: f64, r_series: f64) -> Self { … }
+
+    /// A CR2032-class lithium coin cell: 225 mAh, about 3.0 V for most of
+    /// its life and falling off over the last tenth, with 15 Ω series
+    /// resistance and a 25 Ω, 0.2 F pulse-recovery pair. Approximate,
+    /// from typical published discharge curves; a coin cell's resistance
+    /// rises steeply as it empties and in the cold, which isn't modelled.
+    pub fn cr2032() -> Self { … }
+}
+
+/// Open-circuit voltage (V) at state of charge `soc`, interpolated along
+/// the curve. Outside 0..1 it holds the end values.
+pub fn open_circuit_voltage(soc: f64, params: &BatteryParams) -> f64 { … }
+
+/// The resistance (Ω) a battery shows at DC: `R0`, plus `R1` once the RC
+/// pair has settled.
+pub fn dc_resistance(params: &BatteryParams) -> f64 { … }
+
+/// State of charge after `amp_hours` (Ah) is drawn from `soc`.
+pub fn discharged(soc: f64, amp_hours: f64, params: &BatteryParams) -> f64 { … }
+```
+
 ## `sindr-devices/src/bjt.rs`
 
 BJT (Bipolar Junction Transistor) device model.
@@ -7302,6 +7445,7 @@ end-to-end simulator.
 
 | Module | Device | Model |
 |---|---|---|
+| [`battery`] | Battery | Open-circuit voltage by state of charge, series R, optional RC pair |
 | [`diode`] | Silicon diode | Shockley with series resistance, temperature IS scaling, breakdown and junction charge |
 | [`bjt`] | BJT (NPN/PNP) | Ebers–Moll with Early voltage |
 | [`mosfet`] | MOSFET (NMOS/PMOS) | Level-1 |
@@ -7345,6 +7489,8 @@ assert!(g_eq > 0.0);
   directly.
 
 ```rust
+pub mod battery;
+
 pub mod bjt;
 
 pub mod diode;

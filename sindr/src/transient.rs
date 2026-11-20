@@ -53,6 +53,13 @@ pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) {
             CircuitElement::Resistor { resistance, .. } => {
                 resistances.push(*resistance);
             }
+            CircuitElement::Battery { params, .. } => {
+                resistances.push(params.r_series);
+                if let Some(pair) = params.rc {
+                    resistances.push(pair.r);
+                    capacitances.push(pair.c);
+                }
+            }
             CircuitElement::Switch { closed, .. } => {
                 let r = if *closed {
                     SWITCH_R_CLOSED
@@ -242,6 +249,14 @@ fn stamp_circuit_transient(
                 let (g, i_hist) = integ.capacitor(*capacitance, &caps[cap_index]);
                 stamp_companion(system, node_map, nodes, g, i_hist);
                 cap_index += 1;
+            }
+            CircuitElement::Battery {
+                id, nodes, params, ..
+            } => {
+                let soc = parasitic_history(parasitic, id, crate::battery_state::SOC).x1;
+                let rc = parasitic_history(parasitic, id, crate::battery_state::RC);
+                let (g, i_hist) = crate::battery_state::step_norton(params, soc, &rc, integ);
+                stamp_companion(system, node_map, nodes, g, i_hist);
             }
             CircuitElement::Inductor {
                 nodes, inductance, ..
@@ -600,6 +615,8 @@ fn extract_timestep_results(
 
     for component in &circuit.components {
         match component {
+            // Needs its state's history; `battery::finish_step` reports it.
+            CircuitElement::Battery { .. } => {}
             CircuitElement::Resistor {
                 id,
                 nodes,
@@ -1158,6 +1175,7 @@ fn extract_timestep_results(
         node_voltages,
         component_results,
         junction_temperatures: HashMap::new(),
+        state_of_charge: HashMap::new(),
     };
 
     (snapshot, new_caps, new_inds)
@@ -1734,6 +1752,12 @@ pub(crate) fn run_transient(
             _ => {}
         }
     }
+    crate::battery_state::initial_histories(
+        circuit,
+        &start.voltages,
+        config.start == TransientStart::OperatingPoint,
+        &mut parasitic,
+    );
     // The accepted step before this one; `None` until the first is taken.
     let mut h_prev: Option<f64> = None;
 
@@ -1877,6 +1901,14 @@ pub(crate) fn run_transient(
         // At the temperatures this step solved at, before self-heating moves them.
         update_parasitic_histories(stepped, node_map, &next, &integ, &mut parasitic);
         add_diode_charge_currents(stepped, &parasitic, &mut snapshot.component_results);
+        snapshot.state_of_charge = crate::battery_state::finish_step(
+            stepped,
+            &snapshot.node_voltages,
+            &integ,
+            dt,
+            &mut parasitic,
+            &mut snapshot.component_results,
+        );
         if let (Some(heated), Some(work)) = (&heated, &mut work) {
             temps = heated.advance(&temps, &heated.powers(&snapshot.component_results), dt);
             heated.check_runaway(&temps)?;
@@ -1944,6 +1976,7 @@ pub(crate) fn run_transient(
         mcu_results: vec![],
         convergence_aid: None,
         junction_temperatures: final_snapshot.junction_temperatures.clone(),
+        state_of_charge: final_snapshot.state_of_charge.clone(),
         transient: Some(TransientData {
             timesteps,
             time_step: config.tstep,
