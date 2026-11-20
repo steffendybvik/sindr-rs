@@ -1,0 +1,30 @@
+{
+  "components": [
+    {
+      "id": "V1",
+      "nodes": [
+        "n1",
+        "0"
+      ],
+      "type": "voltage_source",
+      "voltage": 0.0,
+      "waveform": {
+        "amplitude": 5.0,
+        "frequency": 1000.0,
+        "offset": 0.0,
+        "phase": 0.0,
+        "type": "sine"
+      }
+    },
+    {
+      "id": "R1",
+      "nodes": [
+        "n1",
+        "0"
+      ],
+      "resistance": 1000.0,
+      "type": "resistor"
+    }
+  ],
+  "ground_node": "0"
+}

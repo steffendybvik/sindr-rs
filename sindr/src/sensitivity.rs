@@ -17,6 +17,7 @@ use crate::error::SimError;
 use crate::transfer_function::{independent_vsource_branch, Port, TfOutput};
 
 /// Sensitivity-analysis configuration.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SensConfig {
     /// The output whose sensitivities are wanted.
@@ -24,6 +25,7 @@ pub struct SensConfig {
 }
 
 /// Which parameter of a component a [`SensEntry`] is for.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SensParameter {
     /// A resistor's resistance (Ω).
@@ -39,6 +41,7 @@ pub enum SensParameter {
 }
 
 /// The sensitivity of the output to one component parameter.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SensEntry {
     /// Id of the component.
@@ -56,6 +59,7 @@ pub struct SensEntry {
 }
 
 /// Result of a sensitivity analysis.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SensResult {
     /// One entry per supported parameter, in circuit order. Components with

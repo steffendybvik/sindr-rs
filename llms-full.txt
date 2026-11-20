@@ -3479,7 +3479,7 @@ pub struct NoiseSource {
     pub kind: NoiseKind,
     /// Which current it sits on, for parts with more than one: `"ic"`,
     /// `"ib"`, `"top"`/`"bottom"` for a potentiometer; empty otherwise.
-    pub branch: &'static str,
+    pub branch: String,
 }
 
 /// Noise at one frequency.

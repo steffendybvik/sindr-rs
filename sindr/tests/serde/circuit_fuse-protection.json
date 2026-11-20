@@ -1,0 +1,33 @@
+{
+  "components": [
+    {
+      "id": "V1",
+      "nodes": [
+        "n1",
+        "0"
+      ],
+      "type": "voltage_source",
+      "voltage": 5.0
+    },
+    {
+      "blown": false,
+      "id": "F1",
+      "nodes": [
+        "n1",
+        "n2"
+      ],
+      "rating": 1.0,
+      "type": "fuse"
+    },
+    {
+      "id": "R1",
+      "nodes": [
+        "n2",
+        "0"
+      ],
+      "resistance": 100.0,
+      "type": "resistor"
+    }
+  ],
+  "ground_node": "0"
+}

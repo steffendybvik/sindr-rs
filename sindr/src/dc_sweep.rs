@@ -13,6 +13,7 @@ use crate::results::SimulationResult;
 
 /// One operating point of a DC sweep: the sweep value and the full result
 /// at that value.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct DcSweepPoint {
     /// The value of the swept source at this point (V, or A for a current
@@ -26,6 +27,7 @@ pub struct DcSweepPoint {
 ///
 /// Use [`DcSweepResult::node_voltage_curve`] or
 /// [`DcSweepResult::component_current_curve`] to extract a plottable curve.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct DcSweepResult {
     /// Component id of the source that was swept.
@@ -80,6 +82,7 @@ impl DcSweepResult {
 /// assert_eq!(axis.num_points, 11);
 /// assert_eq!(axis.stop, 1.0);
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DcSweepAxis {
     /// Id of the [`VoltageSource`](CircuitElement::VoltageSource) or
@@ -329,6 +332,7 @@ pub fn dc_sweep(
 
 /// A two-source DC sweep: one [`DcSweepResult`] along the inner source per
 /// value of the outer one.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct NestedDcSweepResult {
     /// Component id of the outer (slower) source.
@@ -339,6 +343,7 @@ pub struct NestedDcSweepResult {
 
 /// One curve of a [`NestedDcSweepResult`]: the inner sweep at one value of
 /// the outer source.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct NestedDcSweepCurve {
     /// The outer source's value for this curve (V or A).

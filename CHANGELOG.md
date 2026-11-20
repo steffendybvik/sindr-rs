@@ -31,6 +31,12 @@ staged as `0.1.0-alpha.8`.
   that list the variant's fields need `..`.
 - CI builds every crate for `wasm32-unknown-unknown` and solves a circuit
   there under Node (`sindr/tests/wasm.rs`).
+- Serde for every analysis result and config: `AcResult`, `AcPoint`,
+  `NoiseResult` and `NoiseConfig`, `DcSweepResult` and the nested sweep,
+  `TfResult`/`TfConfig`, `SensResult`/`SensConfig`. Every `CircuitElement`
+  and result type is tested through JSON and back, with circuit
+  snapshots in `sindr/tests/serde/`. `NoiseSource::branch` is a `String`
+  (it was `&'static str`, which can't be deserialized).
 - **Breaking:** three new `CircuitElement`s. `SwitchSpdt` (`[common, a,
   b]`, `position: SpdtPosition`), `Crystal` (`CrystalParams`: the
   Butterworth–Van Dyke model from frequency, ESR, C0 and Cm) and

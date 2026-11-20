@@ -1,0 +1,70 @@
+{
+  "blocks": {
+    "divider": {
+      "components": [
+        {
+          "id": "R1",
+          "nodes": [
+            "top",
+            "mid"
+          ],
+          "resistance": 1000.0,
+          "type": "resistor"
+        },
+        {
+          "id": "R2",
+          "nodes": [
+            "mid",
+            "bot"
+          ],
+          "resistance": 2000.0,
+          "type": "resistor"
+        }
+      ],
+      "parts": {
+        "R1": {
+          "ratings": {
+            "power": 0.25
+          }
+        }
+      },
+      "ports": [
+        "top",
+        "mid",
+        "bot"
+      ]
+    }
+  },
+  "components": [
+    {
+      "id": "V1",
+      "nodes": [
+        "in",
+        "0"
+      ],
+      "type": "voltage_source",
+      "voltage": 9.0
+    }
+  ],
+  "ground_node": "0",
+  "instances": [
+    {
+      "block": "divider",
+      "id": "X1",
+      "nodes": [
+        "in",
+        "a",
+        "0"
+      ]
+    },
+    {
+      "block": "divider",
+      "id": "X2",
+      "nodes": [
+        "a",
+        "b",
+        "0"
+      ]
+    }
+  ]
+}
