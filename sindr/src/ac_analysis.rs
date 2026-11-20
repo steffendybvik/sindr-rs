@@ -15,7 +15,6 @@ use num_complex::Complex64;
 use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::diode;
 use sindr_devices::jfet;
-use sindr_devices::mosfet;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
@@ -312,8 +311,7 @@ pub(crate) fn linearize_at_dc(
                 let vd = d.map_or(0.0, |i| dc_solution[i]);
                 let vs = s.map_or(0.0, |i| dc_solution[i]);
 
-                let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
-                let comp = mosfet::mosfet_companion(vgs, vds, 0.0, &params.in_nmos_frame(*kind));
+                let comp = crate::device_params::mosfet_op(*kind, params, vg, vd, vs);
 
                 // The body is tied to the source, so there is no gmb term.
                 let conds = vec![

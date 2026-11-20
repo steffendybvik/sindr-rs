@@ -16,7 +16,7 @@ use nalgebra::DVector;
 use sindr_devices::bjt::{self, BjtKind, BjtParams};
 use sindr_devices::diode::{self, DiodeParams};
 use sindr_devices::jfet::JfetKind;
-use sindr_devices::mosfet::{self, MosfetKind, MosfetParams};
+use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 use sindr_devices::photoresistor::{ldr_resistance as rs_ldr_resistance, PhotoresistorParams};
 use sindr_devices::regulator::{regulator_piece, RegulatorLinear, RegulatorParams};
 
@@ -706,9 +706,9 @@ pub(crate) fn stamp_mosfet_companion(
     let vd = d.map_or(0.0, |i| v_prev[i]);
     let vs = s.map_or(0.0, |i| v_prev[i]);
 
-    // Sign adjustment for PMOS
+    // The NMOS-frame voltages the companion was linearised at.
     let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
-    let comp = mosfet::mosfet_companion(vgs, vds, 0.0, &params.in_nmos_frame(kind));
+    let comp = crate::device_params::mosfet_op(kind, params, vg, vd, vs);
 
     // Helper closure
     let stamp_g = |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {

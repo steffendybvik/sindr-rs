@@ -13,7 +13,7 @@ use nalgebra::DVector;
 use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::diode;
 use sindr_devices::jfet;
-use sindr_devices::mosfet::{self, MosfetKind};
+use sindr_devices::mosfet::MosfetKind;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
@@ -528,8 +528,7 @@ pub fn extract_results(
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
 
-                let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
-                let comp = mosfet::mosfet_companion(vgs, vds, 0.0, &params.in_nmos_frame(*kind));
+                let comp = crate::device_params::mosfet_op(*kind, params, vg, vd, vs);
                 let id_current = match kind {
                     MosfetKind::Nmos => comp.id,
                     MosfetKind::Pmos => -comp.id,

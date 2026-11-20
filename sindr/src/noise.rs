@@ -478,12 +478,12 @@ fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> V
                 ..
             } => {
                 let [g, d, s] = nodes;
-                let (vgs, vds) = kind.nmos_frame(voltage(g), voltage(d), voltage(s));
-                let comp = sindr_devices::mosfet::mosfet_companion(
-                    vgs,
-                    vds,
-                    0.0,
-                    &params.in_nmos_frame(*kind),
+                let comp = crate::device_params::mosfet_op(
+                    *kind,
+                    params,
+                    voltage(g),
+                    voltage(d),
+                    voltage(s),
                 );
                 out.push(channel(
                     source(id, NoiseKind::Thermal, ""),
