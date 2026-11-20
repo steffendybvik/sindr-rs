@@ -9,6 +9,9 @@
 //! `.`-separated hierarchical naming ([`Circuit::flatten`](crate::Circuit::flatten)),
 //! and a [`SourceMap`] maps each flattened node back to its instance path.
 //! [`to_netlist`] writes blocks back as `.subckt`s.
+//! `.global` nets, declared anywhere in the deck (inside a `.subckt` too),
+//! land in [`Circuit::globals`](crate::Circuit::globals) and keep their name
+//! inside every instance instead of taking its prefix.
 //!
 //! `.ic` cards land in [`ParsedNetlist::initial_conditions`], which
 //! [`ParsedNetlist::transient_config`] passes on. `.options` (`RELTOL`,

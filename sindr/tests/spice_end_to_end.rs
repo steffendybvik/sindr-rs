@@ -393,3 +393,50 @@ fn nested_subckts_keep_their_nesting() {
     let result = sindr::solve_circuit(&nl.circuit).expect("solve");
     assert_relative_eq!(result.node_voltages["out"], 0.25, epsilon = 1e-9);
 }
+
+#[test]
+fn global_nets_reach_into_subckts() {
+    // `.global` holds for the whole deck wherever it's written, so `half`
+    // sees `vee` although only `amp` declares it.
+    let src = "* rails\n\
+               .GLOBAL VCC\n\
+               Vcc vcc 0 10\n\
+               Vee vee 0 -10\n\
+               X1 out amp\n\
+               RL out 0 1k\n\
+               .subckt amp o\n\
+               .global vee vcc\n\
+               R1 vcc o 1k\n\
+               X2 o half\n\
+               .ends\n\
+               .subckt half p\n\
+               R2 p vee 2k\n\
+               .ends\n\
+               .end\n";
+    let lenient = ParseOptions {
+        strict: false,
+        ..ParseOptions::default()
+    };
+    for nl in [
+        parse_str(src).expect("strict parse"),
+        parse_str_with_options(src, lenient).expect("lenient parse"),
+    ] {
+        assert!(nl.warnings.is_empty(), "{:?}", nl.warnings);
+        assert_eq!(nl.circuit.globals, ["vcc", "vee"]);
+        assert_eq!(nl.circuit.blocks["amp"].components[0].nodes(), ["vcc", "o"]);
+        assert!(nl.source_map.keys().all(|k| !k.ends_with(".vcc")));
+        assert!(nl.source_map.keys().all(|k| !k.ends_with(".vee")));
+
+        let flat = nl.circuit.flatten().unwrap();
+        let r2 = flat
+            .components
+            .iter()
+            .find(|c| c.id() == "x1.x2.r2")
+            .unwrap();
+        assert_eq!(r2.nodes(), ["out", "vee"]);
+
+        // out: 10 V through 1k, -10 V through 2k, 1k to ground.
+        let op = sindr::solve_circuit(&nl.circuit).unwrap();
+        assert_relative_eq!(op.node_voltages["out"], 2.0, epsilon = 1e-9);
+    }
+}

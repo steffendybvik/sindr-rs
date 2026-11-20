@@ -291,6 +291,11 @@ fn op_resistive() {
 }
 
 #[test]
+fn op_global() {
+    check_op("op_global", &parse("op_global"), (OP_V, OP_I));
+}
+
+#[test]
 fn op_diode() {
     check_op("op_diode", &parse("op_diode"), (OP_V, OP_I));
 }

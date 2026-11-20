@@ -23,7 +23,7 @@
 //! (overrides win), establishes a `port -> caller_node` mapping, and
 //! emits each body card with renamed nodes / ids:
 //!
-//! * Ground node `"0"` is **never** prefixed.
+//! * Ground node `"0"` and `.global` nets are **never** prefixed.
 //! * A node matching a subckt port maps to the caller's node.
 //! * Any other node is prefixed with `instance_path.join(".")`.
 //! * Component ids are prefixed similarly.
@@ -61,6 +61,9 @@ pub(crate) struct Flattened {
     pub measures: Vec<(RawMeasure, Span)>,
     /// Top-level `.options` cards, in source order.
     pub options: Vec<OptionsCard>,
+    /// `.global` nets from anywhere in the deck, deduplicated, in source
+    /// order.
+    pub globals: Vec<String>,
     /// Snapshot of the outer-most parameter scope after top-level `.param`
     /// evaluation. Analysis directive arguments are evaluated against this.
     pub top_params: HashMap<String, f64>,
@@ -99,6 +102,8 @@ pub(crate) struct InstanceRecord {
 
 /// Where expansion writes its output.
 struct Sink {
+    /// `.global` nets, kept as written in every subckt body.
+    globals: Vec<String>,
     elements: Vec<FlatElement>,
     source_map: SourceMap,
     instances: Vec<InstanceRecord>,
@@ -122,6 +127,7 @@ pub(crate) fn flatten(
     let mut top_measures: Vec<(RawMeasure, Span)> = Vec::new();
     let mut top_options: Vec<OptionsCard> = Vec::new();
     let mut top_elements: Vec<RawElement> = Vec::new();
+    let mut globals: Vec<String> = Vec::new();
 
     for card in cards {
         match card {
@@ -137,6 +143,13 @@ pub(crate) fn flatten(
             RawCard::Measure(m, span) => top_measures.push((m, span)),
             RawCard::Options(o, span) => top_options.push((o, span)),
             RawCard::Element(e) => top_elements.push(e),
+            RawCard::Global(nets) => {
+                for net in nets {
+                    if net != "0" && !globals.contains(&net) {
+                        globals.push(net);
+                    }
+                }
+            }
             RawCard::Ends(_) => {
                 // The parser collects `.ends` into its parent subckt; an
                 // `.ends` reaching this point would have already errored
@@ -163,6 +176,7 @@ pub(crate) fn flatten(
 
     // ---- Pass 2 cont: expand top-level elements ----
     let mut sink = Sink {
+        globals,
         elements: Vec::new(),
         source_map: HashMap::new(),
         instances: Vec::new(),
@@ -202,6 +216,7 @@ pub(crate) fn flatten(
         node_values: top_node_values,
         measures: top_measures,
         options: top_options,
+        globals: sink.globals,
         top_params: top_params_snapshot,
     })
 }
@@ -257,6 +272,11 @@ fn expand_instance(
     let mut port_map: HashMap<String, String> = HashMap::new();
     for (port, caller_node) in def.ports.iter().zip(inst.nodes.iter()) {
         port_map.insert(port.clone(), caller_node.clone());
+    }
+    // A global net keeps its name inside the body, even over a port of the
+    // same name, as `Circuit::flatten` treats it.
+    for global in &sink.globals {
+        port_map.insert(global.clone(), global.clone());
     }
 
     // New scope frame for the body. Defaults evaluated in *parent* scope
@@ -354,6 +374,7 @@ fn expand_instance(
                 // No-op for now.
             }
             RawCard::Analysis(..)
+            | RawCard::Global(_)
             | RawCard::NodeValues(..)
             | RawCard::Measure(..)
             | RawCard::Options(..)

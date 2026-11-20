@@ -363,6 +363,12 @@ staged as `0.1.0-alpha.8`.
   Newton, two MNA branch slots (output current, then gain-stage voltage)
   and, at a rail, has zero small-signal gain in AC. A comparator whose
   `v_pos` is not above `v_neg` is an `InvalidComponent`.
+- The SPICE parser reads `.global`, so a deck `to_netlist` writes for a
+  circuit with `globals` parses back. It used to be an unknown card: an
+  error in strict mode, and in lenient mode dropped, so a global net used
+  inside a `.subckt` took the instance prefix (`x1.vcc`) and came apart
+  from the top-level net. `.global` holds for the whole deck wherever it
+  is written, inside a `.subckt` too, and fills `Circuit::globals`.
 
 ## [0.1.0-alpha.7] - 2026-11-16
 

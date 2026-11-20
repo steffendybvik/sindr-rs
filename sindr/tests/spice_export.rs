@@ -522,3 +522,65 @@ fn a_ground_port_is_rejected() {
         Err(ExportError::BadName { what: "node", .. })
     ));
 }
+
+#[test]
+fn globals_round_trip() {
+    let resistor = |id: &str, a: &str, b: &str, ohms: f64| CircuitElement::Resistor {
+        id: id.into(),
+        nodes: [a.into(), b.into()],
+        resistance: ohms,
+    };
+    // `pullup` reaches the `vcc` rail by name, not through a port.
+    let pullup = sindr::Block {
+        ports: vec!["out".into()],
+        components: vec![resistor("r1", "vcc", "out", 1000.0)],
+        ..Default::default()
+    };
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        globals: vec!["vcc".into()],
+        components: vec![
+            CircuitElement::VoltageSource {
+                id: "v1".into(),
+                nodes: ["vcc".into(), "0".into()],
+                voltage: 5.0,
+                waveform: None,
+            },
+            resistor("r2", "a", "0", 1000.0),
+            resistor("r3", "b", "0", 3000.0),
+        ],
+        instances: vec![
+            sindr::Instance::new("x1", "pullup", ["a"]),
+            sindr::Instance::new("x2", "pullup", ["b"]),
+        ],
+        blocks: [("pullup".to_string(), pullup)].into(),
+        ..Default::default()
+    };
+
+    let deck = to_netlist(&circuit, "globals").unwrap();
+    let back = parse_str(&deck).unwrap().circuit;
+    assert_eq!(back, circuit, "deck:\n{deck}");
+
+    let nets = |c: &Circuit| {
+        let mut nets: Vec<String> = c
+            .flatten()
+            .unwrap()
+            .components
+            .iter()
+            .flat_map(|e| e.nodes().to_vec())
+            .collect();
+        nets.sort();
+        nets.dedup();
+        nets
+    };
+    assert_eq!(nets(&back), ["0", "a", "b", "vcc"]);
+    assert_eq!(nets(&back), nets(&circuit));
+
+    let (a, b) = (
+        solve_circuit(&circuit).unwrap(),
+        solve_circuit(&back).unwrap(),
+    );
+    assert_same_solution("globals", &circuit, &a, &b);
+    assert!((b.node_voltages["a"] - 2.5).abs() < 1e-9);
+    assert!((b.node_voltages["b"] - 3.75).abs() < 1e-9);
+}

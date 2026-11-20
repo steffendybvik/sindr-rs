@@ -688,6 +688,22 @@ fn parse_card_options(input: &mut Input<'_>) -> ModalResult<RawCard> {
     Ok(RawCard::Options(options, Span::detached()))
 }
 
+/// Parse `.global node [node ...]`.
+fn parse_card_global(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    let mut nets = Vec::new();
+    loop {
+        ws(input)?;
+        if input.is_empty() {
+            break;
+        }
+        nets.push(node_name(input)?.0);
+    }
+    if nets.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawCard::Global(nets))
+}
+
 /// Parse `.ic` / `.nodeset`: one or more `V(node)=value`.
 fn parse_card_node_values(input: &mut Input<'_>, kind: NodeValueKind) -> ModalResult<RawCard> {
     let mut values: Vec<(String, ParamExpr)> = Vec::new();
@@ -1241,6 +1257,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "ic" => parse_card_node_values(&mut input, NodeValueKind::Ic),
             "nodeset" => parse_card_node_values(&mut input, NodeValueKind::Nodeset),
             "options" | "option" | "opt" | "opts" => parse_card_options(&mut input),
+            "global" => parse_card_global(&mut input),
             "include" | "lib" => {
                 // Should have been resolved by the preprocessor.
                 return Err(LocalError::Syntax {
@@ -1446,6 +1463,9 @@ pub(crate) fn parse_with_options(
                 };
                 push_card(&mut top, &mut stack, RawCard::Subckt(closed));
             }
+            // As in ngspice, `.global` names nets for the whole deck even
+            // when written inside a `.subckt`, so it always goes to the top.
+            RawCard::Global(nets) => top.push(RawCard::Global(nets)),
             other => push_card(&mut top, &mut stack, other),
         }
     }
@@ -1998,6 +2018,38 @@ mod tests {
             other => panic!("got {other:?}"),
         }
         assert!(matches!(&cards[1], RawCard::Element(e) if e.prefix == 'r'));
+    }
+
+    #[test]
+    fn driver_global_inside_subckt_goes_to_the_top() {
+        let pre = pre(&[
+            ".subckt rc in out",
+            ".global vcc vee",
+            ".ends",
+            ".global gnd2",
+        ]);
+        let cards = parse(&pre).expect("parse");
+        let globals: Vec<Vec<String>> = cards
+            .iter()
+            .filter_map(|c| match c {
+                RawCard::Global(nets) => Some(nets.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(globals, [vec!["vcc", "vee"], vec!["gnd2"]]);
+        assert!(
+            matches!(&cards[0], RawCard::Global(_)),
+            "hoisted out of the body"
+        );
+        assert!(matches!(&cards[1], RawCard::Subckt(s) if s.body.is_empty()));
+    }
+
+    #[test]
+    fn driver_global_without_nets_errors() {
+        assert!(matches!(
+            parse(&pre(&[".global"])),
+            Err(SpiceParseError::Syntax { .. })
+        ));
     }
 
     #[test]

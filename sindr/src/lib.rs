@@ -129,7 +129,7 @@
 //! ## SPICE input (feature `spice`)
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
-//! and X elements; `.subckt`, `.model`, `.param`, `.include`, `.lib`,
+//! and X elements; `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 //! `.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac`, `.tf`,
 //! `.sens` and `.tran`. Not supported: MOSFET (M)
 //! and JFET (J) elements, controlled sources (E, F, G, H), coupled inductors
