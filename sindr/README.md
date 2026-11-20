@@ -10,19 +10,19 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 
 ```toml
 [dependencies]
-sindr = "0.2"
+sindr = "0.1"
 ```
 
 Serde support is on by default. To disable:
 
 ```toml
-sindr = { version = "0.2", default-features = false }
+sindr = { version = "0.1", default-features = false }
 ```
 
 To parse SPICE netlists, enable the optional `spice` feature (off by default):
 
 ```toml
-sindr = { version = "0.2", features = ["spice"] }
+sindr = { version = "0.1", features = ["spice"] }
 ```
 
 ```rust,ignore

@@ -11,6 +11,6 @@ edition = "2021"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-sindr = { path = "sindr", version = "0.2.0" }
-sindr-core = { path = "sindr-core", version = "0.2.0", default-features = false }
-sindr-devices = { path = "sindr-devices", version = "0.2.0" }
+sindr = { path = "sindr", version = "0.1.0" }
+sindr-core = { path = "sindr-core", version = "0.1.0", default-features = false }
+sindr-devices = { path = "sindr-devices", version = "0.1.0" }

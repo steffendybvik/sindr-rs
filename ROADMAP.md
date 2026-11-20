@@ -47,15 +47,15 @@ IC netlists and RF analyses are out of scope for 1.0.
 
 ## Versions
 
-No more prereleases after `0.1.0-alpha.8`. From `0.2.0` on, versions are
-plain `0.x`: a breaking change bumps the minor version, anything else the
-patch. The last `0.x` before 1.0 is the freeze candidate.
+The alphas end with `0.1.0`. From there on, versions are plain `0.x`: a
+breaking change bumps the minor version, anything else the patch. The last
+`0.x` before 1.0 is the freeze candidate.
 
 ## Now
 
 - Netlist-and-bench import API for editors: components, terminals and nets
   in, a `Circuit` and a test bench out, with errors that name the part
-- Release `0.2.0`
+- Release `0.1.0`
 - README and docs.rs front page with the accuracy table, benchmarks and an
   honest comparison with other options
 - Coverage of every common schematic symbol, and the elements still

@@ -53,7 +53,7 @@ On the staging branch, before its PR into `main`:
    described in CONTRIBUTING, then check no snippet or status line still
    names the old version:
    `grep -rn "0\.2\.0\|\"0\.2\"" --include=*.md --include=*.rs .`
-   (with the previous version in place of `0.2`).
+   (with the previous version in place of `0.1`).
 2. **CHANGELOG.** The release section is complete, and breaking changes say
    what to change in calling code.
 3. **Capabilities.** The crate-docs tables, `llms.txt` "Key facts" and

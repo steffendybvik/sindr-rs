@@ -144,7 +144,7 @@ pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensR
 ///
 /// As [`solve_sensitivity`].
 #[deprecated(
-    since = "0.2.0",
+    since = "0.1.0",
     note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).sensitivity(..)`"
 )]
 pub fn solve_sensitivity_with_initial_voltages(

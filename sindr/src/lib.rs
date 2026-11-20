@@ -160,10 +160,10 @@
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = "0.2"
+//! sindr = "0.1"
 //!
 //! # No serde, no built-in examples:
-//! sindr = { version = "0.2", default-features = false }
+//! sindr = { version = "0.1", default-features = false }
 //! ```
 //!
 //! # Transient results
@@ -219,7 +219,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = { version = "0.2", features = ["spice"] }
+//! sindr = { version = "0.1", features = ["spice"] }
 //! ```
 //!
 //! (`no_run`: it reads `amp.cir`, which doesn't exist where doctests run.)
@@ -673,7 +673,7 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
 ///
 /// As [`solve_circuit`].
 #[deprecated(
-    since = "0.2.0",
+    since = "0.1.0",
     note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).circuit(..)`"
 )]
 pub fn solve_circuit_with_initial_voltages(

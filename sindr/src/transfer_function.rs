@@ -145,7 +145,7 @@ pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimErr
 ///
 /// As [`solve_tf`].
 #[deprecated(
-    since = "0.2.0",
+    since = "0.1.0",
     note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).tf(..)`"
 )]
 pub fn solve_tf_with_initial_voltages(
