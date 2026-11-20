@@ -1,12 +1,11 @@
 [package]
 name = "sindr-devices"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 rust-version = "1.89"
 description = "Pure electronics device physics: diode, BJT, MOSFET companion models for MNA circuit simulation. Companion crate to sindr."
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/steffendybvik/sindr-rs"
-homepage = "https://github.com/steffendybvik/sindr-rs"
+license.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/sindr-devices"
 readme = "README.md"
 keywords = ["electronics", "simulation", "spice", "circuit", "eda"]
@@ -17,7 +16,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"], optional = true }
+serde = { workspace = true, optional = true }
 
 [features]
 default = ["serde"]
