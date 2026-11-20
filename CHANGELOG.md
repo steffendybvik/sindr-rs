@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Breaking:** saturating inductors. `CircuitElement::Inductor` has a new
+  `saturation: Option<InductorSaturation>` field (`None` keeps today's
+  linear inductor; struct literals need it, JSON may omit it). With
+  `Some`, the flux follows `L_sat·i + (L0 − L_sat)·I_sat·tanh(i/I_sat)`:
+  the transient integrates flux and solves for the current by Newton, and
+  AC and noise use the incremental inductance at the DC current. The
+  model lives in `sindr_devices::inductor`. No hysteresis or core loss,
+  and transformers stay linear.
 - SPICE `.model` cards now set device parameters: `IS`, `N`, `RS` on `D`
   cards, and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` (alias `VA`) on `NPN`/`PNP`
   cards. Any other card parameter is an error in strict mode and a warning

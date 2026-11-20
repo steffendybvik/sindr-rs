@@ -25,6 +25,7 @@
 //! | [`zener`] | Zener diode | Shockley + reverse-breakdown branch |
 //! | [`schottky`] | Schottky diode | Shockley with low-N, low-IS parameters |
 //! | [`varactor`] | Varactor | Voltage-dependent junction capacitance |
+//! | [`inductor`] | Saturating inductor core | `λ(i) = L_sat·i + (L₀ − L_sat)·I_sat·tanh(i/I_sat)` |
 //! | [`thermistor`] | NTC thermistor | Beta model `R(T) = R₀·exp(β·(1/T − 1/T₀))` |
 //! | [`photodiode`] | Photodiode | Diode + photocurrent offset |
 //! | [`photoresistor`] | Photoresistor (LDR) | Light-level-dependent resistance |
@@ -65,6 +66,7 @@
 pub mod bjt;
 pub mod diode;
 pub mod igbt;
+pub mod inductor;
 pub mod jfet;
 pub mod led;
 pub mod mosfet;

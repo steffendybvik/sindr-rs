@@ -55,6 +55,7 @@ fn inductor(id: &str, a: &str, b: &str, inductance: f64) -> CircuitElement {
         id: id.into(),
         nodes: [a.into(), b.into()],
         inductance,
+        saturation: None,
     }
 }
 

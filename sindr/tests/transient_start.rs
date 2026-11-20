@@ -104,6 +104,7 @@ fn an_inductor_starts_with_its_dc_current() {
             id: "L1".into(),
             nodes: ["a".into(), "0".into()],
             inductance: 10e-3,
+            saturation: None,
         },
     ]);
     let tran = run(&rl, &at_op(2e-3, 1e-5));
@@ -125,6 +126,7 @@ fn an_inductor_current_is_held_at_the_operating_point() {
             id: "L1".into(),
             nodes: ["a".into(), "0".into()],
             inductance: 10e-3,
+            saturation: None,
         },
     ]);
     let tran = run(&rl, &at_op(1e-3, 1e-6).with_initial_current("L1", 0.05));

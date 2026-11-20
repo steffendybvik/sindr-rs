@@ -132,6 +132,19 @@ impl Integrator {
         )
     }
 
+    /// Flux linkage (Wb) an inductor ends the step with when the voltage
+    /// across it ends at `v` (V), from the history `h` of earlier fluxes:
+    /// the integration formula `v = a0·λ + a1·λ₁ + a2·λ₂ − b1·v₁` solved
+    /// for λ. It is affine in `v`, with slope `1/a0`.
+    pub(crate) fn flux(&self, v: f64, h: &History) -> f64 {
+        (v - self.a1 * h.x1 - self.a2 * h.x2 + self.b1 * h.y1) / self.a0
+    }
+
+    /// `1/a0` (s): how much the step's ending flux moves per volt.
+    pub(crate) fn flux_per_volt(&self) -> f64 {
+        1.0 / self.a0
+    }
+
     /// Coupled windings with inductance matrix `l` (H) and histories `h`, in
     /// the branch form `v_k + Σ_j z_kj·i_j = rhs_k`: returns `(z, rhs)`.
     ///

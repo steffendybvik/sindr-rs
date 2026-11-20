@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use nalgebra::DVector;
 
 use sindr_devices::bjt::{self, BjtKind};
+use sindr_devices::inductor;
 use sindr_devices::mosfet::{self, MosfetKind};
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -244,9 +245,27 @@ fn stamp_circuit_transient(
                 cap_index += 1;
             }
             CircuitElement::Inductor {
-                nodes, inductance, ..
+                nodes,
+                inductance,
+                saturation,
+                ..
             } => {
-                let (g, i_hist) = integ.inductor(*inductance, &inds[ind_index]);
+                let history = &inds[ind_index];
+                let (g, i_hist) = match saturation {
+                    None => integ.inductor(*inductance, history),
+                    Some(sat) => {
+                        // Its history holds fluxes. At the Newton iterate's
+                        // voltage the step ends at flux λ(v), carrying
+                        // i(λ); di/dv = (dλ/dv)/L(i).
+                        let v = node_voltage(&nodes[0], node_map, v_prev)
+                            - node_voltage(&nodes[1], node_map, v_prev);
+                        let lambda = integ.flux(v, history);
+                        let i = inductor::current_from_flux(lambda, *inductance, sat);
+                        let l = inductor::incremental_inductance(i, *inductance, sat);
+                        let g = integ.flux_per_volt() / l;
+                        (g, i - g * v)
+                    }
+                };
                 stamp_companion(system, node_map, nodes, g, i_hist);
                 ind_index += 1;
             }
@@ -690,14 +709,25 @@ fn extract_timestep_results(
                 id,
                 nodes,
                 inductance,
+                saturation,
             } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
                 let history = inds_prev[ind_index];
-                let (g, i_hist) = integ.inductor(*inductance, &history);
-                let i_now = g * v_across + i_hist;
-                new_inds.push(history.push(i_now, v_across));
+                let i_now = match saturation {
+                    None => {
+                        let (g, i_hist) = integ.inductor(*inductance, &history);
+                        let i_now = g * v_across + i_hist;
+                        new_inds.push(history.push(i_now, v_across));
+                        i_now
+                    }
+                    Some(sat) => {
+                        let lambda = integ.flux(v_across, &history);
+                        new_inds.push(history.push(lambda, v_across));
+                        inductor::current_from_flux(lambda, *inductance, sat)
+                    }
+                };
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_across,
@@ -1667,7 +1697,19 @@ pub(crate) fn run_transient(
             CircuitElement::Capacitor { nodes, .. } | CircuitElement::Varactor { nodes, .. } => {
                 caps.push(across(&nodes[0], &nodes[1]));
             }
-            CircuitElement::Inductor { id, .. } => inds.push(current(id)),
+            CircuitElement::Inductor {
+                id,
+                inductance,
+                saturation,
+                ..
+            } => {
+                let start = current(id);
+                // A saturating inductor's history holds fluxes.
+                inds.push(match saturation {
+                    None => start,
+                    Some(sat) => History::at(inductor::flux(start.x1, *inductance, sat)),
+                });
+            }
             CircuitElement::Relay { id, inductance, .. } if *inductance > 0.0 => {
                 inds.push(current(id));
             }
@@ -2717,6 +2759,7 @@ mod tests {
                     id: "L1".into(),
                     nodes: ["n2".into(), "0".into()],
                     inductance: 0.5,
+                    saturation: None,
                 },
             ],
             ..Default::default()

@@ -57,6 +57,7 @@ impl Network {
                         id,
                         nodes: [nodes[0].clone(), mid.clone()],
                         inductance: value * 1e-6,
+                        saturation: None,
                     });
                     out.push(CircuitElement::Resistor {
                         id: format!("XR{k}"),

@@ -200,10 +200,24 @@ Every component has an `id` (arbitrary string) and `nodes` (node names as string
 ```rust
 CircuitElement::Resistor   { id, nodes: [String; 2], resistance: f64 }
 CircuitElement::Capacitor  { id, nodes: [String; 2], capacitance: f64 }
-CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64 }
+CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64, saturation: Option<InductorSaturation> }
 ```
 
 Capacitors and inductors trigger transient analysis automatically. In pure DC (no reactive elements, no waveforms), they are treated as open circuits.
+
+An inductor with `saturation: Some(InductorSaturation { i_sat, l_sat })` has a core that saturates: its flux is `λ(i) = l_sat·i + (inductance − l_sat)·i_sat·tanh(i/i_sat)`, so its inductance falls from `inductance` at zero current towards `l_sat` past `i_sat` (to 42 % of the way at `i_sat`, 7 % at `2·i_sat`). A datasheet's saturation current, where L has dropped 20–30 %, is about `0.6·i_sat`. The transient integrates the flux, and AC and noise use the incremental inductance `dλ/di` at the DC current. There's no hysteresis or core loss; add a resistor for loss.
+
+```rust
+use sindr_devices::inductor::InductorSaturation;
+
+// 10 µH that saturates around 3 A, keeping 1 µH when saturated.
+let l1 = CircuitElement::Inductor {
+    id: "L1".into(),
+    nodes: ["sw".into(), "out".into()],
+    inductance: 10e-6,
+    saturation: Some(InductorSaturation { i_sat: 3.0 / 0.6, l_sat: 1e-6 }),
+};
+```
 
 #### Sources
 
@@ -1076,7 +1090,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No JFET parasitic capacitances.** (BJT and MOSFET have optional Cbe/Cbc and Cgs/Cgd; JFET doesn't.)
 - **No power-MOSFET reverse body diode** as a separate stamped element (must be added explicitly as a `Diode`).
 - **No SiC / GaN device models.**
-- **No magnetics with saturation / hysteresis.** `Transformer` is linear coupled inductors. No B-H curve, no core loss, no saturating inductor, no gapped core.
+- **Magnetics: a saturating inductor, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), but there's no hysteresis, remanence, core loss or temperature dependence, and SPICE export refuses a saturating inductor. `Transformer` is linear coupled inductors: no shared saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
 - **No crystal / quartz resonator macromodel** (must be built from L/C/R by hand).
 - **No piezo / MEMS / electro-mechanical coupling.**
@@ -5772,8 +5786,15 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[a, b]`; `current_through` flows `nodes[0] → nodes[1]`.
         nodes: [String; 2],
-        /// Inductance (H).
+        /// Inductance (H): the small-signal value, at zero current.
         inductance: f64,
+        /// Core saturation: the inductance falls towards `l_sat` as the
+        /// current passes `i_sat`. `None` is a linear inductor.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        saturation: Option<sindr_devices::inductor::InductorSaturation>,
     },
 
     /// Diode (Shockley model, silicon unless `model` says otherwise).
@@ -7194,6 +7215,61 @@ pub struct IgbtCompanion {
 pub fn igbt_companion(vge: f64, vce: f64, params: &IgbtParams) -> IgbtCompanion { … }
 ```
 
+## `sindr-devices/src/inductor.rs`
+
+Saturating inductor core: inductance that falls as the current rises.
+
+A ferrite or iron core holds its initial inductance `L0` at small
+currents and falls towards an air-core floor `l_sat` once the flux
+approaches saturation. The flux linkage is
+
+```text
+λ(i) = l_sat·i + (L0 − l_sat)·i_sat·tanh(i / i_sat)
+L(i) = dλ/di = l_sat + (L0 − l_sat)·sech²(i / i_sat)
+```
+
+so L is `L0` at zero current, `l_sat + 0.42·(L0 − l_sat)` at `i_sat`
+and `l_sat + 0.07·(L0 − l_sat)` at `2·i_sat`. The curve is
+single-valued: no hysteresis, remanence or core loss. Put a resistor in
+series or parallel for loss.
+
+A simulator integrates the flux (`v = dλ/dt`) and recovers the current
+with [`current_from_flux`].
+
+```rust
+/// Saturation of an inductor whose small-signal inductance is `L0`.
+pub struct InductorSaturation {
+    /// Current (A) at which the core saturates: the knee of `tanh`. A
+    /// datasheet's saturation current (the current at which L has fallen
+    /// 20–30 %) is roughly `0.6·i_sat` here.
+    pub i_sat: f64,
+    /// Inductance (H) left once the core is fully saturated, positive and
+    /// at most `L0`. An air-core winding keeps about `L0/μr`.
+    pub l_sat: f64,
+}
+
+impl InductorSaturation {
+    /// Saturation at `i_sat` (A), keeping a tenth of `l0` (H) when
+    /// saturated.
+    pub fn at(i_sat: f64, l0: f64) -> Self { … }
+}
+
+/// Flux linkage (Wb) of an inductor with small-signal inductance `l0` (H)
+/// carrying `i` (A).
+pub fn flux(i: f64, l0: f64, s: &InductorSaturation) -> f64 { … }
+
+/// Incremental inductance `dλ/di` (H) at current `i` (A).
+pub fn incremental_inductance(i: f64, l0: f64, s: &InductorSaturation) -> f64 { … }
+
+/// The current (A) that carries flux `lambda` (Wb): the inverse of [`flux`].
+///
+/// λ(i) is odd and strictly increasing (its slope is at least `l_sat`), so
+/// the root is unique. Newton's method from the saturated-line estimate,
+/// kept inside a shrinking bracket, finds it to a relative 1e-12 in a few
+/// iterations.
+pub fn current_from_flux(lambda: f64, l0: f64, s: &InductorSaturation) -> f64 { … }
+```
+
 ## `sindr-devices/src/jfet.rs`
 
 JFET (Junction Field-Effect Transistor) device model.
@@ -7311,6 +7387,7 @@ end-to-end simulator.
 | [`zener`] | Zener diode | Shockley + reverse-breakdown branch |
 | [`schottky`] | Schottky diode | Shockley with low-N, low-IS parameters |
 | [`varactor`] | Varactor | Voltage-dependent junction capacitance |
+| [`inductor`] | Saturating inductor core | `λ(i) = L_sat·i + (L₀ − L_sat)·I_sat·tanh(i/I_sat)` |
 | [`thermistor`] | NTC thermistor | Beta model `R(T) = R₀·exp(β·(1/T − 1/T₀))` |
 | [`photodiode`] | Photodiode | Diode + photocurrent offset |
 | [`photoresistor`] | Photoresistor (LDR) | Light-level-dependent resistance |
@@ -7350,6 +7427,8 @@ pub mod bjt;
 pub mod diode;
 
 pub mod igbt;
+
+pub mod inductor;
 
 pub mod jfet;
 
