@@ -293,7 +293,7 @@ pub use circuit::{
 };
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
-pub use error::SimError;
+pub use error::{SimError, SolvePoint};
 pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
 pub use mna::MnaSystem;
 pub use node_map::NodeMap;

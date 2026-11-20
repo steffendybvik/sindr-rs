@@ -13,7 +13,7 @@ use sindr_devices::mosfet::{self, MosfetKind};
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
-use crate::error::SimError;
+use crate::error::{SimError, SolvePoint};
 pub use crate::integration::IntegrationMethod;
 use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
@@ -2467,7 +2467,7 @@ impl<'a> StepSolver<'a> {
         }
 
         let mut v_prev = start.clone();
-        let mut last_step = f64::INFINITY;
+        let mut last_step = (f64::INFINITY, None);
         for _ in 0..MAX_NR_ITERATIONS {
             let mut system = stamp(&v_prev)?;
             newton_raphson::add_gmin_shunts(&mut system, self.num_nodes);
@@ -2486,10 +2486,12 @@ impl<'a> StepSolver<'a> {
             last_step = newton_raphson::max_node_step(&v_prev, &v_limited, self.num_nodes);
             v_prev = v_limited;
         }
-        Err(SimError::ConvergenceFailed {
-            iterations: MAX_NR_ITERATIONS,
-            max_step_volts: last_step,
-        })
+        Err(newton_raphson::convergence_failed(
+            self.circuit,
+            self.node_map,
+            last_step,
+            SolvePoint::Transient { time: t },
+        ))
     }
 }
 

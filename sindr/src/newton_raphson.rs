@@ -12,7 +12,7 @@ use sindr_devices::diode::{self, GMIN};
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
-use crate::error::SimError;
+use crate::error::{SimError, SolvePoint};
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
 use crate::results::{self, ConvergenceAid, SimulationResult};
@@ -189,6 +189,9 @@ fn gmin_stepping(
     let mut last_err = SimError::ConvergenceFailed {
         iterations: 0,
         max_step_volts: f64::INFINITY,
+        node: None,
+        components: Vec::new(),
+        at: SolvePoint::OperatingPoint,
     };
 
     for &gmin_extra in LADDER {
@@ -312,7 +315,7 @@ fn nr_inner(
     let diode_info = collect_diode_info(circuit, node_map);
     let igbt_info = collect_igbt_info(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
-    let mut last_step = f64::INFINITY;
+    let mut last_step = (f64::INFINITY, None);
     for _iteration in 0..MAX_NR_ITERATIONS {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
         stamp::stamp_circuit(circuit, &mut system, node_map, Some(&v_prev))?;
@@ -349,10 +352,12 @@ fn nr_inner(
         v_prev = v_limited;
     }
 
-    Err(SimError::ConvergenceFailed {
-        iterations: MAX_NR_ITERATIONS,
-        max_step_volts: last_step,
-    })
+    Err(convergence_failed(
+        circuit,
+        node_map,
+        last_step,
+        SolvePoint::OperatingPoint,
+    ))
 }
 
 /// Rails far enough out that the op-amp clamp never engages.
@@ -804,19 +809,52 @@ pub(crate) fn converged(
     })
 }
 
-/// Largest per-node voltage step `max_i |v_new[i] − v_prev[i]|` (V).
-///
-/// Used to populate [`SimError::ConvergenceFailed`] diagnostics when NR
-/// runs out of iterations.
-pub(crate) fn max_node_step(v_prev: &DVector<f64>, v_new: &DVector<f64>, num_nodes: usize) -> f64 {
-    let mut max = 0.0f64;
+/// Largest per-node voltage step `max_i |v_new[i] − v_prev[i]|` (V), and
+/// the node index that took it (`None` when there are no nodes).
+pub(crate) fn max_node_step(
+    v_prev: &DVector<f64>,
+    v_new: &DVector<f64>,
+    num_nodes: usize,
+) -> (f64, Option<usize>) {
+    let mut max = (0.0f64, None);
     for i in 0..num_nodes {
         let diff = (v_new[i] - v_prev[i]).abs();
-        if diff > max {
-            max = diff;
+        if max.1.is_none() || diff > max.0 {
+            max = (diff, Some(i));
         }
     }
     max
+}
+
+/// [`SimError::ConvergenceFailed`] for a solve of `circuit` whose last
+/// Newton step was `step`: names the node that took it and the components
+/// on that node.
+pub(crate) fn convergence_failed(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    step: (f64, Option<usize>),
+    at: SolvePoint,
+) -> SimError {
+    let node = step
+        .1
+        .and_then(|i| node_map.node_name(i))
+        .map(str::to_string);
+    let components = match &node {
+        Some(name) => circuit
+            .components
+            .iter()
+            .filter(|c| c.nodes().iter().any(|n| n == name))
+            .map(|c| c.id().to_string())
+            .collect(),
+        None => Vec::new(),
+    };
+    SimError::ConvergenceFailed {
+        iterations: MAX_NR_ITERATIONS,
+        max_step_volts: step.0,
+        node,
+        components,
+        at,
+    }
 }
 
 /// Set initial voltage guesses for BJT circuits.
@@ -979,8 +1017,73 @@ mod tests {
         let prev = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
         let new = DVector::from_vec(vec![1.05, 1.9, 3.5, 4.0]);
         // Diffs: 0.05, 0.1, 0.5, 0.0  → max = 0.5 over the first 4 nodes.
-        let r = max_node_step(&prev, &new, 4);
+        let (r, at) = max_node_step(&prev, &new, 4);
         assert!((r - 0.5).abs() < 1e-12, "got {r}");
+        assert_eq!(at, Some(2));
+    }
+
+    #[test]
+    fn convergence_failed_names_the_node_and_its_components() {
+        let diode = |id: &str| CircuitElement::Diode {
+            id: id.into(),
+            nodes: ["a".into(), "0".into()],
+            temperature: 300.15,
+            model: None,
+        };
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["in".into(), "0".into()],
+                    voltage: 5.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["in".into(), "a".into()],
+                    resistance: 1e3,
+                },
+                diode("D1"),
+                diode("D2"),
+            ],
+        );
+        let node_map = NodeMap::from_circuit(&circuit);
+        let a = node_map.index("a").unwrap();
+        let err = convergence_failed(
+            &circuit,
+            &node_map,
+            (0.25, Some(a)),
+            SolvePoint::Transient { time: 2e-3 },
+        );
+        match &err {
+            SimError::ConvergenceFailed {
+                node,
+                components,
+                max_step_volts,
+                at,
+                ..
+            } => {
+                assert_eq!(node.as_deref(), Some("a"));
+                assert_eq!(components, &["R1", "D1", "D2"]);
+                assert_eq!(*max_step_volts, 0.25);
+                assert_eq!(at, &SolvePoint::Transient { time: 2e-3 });
+            }
+            other => panic!("{other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("node `a` (on R1, D1, D2)"), "{msg}");
+
+        // No iteration ran: no node to name.
+        let none = convergence_failed(
+            &circuit,
+            &node_map,
+            (f64::INFINITY, None),
+            SolvePoint::OperatingPoint,
+        );
+        assert!(
+            matches!(none, SimError::ConvergenceFailed { node: None, ref components, .. } if components.is_empty())
+        );
     }
 
     #[test]
@@ -988,8 +1091,9 @@ mod tests {
         // num_nodes = 2 means branch unknowns at index 2,3 are ignored.
         let prev = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
         let new = DVector::from_vec(vec![1.01, 2.01, 99.0, 99.0]);
-        let r = max_node_step(&prev, &new, 2);
+        let (r, at) = max_node_step(&prev, &new, 2);
         assert!((r - 0.01).abs() < 1e-12, "got {r}");
+        assert!(matches!(at, Some(0 | 1)), "got {at:?}");
     }
 
     /// Direct exercise of the gmin-stepping homotopy. Bypasses the

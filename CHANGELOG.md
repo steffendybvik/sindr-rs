@@ -24,6 +24,11 @@ staged as `0.1.0-alpha.8`.
   the same decks, per call, in parallel and by size. The README's
   "Against ngspice" quotes it, and LIMITATIONS gives the transient
   ceiling.
+- **Breaking:** `SimError::ConvergenceFailed` says where the circuit is
+  stuck: `node` (the largest final Newton step), `components` (the ids on
+  it) and `at`, a new `SolvePoint` (operating point, DC sweep or
+  temperature point, transient time). The message names them. Patterns
+  that list the variant's fields need `..`.
 - **Breaking:** three new `CircuitElement`s. `SwitchSpdt` (`[common, a,
   b]`, `position: SpdtPosition`), `Crystal` (`CrystalParams`: the
   Butterworth–Van Dyke model from frequency, ESR, C0 and Cm) and

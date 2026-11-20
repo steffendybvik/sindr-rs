@@ -726,11 +726,17 @@ pub enum SimError {
     InvalidSolution,
     InvalidComponent(String),
     InvalidResistance(String),
-    ConvergenceFailed { iterations: usize, max_step_volts: f64 },
+    ConvergenceFailed {
+        iterations: usize,
+        max_step_volts: f64,
+        node: Option<String>,
+        components: Vec<String>,
+        at: SolvePoint,
+    },
 }
 ```
 
-`ConvergenceFailed` means Newton-Raphson did not converge — usually caused by a nonlinear circuit with no DC path to ground, or component values far outside typical operating ranges. The `max_step_volts` field gives the largest per-node Newton step (V) on the final iteration, useful for distinguishing slow convergence from genuine divergence. (Note: this is a step magnitude `max_i |V_new[i] − V_prev[i]|`, not a KCL residual `|F(x)|`.)
+`ConvergenceFailed` means Newton-Raphson did not converge — usually caused by a nonlinear circuit with no DC path to ground, or component values far outside typical operating ranges. The `max_step_volts` field gives the largest per-node Newton step (V) on the final iteration, useful for distinguishing slow convergence from genuine divergence. `node` is the node that took it, `components` the parts on that node, and `at` where the analysis failed (`SolvePoint::OperatingPoint`, `DcSweep`, `Temperature` or `Transient { time }`), so the message points at the part to fix. (Note: this is a step magnitude `max_i |V_new[i] − V_prev[i]|`, not a KCL residual `|F(x)|`.)
 
 ## Solver routing
 

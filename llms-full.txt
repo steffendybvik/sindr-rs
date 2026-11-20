@@ -918,11 +918,17 @@ pub enum SimError {
     InvalidSolution,
     InvalidComponent(String),
     InvalidResistance(String),
-    ConvergenceFailed { iterations: usize, max_step_volts: f64 },
+    ConvergenceFailed {
+        iterations: usize,
+        max_step_volts: f64,
+        node: Option<String>,
+        components: Vec<String>,
+        at: SolvePoint,
+    },
 }
 ```
 
-`ConvergenceFailed` means Newton-Raphson did not converge — usually caused by a nonlinear circuit with no DC path to ground, or component values far outside typical operating ranges. The `max_step_volts` field gives the largest per-node Newton step (V) on the final iteration, useful for distinguishing slow convergence from genuine divergence. (Note: this is a step magnitude `max_i |V_new[i] − V_prev[i]|`, not a KCL residual `|F(x)|`.)
+`ConvergenceFailed` means Newton-Raphson did not converge — usually caused by a nonlinear circuit with no DC path to ground, or component values far outside typical operating ranges. The `max_step_volts` field gives the largest per-node Newton step (V) on the final iteration, useful for distinguishing slow convergence from genuine divergence. `node` is the node that took it, `components` the parts on that node, and `at` where the analysis failed (`SolvePoint::OperatingPoint`, `DcSweep`, `Temperature` or `Transient { time }`), so the message points at the part to fix. (Note: this is a step magnitude `max_i |V_new[i] − V_prev[i]|`, not a KCL residual `|F(x)|`.)
 
 ### Solver routing
 
@@ -1269,7 +1275,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
 - **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation.
-- **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
+- **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` names the node that won't settle, the components on it and the point of the analysis (`SolvePoint`), with the last Newton step (not a KCL residual).
 - **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the bias point of AC, `.tf` and `.sens` (`solve_ac_with_initial_voltages`, `solve_tf_with_initial_voltages`, `solve_sensitivity_with_initial_voltages`).
 - **A transient starts switched on at t = 0 unless asked otherwise:** `TransientConfig::new` starts from the initial conditions alone (SPICE's `UIC`), where SPICE starts from the DC operating point. `TransientStart::OperatingPoint` does what SPICE does, and a deck's `.tran` maps onto it (`uic` onto the other). The operating point it starts from is solved without self-heating. Initial winding currents on a transformer can't be set, and inductor `IC=` on SPICE element lines isn't parsed. With `tstart`, sindr's first snapshot is at `tstart` itself, where ngspice's is its first step past it.
 - **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), not per charge or flux, and the tolerances can't be changed yet. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
@@ -1862,28 +1868,38 @@ pub enum SimError {
     InvalidResistance(String),
 
     /// Newton–Raphson exhausted its iteration budget without converging,
-    /// in DC after the gmin- and source-stepping fallbacks failed too.
+    /// in DC after the gmin- and source-stepping fallbacks failed too, or in
+    /// transient after halving the step down to its floor.
     ///
-    /// Carries the iteration count reached and the largest per-node voltage
-    /// step `max_i |Vᵢ_new − Vᵢ_prev|` (V) at the final iteration. A step
-    /// near the convergence tolerance suggests slow convergence — try
-    /// scaling component values or supplying initial conditions. A large
-    /// step usually means the circuit has no valid operating point (e.g. a
-    /// nonlinear element with no DC path to ground).
+    /// Says where the circuit is stuck: the node whose voltage was still
+    /// moving most on the last iteration, the components on that node, and
+    /// the point of the analysis that failed. The message names them, so a
+    /// designer or an agent knows which part to look at.
     ///
-    /// Note: this is the maximum *Newton step* between consecutive
-    /// iterations, not a KCL residual `|F(x)|`.
+    /// A final step near the convergence tolerance suggests slow
+    /// convergence: try initial conditions (`.nodeset`) or scaling values. A
+    /// large one usually means there's no valid operating point there, such
+    /// as a nonlinear element with no DC path to ground.
     #[error(
-        "Newton-Raphson failed to converge after {iterations} iterations \
-         (max node-voltage step {max_step_volts:.3e} V). \
-         The circuit may have no valid operating point."
+        "Newton-Raphson failed to converge at {at} after {iterations} iterations{}. \
+         The circuit may have no valid operating point there.",
+        stuck(.node, .components, .max_step_volts)
     )]
     ConvergenceFailed {
         /// Number of Newton iterations executed before giving up.
         iterations: usize,
         /// Largest per-node Newton step on the final iteration (V): the max
-        /// over node indices of `|V_new[i] − V_prev[i]|`.
+        /// over nodes of `|V_new − V_prev|`. A Newton step, not a KCL
+        /// residual.
         max_step_volts: f64,
+        /// The node that took that step: where the circuit won't settle.
+        /// `None` only when no iteration ran.
+        node: Option<String>,
+        /// Ids of the components with a terminal on [`node`](Self::ConvergenceFailed::node),
+        /// in circuit order, with blocks flattened (`X1.R2`).
+        components: Vec<String>,
+        /// Where in the analysis it failed.
+        at: SolvePoint,
     },
 
     /// Self-heating has no stable balance: a part's dissipation heats its
@@ -1911,6 +1927,32 @@ pub enum SimError {
         name: String,
         /// Why it couldn't be taken.
         reason: String,
+    },
+}
+
+/// Where in an analysis a solve failed, carried by
+/// [`SimError::ConvergenceFailed`].
+pub enum SolvePoint {
+    /// The DC operating point, including one AC, `.tf`, `.sens` or `.noise`
+    /// linearise around and the one a transient starts from.
+    OperatingPoint,
+    /// A DC sweep point: `source` set to `value` (V or A).
+    DcSweep {
+        /// The swept source's id.
+        source: String,
+        /// Its value at the failing point.
+        value: f64,
+    },
+    /// A temperature sweep point (K).
+    Temperature {
+        /// The device temperature at the failing point (K).
+        kelvin: f64,
+    },
+    /// A transient step to `time` (s), after the step was halved to its
+    /// floor.
+    Transient {
+        /// The time the failing step was solving for (s).
+        time: f64,
     },
 }
 ```
@@ -2981,7 +3023,7 @@ pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult
 
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 
-pub use error::SimError;
+pub use error::{SimError, SolvePoint};
 
 pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
 
