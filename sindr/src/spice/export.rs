@@ -69,6 +69,9 @@ pub enum ExportError {
 /// | `Vcvs`, `Vccs`, `Ccvs`, `Cccs` | `E`, `G`, `H`, `F` |
 /// | `Transformer` | two `L` and a `K` |
 /// | `Switch`, `Pushbutton`, `Fuse` | `R` at the resistance sindr stamps |
+/// | `SwitchSpdt` | two `R`, common to each throw |
+/// | `Crystal` | `R`, `L`, `C` in series (the motional arm) beside `C` (C0) |
+/// | `FerriteBead` | `R` (DC) into `L` ∥ `R` (∥ `C`) |
 /// | `Potentiometer` | two `R`, top–wiper and wiper–bottom |
 /// | `Photoresistor`, `Thermistor` | `R` at their resistance |
 /// | `Led`, `SchottkyDiode` | `D` with their Shockley parameters |
@@ -346,6 +349,45 @@ impl<'a> Deck<'a> {
             reason: reason.to_string(),
         };
         match component {
+            CircuitElement::SwitchSpdt { .. }
+            | CircuitElement::Crystal { .. }
+            | CircuitElement::FerriteBead { .. } => {
+                let parts = crate::composite::lower(component)
+                    .map_err(|e| unsupported(&e.to_string()))?
+                    .unwrap_or_default();
+                // `<id>#m1` → `<id>_m1`: one SPICE-safe spelling for the
+                // parts' names and the internal nodes.
+                let local = |s: &str| s.replace('#', "_");
+                for part in &parts {
+                    let suffix = part.id().rsplit('#').next().unwrap_or("");
+                    let letter = spice_letter(part);
+                    let base = name.strip_prefix(['R', 'r']).unwrap_or(&name);
+                    let part_name = self.extra_name(id, format!("{letter}{base}_{suffix}"))?;
+                    let nodes = [local(&part.nodes()[0]), local(&part.nodes()[1])];
+                    let value = match part {
+                        CircuitElement::Resistor { resistance, .. } => {
+                            num(id, "resistance", *resistance)?
+                        }
+                        CircuitElement::Inductor { inductance, .. } => {
+                            num(id, "inductance", *inductance)?
+                        }
+                        CircuitElement::Capacitor { capacitance, .. } => {
+                            num(id, "capacitance", *capacitance)?
+                        }
+                        CircuitElement::Switch { closed, .. } => {
+                            let r = if *closed {
+                                SWITCH_R_CLOSED
+                            } else {
+                                SWITCH_R_OPEN
+                            };
+                            num(id, "resistance", r)?
+                        }
+                        _ => return Err(unsupported("an unexpected part")),
+                    };
+                    self.two_terminal(&part_name, &nodes, value)?;
+                }
+                Ok(())
+            }
             CircuitElement::Battery { .. } => Err(unsupported(
                 "a battery's state of charge has no SPICE3 primitive",
             )),

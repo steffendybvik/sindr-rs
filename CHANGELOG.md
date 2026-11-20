@@ -16,6 +16,15 @@ staged as `0.1.0-alpha.8`.
 
 ### Added
 
+- **Breaking:** three new `CircuitElement`s. `SwitchSpdt` (`[common, a,
+  b]`, `position: SpdtPosition`), `Crystal` (`CrystalParams`: the
+  Butterworth–Van Dyke model from frequency, ESR, C0 and Cm) and
+  `FerriteBead` (`FerriteBeadParams`: R_dc into L ∥ R_ac, optional C,
+  with `from_datasheet(z_100mhz, r_dc)`). Each is solved as its network
+  in every analysis; results, ratings (crystal drive level as `power`,
+  bead `current`) and SPICE export use the element's own id. Checked
+  against ngspice. Exhaustive matches on `CircuitElement` need the new
+  arms.
 - `sindr::import`: simulate a schematic tool's netlist without writing a
   SPICE deck. A `Netlist` of components (the caller's id, a
   `ComponentKind`, a value such as `"4k7"`, parameters, an optional model

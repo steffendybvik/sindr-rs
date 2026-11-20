@@ -94,6 +94,7 @@ pub fn temperature_sweep(
     temp_end: f64,
     num_steps: usize,
 ) -> Result<TempSweepResult, SimError> {
+    let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     if num_steps < 2 {
@@ -164,6 +165,9 @@ pub fn temperature_sweep(
         });
     }
 
+    for point in &mut points {
+        crate::composite::fold(original, &mut point.result);
+    }
     Ok(TempSweepResult {
         temp_start,
         temp_end,

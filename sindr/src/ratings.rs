@@ -249,6 +249,9 @@ fn needed(element: &CircuitElement) -> &'static [RatingKind] {
         CircuitElement::Mosfet { .. } | CircuitElement::Jfet { .. } => &[Vds, Vgs, Id, Power],
         CircuitElement::Igbt { .. } => &[Vce, Vgs, Ic, Power],
         CircuitElement::VoltageRegulator { .. } => &[Voltage, Current, Power],
+        // A crystal's power is its drive level.
+        CircuitElement::Crystal { .. } => &[Power],
+        CircuitElement::FerriteBead { .. } => &[Current, Power],
         _ => &[],
     }
 }

@@ -1,0 +1,9 @@
+ac_exported_crystal: written by sindr::spice::to_netlist
+v1 in 0 DC 0
+rs in a 50
+Ry1_rm a y1_m1 40
+Ly1_lm y1_m1 y1_m2 0.004947323420036024
+Cy1_cm y1_m2 out 2e-14
+Cy1_c0 a out 5e-12
+rl out 0 50
+.end

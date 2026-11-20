@@ -368,6 +368,10 @@ pub fn extract_results(
 
     for component in &circuit.components {
         match component {
+            // Split into their parts by `solver_circuit` first.
+            CircuitElement::SwitchSpdt { .. }
+            | CircuitElement::Crystal { .. }
+            | CircuitElement::FerriteBead { .. } => {}
             CircuitElement::Resistor {
                 id,
                 nodes,

@@ -549,6 +549,10 @@ pub(crate) fn small_signal_system(
     // Stamp linear components
     for component in &circuit.components {
         match component {
+            // Split into their parts by `solver_circuit` first.
+            CircuitElement::SwitchSpdt { .. }
+            | CircuitElement::Crystal { .. }
+            | CircuitElement::FerriteBead { .. } => {}
             CircuitElement::Resistor {
                 nodes, resistance, ..
             } => {
@@ -1151,8 +1155,6 @@ pub(crate) fn small_signal_system(
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
-    let flat = crate::solver_circuit(circuit)?;
-    let circuit: &Circuit = &flat;
     solve_ac_with_initial_voltages(circuit, config, &HashMap::new())
 }
 
@@ -1169,6 +1171,7 @@ pub fn solve_ac_with_initial_voltages(
     config: &AcConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<AcResult, SimError> {
+    let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     validate_config(config)?;
@@ -1212,6 +1215,7 @@ pub fn solve_ac_with_initial_voltages(
                 node_voltages.insert(name.to_string(), solution[i]);
             }
         }
+        crate::composite::strip_nodes(original, &mut node_voltages);
 
         points.push(AcPoint {
             frequency: freq,

@@ -101,6 +101,8 @@
 //! | Transformer | Linear coupled inductors |
 //! | Battery | Open-circuit voltage by state of charge behind R0 and an optional R1‖C1; state of charge falls with charge drawn ([`battery::BatteryParams`]; Li-ion and CR2032 presets) |
 //! | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
+//! | Crystal | Butterworth–Van Dyke: `Rm`–`Lm`–`Cm` beside `C0` ([`CrystalParams`]) |
+//! | Ferrite bead | `R_dc` into `L ∥ R_ac` (∥ `C`) ([`FerriteBeadParams`]) |
 //!
 //! Parameters are Rust structs, not SPICE `.model` cards.
 //!
@@ -259,6 +261,7 @@ mod battery_state;
 pub mod import;
 pub use sindr_core::circuit;
 pub use sindr_core::design;
+mod composite;
 pub mod csv;
 pub mod dc_sweep;
 mod device_params;
@@ -284,7 +287,10 @@ pub mod transient;
 pub mod validation;
 pub use sindr_core::waveform;
 
-pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
+pub use circuit::{
+    BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel, FerriteBeadParams, OpAmpModel,
+    SpdtPosition,
+};
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::SimError;
@@ -327,19 +333,38 @@ use node_map::NodeMap as NM;
 pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, Circuit>, SimError> {
     let flat = circuit.flattened()?;
     let lowers = |c: &CircuitElement| {
-        matches!(
-            c,
-            CircuitElement::ZenerDiode { .. }
-                | CircuitElement::Mosfet {
-                    body_diode: Some(_),
-                    ..
-                }
-        )
+        composite::is_composite(c)
+            || matches!(
+                c,
+                CircuitElement::ZenerDiode { .. }
+                    | CircuitElement::Mosfet {
+                        body_diode: Some(_),
+                        ..
+                    }
+            )
     };
     if !flat.components.iter().any(lowers) {
         return Ok(flat);
     }
     let mut owned = flat.into_owned();
+    let mut lowered = Vec::with_capacity(owned.components.len());
+    for element in std::mem::take(&mut owned.components) {
+        match composite::lower(&element)? {
+            Some(parts) => lowered.extend(parts),
+            None => lowered.push(element),
+        }
+    }
+    owned.components = lowered;
+    let mut seen = std::collections::HashSet::new();
+    for element in &owned.components {
+        if !seen.insert(element.id()) {
+            return Err(SimError::InvalidComponent(format!(
+                "`{}`: two components share this id once switches, crystals and beads \
+                 are split into their parts",
+                element.id()
+            )));
+        }
+    }
     let mut body_diodes = Vec::new();
     for element in &mut owned.components {
         if let CircuitElement::Mosfet {
@@ -466,6 +491,13 @@ fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError>
 /// assert!((r1.current_through.abs() - 0.005).abs() < 1e-9);
 /// ```
 pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
+    let mut result = solve_circuit_parts(circuit)?;
+    composite::fold(circuit, &mut result);
+    Ok(result)
+}
+
+/// [`solve_circuit`], with composite elements still in their parts.
+fn solve_circuit_parts(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     validation::validate_circuit(circuit)?;
@@ -653,6 +685,17 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
 /// assert!(result.node_voltages["n1"] > 0.5);
 /// ```
 pub fn solve_circuit_with_initial_voltages(
+    circuit: &Circuit,
+    initial_voltages: &std::collections::HashMap<String, f64>,
+) -> Result<SimulationResult, SimError> {
+    let mut result = solve_circuit_with_initial_voltages_parts(circuit, initial_voltages)?;
+    composite::fold(circuit, &mut result);
+    Ok(result)
+}
+
+/// [`solve_circuit_with_initial_voltages`], with composite elements still
+/// in their parts.
+fn solve_circuit_with_initial_voltages_parts(
     circuit: &Circuit,
     initial_voltages: &std::collections::HashMap<String, f64>,
 ) -> Result<SimulationResult, SimError> {

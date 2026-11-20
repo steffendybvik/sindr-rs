@@ -37,8 +37,8 @@ pub mod design;
 pub mod waveform;
 
 pub use circuit::{
-    BjtModel, BjtParasiticCaps, Circuit, CircuitElement, DiodeModel, MosfetParasiticCaps,
-    OpAmpModel,
+    BjtModel, BjtParasiticCaps, Circuit, CircuitElement, CrystalParams, DiodeModel,
+    FerriteBeadParams, MosfetParasiticCaps, OpAmpModel, SpdtPosition,
 };
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use waveform::Waveform;
