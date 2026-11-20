@@ -1,0 +1,10 @@
+tran: NPN switch, a 5 V pulse through 10k into the base with 10 nF to ground
+VCC vcc 0 5
+VIN in 0 PULSE(0 5 0.1m 1u 1u 0.4m 1m)
+RB in b 10k
+CB b 0 10n
+Q1 c b 0 qn
+RC vcc c 1k
+.model qn NPN(IS=1e-14 BF=100 BR=1)
+.tran 5u 2m 0 0.2u uic
+.end

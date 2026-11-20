@@ -47,9 +47,46 @@ python3 scripts/gen_llms_full.py --check
 - Parsers and evaluators get `proptest` properties (see `spice/si.rs` and
   `spice/param_eval.rs`). If one fails, proptest writes the shrunk case to
   `sindr/proptest-regressions/`; commit that file with the fix.
-- The `coverage` CI job reports per-file line coverage in the job summary. It
-  only reports and never fails a build. Locally:
-  `cargo llvm-cov --workspace --all-features --summary-only`.
+- The `coverage` CI job reports per-file line coverage in the job summary,
+  and fails if `stamp.rs`, `transient.rs`, `newton_raphson.rs`, `mna.rs` or
+  the total drops below its floor in `scripts/coverage_floor.py`. Locally:
+
+  ```bash
+  cargo llvm-cov --workspace --all-features --summary-only > coverage.txt
+  python3 scripts/coverage_floor.py coverage.txt
+  ```
+
+  Raise a floor when coverage rises. Lower one only with a reason in the PR.
+- The SPICE parser has a fuzz target in `fuzz/` (cargo-fuzz, nightly). It
+  feeds arbitrary text to `parse_str_with_options`, and for any deck that
+  parses it validates the circuit and checks that `to_netlist`'s output
+  parses again. Nothing may panic. Run it for five minutes before changing
+  the parser:
+
+  ```bash
+  cargo install cargo-fuzz
+  cd fuzz
+  mkdir -p corpus/parse && cp seeds/parse/* corpus/parse/
+  cargo +nightly fuzz run parse corpus/parse -- -dict=spice.dict -max_total_time=300
+  ```
+
+  A crash is saved under `fuzz/artifacts/parse/`. Fix it, then add the deck
+  as a test in `sindr/tests/spice_errors.rs`. The seeds (one mode byte, 0
+  for strict, then a deck) also run on stable in `fuzz_seed_decks_do_not_panic`,
+  and the `fuzz` workflow runs the target for ten minutes every week.
+- Benchmarks live in `sindr/benches/` (criterion). The `benchmarks` CI job
+  runs `transient` and `newton` on a PR's base and on the PR, and fails if any
+  case is more than 25 % slower. To check locally before pushing:
+
+  ```bash
+  cargo bench -p sindr --bench transient --bench newton -- --quick --save-baseline base
+  # make the change
+  cargo bench -p sindr --bench transient --bench newton -- --quick --save-baseline head
+  python3 scripts/bench_compare.py base head
+  ```
+
+  When a change makes something deliberately slower, say why in the PR. If
+  the numbers move a lot, update the table in `sindr/README.md`.
 
 ## Versions and the CHANGELOG
 

@@ -79,9 +79,9 @@ pub enum SimError {
     #[error("Invalid component: {0}")]
     InvalidComponent(String),
 
-    /// A resistor has zero or negative resistance.
+    /// A resistor's resistance is zero, negative or not finite.
     #[error(
-        "Resistor \"{0}\" has zero or negative resistance, which is not physically meaningful."
+        "Resistor \"{0}\" has a zero, negative or non-finite resistance, which is not physically meaningful."
     )]
     InvalidResistance(String),
 

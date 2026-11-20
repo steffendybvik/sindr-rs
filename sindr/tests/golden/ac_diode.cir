@@ -1,0 +1,6 @@
+ac: forward-biased 1N4148 behind 1k: its rd, RS and charge against R1
+V1 in 0 5
+R1 in a 1k
+D1 a 0 d1n4148
+.model d1n4148 D(IS=2.52n N=1.752 RS=0.568 CJO=4p M=0.4 TT=20n BV=100 IBV=100u)
+.end

@@ -305,7 +305,7 @@ CircuitElement::Jfet {
 
 `BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps` and `MosfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
-When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally. This automatically triggers transient analysis.
+When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC. This automatically triggers transient analysis.
 
 **NPN common-emitter example:**
 
@@ -467,7 +467,7 @@ let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 1e-6))?;
 
 Each snapshot is the end of one step, with sources evaluated at that time; the last is at `tstop`. The default integrator is Gear-2 (second order, no ringing); `.with_method(IntegrationMethod::Trapezoidal)` keeps an LC tank's amplitude exactly, and `IntegrationMethod::BackwardEuler` matches sindr before 0.1.0-alpha.7. Every method takes its first step as backward Euler.
 
-A run starts switched on at t = 0 by default: capacitors uncharged and inductors at 0 A, unless `.with_initial_voltages(…)` or `.with_initial_current(…)` say otherwise (SPICE's `.ic` with `UIC`), so power-on inrush shows. `.with_start(TransientStart::OperatingPoint)` starts from the DC operating point instead, as SPICE's `.tran` without `UIC` does: each source at its t = 0 value, capacitors charged and inductors and transformer windings carrying its currents, with any initial voltages and currents held while it's solved. A SPICE deck's `transient_config()` picks the start the way ngspice does.
+A run starts switched on at t = 0 by default: capacitors uncharged and inductors at 0 A, unless `.with_initial_voltages(…)` or `.with_initial_current(…)` say otherwise (SPICE's `.ic` with `UIC`), so power-on inrush shows. `.with_start(TransientStart::OperatingPoint)` starts from the DC operating point instead, as SPICE's `.tran` without `UIC` does: each source at its t = 0 value, capacitors charged and inductors and transformer windings carrying its currents, with any initial voltages and currents held while it's solved. A SPICE deck's `ParsedNetlist::transient_config()` sets the run up the way ngspice does: the start, `.ic`, `tmax`, and `tstart` (`.with_tstart(t)`: integrate from 0, keep the steps from `t` on).
 
 Steps are at most `tstep` long and every multiple of `tstep` gets a snapshot. In between, the stepper shortens steps where the local truncation error would exceed SPICE's default tolerances, and lands exactly on each corner of a source waveform (pulse edges, PWL points, square-wave flips), so a 1 ns edge in a 1 ms run is resolved without 1 ns steps everywhere. `result.transient.stats` counts accepted and rejected steps; `.with_fixed_step()` turns the error control off.
 
@@ -783,6 +783,20 @@ pub enum SimError {
 
 The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
 
+### Performance
+
+Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple M1 Pro (release build, one thread). The circuits are in `sindr/benches/`.
+
+| Case | 10 | 100 | 1 000 |
+|---|---:|---:|---:|
+| DC, diode–resistor chain (devices) | 37 µs | 0.93 ms | 8.7 ms |
+| DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
+| Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
+
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes.
+
+Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
+
 ### Serde
 
 With the default `serde` feature, `Circuit` and `SimulationResult` (and all nested types) implement `Serialize`/`Deserialize`. Component types use snake_case tags:
@@ -1065,7 +1079,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 |----------|-----------|-------|
 | `.op` (operating point) | ✅ | via `solve_circuit` |
 | `.dc` (DC sweep) | ✅ | one source (`dc_sweep`) or two nested (`dc_sweep_nested`), voltage or current |
-| `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` ignored |
+| `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` keeps the result from there on |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
 | `.temp` (temperature sweep) | ✅ | junction-device temp parameter |
@@ -1103,7 +1117,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation.
 - **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` carries the iteration count and the last Newton step (not a KCL residual) to help diagnose.
 - **`.nodeset`** seeds the DC operating point (`solve_circuit_with_initial_voltages`) and the bias point of AC, `.tf` and `.sens` (`solve_ac_with_initial_voltages`, `solve_tf_with_initial_voltages`, `solve_sensitivity_with_initial_voltages`).
-- **A transient starts switched on at t = 0 unless asked otherwise:** `TransientConfig::new` starts from the initial conditions alone (SPICE's `UIC`), where SPICE starts from the DC operating point. `TransientStart::OperatingPoint` does what SPICE does, and a deck's `.tran` maps onto it (`uic` onto the other). The operating point it starts from is solved without self-heating. Initial winding currents on a transformer can't be set, and inductor `IC=` on SPICE element lines isn't parsed. `.tran`'s `tstart` is read but not applied.
+- **A transient starts switched on at t = 0 unless asked otherwise:** `TransientConfig::new` starts from the initial conditions alone (SPICE's `UIC`), where SPICE starts from the DC operating point. `TransientStart::OperatingPoint` does what SPICE does, and a deck's `.tran` maps onto it (`uic` onto the other). The operating point it starts from is solved without self-heating. Initial winding currents on a transformer can't be set, and inductor `IC=` on SPICE element lines isn't parsed. With `tstart`, sindr's first snapshot is at `tstart` itself, where ngspice's is its first step past it.
 - **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), not per charge or flux, and the tolerances can't be changed yet. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
 - **No checkpointing / restart** of long transient runs.
 - **No multithreading** in the solver.
@@ -1686,9 +1700,9 @@ pub enum SimError {
     #[error("Invalid component: {0}")]
     InvalidComponent(String),
 
-    /// A resistor has zero or negative resistance.
+    /// A resistor's resistance is zero, negative or not finite.
     #[error(
-        "Resistor \"{0}\" has zero or negative resistance, which is not physically meaningful."
+        "Resistor \"{0}\" has a zero, negative or non-finite resistance, which is not physically meaningful."
     )]
     InvalidResistance(String),
 
@@ -3635,8 +3649,9 @@ pub enum AnalysisRequest {
         tstep: f64,
         /// Stop time in seconds.
         tstop: f64,
-        /// Optional start time (s). Read but not used: sindr's results
-        /// start at 0.
+        /// Optional start time (s), SPICE's TSTART: the run is integrated
+        /// from 0, and the result starts here
+        /// ([`with_tstart`](crate::TransientConfig::with_tstart)).
         tstart: Option<f64>,
         /// Optional largest step (s), SPICE's TMAX.
         tmax: Option<f64>,
@@ -3766,10 +3781,10 @@ impl AnalysisRequest {
     /// or with `uic` from the initial conditions alone
     /// ([`TransientStart::InitialConditions`](crate::TransientStart::InitialConditions)).
     /// `tmax` caps the step. The deck's `.ic` values aren't in the config:
-    /// add [`ParsedNetlist::initial_conditions`](crate::spice::ParsedNetlist::initial_conditions)
-    /// with [`with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
-    /// `tstart` is not applied: the result holds every step from the first
-    /// one on.
+    /// [`ParsedNetlist::transient_config`](crate::spice::ParsedNetlist::transient_config)
+    /// adds them.
+    /// `tstart` keeps the result from that time on
+    /// ([`with_tstart`](crate::TransientConfig::with_tstart)).
     ///
     /// ```
     /// use sindr::spice::parse_str;
@@ -4567,7 +4582,7 @@ pub struct ParsedNetlist {
     pub analyses: Vec<AnalysisRequest>,
     /// `.ic` node voltages (V), keyed by node name: where a transient
     /// starts, or with no `uic` what its operating point holds them at.
-    /// Pass them to
+    /// [`ParsedNetlist::transient_config`] passes them to
     /// [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
     /// Only top-level cards are read.
     pub initial_conditions: HashMap<String, f64>,
@@ -4590,6 +4605,32 @@ pub struct ParsedNetlist {
     /// Title line of the netlist (first non-blank line). May be empty if the
     /// source has no title.
     pub title: String,
+}
+
+impl ParsedNetlist {
+    /// The [`TransientConfig`](crate::TransientConfig) for the deck's first
+    /// `.tran`, with its `.ic` cards as
+    /// [`initial_voltages`](crate::TransientConfig::initial_voltages), so
+    /// the run starts as ngspice's does: from the operating point with the
+    /// `.ic` nodes held, or with `uic` from the `.ic` values alone. `None`
+    /// without a `.tran`. See [`AnalysisRequest::transient_config`] for the
+    /// rest of the card.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// // .ic holds `a` at 3 V while the operating point is solved; then
+    /// // the capacitor discharges towards the divider's 0.5 V.
+    /// let deck = "* ic\nV1 in 0 1\nR1 in a 1k\nR2 a 0 1k\nC1 a 0 1u\n\
+    ///             .ic v(a)=3\n.tran 10u 5m\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.transient_config().unwrap();
+    /// let tran = sindr::solve_transient(&netlist.circuit, &config)?.transient.unwrap();
+    /// assert!(tran.timesteps[0].node_voltages["a"] > 2.9);
+    /// assert!((tran.timesteps.last().unwrap().node_voltages["a"] - 0.5).abs() < 1e-3);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn transient_config(&self) -> Option<crate::TransientConfig> { … }
 }
 
 /// Knobs controlling parser strictness and include-path resolution.
@@ -5276,6 +5317,10 @@ pub struct TransientConfig {
     pub tstep: f64,
     /// Largest step allowed (s), as SPICE's TMAX. `None` means `tstep`.
     pub tmax: Option<f64>,
+    /// Time (s) the result starts at, as SPICE's TSTART (default 0). The run
+    /// is still integrated from 0, so the circuit has the same history, but
+    /// steps before `tstart` aren't kept: the first snapshot is at `tstart`.
+    pub tstart: f64,
     /// Integration method. Default [`IntegrationMethod::Gear2`].
     pub method: IntegrationMethod,
     /// Control the step by local truncation error (default `true`). When
@@ -5419,6 +5464,44 @@ impl TransientConfig {
     /// Cap the step at `tmax` seconds.
     pub fn with_tmax(mut self, tmax: f64) -> Self { … }
 
+    /// Keep only the steps from `tstart` seconds on, as SPICE's TSTART. The
+    /// run is still integrated from 0; a step lands on `tstart`, and it's
+    /// the first snapshot. See [`tstart`](Self::tstart).
+    ///
+    /// ```
+    /// use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+    ///
+    /// let circuit = Circuit {
+    ///     ground_node: "0".into(),
+    ///     components: vec![
+    ///         CircuitElement::VoltageSource {
+    ///             id: "V1".into(),
+    ///             nodes: ["in".into(), "0".into()],
+    ///             voltage: 5.0,
+    ///             waveform: None,
+    ///         },
+    ///         CircuitElement::Resistor {
+    ///             id: "R1".into(),
+    ///             nodes: ["in".into(), "out".into()],
+    ///             resistance: 1e3,
+    ///         },
+    ///         CircuitElement::Capacitor {
+    ///             id: "C1".into(),
+    ///             nodes: ["out".into(), "0".into()],
+    ///             capacitance: 1e-6,
+    ///         },
+    ///     ],
+    ///     ..Default::default()
+    /// };
+    /// // Charging from 0 V at t = 0, kept from 1 ms (one τ) on.
+    /// let config = TransientConfig::new(3e-3, 1e-5).with_tstart(1e-3);
+    /// let tran = solve_transient(&circuit, &config).unwrap().transient.unwrap();
+    /// let first = &tran.timesteps[0];
+    /// assert!((first.time - 1e-3).abs() < 1e-12);
+    /// assert!((first.node_voltages["out"] - 5.0 * (1.0 - (-1.0_f64).exp())).abs() < 1e-2);
+    /// ```
+    pub fn with_tstart(mut self, tstart: f64) -> Self { … }
+
     /// The config [`solve_circuit`](crate::solve_circuit) uses: `tstop` = 5·τ
     /// and `tstep` = τ/50 for the circuit's longest time constant τ,
     /// stretched to cover 3 periods of a periodic source at 100 steps per
@@ -5517,8 +5600,11 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 /// 1. Ground node exists (at least one component touches it)
 /// 2. All nodes reachable from ground (BFS connectivity)
 /// 3. No floating nodes (every non-ground node has degree >= 2)
-/// 4. Device values the models can use: every `temperature` field positive
-///    and finite (K), and a BJT's `bf` positive and finite
+/// 4. Unique component ids
+/// 5. Values the models can use: resistances, inductances and every
+///    `temperature` (K) positive and finite, capacitances zero or more,
+///    source values and controlled-source gains finite, a BJT's `bf`
+///    positive and finite, and the device-model fields each check names
 ///
 /// # Errors
 ///
@@ -5531,9 +5617,11 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 /// Returns [`SimError::FloatingNode`] naming the first node with fewer than
 /// 2 connections.
 ///
-/// Returns [`SimError::InvalidComponent`] naming the component, field and
-/// value for a `temperature` that is zero, negative or not finite, or a BJT
-/// `bf` that isn't positive and finite.
+/// Returns [`SimError::InvalidResistance`] for a resistor whose resistance
+/// is zero, negative or not finite.
+///
+/// Returns [`SimError::InvalidComponent`] for a repeated id, or naming the
+/// component, field and value for any other value out of range.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> { … }
 ```
 

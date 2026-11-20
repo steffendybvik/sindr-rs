@@ -34,8 +34,11 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 /// 1. Ground node exists (at least one component touches it)
 /// 2. All nodes reachable from ground (BFS connectivity)
 /// 3. No floating nodes (every non-ground node has degree >= 2)
-/// 4. Device values the models can use: every `temperature` field positive
-///    and finite (K), and a BJT's `bf` positive and finite
+/// 4. Unique component ids
+/// 5. Values the models can use: resistances, inductances and every
+///    `temperature` (K) positive and finite, capacitances zero or more,
+///    source values and controlled-source gains finite, a BJT's `bf`
+///    positive and finite, and the device-model fields each check names
 ///
 /// # Errors
 ///
@@ -48,9 +51,11 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 /// Returns [`SimError::FloatingNode`] naming the first node with fewer than
 /// 2 connections.
 ///
-/// Returns [`SimError::InvalidComponent`] naming the component, field and
-/// value for a `temperature` that is zero, negative or not finite, or a BJT
-/// `bf` that isn't positive and finite.
+/// Returns [`SimError::InvalidResistance`] for a resistor whose resistance
+/// is zero, negative or not finite.
+///
+/// Returns [`SimError::InvalidComponent`] for a repeated id, or naming the
+/// component, field and value for any other value out of range.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     let flat = circuit.flattened()?;
     let circuit: &Circuit = &flat;
@@ -123,7 +128,21 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     }
 
     // ------------------------------------------------------------------
-    // Check 4: Device values the models can't take
+    // Check 4: Unique ids. Results, controlled sources and sweeps find a
+    // component by id, so a repeated one would silently pick the first.
+    // ------------------------------------------------------------------
+    let mut ids = HashSet::new();
+    for comp in &circuit.components {
+        if !ids.insert(comp.id()) {
+            return Err(SimError::InvalidComponent(format!(
+                "`{}`: more than one component has this id",
+                comp.id()
+            )));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Check 5: Device values the models can't take
     // ------------------------------------------------------------------
     for comp in &circuit.components {
         check_values(comp)?;
@@ -153,6 +172,16 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
         } else {
             Err(SimError::InvalidComponent(format!(
                 "`{}`: {field} {value}{unit} must be zero or a positive, finite number",
+                comp.id()
+            )))
+        }
+    };
+    let finite = |field: &str, value: f64, unit: &str| {
+        if value.is_finite() {
+            Ok(())
+        } else {
+            Err(SimError::InvalidComponent(format!(
+                "`{}`: {field} {value}{unit} must be a finite number",
                 comp.id()
             )))
         }
@@ -225,16 +254,6 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             model: Some(model),
             ..
         } => {
-            let finite = |field: &str, value: f64, unit: &str| {
-                if value.is_finite() {
-                    Ok(())
-                } else {
-                    Err(SimError::InvalidComponent(format!(
-                        "`{}`: {field} {value}{unit} must be a finite number",
-                        comp.id()
-                    )))
-                }
-            };
             finite("v_pos", *v_pos, " V")?;
             finite("v_neg", *v_neg, " V")?;
             if v_pos <= v_neg {
@@ -297,6 +316,59 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
         CircuitElement::Mosfet { params, .. } => {
             non_negative("params.kf", params.kf, "")?;
             positive("params.af", params.af, "")
+        }
+        CircuitElement::Resistor { id, resistance, .. } => {
+            if resistance.is_finite() && *resistance > 0.0 {
+                Ok(())
+            } else {
+                Err(SimError::InvalidResistance(id.clone()))
+            }
+        }
+        CircuitElement::VoltageSource { voltage, .. } => finite("voltage", *voltage, " V"),
+        CircuitElement::CurrentSource { current, .. } => finite("current", *current, " A"),
+        // A zero capacitor is an open circuit, as in SPICE; a zero inductor
+        // would divide by zero in its companion model.
+        CircuitElement::Capacitor { capacitance, .. } => {
+            non_negative("capacitance", *capacitance, " F")
+        }
+        CircuitElement::Inductor { inductance, .. } => positive("inductance", *inductance, " H"),
+        CircuitElement::Vcvs { gain, .. } => finite("gain", *gain, ""),
+        CircuitElement::Vccs { gm, .. } => finite("gm", *gm, " S"),
+        CircuitElement::Ccvs { rm, .. } => finite("rm", *rm, " Ω"),
+        CircuitElement::Cccs { alpha, .. } => finite("alpha", *alpha, ""),
+        CircuitElement::Relay {
+            coil_resistance,
+            pickup_voltage,
+            inductance,
+            ..
+        } => {
+            positive("coil_resistance", *coil_resistance, " Ω")?;
+            positive("pickup_voltage", *pickup_voltage, " V")?;
+            non_negative("inductance", *inductance, " H")
+        }
+        // Light level, wiper position and coupling are clamped into range
+        // by the models, so only a non-finite value is refused.
+        CircuitElement::Photoresistor { light_level, .. } => {
+            finite("light_level", *light_level, "")
+        }
+        CircuitElement::Potentiometer {
+            resistance,
+            position,
+            ..
+        } => {
+            positive("resistance", *resistance, " Ω")?;
+            finite("position", *position, "")
+        }
+        CircuitElement::Transformer { l1, l2, k, .. } => {
+            positive("l1", *l1, " H")?;
+            positive("l2", *l2, " H")?;
+            finite("k", *k, "")
+        }
+        CircuitElement::Fuse { rating, .. } => positive("rating", *rating, " A"),
+        CircuitElement::Comparator { v_pos, v_neg, .. }
+        | CircuitElement::OpAmp { v_pos, v_neg, .. } => {
+            finite("v_pos", *v_pos, " V")?;
+            finite("v_neg", *v_neg, " V")
         }
         _ => Ok(()),
     }

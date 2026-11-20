@@ -19,11 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AC and noise use the incremental inductance at the DC current. The
   model lives in `sindr_devices::inductor`. No hysteresis or core loss,
   and transformers stay linear.
+- Transient and Newton benchmarks (`cargo bench -p sindr --bench transient
+  --bench newton`), with a CI job that fails a PR more than 25 % slower than
+  its base, and a Performance section in the README with the numbers.
 - SPICE `.model` cards now set device parameters: `IS`, `N`, `RS` on `D`
   cards, and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` (alias `VA`) on `NPN`/`PNP`
   cards. Any other card parameter is an error in strict mode and a warning
   per card in lenient mode, naming it; before, every parameter but `BF`
   was dropped silently, even in strict mode.
+- ngspice goldens for nonlinear transient and device AC:
+  `tran_halfwave` (sine into a rectifier with a filter cap),
+  `tran_bjt_switch` (pulse through an RC into an NPN switch),
+  `tran_rlc_ring`, `ac_diode` (a biased 1N4148 with its charge),
+  `ac_mosfet_cs`, `ac_bjt_caps` and `ac_jfet`.
 - `DiodeModel` (IS, N, RS) and `BjtModel` (IS, BR, NF, NR, VAF), as the
   optional `model` field of `CircuitElement::Diode` and `CircuitElement::Bjt`.
   DC, AC, transient, `.tf`, `.sens` and results all use them, so a diode's
@@ -127,6 +135,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [uic]`), and `transient_config()` starts from the operating point unless
   `uic` is given, as ngspice does. `uic` used to be dropped without a word,
   and a `tmax` was a parse error.
+- `.tran`'s `tstart` is applied: `TransientConfig::tstart` and
+  `with_tstart(t)` integrate from 0 as before but keep only the steps from
+  `t` on, with one landing on `t`. It used to be read and ignored.
+- `ParsedNetlist::transient_config()`: the deck's first `.tran` with its
+  `.ic` cards as initial voltages, so a deck runs as ngspice runs it.
+- ngspice goldens `tran_ic_op` and `tran_ic_uic` (`.ic` without and with
+  `UIC`, on the same deck) and `tran_tstart`, run from the deck's own
+  `.tran` and `.ic`.
 - Two-source DC sweeps: `dc_sweep_nested(circuit, inner, outer)` with
   `DcSweepAxis` gives a `DcSweepResult` along the inner source for each
   value of the outer one, for device curve families. SPICE `.dc` takes a
@@ -198,11 +214,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AC analysis now includes a BJT's and a MOSFET's `parasitic_caps` (Cbe,
+  Cbc, Cgs, Cgd). They were stamped in transient only, so a transistor
+  amplifier's AC response had no Miller pole and stayed flat to any
+  frequency. `.noise` goes through the same small-signal system and changes
+  with it. New ngspice goldens `ac_bjt_caps` and `ac_mosfet_cs` pin them.
 - A hot LED's forward voltage now falls about 2 mV/K at its rated current,
   as a real one does. IS scaled with silicon's 1.11 eV bandgap, below every
   LED's Vf, so Vf rose with temperature and a self-heated LED drew less
   current as it warmed. Each colour now has an effective EG fitted to
   −2 mV/K. Temperature sweeps and self-heated results for LEDs change.
+- A P-channel JFET's current and power in a transient were wrong: the
+  transient mirrored its voltages into the N-channel frame before the model,
+  which mirrors them again. A self-biased P-JFET reported 12.7 mA where it
+  conducted 4.0 mA. Node voltages were right; only the reported
+  `current_through` and `power` were off. Transient and DC now share one
+  calculation.
+- `solve_transient` (and `solve_circuit` when it routes to transient) left
+  `op_amp_results` and `relay_results` empty. They now hold the last step's
+  values, as DC does.
+- A `.model` card stopped at the first parameter it couldn't read and kept
+  the ones before it, so `d(is=1e-10, n=2)` (commas, as many vendor
+  libraries write them) silently lost `n`, and `is=` with no value or a
+  stray word lost the rest of the card. Commas now separate parameters, and
+  anything else that isn't `name=value` is a syntax error. `.param` and
+  `.subckt` headers with trailing text are errors too, where they used to
+  drop it.
+- Validation now refuses values the models can't use, naming the
+  component and field, before the solver turns them into a bare
+  `InvalidSolution` or a wrong answer: a NaN or infinite resistance
+  (`InvalidResistance`; an infinite one solved as an open), a non-finite
+  source value or controlled-source gain, a negative or non-finite
+  capacitance, a zero, negative or non-finite inductance (or transformer
+  winding), and non-finite relay, potentiometer, photoresistor, fuse and
+  op-amp/comparator rail values. A zero capacitor is still an open.
+- **Breaking:** two components with the same id are an `InvalidComponent`.
+  Results, controlled sources and sweeps look components up by id, so the
+  second was silently shadowed by the first. A SPICE deck that names two
+  elements alike now fails to solve.
 
 ## [0.1.0-alpha.7] - 2026-11-16
 

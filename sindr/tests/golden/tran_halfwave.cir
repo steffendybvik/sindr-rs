@@ -1,0 +1,8 @@
+tran: half-wave rectifier, 10 V 1 kHz sine into a diode, 10 uF and 1k
+V1 a 0 SIN(0 10 1k)
+D1 a b dr
+C1 b 0 10u
+RL b 0 1k
+.model dr D(IS=1e-14 N=1 RS=1)
+.tran 10u 5m 0 0.2u uic
+.end
