@@ -36,8 +36,8 @@ use std::collections::{HashMap, HashSet};
 use miette::NamedSource;
 
 use crate::spice::ast::{
-    NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawModel,
-    RawSubckt, Span,
+    NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawMeasure,
+    RawModel, RawSubckt, Span,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::param_eval::{eval_error_to_parse_error, eval_param_list, ParamScope};
@@ -57,6 +57,8 @@ pub(crate) struct Flattened {
     pub analyses: Vec<(RawAnalysis, Span)>,
     /// Top-level `.ic` / `.nodeset` cards, in source order.
     pub node_values: Vec<NodeValueCard>,
+    /// Top-level `.meas` cards, in source order.
+    pub measures: Vec<(RawMeasure, Span)>,
     /// Snapshot of the outer-most parameter scope after top-level `.param`
     /// evaluation. Analysis directive arguments are evaluated against this.
     pub top_params: HashMap<String, f64>,
@@ -112,6 +114,7 @@ pub(crate) fn flatten(
     let mut top_param_lists: Vec<(Vec<(String, ParamExpr)>, Span)> = Vec::new();
     let mut top_analyses: Vec<(RawAnalysis, Span)> = Vec::new();
     let mut top_node_values = Vec::new();
+    let mut top_measures: Vec<(RawMeasure, Span)> = Vec::new();
     let mut top_elements: Vec<RawElement> = Vec::new();
 
     for card in cards {
@@ -125,6 +128,7 @@ pub(crate) fn flatten(
             RawCard::Param(list, span) => top_param_lists.push((list, span)),
             RawCard::Analysis(a, span) => top_analyses.push((a, span)),
             RawCard::NodeValues(kind, values, span) => top_node_values.push((kind, values, span)),
+            RawCard::Measure(m, span) => top_measures.push((m, span)),
             RawCard::Element(e) => top_elements.push(e),
             RawCard::Ends(_) => {
                 // The parser collects `.ends` into its parent subckt; an
@@ -189,6 +193,7 @@ pub(crate) fn flatten(
         instances: sink.instances,
         analyses: top_analyses,
         node_values: top_node_values,
+        measures: top_measures,
         top_params: top_params_snapshot,
     })
 }
@@ -340,7 +345,10 @@ fn expand_instance(
                 // definitions even if we cannot use them.
                 // No-op for now.
             }
-            RawCard::Analysis(..) | RawCard::NodeValues(..) | RawCard::Ends(_) => {
+            RawCard::Analysis(..)
+            | RawCard::NodeValues(..)
+            | RawCard::Measure(..)
+            | RawCard::Ends(_) => {
                 // Ignore inside subckt bodies.
             }
         }

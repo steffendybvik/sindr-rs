@@ -56,7 +56,8 @@ pub struct AcConfig {
 pub struct AcPoint {
     /// Frequency of this point (Hz).
     pub frequency: f64,
-    /// Complex node voltages (V) keyed by node name.
+    /// Complex node voltages (V) keyed by node name. Includes the ground
+    /// node (always 0).
     pub node_voltages: HashMap<String, Complex64>,
 }
 
@@ -1135,6 +1136,7 @@ pub fn solve_ac_with_initial_voltages(
 
         // Extract node voltages
         let mut node_voltages = HashMap::new();
+        node_voltages.insert(circuit.ground_node.clone(), Complex64::new(0.0, 0.0));
         for i in 0..num_nodes {
             if let Some(name) = node_map.node_name(i) {
                 node_voltages.insert(name.to_string(), solution[i]);

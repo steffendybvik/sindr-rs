@@ -125,6 +125,17 @@ pub enum SimError {
         /// Its junction temperature when the solve gave up (K).
         temperature: f64,
     },
+
+    /// A [`Measurement`](crate::measure::Measurement) couldn't be taken on
+    /// a result: an unknown node or component, a window outside the
+    /// result, or a level the signal never crosses.
+    #[error("measurement `{name}`: {reason}")]
+    Measurement {
+        /// The measurement's name.
+        name: String,
+        /// Why it couldn't be taken.
+        reason: String,
+    },
 }
 
 #[cfg(test)]

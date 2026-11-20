@@ -324,6 +324,45 @@ pub enum AcSweep {
     Lin,
 }
 
+/// Which analysis a `.meas` card measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasureAnalysis {
+    /// `.meas tran`: on the `.tran` result, x is time (s).
+    Tran,
+    /// `.meas ac`: on the `.ac` result, x is frequency (Hz).
+    Ac,
+    /// `.meas dc`: on the `.dc` sweep, x is the swept source's value.
+    Dc,
+}
+
+/// A `.meas` card: the analysis it applies to and the measurement.
+///
+/// Take it with [`Measurement::on`](crate::measure::Measurement::on) on that
+/// analysis's result, or wrap it in a [`Spec`](crate::measure::Spec) to give
+/// it limits.
+///
+/// ```
+/// use sindr::spice::{parse_str, MeasureAnalysis};
+///
+/// let deck = "* rc\nV1 in 0 1\nR1 in out 1k\nC1 out 0 1u\n.tran 10u 5m uic\n\
+///             .meas tran t_half when v(out)=0.5 rise=1\n.end\n";
+/// let netlist = parse_str(deck)?;
+/// let meas = &netlist.measurements[0];
+/// assert_eq!(meas.analysis, MeasureAnalysis::Tran);
+/// let result = sindr::solve_transient(&netlist.circuit, &netlist.analyses[0].transient_config().unwrap())?;
+/// // An RC step crosses half way at τ·ln 2.
+/// let t = meas.measurement.on(&result)?;
+/// assert!((t - 1e-3 * std::f64::consts::LN_2).abs() < 2e-5);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeasureRequest {
+    /// The analysis whose result it measures.
+    pub analysis: MeasureAnalysis,
+    /// The measurement, named as the card names it.
+    pub measurement: crate::measure::Measurement,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +371,91 @@ mod tests {
     fn analyses(directives: &str) -> Vec<AnalysisRequest> {
         let deck = format!("* analyses\nV1 in 0 1\nR1 in 0 1k\n{directives}\n.end\n");
         parse_str(&deck).unwrap().analyses
+    }
+
+    fn measures(cards: &str) -> Vec<MeasureRequest> {
+        let deck = format!(
+            "* meas\nV1 in 0 1\nR1 in out 1k\nC1 out 0 1u\n.param tend=2m\n{cards}\n.end\n"
+        );
+        parse_str(&deck).unwrap().measurements
+    }
+
+    fn meas_error(card: &str) -> String {
+        let deck = format!("* meas\nV1 in 0 1\nR1 in 0 1k\n{card}\n.end\n");
+        parse_str(&deck).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn meas_statistics_with_a_window() {
+        use crate::measure::{Measure, Measurement, Signal, Stat};
+        let m = measures(
+            ".MEAS TRAN Vavg AVG V(out) FROM=1m TO={tend}\n.measure tran ripple pp v(out,in)",
+        );
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].analysis, MeasureAnalysis::Tran);
+        assert_eq!(
+            m[0].measurement,
+            Measurement::new("vavg", Measure::stat(Signal::v("out"), Stat::Avg)).window(1e-3, 2e-3)
+        );
+        assert_eq!(
+            m[1].measurement,
+            Measurement::new(
+                "ripple",
+                Measure::stat(Signal::v_diff("out", "in"), Stat::PeakToPeak)
+            )
+        );
+    }
+
+    #[test]
+    fn meas_find_when_and_trig_targ() {
+        use crate::measure::{Crossing, Measure, Signal};
+        let m = measures(
+            ".meas tran v1m find v(out) at=1m\n\
+             .meas ac bw when vdb(out)=-3 fall=1\n\
+             .meas tran last_cross when i(r1) = 0.5m cross=last\n\
+             .meas tran tpd trig v(in) val=0.5 rise=1 targ v(out) val=0.5 rise=2",
+        );
+        assert_eq!(
+            m[0].measurement.measure,
+            Measure::find(Signal::v("out"), 1e-3)
+        );
+        assert_eq!(m[1].analysis, MeasureAnalysis::Ac);
+        assert_eq!(
+            m[1].measurement.measure,
+            Measure::When(Crossing::new(Signal::v("out").db(), -3.0).falling())
+        );
+        assert_eq!(
+            m[2].measurement.measure,
+            Measure::When(Crossing::new(Signal::i("r1"), 0.5e-3).last())
+        );
+        assert_eq!(
+            m[3].measurement.measure,
+            Measure::Delay {
+                trig: Crossing::new(Signal::v("in"), 0.5).rising(),
+                targ: Crossing::new(Signal::v("out"), 0.5).rising().nth(2),
+            }
+        );
+    }
+
+    #[test]
+    fn meas_rejects_what_it_cant_measure() {
+        for (card, expect) in [
+            (".meas op x max v(in)", "not `op`"),
+            (".meas tran x max", "expected a signal"),
+            (".meas tran x max out", "expected a signal"),
+            (".meas tran x find v(in) when v(in)=1", "isn't supported"),
+            (".meas tran x find v(in)", "needs `at=<x>`"),
+            (".meas tran x when v(in)=v(out)", "crossing another signal"),
+            (".meas tran x when v(in)=1 rise=0", "count from 1"),
+            (".meas tran x when v(in)=1 rise=1 fall=1", "only one of"),
+            (".meas tran x trig v(in) val=1", "needs a `targ`"),
+            (".meas tran x max v(in) td=1", "`td=` isn't supported"),
+            (".meas tran x deriv v(in) at=1", "aren't supported"),
+            (".meas ac x max vr(in)", "real and imaginary"),
+        ] {
+            let err = meas_error(card);
+            assert!(err.contains(expect), "{card}: {err}");
+        }
     }
 
     #[test]

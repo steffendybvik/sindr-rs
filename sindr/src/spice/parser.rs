@@ -32,8 +32,8 @@ use winnow::token::{one_of, take_while};
 use winnow::{ModalResult, Parser};
 
 use crate::spice::ast::{
-    AcSweepKind, BinOp, NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody,
-    RawModel, RawSubckt, RawWaveform, SourceKind, Span,
+    AcSweepKind, BinOp, NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawCrossing, RawElement,
+    RawElementBody, RawMeasure, RawMeasureKind, RawModel, RawSubckt, RawWaveform, SourceKind, Span,
 };
 use crate::spice::error::SpiceParseError;
 use crate::spice::preprocess::{LogicalLine, Preprocessed};
@@ -73,6 +73,7 @@ fn anchor_to_line(card: RawCard, line: &LogicalLine) -> RawCard {
         RawCard::Param(bindings, _) => RawCard::Param(bindings, line_span(line)),
         RawCard::Analysis(analysis, _) => RawCard::Analysis(analysis, line_span(line)),
         RawCard::NodeValues(kind, values, _) => RawCard::NodeValues(kind, values, line_span(line)),
+        RawCard::Measure(measure, _) => RawCard::Measure(measure, line_span(line)),
         other => other,
     }
 }
@@ -860,6 +861,299 @@ fn parse_card_noise(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ))
 }
 
+/// Split a `.meas` card into words: `=` stands alone, and parentheses,
+/// braces and quotes keep what they hold in one word (`v(a, b)`,
+/// `{tstop/2}`). A quoted `'expr'` becomes `{expr}`.
+fn meas_words(text: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        if c == '=' {
+            chars.next();
+            words.push("=".to_string());
+            continue;
+        }
+        if c == '\'' {
+            chars.next();
+            let mut expr = String::from("{");
+            loop {
+                match chars.next() {
+                    Some('\'') => break,
+                    Some(ch) => expr.push(ch),
+                    None => return Err("unclosed quote".to_string()),
+                }
+            }
+            expr.push('}');
+            words.push(expr);
+            continue;
+        }
+        let mut word = String::new();
+        let mut depth = 0usize;
+        while let Some(&ch) = chars.peek() {
+            if depth == 0 && (ch.is_whitespace() || ch == '=') {
+                break;
+            }
+            match ch {
+                '(' | '{' => depth += 1,
+                ')' | '}' => {
+                    depth = depth
+                        .checked_sub(1)
+                        .ok_or_else(|| format!("unbalanced `{ch}`"))?;
+                }
+                _ => {}
+            }
+            word.push(ch);
+            chars.next();
+        }
+        if depth != 0 {
+            return Err(format!("unbalanced brackets in `{word}`"));
+        }
+        words.push(word);
+    }
+    Ok(words)
+}
+
+/// A `.meas` signal: `v(n)`, `v(a,b)`, `vdb(n)`, `vp(n)`, `vm(n)` or `i(x)`.
+fn meas_signal(word: &str) -> Result<crate::measure::Signal, String> {
+    use crate::measure::{Signal, View};
+    let bad = || {
+        format!(
+            "expected a signal such as `v(out)`, `v(a,b)`, `vdb(out)`, `vp(out)` or `i(r1)`, found `{word}`"
+        )
+    };
+    let (func, args) = word.split_once('(').ok_or_else(bad)?;
+    let args = args.strip_suffix(')').ok_or_else(bad)?;
+    let args: Vec<&str> = args.split(',').map(str::trim).collect();
+    if args.iter().any(|a| a.is_empty()) || args.len() > 2 {
+        return Err(bad());
+    }
+    let voltage = |view: View| {
+        let mut signal = match args.as_slice() {
+            [n] => Signal::v(*n),
+            [n, r] => Signal::v_diff(*n, *r),
+            _ => unreachable!("checked above"),
+        };
+        signal.view = view;
+        signal
+    };
+    match func {
+        "v" | "vm" => Ok(voltage(View::Value)),
+        "vdb" => Ok(voltage(View::Db)),
+        "vp" => Ok(voltage(View::Phase)),
+        "i" if args.len() == 1 => Ok(Signal::i(args[0])),
+        "vr" | "vi" => Err(format!(
+            "`{word}`: real and imaginary parts aren't supported; use `vm`, `vdb` or `vp`"
+        )),
+        _ => Err(bad()),
+    }
+}
+
+/// A value word: a number with an optional SI suffix, or `{expr}`.
+fn meas_value(word: &str) -> Result<ParamExpr, String> {
+    let mut input = LocatingSlice::new(word);
+    match value_expr(&mut input) {
+        Ok((expr, _)) if input.is_empty() => Ok(expr),
+        _ => Err(format!(
+            "expected a number or `{{expression}}`, found `{word}`"
+        )),
+    }
+}
+
+/// The `key=value` options after a `.meas` measurement, up to `stop` (the
+/// `targ` keyword) or the end.
+fn meas_options<'w>(
+    words: &mut std::iter::Peekable<impl Iterator<Item = &'w String>>,
+    stop: Option<&str>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut options = Vec::new();
+    while let Some(key) = words.peek() {
+        if Some(key.as_str()) == stop {
+            break;
+        }
+        let key = words.next().map(String::as_str).unwrap_or_default();
+        if words.next().map(String::as_str) != Some("=") {
+            return Err(format!("expected `{key}=<value>`"));
+        }
+        let value = words
+            .next()
+            .ok_or_else(|| format!("`{key}=` needs a value"))?;
+        options.push((key.to_string(), value.clone()));
+    }
+    Ok(options)
+}
+
+/// `rise=n`, `fall=n` or `cross=n|last` from a crossing's options.
+fn meas_edge(
+    options: &[(String, String)],
+) -> Result<(crate::measure::Edge, crate::measure::Occurrence), String> {
+    use crate::measure::{Edge, Occurrence};
+    let mut found = None;
+    for (key, value) in options {
+        let edge = match key.as_str() {
+            "rise" => Edge::Rise,
+            "fall" => Edge::Fall,
+            "cross" => Edge::Cross,
+            _ => continue,
+        };
+        if found.is_some() {
+            return Err("give only one of `rise`, `fall` and `cross`".to_string());
+        }
+        let occurrence = if value == "last" {
+            Occurrence::Last
+        } else {
+            match value.parse::<usize>() {
+                Ok(n) if n >= 1 => Occurrence::Nth(n),
+                _ => {
+                    return Err(format!(
+                        "`{key}=` takes a count from 1 or `last`, found `{value}`"
+                    ))
+                }
+            }
+        };
+        found = Some((edge, occurrence));
+    }
+    Ok(found.unwrap_or((Edge::Cross, Occurrence::Nth(1))))
+}
+
+/// Reject options a form doesn't take.
+fn meas_only(options: &[(String, String)], allowed: &[&str]) -> Result<(), String> {
+    match options.iter().find(|(k, _)| !allowed.contains(&k.as_str())) {
+        Some((key, _)) => Err(format!("`{key}=` isn't supported here")),
+        None => Ok(()),
+    }
+}
+
+fn meas_option(options: &[(String, String)], key: &str) -> Result<Option<ParamExpr>, String> {
+    options
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| meas_value(v))
+        .transpose()
+}
+
+/// `<signal>=<level>` or `<signal> val=<level>`-style crossing, then its options.
+fn meas_crossing(
+    signal: &str,
+    level: ParamExpr,
+    options: &[(String, String)],
+) -> Result<RawCrossing, String> {
+    let (edge, occurrence) = meas_edge(options)?;
+    Ok(RawCrossing {
+        signal: meas_signal(signal)?,
+        level,
+        edge,
+        occurrence,
+    })
+}
+
+/// Parse `.meas tran|ac|dc <name> …`; see [`crate::spice::MeasureRequest`].
+fn parse_card_meas(text: &str) -> Result<RawCard, String> {
+    use crate::measure::Stat;
+    use crate::spice::MeasureAnalysis;
+
+    let words = meas_words(text)?;
+    let mut it = words.iter().peekable();
+    let analysis = match it.next().map(String::as_str) {
+        Some("tran") => MeasureAnalysis::Tran,
+        Some("ac") => MeasureAnalysis::Ac,
+        Some("dc") => MeasureAnalysis::Dc,
+        Some(other) => return Err(format!("measures `tran`, `ac` or `dc`, not `{other}`")),
+        None => return Err("expected `tran`, `ac` or `dc`".to_string()),
+    };
+    let name = it
+        .next()
+        .filter(|w| w.as_str() != "=")
+        .ok_or("expected a name for the measurement")?
+        .clone();
+    let keyword = it.next().ok_or("expected what to measure")?.clone();
+    let range = ["from", "to"];
+    let (kind, options) = match keyword.as_str() {
+        "avg" | "rms" | "min" | "max" | "pp" | "integ" | "integral" => {
+            let stat = match keyword.as_str() {
+                "avg" => Stat::Avg,
+                "rms" => Stat::Rms,
+                "min" => Stat::Min,
+                "max" => Stat::Max,
+                "pp" => Stat::PeakToPeak,
+                _ => Stat::Integral,
+            };
+            let signal = meas_signal(it.next().ok_or("expected a signal")?)?;
+            let options = meas_options(&mut it, None)?;
+            meas_only(&options, &range)?;
+            (RawMeasureKind::Stat(signal, stat), options)
+        }
+        "find" => {
+            let signal = meas_signal(it.next().ok_or("expected a signal")?)?;
+            if it.peek().is_some_and(|w| w.as_str() == "when") {
+                return Err(
+                    "`find … when` isn't supported; measure the `when` and then `find … at=`"
+                        .to_string(),
+                );
+            }
+            let options = meas_options(&mut it, None)?;
+            meas_only(&options, &["at"])?;
+            let at = meas_option(&options, "at")?.ok_or("`find` needs `at=<x>`")?;
+            (RawMeasureKind::Find(signal, at), Vec::new())
+        }
+        "when" => {
+            let signal = it.next().ok_or("expected `<signal>=<level>`")?.clone();
+            if it.next().map(String::as_str) != Some("=") {
+                return Err("expected `<signal>=<level>`".to_string());
+            }
+            let level = it.next().ok_or("expected a level after `=`")?;
+            let level = meas_value(level)
+                .map_err(|e| format!("{e} (crossing another signal isn't supported)"))?;
+            let options = meas_options(&mut it, None)?;
+            meas_only(&options, &["rise", "fall", "cross", "from", "to"])?;
+            (
+                RawMeasureKind::When(meas_crossing(&signal, level, &options)?),
+                options,
+            )
+        }
+        "trig" => {
+            let trig_signal = it.next().ok_or("expected a signal after `trig`")?.clone();
+            let trig_options = meas_options(&mut it, Some("targ"))?;
+            if it.next().map(String::as_str) != Some("targ") {
+                return Err("`trig` needs a `targ`".to_string());
+            }
+            let targ_signal = it.next().ok_or("expected a signal after `targ`")?.clone();
+            let targ_options = meas_options(&mut it, None)?;
+            let crossing = |signal: &str, options: &[(String, String)], which: &str| {
+                meas_only(options, &["val", "rise", "fall", "cross"])
+                    .map_err(|e| format!("{e} (on `{which}`)"))?;
+                let level = meas_option(options, "val")?
+                    .ok_or_else(|| format!("`{which}` needs `val=<level>`"))?;
+                meas_crossing(signal, level, options)
+            };
+            (
+                RawMeasureKind::Delay(
+                    crossing(&trig_signal, &trig_options, "trig")?,
+                    crossing(&targ_signal, &targ_options, "targ")?,
+                ),
+                Vec::new(),
+            )
+        }
+        "deriv" | "derivative" | "param" | "integral_of" => {
+            return Err(format!("`{keyword}` measurements aren't supported"));
+        }
+        other => return Err(format!("unknown measurement `{other}`")),
+    };
+    Ok(RawCard::Measure(
+        RawMeasure {
+            analysis,
+            name,
+            kind,
+            from: meas_option(&options, "from")?,
+            to: meas_option(&options, "to")?,
+        },
+        Span::detached(),
+    ))
+}
+
 /// Parse `.op` (no args).
 fn parse_card_op(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
@@ -897,6 +1191,14 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "tf" => parse_card_tf(&mut input),
             "sens" => parse_card_sens(&mut input),
             "noise" => parse_card_noise(&mut input),
+            "meas" | "measure" => {
+                return parse_card_meas(&trimmed[1 + kind_span.end..]).map_err(|message| {
+                    LocalError::Syntax {
+                        message: format!("`.{kind}`: {message}"),
+                        span: 0..trimmed.len(),
+                    }
+                });
+            }
             "ic" => parse_card_node_values(&mut input, NodeValueKind::Ic),
             "nodeset" => parse_card_node_values(&mut input, NodeValueKind::Nodeset),
             "include" | "lib" => {
