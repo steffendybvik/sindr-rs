@@ -11,6 +11,7 @@ use sindr_devices::diode::{
     temperature_scale_is, Breakdown, DiodeParams, JunctionCharge, K_OVER_Q, T_NOM,
 };
 use sindr_devices::led::{led_params_from_str, LedColor};
+use sindr_devices::mosfet::{self, MosfetCompanion, MosfetKind, MosfetParams};
 use sindr_devices::photodiode::PhotodiodeParams;
 use sindr_devices::schottky::SchottkyParams;
 
@@ -169,6 +170,21 @@ fn with_temperature(mut params: DiodeParams, temperature: f64) -> DiodeParams {
 pub(crate) fn thermistor_resistance(temperature: f64) -> f64 {
     let params = sindr_devices::thermistor::ThermistorParams::default();
     sindr_devices::thermistor::thermistor_resistance(temperature, &params)
+}
+
+/// A MOSFET's companion model at gate, drain and source voltages `vg`, `vd`,
+/// `vs` (V), in the NMOS frame: a PMOS has its voltages and parameters
+/// mirrored first. The body is tied to the source (`vbs = 0`), as every
+/// `CircuitElement::Mosfet` is.
+pub(crate) fn mosfet_op(
+    kind: MosfetKind,
+    params: &MosfetParams,
+    vg: f64,
+    vd: f64,
+    vs: f64,
+) -> MosfetCompanion {
+    let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
+    mosfet::mosfet_companion(vgs, vds, 0.0, &params.in_nmos_frame(kind))
 }
 
 #[cfg(test)]
