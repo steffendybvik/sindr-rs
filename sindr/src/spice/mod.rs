@@ -191,7 +191,7 @@ mod preprocess;
 mod si;
 mod source_map;
 
-pub use analysis::{AcSweep, AnalysisRequest, DcSweepSpec};
+pub use analysis::{AcSweep, AnalysisRequest, DcSweepSpec, MeasureAnalysis, MeasureRequest};
 pub use error::{ParseWarning, SpiceParseError};
 pub use export::{to_netlist, ExportError};
 pub use source_map::{HierarchyPath, SourceMap};
@@ -233,6 +233,9 @@ pub struct ParsedNetlist {
     /// or [`solve_sensitivity_with_initial_voltages`](crate::sensitivity::solve_sensitivity_with_initial_voltages).
     /// Only top-level cards are read.
     pub nodesets: HashMap<String, f64>,
+    /// `.meas` / `.measure` cards, in source order. Only top-level cards are
+    /// read.
+    pub measurements: Vec<MeasureRequest>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
     /// [`ParseOptions::strict`] is `true`.
     pub warnings: Vec<ParseWarning>,

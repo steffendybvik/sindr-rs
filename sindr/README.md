@@ -569,6 +569,40 @@ Each component kind has ratings it needs, checked whether set or not; a missing 
 
 Any other rating set on a part is checked too: `power`, `voltage` and `current` on any component (on the port its `ComponentResult` reports), the rest on the devices they belong to. All limits are magnitudes, so PNP and PMOS parts use the same positive numbers. Transistor power is `|V·I|` on the Vce/Ic or Vds/Id port, without base or gate dissipation.
 
+## Measurements and specs
+
+Turn a result into numbers, and the numbers into a verdict. A `Measurement` reads a `Signal` (`v(out)`, `v(a, b)`, `i(R1)`, in dB or phase on AC) off any result: a transient, AC, DC or temperature sweep, or an operating point. A `Spec` adds limits, and `check_specs` reports each one's value, limits, pass/fail and margin.
+
+```rust
+use sindr::measure::{check_specs, Crossing, Measure, Measurement, Signal, Spec, Stat};
+
+let tran = solve_transient(&circuit, &TransientConfig::new(10e-3, 1e-6))?;
+let specs = [
+    Spec::new(Measurement::new("vout", Measure::stat(Signal::v("out"), Stat::Avg)).window(5e-3, 10e-3))
+        .between(4.9, 5.1),
+    Spec::new(Measurement::new("ripple", Measure::stat(Signal::v("out"), Stat::PeakToPeak)).window(5e-3, 10e-3))
+        .at_most(0.05),
+    Spec::new(Measurement::new("settle", Measure::settling(Signal::v("out"), 0.05))).at_most(2e-3),
+];
+let report = check_specs(&tran, &specs).with_ratings(check_ratings(&circuit, &tran)?);
+for c in report.failed() {
+    println!("{}: {:?} outside {:?}..{:?} by {:?}", c.name, c.value, c.min, c.max, c.margin);
+}
+assert!(report.passed()); // every spec passed and every part is within its ratings
+```
+
+| `Measure` | SPICE `.meas` | Gives |
+|---|---|---|
+| `Find { at }` | `FIND v(out) AT=1m` | value at x, interpolated |
+| `Stat` | `AVG`, `RMS`, `MIN`, `MAX`, `PP`, `INTEG` (and `Final`) | statistic over the window (`FROM=`/`TO=`) |
+| `When(Crossing)` | `WHEN v(out)=2.5 RISE=2` | x of the nth rising, falling or any crossing, or the last |
+| `Delay { trig, targ }` | `TRIG … VAL= … TARG … VAL=` | x(targ) − x(trig) |
+| `Transition` | | rise or fall time between fractions of the swing (10–90 %) |
+| `Settling { band }` | | time from the window start until it stays within ±band of its final value |
+| `Bandwidth { drop_db }` | `WHEN vdb(out)=-3 FALL=1` | first x after the peak `drop_db` below it (−3 dB point) |
+
+A measurement that can't be taken (an unknown node, a level never crossed, a phase on a transient) is `SpecStatus::Unmeasured` with a reason, never a pass; `Measurement::on` returns it as `SimError::Measurement`. Average and RMS are weighted by step width, so the transient's uneven steps don't skew them. With the `spice` feature, `.meas tran|ac|dc` cards land in `ParsedNetlist::measurements`, each with the analysis it measures.
+
 ## Examples
 
 One small program per capability in [`examples/`](./examples), run with `cargo run -p sindr --example <name>`:

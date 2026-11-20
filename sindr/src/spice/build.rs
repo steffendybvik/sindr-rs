@@ -30,10 +30,10 @@ use crate::design::{Block, Instance};
 use crate::{BjtKind, Circuit, CircuitElement, Waveform};
 use miette::NamedSource;
 
-use crate::spice::analysis::{AcSweep, AnalysisRequest};
+use crate::spice::analysis::{AcSweep, AnalysisRequest, MeasureRequest};
 use crate::spice::ast::{
-    AcSweepKind, NodeValueKind, ParamExpr, RawAnalysis, RawElementBody, RawModel, RawWaveform,
-    SourceKind,
+    AcSweepKind, NodeValueKind, ParamExpr, RawAnalysis, RawCrossing, RawElementBody, RawMeasure,
+    RawMeasureKind, RawModel, RawWaveform, SourceKind,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::flatten::{FlatElement, Flattened, InstanceRecord};
@@ -110,11 +110,18 @@ pub(crate) fn build_netlist(
         }
     }
 
+    let measurements = flat
+        .measures
+        .iter()
+        .map(|(raw, span)| build_measure(raw, &top_scope).map_err(|e| e.locate(span)))
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(ParsedNetlist {
         circuit,
         analyses,
         initial_conditions,
         nodesets,
+        measurements,
         warnings: warnings.clone(),
         source_map: flat.source_map,
         title,
@@ -647,6 +654,35 @@ fn build_dc_axis(
         )));
     }
     Ok((start, stop, step))
+}
+
+fn build_measure(raw: &RawMeasure, scope: &ParamScope) -> Result<MeasureRequest, SpiceParseError> {
+    use crate::measure::{Crossing, Measure, Measurement};
+    let value = |expr: &ParamExpr, what: &str| eval_finite(expr, scope, ".meas", what);
+    let crossing = |c: &RawCrossing, what: &str| -> Result<Crossing, SpiceParseError> {
+        Ok(Crossing {
+            signal: c.signal.clone(),
+            level: value(&c.level, what)?,
+            edge: c.edge,
+            occurrence: c.occurrence,
+        })
+    };
+    let measure = match &raw.kind {
+        RawMeasureKind::Stat(signal, stat) => Measure::stat(signal.clone(), *stat),
+        RawMeasureKind::Find(signal, at) => Measure::find(signal.clone(), value(at, "at")?),
+        RawMeasureKind::When(c) => Measure::When(crossing(c, "level")?),
+        RawMeasureKind::Delay(trig, targ) => Measure::Delay {
+            trig: crossing(trig, "trig val")?,
+            targ: crossing(targ, "targ val")?,
+        },
+    };
+    let mut measurement = Measurement::new(raw.name.clone(), measure);
+    measurement.from = raw.from.as_ref().map(|e| value(e, "from")).transpose()?;
+    measurement.to = raw.to.as_ref().map(|e| value(e, "to")).transpose()?;
+    Ok(MeasureRequest {
+        analysis: raw.analysis,
+        measurement,
+    })
 }
 
 fn build_analysis(

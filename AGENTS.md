@@ -28,6 +28,7 @@ sindr-rs/
 │   │   ├── results.rs          # SimulationResult, ComponentResult, etc.
 │   │   ├── node_map.rs         # node-name → matrix-index mapping
 │   │   ├── ratings.rs          # check_ratings: absolute-maximum ratings vs. a result
+│   │   ├── measure.rs          # measurements (.meas) and specs: check_specs, pass/fail and margin
 │   │   ├── thermal.rs          # self-heating: DC balance iteration, transient thermal RC
 │   │   ├── validation.rs       # circuit pre-flight checks
 │   │   ├── error.rs            # SimError variants
@@ -124,6 +125,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Voltage regulators drop out.** `VoltageRegulator { model: Some(RegulatorParams::lm7805()), .. }` needs about 2 V of headroom and draws its output plus 4.3 mA from the input; check `voltage_across` (`Vin − Vout`) and `power` on its result. `model: None` is ideal but can't boost.
 - **Self-heating is opt-in per part:** set `Part::thermal` (`Thermal::junction_to_ambient(rθja)` or `Thermal::on_heatsink(rθjc, rθca)`). Then the element's `temperature` field is ignored, and `SimError::ThermalRunaway` means the design has no thermal balance (add degeneration or a heatsink, don't retry). Only junction devices and thermistors feel the heat; MOSFET/IGBT models don't.
 - **Check ratings before calling a design done.** `check_ratings(&circuit, &result)` compares every part with the `Ratings` on its `Part`; for anything with switching or start-up, run it on a transient, since the DC operating point misses the peaks. `report.is_safe()` is false while any needed rating is missing, so fill them in rather than ignoring unverified checks.
+- **Judge a design with specs, not by eye.** `check_specs(&result, &[Spec::new(Measurement::new("vout", Measure::stat(Signal::v("out"), Stat::Final))).between(4.9, 5.1)])` gives each spec's value, pass/fail and margin; attach `check_ratings` with `SpecReport::with_ratings`. `SpecStatus::Unmeasured` (an unknown node, a level never crossed) is never a pass: read its `reason`. Node and component names in a parsed SPICE deck are lowercase.
 - **`ConvergenceFailed { iterations, max_step_volts }`**: usually a nonlinear element with no DC path to ground, or component values orders of magnitude outside typical ranges. `max_step_volts` is the max Newton step (not a KCL residual). The solver already retries with gmin stepping (homotopy ladder `1e-2` → `1e-12`) and then source stepping before giving up; `SimulationResult::convergence_aid` says which one a solve needed. If neither rescues it, perturb the circuit or pass a starting guess via `solve_circuit_with_initial_voltages` — don't blindly retry.
 
 When in doubt, run `cargo run --example list_examples` and copy the closest existing example; the bundled circuits are known-good.
