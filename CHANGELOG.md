@@ -178,7 +178,9 @@ staged as `0.1.0-alpha.8`.
   current limit, line regulation, output resistance), with
   `RegulatorParams::lm7805()` and `::ams1117()` datasheet presets. AC
   passes input ripple through line regulation. Ratings checks need its
-  input voltage, output current and power.
+  input voltage, output current and power. A negative `voltage` is a
+  negative regulator (7905, 7912): the same characteristic mirrored
+  through the ground pin. A zero `voltage` is rejected.
 - Measurements and specs (`sindr::measure`). A `Measurement` takes one
   number from a transient, AC, DC sweep, temperature sweep or operating
   point result: the value at an x, min, max, average, RMS, peak-to-peak,
