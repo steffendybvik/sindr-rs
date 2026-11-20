@@ -1171,6 +1171,53 @@ fn dc_diode_breakdown() {
     check.finish();
 }
 
+/// A 5.1 V `ZenerDiode` as a shunt regulator through 1 kΩ, swept from
+/// forward bias to well past its knee. sindr stamps a zener as the SPICE
+/// diode in the deck (BV = vz at IBV = 5 mA, RS = 1 Ω), so ngspice reads
+/// the same model. Built in Rust: the deck's `D` card would come back as a
+/// plain diode.
+#[test]
+fn dc_zener() {
+    let golden = Golden::load("dc_zener");
+    let circuit = circuit(vec![
+        vsource("v1", "a", "0", 0.0),
+        resistor("r1", "a", "b", 1e3),
+        CircuitElement::ZenerDiode {
+            id: "d1".into(),
+            nodes: ["0".into(), "b".into()],
+            vz: 5.1,
+            temperature: 300.15,
+        },
+    ]);
+    let sweep = dc_sweep(&circuit, "v1", -2.0, 12.0, 29).unwrap();
+    let scale = golden.scale();
+    let vb: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["b"])
+        .collect();
+    let i: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| source_current(&p.result, "v1"))
+        .collect();
+    // Below the knee both carry picoamps; ngspice's 1 pS GMIN is half of
+    // it there, as in `dc_diode_breakdown`, so currents get 1 nA.
+    let mut check = Check::new("dc_zener");
+    check.series("v(b)", &scale, &vb, &golden.column("v(b)"), OP_V);
+    check.series(
+        "i(v1)",
+        &scale,
+        &i,
+        &golden.column("i(v1)"),
+        Tol {
+            rel: 1e-4,
+            abs: 1e-9,
+        },
+    );
+    check.finish();
+}
+
 /// sindr's small-signal admittance of a diode at each bias of ngspice's
 /// sweep, measured in AC at 1 MHz behind the deck's 1 Ω, against what
 /// ngspice's junction (`@d1[gd]`, `@d1[cd]`) gives behind the card's RS:

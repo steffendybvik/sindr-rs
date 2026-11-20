@@ -101,7 +101,7 @@
 //! | Device | Model |
 //! |---|---|
 //! | Diode, LED, Schottky, photodiode | Shockley; IS and V_T = kT/q follow each device's `temperature` (SPICE IS(T), XTI = 3) |
-//! | Zener | Shockley forward, linear breakdown at `vz` |
+//! | Zener | A SPICE diode with breakdown `BV = vz` at 5 mA and RS = 1 Ω |
 //! | BJT (NPN/PNP) | Ebers–Moll with Early voltage; not Gummel–Poon |
 //! | MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges), body tied to source, SPICE-signed VTO (negative for an enhancement PMOS); no BSIM |
 //! | JFET (N/P) | Shichman–Hodges square law |
@@ -315,6 +315,44 @@ pub use sindr_devices::varactor::VaractorParams;
 
 use node_map::NodeMap as NM;
 
+/// The circuit the solver runs: `circuit` flattened, with each
+/// [`CircuitElement::ZenerDiode`] as the SPICE diode it stands for
+/// ([`device_params::zener_model`]). Every analysis starts here, so they
+/// all see one zener model; ratings and export keep the zener as it is.
+pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, Circuit>, SimError> {
+    let flat = circuit.flattened()?;
+    if !flat
+        .components
+        .iter()
+        .any(|c| matches!(c, CircuitElement::ZenerDiode { .. }))
+    {
+        return Ok(flat);
+    }
+    let mut owned = flat.into_owned();
+    for element in &mut owned.components {
+        if let CircuitElement::ZenerDiode {
+            id,
+            nodes,
+            vz,
+            temperature,
+        } = element
+        {
+            if !(vz.is_finite() && *vz > 0.0) {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{id}`: vz {vz} V must be a positive, finite number"
+                )));
+            }
+            *element = CircuitElement::Diode {
+                id: id.clone(),
+                nodes: nodes.clone(),
+                temperature: *temperature,
+                model: Some(device_params::zener_model(*vz)),
+            };
+        }
+    }
+    Ok(std::borrow::Cow::Owned(owned))
+}
+
 /// The automatic transient config [`solve_circuit`] runs, checked like a
 /// user's: a circuit whose time constants and waveforms ask for more than
 /// 10⁷ steps gets an error naming them, not a run that never ends.
@@ -384,7 +422,7 @@ fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError>
 /// assert!((r1.current_through.abs() - 0.005).abs() < 1e-9);
 /// ```
 pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     validation::validate_circuit(circuit)?;
 
@@ -574,7 +612,7 @@ pub fn solve_circuit_with_initial_voltages(
     circuit: &Circuit,
     initial_voltages: &std::collections::HashMap<String, f64>,
 ) -> Result<SimulationResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     validation::validate_circuit(circuit)?;
 

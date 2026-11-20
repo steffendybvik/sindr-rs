@@ -126,12 +126,12 @@ Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 ```rust
 CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
 CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"green"|"blue"|"yellow"|"white"
-CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage
+CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage at 5 mA
 CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
+All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 ### Varactor diode
 

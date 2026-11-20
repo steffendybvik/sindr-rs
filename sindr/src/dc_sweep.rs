@@ -304,7 +304,7 @@ pub fn dc_sweep(
     stop: f64,
     num_points: usize,
 ) -> Result<DcSweepResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     let axis = DcSweepAxis::new(source_id, start, stop, num_points);
     if num_points < 2 {
@@ -398,7 +398,7 @@ pub fn dc_sweep_nested(
     inner: &DcSweepAxis,
     outer: &DcSweepAxis,
 ) -> Result<NestedDcSweepResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     inner.check(circuit, 2)?;
     outer.check(circuit, 2)?;

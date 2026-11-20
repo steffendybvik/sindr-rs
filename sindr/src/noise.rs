@@ -204,7 +204,7 @@ pub fn solve_noise_with_initial_voltages(
     config: &NoiseConfig,
     initial_voltages: &HashMap<String, f64>,
 ) -> Result<NoiseResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     let invalid = |msg: String| SimError::InvalidComponent(format!("noise: {msg}"));
 

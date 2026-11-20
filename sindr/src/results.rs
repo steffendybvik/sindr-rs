@@ -692,9 +692,8 @@ pub fn extract_results(
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
-                let params = device_params::zener(*vz, *temperature);
-                let (g_eq, i_eq) = sindr_devices::zener::zener_companion(v_across, &params);
-                let i_through = g_eq * v_across + i_eq;
+                let params = device_params::zener_diode(*vz, *temperature);
+                let i_through = diode::diode_current(v_across, &params);
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_across,

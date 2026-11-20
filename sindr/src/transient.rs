@@ -443,12 +443,12 @@ fn stamp_circuit_transient(
                 temperature,
                 ..
             } => {
-                crate::stamp::stamp_zener_companion(
+                stamp_diode_companion(
                     system,
                     node_map,
                     nodes,
                     v_prev,
-                    &device_params::zener(*vz, *temperature),
+                    &device_params::zener_diode(*vz, *temperature),
                 );
             }
             CircuitElement::SchottkyDiode {
@@ -976,11 +976,10 @@ fn extract_timestep_results(
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
-                let (g_eq, i_eq) = sindr_devices::zener::zener_companion(
+                let i_through = sindr_devices::diode::diode_current(
                     v_across,
-                    &device_params::zener(*vz, *temperature),
+                    &device_params::zener_diode(*vz, *temperature),
                 );
-                let i_through = g_eq * v_across + i_eq;
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_across,
@@ -1691,7 +1690,7 @@ pub fn solve_transient(
     circuit: &Circuit,
     config: &TransientConfig,
 ) -> Result<SimulationResult, SimError> {
-    let flat = circuit.flattened()?;
+    let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     config.validate()?;
     crate::validation::validate_circuit(circuit)?;

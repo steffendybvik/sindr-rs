@@ -462,18 +462,17 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 temperature,
                 ..
             } => {
-                // Forward region is a Shockley diode with N = 1
-                let params = device_params::zener(*vz, *temperature);
+                let params = device_params::zener_diode(*vz, *temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
-                    v_crit: diode::critical_voltage(params.is, 1.0, params.vt()),
-                    n: 1.0,
+                    v_crit: diode::critical_voltage(params.is, params.n, params.vt()),
+                    n: params.n,
                     vt: params.vt(),
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: Some(*vz),
-                    breakdown: None,
+                    breakdown: Some(*vz),
                 });
             }
             CircuitElement::SchottkyDiode {

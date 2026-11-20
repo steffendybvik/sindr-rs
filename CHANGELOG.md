@@ -162,6 +162,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (results):** a `ZenerDiode` is now a SPICE diode with
+  breakdown `BV = vz` at `IBV` = 5 mA and `RS` = 1 Ω, in every analysis.
+  Its reverse knee used to be a piecewise `1/rz` clamp whose conductance
+  jumped from almost nothing to 1 S at `−vz`, which no SPICE model
+  matches. A zener now holds `vz` at 5 mA and a few tens of millivolts
+  less well below it, and a new ngspice golden (`dc_zener`) checks it
+  through the knee. Forward voltage picks up the 1 Ω.
 - **Breaking:** `AnalysisRequest::Tran` has new `tmax` and `uic` fields;
   patterns need `..`. A deck's `transient_config()` now starts from the
   operating point unless the card says `uic`.

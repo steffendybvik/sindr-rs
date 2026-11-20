@@ -22,7 +22,7 @@
 //! | [`jfet`] | JFET (N/P-channel) | Shichman–Hodges |
 //! | [`igbt`] | IGBT | MOSFET gate control + BJT output conductance |
 //! | [`led`] | LED | Diode with colour-dependent forward voltage |
-//! | [`zener`] | Zener diode | Shockley + reverse-breakdown branch |
+//! | [`zener`] | Zener diode | Shockley + piecewise `1/rz` reverse-breakdown branch (sindr itself stamps a zener as a [`diode`] with `Breakdown`) |
 //! | [`schottky`] | Schottky diode | Shockley with low-N, low-IS parameters |
 //! | [`varactor`] | Varactor | Voltage-dependent junction capacitance |
 //! | [`inductor`] | Saturating inductor core | `λ(i) = L_sat·i + (L₀ − L_sat)·I_sat·tanh(i/I_sat)` |
