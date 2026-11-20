@@ -651,6 +651,20 @@ pub enum SimError {
 
 The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
 
+## Performance
+
+Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple M1 Pro (release build, one thread). The circuits are in `sindr/benches/`.
+
+| Case | 10 | 100 | 1 000 |
+|---|---:|---:|---:|
+| DC, diode–resistor chain (devices) | 37 µs | 0.93 ms | 8.7 ms |
+| DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
+| Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
+
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes.
+
+Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
+
 ## Serde
 
 With the default `serde` feature, `Circuit` and `SimulationResult` (and all nested types) implement `Serialize`/`Deserialize`. Component types use snake_case tags:

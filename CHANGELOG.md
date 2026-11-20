@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Transient and Newton benchmarks (`cargo bench -p sindr --bench transient
+  --bench newton`), with a CI job that fails a PR more than 25 % slower than
+  its base, and a Performance section in the README with the numbers.
 - SPICE `.model` cards now set device parameters: `IS`, `N`, `RS` on `D`
   cards, and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF` (alias `VA`) on `NPN`/`PNP`
   cards. Any other card parameter is an error in strict mode and a warning
