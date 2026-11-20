@@ -1,6 +1,6 @@
 # sindr
 
-> Analog circuit simulator in pure Rust: a SPICE-style modified nodal analysis (MNA) solver with built-in semiconductor device models. Build a `Circuit` (a list of `CircuitElement`s plus a ground node name, optionally with blocks and instances) in Rust or JSON, or parse a SPICE3 subset, then run DC operating point, transient (Gear-2 by default, or trapezoidal or backward Euler), AC small-signal, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep or temperature sweep. Three crates: `sindr` (solver), `sindr-core` (the `Circuit` data model and design hierarchy, re-exported by `sindr`) and `sindr-devices` (device companion models). Pre-release alpha.
+> Analog circuit simulator in pure Rust: a SPICE-style modified nodal analysis (MNA) solver with built-in semiconductor device models. Build a `Circuit` (a list of `CircuitElement`s plus a ground node name, optionally with blocks and instances) in Rust or JSON, or parse a SPICE3 subset, then run DC operating point, transient (Gear-2 by default, or trapezoidal or backward Euler), AC small-signal, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep or temperature sweep. Three crates: `sindr` (solver), `sindr-core` (the `Circuit` data model and design hierarchy, re-exported by `sindr`) and `sindr-devices` (device companion models). Version 0.2: plain 0.x until 1.0, where a minor bump is breaking.
 
 Key facts for generating code:
 
@@ -13,6 +13,7 @@ Key facts for generating code:
 - `check_ratings(&circuit, &result)` checks each part against the absolute maximum `Ratings` on its `Part` (`circuit.parts`), at the operating point or every transient step, with worst value, time and margin. Missing ratings report `Unverified`, never a pass.
 - `check_specs(&result, &specs)` (`sindr::measure`) takes `Measurement`s (value at x, min/max/avg/RMS/pp, `WHEN` crossings, `TRIG`/`TARG` delay, rise/fall, settling, −3 dB) on any result and judges each `Spec` (min/max limits): value, pass/fail, margin, and the reason when unmeasured. `SpecReport::with_ratings` adds the ratings checks. SPICE `.meas` cards parse into `ParsedNetlist::measurements`.
 - `SwitchSpdt { nodes: [common, a, b], position: SpdtPosition::A | B }`, `Crystal { params: CrystalParams::from_datasheet(freq, esr, c0) }` and `FerriteBead { params: FerriteBeadParams::from_datasheet(z_100mhz, r_dc) }` are solved as networks of simpler elements, with results under their own id. A crystal is open at DC; its `power` is the drive level.
+- `sindr::import` maps a schematic tool's netlist onto sindr: `Netlist { components: [Component::new(id, ComponentKind::Resistor).with_value("4k7")], nets: [Net::new(id, [(component, terminal)])] }` plus a `Bench` (ground, `BenchSource`s and `BenchLoad`s on nets or terminals, ties, `Analysis`), run by `import::simulate`. Terminals match by name (`anode`/`cathode`, `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out`; `1`/`2` on unpolarised parts). Values read like a schematic (`1M` is mega, `4k7` is 4.7 k). Results and `ImportError`s use the caller's ids. Power-port names drive nothing unless `Bench::with_supplies_from_net_names` is called.
 - SI units throughout (V, A, Ω, F, H, s, K). Junction temperatures are in kelvin; 300.15 K is nominal.
 - Device models: Shockley diodes, Ebers–Moll BJT, Level-1 MOSFET, square-law JFET and IGBT. No BSIM or Gummel–Poon. `.model` cards fill diode IS/N/RS and BJT IS/BF/BR/NF/NR/VAF (`DiodeModel`, `BjtModel`); other parameters are rejected (strict) or warned about. SPICE input (feature `spice`) reads R, L, C, V, I, D, Q, X elements only, plus `.ic`/`.nodeset` into `ParsedNetlist::{initial_conditions, nodesets}`. `spice::to_netlist(&Circuit, title)` writes a deck back out (R, L, C, V, I, D, Q, E/G/F/H, K and exact R/D equivalents; other elements are an `ExportError`).
 
@@ -33,6 +34,7 @@ Key facts for generating code:
 
 ## Optional
 
+- [ROADMAP](https://github.com/steffendybvik/sindr-rs/blob/main/ROADMAP.md): where sindr is heading on the way to 1.0; planned, not shipped
 - [CHANGELOG](https://github.com/steffendybvik/sindr-rs/blob/main/CHANGELOG.md): changes per release, including breaking ones
 - [AGENTS.md](https://github.com/steffendybvik/sindr-rs/blob/main/AGENTS.md): orientation for agents working on the repo itself
 - [CONTRIBUTING](https://github.com/steffendybvik/sindr-rs/blob/main/CONTRIBUTING.md): development setup and conventions

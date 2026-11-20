@@ -90,6 +90,12 @@ python3 scripts/gen_llms_full.py --check
 
 ## Versions and the CHANGELOG
 
+Versions are plain `0.x` until 1.0, with no prereleases. A release with a
+breaking change bumps the minor version (`0.2.0` → `0.3.0`); one with only
+fixes and additions bumps the patch (`0.2.0` → `0.2.1`). Cargo treats a 0.x
+minor bump as breaking, so a caller on `sindr = "0.2"` is never broken by
+`cargo update`.
+
 Every PR to `main` must bump the version. The `version bumped` CI job fails
 unless:
 
@@ -104,15 +110,15 @@ The three crates share one version. A bump touches:
   `sindr-devices/Cargo.toml`
 - the `sindr` / `sindr-core` / `sindr-devices` entries under `[workspace.dependencies]` in
   the root `Cargo.toml`, plus `Cargo.lock`
-- the version in install snippets and status lines: `README.md`,
-  `sindr/README.md`, `sindr-core/README.md`, `sindr-devices/README.md`, `LIMITATIONS.md`, `AGENTS.md`,
-  `sindr/src/lib.rs` and `sindr/src/spice/mod.rs`. Pre-release versions don't
-  match a plain `"0.1"` requirement, so the snippets pin the full version.
+- the version in status lines: `README.md`, `LIMITATIONS.md`, `AGENTS.md`;
+  and, on a minor bump, the `"0.x"` requirement in the install snippets of
+  `README.md`, `sindr/README.md`, `sindr-core/README.md`,
+  `sindr-devices/README.md`, `sindr/src/lib.rs` and `sindr/src/spice/mod.rs`
 - `CHANGELOG.md`: move the `[Unreleased]` entries into the new section and
   update the compare links at the bottom
 
 Work for an upcoming release goes to a staging branch named after it (for
-example `v0.1.0-alpha.7`) that already carries the bump. Branch from it and open
+example `v0.3.0`) that already carries the bump. Branch from it and open
 PRs into it. CI runs on those PRs, but the version-bump check only runs on the
 staging branch's own PR into `main` when the release ships. Add CHANGELOG
 entries under the staging version's section, and don't bump versions in
@@ -133,8 +139,9 @@ checklist.
 
 - One commit per logical change. Subject: `type(scope): what changed`,
   lowercase and imperative, with no trailing period.
-- Breaking public-API changes are allowed during the alpha, but say so in the
-  commit body and the CHANGELOG.
+- Breaking public-API changes are allowed before 1.0, but say so in the
+  commit body and the CHANGELOG, and the release they go into bumps the
+  minor version.
 
 ## License
 

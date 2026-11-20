@@ -4,7 +4,7 @@ This file briefs an AI coding assistant (Claude Code, Codex, Cursor, etc.) worki
 
 ## What this repo is
 
-A pure-Rust analog circuit simulator. SPICE-style MNA (Modified Nodal Analysis) solver plus semiconductor companion models. Library only — no CLI, no GUI, no `no_std`. Pre-release alpha.
+A pure-Rust analog circuit simulator. SPICE-style MNA (Modified Nodal Analysis) solver plus semiconductor companion models. Library only — no CLI, no GUI, no `no_std`. Pre-1.0 (0.x).
 
 ## Workspace layout
 
@@ -32,6 +32,7 @@ sindr-rs/
 │   │   ├── thermal.rs          # self-heating: DC balance iteration, transient thermal RC
 │   │   ├── validation.rs       # circuit pre-flight checks
 │   │   ├── error.rs            # SimError variants
+│   │   ├── import/             # netlist-and-bench import for editors: Netlist, Bench, simulate, parse_value
 │   │   ├── examples.rs         # named example circuits, runnable from list_examples / run_example
 │   │   └── spice/              # SPICE3 netlist parser (optional `spice` feature)
 │   │       └── {mod,parser,preprocess,flatten,build,ast,param_eval,si,
@@ -79,7 +80,7 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 - **Errors flow through `SimError`** (see `sindr/src/error.rs`). When adding a new failure mode, prefer extending the enum over `String` errors.
 - **`f64` everywhere.** No generic numeric backend, no `f32`.
 - **Serde is feature-gated** but on by default. Any new public type that is part of `Circuit` or `SimulationResult` must derive `Serialize`/`Deserialize` under `#[cfg(feature = "serde")]`. Component types use `snake_case` tags (see existing `#[serde(rename_all = "snake_case")]`).
-- **Public API stability**: the crate is `0.1.0-alpha.8` — breaking changes are allowed, but call them out in the commit message.
+- **Public API stability**: the crates are at `0.2.0`, plain 0.x until 1.0. A breaking change bumps the minor version (`0.3.0`), anything else the patch (`0.2.1`). Breaking changes are allowed, but call them out in the commit message and the CHANGELOG.
 - **Comments**: lean. Don't restate what well-named code already says. Do explain *why* for non-obvious numerical choices (e.g. damping factors, why `k ≤ 0.999`, why `gmin` thresholds).
 - **No GSD planning-artefact references in source.** Strip `EX-NN`, `Pitfall N`, `RESEARCH.md` / `PLAN.md` mentions. They belong in `.planning/`, not in code or commits.
 
@@ -145,7 +146,7 @@ When in doubt, run `cargo run --example list_examples` and copy the closest exis
 
 ## Commit & PR conventions
 
-- Each release is staged on a `v<version>` branch (e.g. `v0.1.0-alpha.7`) that already carries the version bump. Branch off it and open PRs against it, not `main`; the staging branch merges into `main` when the release ships.
+- Each release is staged on a `v<version>` branch (e.g. `v0.3.0`) that already carries the version bump. Branch off it and open PRs against it, not `main`; the staging branch merges into `main` when the release ships.
 - One commit per logical change. Squash GSD's atomic per-task commits at end of phase.
 - Commit message: imperative, lowercase first word, no trailing period in subject.
 - Co-author trailer is fine; do not add hype-marketing footers.

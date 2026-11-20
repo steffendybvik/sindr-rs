@@ -16,7 +16,7 @@
 //! and [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages).
 //!
 //! Enable the optional `spice` feature to pull this module in
-//! (`sindr = { version = "0.1.0-alpha.8", features = ["spice"] }`); it is off by
+//! (`sindr = { version = "0.2", features = ["spice"] }`); it is off by
 //! default so the parser dependencies stay out of the baseline build.
 //!
 //! # Quick start

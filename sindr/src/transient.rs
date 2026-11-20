@@ -1360,6 +1360,7 @@ fn extract_mosfet_results_from_snapshot(
 /// let config = TransientConfig::new(10e-3, 1e-6);
 /// assert_eq!(config.tstop, 10e-3);
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TransientConfig {
@@ -1370,20 +1371,25 @@ pub struct TransientConfig {
     /// Newton solves add shorter steps in between.
     pub tstep: f64,
     /// Largest step allowed (s), as SPICE's TMAX. `None` means `tstep`.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub tmax: Option<f64>,
     /// Time (s) the result starts at, as SPICE's TSTART (default 0). The run
     /// is still integrated from 0, so the circuit has the same history, but
     /// steps before `tstart` aren't kept: the first snapshot is at `tstart`.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub tstart: f64,
     /// Integration method. Default [`IntegrationMethod::Gear2`].
+    #[cfg_attr(feature = "serde", serde(default))]
     pub method: IntegrationMethod,
     /// Control the step by local truncation error (default `true`). When
     /// `false`, every step is `tstep` (or `tmax`) except where a breakpoint
     /// or Newton failure shortens it.
+    #[cfg_attr(feature = "serde", serde(default = "default_adaptive"))]
     pub adaptive: bool,
     /// Where the run starts: from the initial conditions alone, as if
     /// switched on at t = 0 (the default), or from the DC operating point.
     /// See [`TransientStart`].
+    #[cfg_attr(feature = "serde", serde(default))]
     pub start: TransientStart,
     /// Initial node voltages (V), keyed by node name, as SPICE's `.ic`.
     /// With [`TransientStart::InitialConditions`] (SPICE's `UIC`) each
@@ -1392,6 +1398,7 @@ pub struct TransientConfig {
     /// With [`TransientStart::OperatingPoint`] these nodes are held at their
     /// values while the operating point is solved, as SPICE does with `.ic`
     /// and no `UIC`.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub initial_voltages: HashMap<String, f64>,
     /// Initial inductor currents (A), keyed by inductor or relay id, flowing
     /// from the element's first node to its second. Inductors not listed
@@ -1399,6 +1406,7 @@ pub struct TransientConfig {
     /// operating-point current. There an inductor listed here is held at its
     /// current while the operating point is solved; a relay coil just starts
     /// at it.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub initial_currents: HashMap<String, f64>,
 }
 
@@ -1460,6 +1468,11 @@ pub enum TransientStart {
     /// operating point is solved without self-heating, at the ambient the
     /// run starts from.
     OperatingPoint,
+}
+
+#[cfg(feature = "serde")]
+fn default_adaptive() -> bool {
+    true
 }
 
 /// Most steps one transient run may take.

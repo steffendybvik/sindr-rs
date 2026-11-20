@@ -23,6 +23,8 @@ use crate::mna::MnaMatrix;
 use crate::node_map::NodeMap;
 
 /// Frequency sweep spacing.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrequencySpacing {
     /// Logarithmic spacing: `num_points` in total, evenly spaced in
@@ -33,7 +35,8 @@ pub enum FrequencySpacing {
 }
 
 /// AC analysis configuration.
-#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AcConfig {
     /// Start frequency (Hz).
     pub f_start: f64,

@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0-alpha.8] - Unreleased
+## [0.2.0] - Unreleased
+
+The first plain release. Versions are now `0.x` with no prereleases: a
+breaking change bumps the minor version, anything else the patch, so
+`sindr = "0.2"` keeps working through `cargo update`. This release was
+staged as `0.1.0-alpha.8`.
 
 ### Added
 
@@ -20,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bead `current`) and SPICE export use the element's own id. Checked
   against ngspice. Exhaustive matches on `CircuitElement` need the new
   arms.
+- `sindr::import`: simulate a schematic tool's netlist without writing a
+  SPICE deck. A `Netlist` of components (the caller's id, a
+  `ComponentKind`, a value such as `"4k7"`, parameters, an optional model
+  and `Part`) and nets of `(component, terminal)` pins, plus a `Bench`
+  (ground, sources and loads on nets or terminals, ties, the analysis),
+  becomes a `Circuit` keyed by the caller's ids (`Netlist::to_circuit`)
+  or runs (`import::simulate`). Terminals match by name, values read as a
+  schematic writes them (`import::parse_value`: `4k7`, `100nF`, `1M` is
+  mega), and every `ImportError` names the component, net or bench item.
+  All of it is serde.
+- `TransientConfig`, `AcConfig` and `FrequencySpacing` derive
+  `Serialize`/`Deserialize`, and `AcConfig` derives `PartialEq`.
 - **Breaking:** a power MOSFET's body diode. `CircuitElement::Mosfet` has
   a new `body_diode: Option<DiodeModel>` field (struct literals need it,
   JSON may omit it): source to drain for NMOS, drain to source for PMOS,
@@ -688,8 +705,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   semiconductor models (diode, BJT, MOSFET, JFET, IGBT, varactor, zener,
   Schottky, LED, photodiode, photoresistor, thermistor).
 
-[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.8...HEAD
-[0.1.0-alpha.8]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.7...v0.1.0-alpha.8
+[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.7...v0.2.0
 [0.1.0-alpha.7]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.6...v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.5
