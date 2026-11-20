@@ -60,3 +60,11 @@ required-features = ["spice"]
 [[bench]]
 name = "mna_solve"
 harness = false
+
+[[bench]]
+name = "transient"
+harness = false
+
+[[bench]]
+name = "newton"
+harness = false

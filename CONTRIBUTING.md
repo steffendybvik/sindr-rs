@@ -47,6 +47,19 @@ python3 scripts/gen_llms_full.py --check
 - Parsers and evaluators get `proptest` properties (see `spice/si.rs` and
   `spice/param_eval.rs`). If one fails, proptest writes the shrunk case to
   `sindr/proptest-regressions/`; commit that file with the fix.
+- Benchmarks live in `sindr/benches/` (criterion). The `benchmarks` CI job
+  runs `transient` and `newton` on a PR's base and on the PR, and fails if any
+  case is more than 25 % slower. To check locally before pushing:
+
+  ```bash
+  cargo bench -p sindr --bench transient --bench newton -- --quick --save-baseline base
+  # make the change
+  cargo bench -p sindr --bench transient --bench newton -- --quick --save-baseline head
+  python3 scripts/bench_compare.py base head
+  ```
+
+  When a change makes something deliberately slower, say why in the PR. If
+  the numbers move a lot, update the table in `sindr/README.md`.
 - The `coverage` CI job reports per-file line coverage in the job summary. It
   only reports and never fails a build. Locally:
   `cargo llvm-cov --workspace --all-features --summary-only`.
