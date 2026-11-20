@@ -184,6 +184,7 @@ pub fn in_deck<'a>(case: &str, deck: &str, circuit: &'a Circuit) -> &'a Circuit 
                 kind,
                 params,
                 parasitic_caps: None,
+                body_diode: None,
             } => {
                 // `M d g s b model [W= L=]`; sindr's nodes are [g, d, s] and
                 // its body is the source.

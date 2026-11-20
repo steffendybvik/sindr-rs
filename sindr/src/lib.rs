@@ -321,18 +321,58 @@ use node_map::NodeMap as NM;
 
 /// The circuit the solver runs: `circuit` flattened, with each
 /// [`CircuitElement::ZenerDiode`] as the SPICE diode it stands for
-/// ([`device_params::zener_model`]). Every analysis starts here, so they
+/// ([`device_params::zener_model`]) and each MOSFET body diode as a
+/// [`CircuitElement::Diode`] `<id>.body`. Every analysis starts here, so they
 /// all see one zener model; ratings and export keep the zener as it is.
 pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, Circuit>, SimError> {
     let flat = circuit.flattened()?;
-    if !flat
-        .components
-        .iter()
-        .any(|c| matches!(c, CircuitElement::ZenerDiode { .. }))
-    {
+    let lowers = |c: &CircuitElement| {
+        matches!(
+            c,
+            CircuitElement::ZenerDiode { .. }
+                | CircuitElement::Mosfet {
+                    body_diode: Some(_),
+                    ..
+                }
+        )
+    };
+    if !flat.components.iter().any(lowers) {
         return Ok(flat);
     }
     let mut owned = flat.into_owned();
+    let mut body_diodes = Vec::new();
+    for element in &mut owned.components {
+        if let CircuitElement::Mosfet {
+            id,
+            nodes,
+            kind,
+            body_diode,
+            ..
+        } = element
+        {
+            if let Some(model) = body_diode.take() {
+                let (anode, cathode) = match kind {
+                    MosfetKind::Nmos => (&nodes[2], &nodes[1]),
+                    MosfetKind::Pmos => (&nodes[1], &nodes[2]),
+                };
+                body_diodes.push(CircuitElement::Diode {
+                    id: format!("{id}.body"),
+                    nodes: [anode.clone(), cathode.clone()],
+                    temperature: sindr_devices::diode::T_NOM,
+                    model: Some(model),
+                });
+            }
+        }
+    }
+    for diode in &body_diodes {
+        if owned.components.iter().any(|c| c.id() == diode.id()) {
+            return Err(SimError::InvalidComponent(format!(
+                "`{}`: a component already has the id a body diode is solved under",
+                diode.id()
+            )));
+        }
+    }
+    owned.components.extend(body_diodes);
     for element in &mut owned.components {
         if let CircuitElement::ZenerDiode {
             id,

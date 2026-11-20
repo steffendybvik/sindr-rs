@@ -310,6 +310,7 @@ CircuitElement::Mosfet {
     kind: MosfetKind,                          // MosfetKind::Nmos or MosfetKind::Pmos
     params: MosfetParams,                      // KP, VTO, LAMBDA, GAMMA, PHI; VTO SPICE-signed (negative for PMOS)
     parasitic_caps: Option<MosfetParasiticCaps>, // { cgs, cgd } in Farads; None = disabled
+    body_diode: Option<DiodeModel>,            // power MOSFET's body diode; None = none
 }
 
 // IGBT — nodes: [gate, collector, emitter]
@@ -328,6 +329,8 @@ CircuitElement::Jfet {
     vp: f64,        // pinch-off voltage (V), negative for N-channel
 }
 ```
+
+A MOSFET's `body_diode` is a SPICE diode card (`DiodeModel`) from source to drain for NMOS, drain to source for PMOS. It conducts when a bridge or inductive load pulls the drain past the source with the channel off. Every analysis solves it as a `Diode` named `<id>.body`, which is where its current shows in the results; `bv` on it sets the part's avalanche voltage.
 
 `BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps` and `MosfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
@@ -1129,7 +1132,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
 - **No JFET parasitic capacitances.** (BJT and MOSFET have optional Cbe/Cbc and Cgs/Cgd; JFET doesn't.)
-- **No power-MOSFET reverse body diode** as a separate stamped element (must be added explicitly as a `Diode`).
+- **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
 - **No SiC / GaN device models.**
 - **Magnetics: a saturating inductor, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), but there's no hysteresis, remanence, core loss or temperature dependence, and SPICE export refuses a saturating inductor. `Transformer` is linear coupled inductors: no shared saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
@@ -6042,6 +6045,17 @@ pub enum CircuitElement {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         parasitic_caps: Option<MosfetParasiticCaps>,
+        /// A power MOSFET's body diode, as a SPICE diode card: anode at the
+        /// source and cathode at the drain for NMOS, the other way round for
+        /// PMOS. It conducts when the drain is pulled past the source, as
+        /// in a bridge's freewheeling interval. Every analysis solves it as
+        /// a [`CircuitElement::Diode`] with id `<id>.body`, which is where
+        /// its current is reported. `None` (default) is no body diode.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        body_diode: Option<DiodeModel>,
     },
 
     /// N-channel or P-channel JFET (Shockley square-law model).

@@ -2262,6 +2262,7 @@ mod tests {
                     kind,
                     params: params.clone(),
                     parasitic_caps: None,
+                    body_diode: None,
                 }],
                 ..Default::default()
             };

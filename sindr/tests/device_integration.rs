@@ -358,6 +358,7 @@ fn mosfet(kind: sindr::MosfetKind, params: sindr_devices::mosfet::MosfetParams) 
         kind,
         params,
         parasitic_caps: None,
+        body_diode: None,
     }
 }
 
@@ -605,5 +606,68 @@ fn comparator_in_transient_and_ac() {
     .expect("ac");
     for point in &ac.points {
         assert_relative_eq!(point.node_voltages["out"].norm(), 1e5, max_relative = 1e-9);
+    }
+}
+
+// ----- MOSFET body diode --------------------------------------------------
+
+fn body_diode_circuit(kind: sindr::MosfetKind, drain_volts: f64) -> Circuit {
+    use sindr_devices::mosfet::MosfetParams;
+    let (params, source_volts) = match kind {
+        sindr::MosfetKind::Nmos => (MosfetParams::default_nmos(), 0.0),
+        sindr::MosfetKind::Pmos => (MosfetParams::default_pmos(), 5.0),
+    };
+    Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            vsrc("VS", "s", "0", source_volts),
+            vsrc("VG", "g", "s", 0.0),
+            vsrc("VD", "a", "0", drain_volts),
+            resistor("R1", "a", "d", 100.0),
+            CircuitElement::Mosfet {
+                id: "M1".into(),
+                nodes: ["g".into(), "d".into(), "s".into()],
+                kind,
+                params,
+                parasitic_caps: None,
+                body_diode: Some(sindr::DiodeModel::default()),
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+/// Closed form: with the channel off, the body diode is the only path, so
+/// `M1.body` carries exactly what R1 does. NMOS conducts with the drain
+/// below the source, PMOS with it above.
+#[test]
+fn body_diode_conducts_the_right_way_for_each_kind() {
+    for (kind, conducting, blocking) in [
+        (sindr::MosfetKind::Nmos, -3.0, 3.0),
+        (sindr::MosfetKind::Pmos, 8.0, 2.0),
+    ] {
+        let on = solve_circuit(&body_diode_circuit(kind, conducting)).expect("solves");
+        let body = comp_current(&on, "M1.body");
+        let r1 = comp_current(&on, "R1");
+        assert!(
+            body.abs() > 1e-3,
+            "{kind:?}: body diode should conduct: {body}"
+        );
+        assert_relative_eq!(body.abs(), r1.abs(), max_relative = 1e-6);
+        let off = solve_circuit(&body_diode_circuit(kind, blocking)).expect("solves");
+        assert!(
+            comp_current(&off, "M1.body").abs() < 1e-9,
+            "{kind:?}: blocks"
+        );
+    }
+}
+
+#[test]
+fn body_diode_id_must_be_free() {
+    let mut circuit = body_diode_circuit(sindr::MosfetKind::Nmos, -3.0);
+    circuit.components.push(resistor("M1.body", "a", "0", 1e3));
+    match solve_circuit(&circuit) {
+        Err(SimError::InvalidComponent(m)) => assert!(m.contains("M1.body"), "{m}"),
+        other => panic!("expected InvalidComponent, got {other:?}"),
     }
 }

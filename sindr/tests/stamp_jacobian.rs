@@ -251,6 +251,7 @@ fn mosfet(kind: MosfetKind, params: MosfetParams) -> Circuit {
         kind,
         params,
         parasitic_caps: None,
+        body_diode: None,
     })
 }
 
