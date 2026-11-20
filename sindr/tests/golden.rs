@@ -301,6 +301,11 @@ fn op_bjt_ce() {
 }
 
 #[test]
+fn op_bjt_pnp() {
+    check_op("op_bjt_pnp", &parse("op_bjt_pnp"), (OP_V, OP_I));
+}
+
+#[test]
 fn op_bjt_card() {
     check_op("op_bjt_card", &parse("op_bjt_card"), (OP_V, OP_I));
 }

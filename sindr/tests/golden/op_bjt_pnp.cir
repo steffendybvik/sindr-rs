@@ -1,0 +1,8 @@
+op: PNP common-emitter bias, emitter on the rail
+VCC vcc 0 10
+RC c 0 1k
+RB b 0 470k
+Q1 c b vcc qp
+* sindr's Ebers-Moll defaults with BF=100
+.model qp PNP(IS=1e-14 BF=100 BR=1)
+.end
