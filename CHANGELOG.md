@@ -140,9 +140,6 @@ staged as `0.1.0-alpha.8`.
 - ngspice goldens `tran_diode_recovery` (1N4148 reverse recovery),
   `cv_1n4148` and `cv_1n5819` (small-signal admittance across bias) and
   `dc_diode_breakdown`.
-- New crate `sindr-core`: the data model (`Circuit`, `CircuitElement`,
-  `Waveform`) with no solver dependencies, so design tools can use it alone.
-  `sindr` re-exports it, so `sindr::Circuit` paths still work.
 - Design hierarchy on `Circuit`: `blocks` (`Block`: ports, components,
   instances), `instances` (`Instance`), `globals`, and `parts` (`Part`:
   reference, value, symbol, footprint, free-form fields, ignored by the

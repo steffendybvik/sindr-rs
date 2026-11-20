@@ -1104,8 +1104,8 @@ mod tests {
     use super::*;
     use crate::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
     use crate::circuit::{Circuit, CircuitElement};
+    use crate::waveform::Waveform;
     use crate::{dc_sweep, solve_circuit, solve_transient, TransientConfig};
-    use sindr_core::waveform::Waveform;
 
     struct Points(Vec<(f64, f64)>);
 

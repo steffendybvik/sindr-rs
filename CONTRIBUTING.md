@@ -108,26 +108,23 @@ minor bump as breaking, so a caller on `sindr = "0.1"` is never broken by
 Every PR to `main` must bump the version. The `version bumped` CI job fails
 unless:
 
-1. `version` in `sindr/Cargo.toml`, `sindr-core/Cargo.toml` and
-   `sindr-devices/Cargo.toml` differs from `main` (a crate new on the
+1. `version` in `sindr/Cargo.toml` and `sindr-devices/Cargo.toml` differs from `main` (a crate new on the
    branch is skipped), and
 2. `CHANGELOG.md` has a `## [<new version>]` section.
 
-The three crates share one version. A bump touches:
+The two crates share one version. A bump touches:
 
-- `version` in `sindr/Cargo.toml`, `sindr-core/Cargo.toml` and
-  `sindr-devices/Cargo.toml`
-- the `sindr` / `sindr-core` / `sindr-devices` entries under `[workspace.dependencies]` in
+- `version` in `sindr/Cargo.toml` and `sindr-devices/Cargo.toml`
+- the `sindr` / `sindr-devices` entries under `[workspace.dependencies]` in
   the root `Cargo.toml`, plus `Cargo.lock`
 - the version in status lines: `README.md`, `LIMITATIONS.md`, `AGENTS.md`;
   and, on a minor bump, the `"0.x"` requirement in the install snippets of
-  `README.md`, `sindr/README.md`, `sindr-core/README.md`,
-  `sindr-devices/README.md`, `sindr/src/lib.rs` and `sindr/src/spice/mod.rs`
+  `README.md`, `sindr/README.md`, `sindr-devices/README.md`, `sindr/src/lib.rs` and `sindr/src/spice/mod.rs`
 - `CHANGELOG.md`: move the `[Unreleased]` entries into the new section and
   update the compare links at the bottom
 
 Work for an upcoming release goes to a staging branch named after it (for
-example `v0.2.0`) that already carries the bump. Branch from it and open
+example `v0.1.0`) that already carries the bump. Branch from it and open
 PRs into it. CI runs on those PRs, but the version-bump check only runs on the
 staging branch's own PR into `main` when the release ships. Add CHANGELOG
 entries under the staging version's section, and don't bump versions in
