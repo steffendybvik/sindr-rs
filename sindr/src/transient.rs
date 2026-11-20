@@ -1114,21 +1114,12 @@ fn extract_timestep_results(
                 idss,
                 vp,
             } => {
-                use sindr_devices::jfet::{jfet_companion, JfetKind};
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
-                let (vgs_eff, vds_eff) = match kind {
-                    JfetKind::NChannel => (vg - vs, vd - vs),
-                    JfetKind::PChannel => (vs - vg, vs - vd),
-                };
-                let comp = jfet_companion(vgs_eff, vds_eff, *kind, *idss, *vp);
-                let sign = match kind {
-                    JfetKind::NChannel => 1.0,
-                    JfetKind::PChannel => -1.0,
-                };
                 let vds_phys = vd - vs;
-                let id_current = sign * (comp.gm * vgs_eff + comp.gds * vds_eff + comp.i_eq);
+                let id_current =
+                    crate::results::jfet_drain_current(vg - vs, vds_phys, *kind, *idss, *vp);
                 let power = (id_current * vds_phys).abs();
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -1994,6 +1985,8 @@ pub(crate) fn run_transient(
     let last = work.as_ref().unwrap_or(circuit);
     let bjt_results = extract_bjt_results_from_snapshot(last, final_snapshot);
     let mosfet_results = extract_mosfet_results_from_snapshot(last, final_snapshot);
+    let (op_amp_results, relay_results) =
+        crate::results::op_amp_and_relay_results(last, &final_snapshot.node_voltages);
 
     Ok(SimulationResult {
         node_voltages: final_snapshot.node_voltages.clone(),
@@ -2001,8 +1994,8 @@ pub(crate) fn run_transient(
         component_results: final_snapshot.component_results.clone(),
         bjt_results,
         mosfet_results,
-        op_amp_results: vec![],
-        relay_results: vec![],
+        op_amp_results,
+        relay_results,
         mcu_results: vec![],
         convergence_aid: None,
         junction_temperatures: final_snapshot.junction_temperatures.clone(),
