@@ -2,7 +2,7 @@
 //! and an RC mesh at 10 to 10 000 nodes. `DENSE_MAX` in `src/mna.rs` comes
 //! from where the two cross.
 //!
-//!     cargo bench -p sindr --bench mna_solve
+//!     cargo bench -p sindr --features internals --bench mna_solve
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use nalgebra::DVector;

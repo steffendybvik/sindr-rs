@@ -36,6 +36,9 @@ examples = ["serde"]
 # SPICE3 netlist parsing (`sindr::spice`). Off by default to keep the
 # baseline dependency tree lean.
 spice = ["dep:winnow", "dep:miette"]
+# Unstable, not covered by semver: exposes the MNA matrix for sindr's own
+# `mna_solve` bench.
+internals = []
 
 [dev-dependencies]
 approx = "0.5"
@@ -71,6 +74,7 @@ required-features = ["spice"]
 [[bench]]
 name = "mna_solve"
 harness = false
+required-features = ["internals"]
 
 [[bench]]
 name = "transient"

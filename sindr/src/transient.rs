@@ -1612,7 +1612,7 @@ impl TransientConfig {
     /// The config [`solve_circuit`](crate::solve_circuit) uses: `tstop` = 5·τ
     /// and `tstep` = τ/50 for the circuit's longest time constant τ,
     /// stretched to cover 3 periods of a periodic source at 100 steps per
-    /// period (see [`calculate_duration`]). It starts from
+    /// period. It starts from
     /// [`TransientStart::InitialConditions`], switched on at t = 0, so the
     /// run shows the circuit settling.
     pub fn auto(circuit: &Circuit) -> Self {

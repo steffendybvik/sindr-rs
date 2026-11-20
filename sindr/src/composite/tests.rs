@@ -275,7 +275,7 @@ fn a_part_id_already_taken_is_refused() {
 #[test]
 fn stamping_directly_is_an_error_not_a_silent_open() {
     let circuit = spdt(SpdtPosition::A);
-    let node_map = crate::NodeMap::from_circuit(&circuit);
+    let node_map = crate::node_map::NodeMap::from_circuit(&circuit);
     let mut system = crate::MnaSystem::new(node_map.num_nodes(), circuit.count_voltage_sources());
     assert!(crate::stamp::stamp_circuit(&circuit, &mut system, &node_map, None).is_err());
 }
