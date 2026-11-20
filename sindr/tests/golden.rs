@@ -489,15 +489,27 @@ fn check_ac(
     let mag: Vec<f64> = phasors.iter().map(|v| v.norm()).collect();
     check.series("mag", &scale, &mag, &golden.column("mag"), mag_tol);
     if golden.names.iter().any(|n| n == "ph") {
-        let phase: Vec<f64> = phasors.iter().map(|v| v.arg().to_degrees()).collect();
+        // ngspice's `cph` unwraps the phase; take sindr's turn by turn
+        // nearest it.
+        let want = golden.column("ph");
+        let phase: Vec<f64> = phasors
+            .iter()
+            .zip(&want)
+            .map(|(v, w)| {
+                let p = v.arg().to_degrees();
+                p + 360.0 * ((w - p) / 360.0).round()
+            })
+            .collect();
         check.series(
             "phase (deg)",
             &scale,
             &phase,
-            &golden.column("ph"),
+            &want,
             Tol {
                 rel: 0.0,
-                abs: 1e-4,
+                // A relative error ε in the phasor turns its phase by up
+                // to ε rad.
+                abs: mag_tol.rel.to_degrees().max(1e-4),
             },
         );
     }
@@ -541,6 +553,106 @@ fn ac_bjt_ce() {
         (10.0, 100e3),
         OP_V,
     );
+}
+
+/// `ac_bjt_ce` from a 1k source, with constant Cbe and Cbc: gm·RC, then
+/// the Miller pole and the right-half-plane zero of Cbc.
+#[test]
+fn ac_bjt_caps() {
+    let circuit = circuit(vec![
+        vsource("vcc", "vcc", "0", 10.0),
+        vsource("vin", "in", "0", 0.0),
+        resistor("rs", "in", "s", 1e3),
+        CircuitElement::Capacitor {
+            id: "cin".into(),
+            nodes: ["s".into(), "b".into()],
+            capacitance: 10e-6,
+        },
+        resistor("rb", "vcc", "b", 470e3),
+        resistor("rc", "vcc", "c", 1e3),
+        CircuitElement::Bjt {
+            id: "q1".into(),
+            nodes: ["b".into(), "c".into(), "0".into()],
+            kind: sindr::BjtKind::Npn,
+            bf: 100.0,
+            temperature: 300.15,
+            parasitic_caps: Some(sindr::circuit::BjtParasiticCaps {
+                cbe: 10e-12,
+                cbc: 2e-12,
+            }),
+            model: None,
+        },
+    ]);
+    check_ac("ac_bjt_caps", &circuit, "vin", "c", 5, (10.0, 1e9), OP_V);
+}
+
+/// A forward-biased 1N4148 (about 4.3 mA): R1 against rd + RS, then the
+/// diffusion and junction charge rolling off the top decades.
+#[test]
+fn ac_diode() {
+    check_ac(
+        "ac_diode",
+        &parse("ac_diode"),
+        "v1",
+        "a",
+        5,
+        (1e3, 1e9),
+        OP_V,
+    );
+}
+
+/// Common-source NMOS fed from 10k: gm·RD at low frequency, then the
+/// Miller pole of Cgd and the zero where Cgd feeds forward.
+#[test]
+fn ac_mosfet_cs() {
+    let circuit = circuit(vec![
+        vsource("vdd", "vdd", "0", 10.0),
+        vsource("vg", "in", "0", 3.0),
+        resistor("rg", "in", "g", 10e3),
+        resistor("rd", "vdd", "d", 10e3),
+        CircuitElement::Mosfet {
+            id: "m1".into(),
+            nodes: ["g".into(), "d".into(), "0".into()],
+            kind: MosfetKind::Nmos,
+            params: MosfetParams::default_nmos(),
+            parasitic_caps: Some(sindr::circuit::MosfetParasiticCaps {
+                cgs: 10e-12,
+                cgd: 2e-12,
+            }),
+        },
+    ]);
+    check_ac("ac_mosfet_cs", &circuit, "vg", "d", 5, (1e3, 1e9), OP_V);
+}
+
+/// Self-biased JFET, AC-coupled into the gate with the source bypassed:
+/// the input high-pass, then gm·RD.
+#[test]
+fn ac_jfet() {
+    let circuit = circuit(vec![
+        vsource("vdd", "vdd", "0", 12.0),
+        vsource("vin", "in", "0", 0.0),
+        CircuitElement::Capacitor {
+            id: "cin".into(),
+            nodes: ["in".into(), "g".into()],
+            capacitance: 100e-9,
+        },
+        resistor("rg", "g", "0", 1e6),
+        resistor("rd", "vdd", "d", 1e3),
+        resistor("rs", "s", "0", 220.0),
+        CircuitElement::Capacitor {
+            id: "cs".into(),
+            nodes: ["s".into(), "0".into()],
+            capacitance: 100e-6,
+        },
+        CircuitElement::Jfet {
+            id: "j1".into(),
+            nodes: ["g".into(), "d".into(), "s".into()],
+            kind: JfetKind::NChannel,
+            idss: 10e-3,
+            vp: -2.0,
+        },
+    ]);
+    check_ac("ac_jfet", &circuit, "vin", "d", 5, (0.1, 100e3), JFET.0);
 }
 
 // ---------------------------------------------------------------- noise
@@ -810,6 +922,16 @@ fn check_tran(case: &'static str, vectors: &[&str]) {
 /// Each of `vectors` in `tran` against the golden, resampled onto sindr's
 /// steps, to 0.1 % of full scale.
 fn compare_tran(case: &'static str, vectors: &[&str], tran: &sindr::TransientData) {
+    compare_tran_within(case, vectors, tran, 1e-3);
+}
+
+/// As [`compare_tran`], to `fraction` of each vector's full scale.
+fn compare_tran_within(
+    case: &'static str,
+    vectors: &[&str],
+    tran: &sindr::TransientData,
+    fraction: f64,
+) {
     let golden = Golden::load(case);
     let times: Vec<f64> = tran.timesteps.iter().map(|s| s.time).collect();
 
@@ -845,7 +967,7 @@ fn compare_tran(case: &'static str, vectors: &[&str], tran: &sindr::TransientDat
             &want,
             Tol {
                 rel: 0.0,
-                abs: 1e-3 * full_scale,
+                abs: fraction * full_scale,
             },
         );
     }
@@ -884,6 +1006,39 @@ fn tran_op_start() {
         &["v(a)", "i(v1)"],
         &result.transient.unwrap(),
     );
+}
+
+/// Runs the deck's own `.tran` (with `uic`: both start from rest) and
+/// compares `vectors` to `fraction` of full scale. sindr steps adaptively at
+/// its defaults; the golden is ngspice at RELTOL 1e-6 and a short TMAX.
+fn check_deck_tran(case: &'static str, vectors: &[&str], fraction: f64) {
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    let config = netlist.analyses[0].transient_config().unwrap();
+    let tran = sindr::solve_transient(&netlist.circuit, &config)
+        .unwrap_or_else(|e| panic!("{case}: {e}"))
+        .transient
+        .unwrap();
+    compare_tran_within(case, vectors, &tran, fraction);
+}
+
+#[test]
+fn tran_halfwave() {
+    check_deck_tran("tran_halfwave", &["v(b)", "i(v1)"], 1e-3);
+}
+
+/// The base RC is checked to 0.1 % of full scale. The collector edge is
+/// looser: in the active region ic = IS·exp(vbe/Vt), so the base's error
+/// (0.4 mV here) comes out about vbe/Vt ≈ 27 times larger in ic, and the
+/// edge falls 5 V in 3 µs. Allow 3 %.
+#[test]
+fn tran_bjt_switch() {
+    check_deck_tran("tran_bjt_switch", &["v(b)"], 1e-3);
+    check_deck_tran("tran_bjt_switch", &["v(c)", "i(vcc)"], 3e-2);
+}
+
+#[test]
+fn tran_rlc_ring() {
+    check_deck_tran("tran_rlc_ring", &["v(b)", "i(v1)"], 1e-3);
 }
 
 // ---------------------------------------------------------------- temperature

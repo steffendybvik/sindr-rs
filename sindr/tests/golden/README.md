@@ -70,6 +70,18 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
   max step) resampled onto sindr's grid with `linearize`. That leaves
   sindr's truncation error, about 0.03 % of full scale at the start, where
   the first step is backward Euler.
+- **Nonlinear transient** (`tran_halfwave`, `tran_bjt_switch`,
+  `tran_rlc_ring`): the deck's own `.tran` with `uic`, so both start from
+  rest, and a short TMAX in the deck, so the check is the physics and not
+  the step control: 0.1 % of full scale. At default steps sindr is off by
+  0.2 % to 3 % of full scale on the rectifier's charging peaks and the
+  ringing, a little more than ngspice at its own defaults (0.05 % to 2 %).
+  `tran_bjt_switch`'s collector is checked to 3 %: in the active region
+  ic = IS·exp(vbe/Vt) turns the base's 0.4 mV error into about 2.7 % of ic
+  on an edge that falls 5 V in 3 µs. The base itself is held to 0.1 %.
+- **AC phase:** ngspice's `cph` unwraps the phase, so sindr's is compared
+  a whole number of turns from it, to the magnitude's relative tolerance in
+  radians (at least 1e-4°).
 
 ## Coverage
 
@@ -78,8 +90,8 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 | Operating point | `op_resistive`, `op_diode`, `op_diode_series`, `op_bjt_ce`, `op_bjt_card`, `op_exported_controlled` (E, G, F, H, I, potentiometer, switch), `op_mosfet_cs`, `op_mosfet_follower`, `op_pmos_highside`, `op_jfet`, `op_led`, `op_schottky`, `op_photodiode`, `op_subckt_param` (`.param`, nested `.subckt`, `.include`) |
 | DC sweep | `dc_diode_iv`, `dc_diode_1n4148`, `dc_diode_breakdown` (BV, IBV) |
 | Diode charge | `cv_1n4148`, `cv_1n5819`: sindr's AC admittance at each bias of an ngspice sweep, against ngspice's `gd` and `cd` behind the card's RS |
-| AC | `ac_rc_lowpass`, `ac_rlc_bandpass`, `ac_bjt_ce`, `ac_exported_transformer` |
-| Transient | `tran_rc_step`, `tran_rl_step`, `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
+| AC | `ac_rc_lowpass`, `ac_rlc_bandpass`, `ac_bjt_ce`, `ac_bjt_caps` (Cbe, Cbc), `ac_diode` (1N4148 with its charge), `ac_mosfet_cs` (Cgs, Cgd), `ac_jfet`, `ac_exported_transformer` |
+| Transient | `tran_rc_step`, `tran_rl_step`, `tran_halfwave` (sine into a diode and filter cap), `tran_bjt_switch` (pulse through an RC into an NPN; collector to 3 %, see below), `tran_rlc_ring`, `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
 | Temperature | `temp_diode` |
 
 Ignored until its bug is fixed: `temp_diode` (SIN-15, temperature maths).

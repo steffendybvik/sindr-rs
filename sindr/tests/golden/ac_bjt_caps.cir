@@ -1,0 +1,11 @@
+ac: NPN common-emitter from a 1k source, Miller pole of Cbc (built in Rust on the sindr side)
+VCC vcc 0 10
+VIN in 0 0
+RS in s 1k
+CIN s b 10u
+RB vcc b 470k
+RC vcc c 1k
+Q1 c b 0 qn
+* sindr: Cbe = 10 pF and Cbc = 2 pF, constant (MJE = MJC = 0 makes ngspice's junction caps bias-independent)
+.model qn NPN(IS=1e-14 BF=100 BR=1 CJE=10p MJE=0 CJC=2p MJC=0)
+.end
