@@ -24,10 +24,6 @@ pub const MAX_NR_ITERATIONS: usize = 100;
 /// Absolute voltage tolerance (V).
 pub const V_ABSTOL: f64 = 1e-6;
 
-/// Absolute current tolerance (A).
-#[allow(dead_code)]
-pub const I_ABSTOL: f64 = 1e-12;
-
 /// Relative tolerance (dimensionless).
 pub const RELTOL: f64 = 1e-3;
 
@@ -265,6 +261,35 @@ fn nr_inner(
     initial_voltages: Option<&std::collections::HashMap<String, f64>>,
     gmin_extra: f64,
 ) -> Result<(SimulationResult, DVector<f64>), SimError> {
+    // A high-gain op-amp clamped to its rails gives Newton no slope once an
+    // iterate saturates, so a feedback loop can bounce rail to rail. Solve
+    // with the clamps lifted first: that is the answer whenever the op-amps
+    // end up in their linear range, and a close start when they don't.
+    if v_init.is_none() {
+        if let Some(open) = without_op_amp_rails(circuit) {
+            if let Ok((_, v)) = nr_inner(
+                &open,
+                node_map,
+                num_nodes,
+                num_vsources,
+                None,
+                initial_voltages,
+                gmin_extra,
+            ) {
+                if let Ok(solved) = nr_inner(
+                    circuit,
+                    node_map,
+                    num_nodes,
+                    num_vsources,
+                    Some(&v),
+                    None,
+                    gmin_extra,
+                ) {
+                    return Ok(solved);
+                }
+            }
+        }
+    }
     let size = num_nodes + num_vsources;
     let mut v_prev = match v_init {
         Some(v) => v.clone(),
@@ -328,6 +353,32 @@ fn nr_inner(
         iterations: MAX_NR_ITERATIONS,
         max_step_volts: last_step,
     })
+}
+
+/// Rails far enough out that the op-amp clamp never engages.
+const UNCLAMPED_RAIL: f64 = 1e12;
+
+/// `circuit` with every modelled op-amp's rails moved out of reach, or
+/// `None` when it has no clamped op-amp.
+fn without_op_amp_rails(circuit: &Circuit) -> Option<Circuit> {
+    let clamped = |c: &CircuitElement| matches!(c, CircuitElement::OpAmp { model: Some(_), v_pos, .. } if *v_pos < UNCLAMPED_RAIL);
+    if !circuit.components.iter().any(clamped) {
+        return None;
+    }
+    let mut open = circuit.clone();
+    for c in &mut open.components {
+        if let CircuitElement::OpAmp {
+            v_pos,
+            v_neg,
+            model: Some(_),
+            ..
+        } = c
+        {
+            *v_pos = UNCLAMPED_RAIL;
+            *v_neg = -UNCLAMPED_RAIL;
+        }
+    }
+    Some(open)
 }
 
 /// Information about a diode/junction needed for voltage limiting.

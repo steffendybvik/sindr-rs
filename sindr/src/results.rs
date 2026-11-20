@@ -27,8 +27,9 @@ use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 /// dissipating energy. Components with more terminals report one port:
 /// BJTs and IGBTs give Vce and Ic, MOSFETs and JFETs give Vds and Id, with
 /// `power` as the magnitude `|V·I|` (their full results are in
-/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, and a
-/// transformer its primary.
+/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, a
+/// transformer its primary, and a voltage regulator its pass element
+/// (`Vin − Vout`, the output current, and its dissipation).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ComponentResult {
@@ -53,11 +54,14 @@ pub struct BjtResult {
     pub vbe: f64,
     /// Collector–emitter voltage (V).
     pub vce: f64,
-    /// Base current (A).
+    /// Base current (A), into the base: positive for a conducting NPN,
+    /// negative for a PNP.
     pub ib: f64,
-    /// Collector current (A).
+    /// Collector current (A), into the collector: positive for a
+    /// conducting NPN, negative for a PNP.
     pub ic: f64,
-    /// Emitter current (A).
+    /// Emitter current (A), into the emitter: `−(ic + ib)` by KCL, so
+    /// negative for a conducting NPN and positive for a PNP.
     pub ie: f64,
     /// Collector dissipation `|Ic·Vce|` (W). The base's `Ib·Vbe` is left
     /// out.
@@ -76,7 +80,8 @@ pub struct MosfetResult {
     pub vgs: f64,
     /// Drain–source voltage (V).
     pub vds: f64,
-    /// Drain current (A).
+    /// Drain current (A), into the drain: positive for a conducting NMOS,
+    /// negative for a PMOS.
     pub id_current: f64,
     /// Total dissipation (W).
     pub power: f64,
@@ -106,13 +111,16 @@ pub struct OpAmpResult {
 pub struct RelayResult {
     /// Component id.
     pub id: String,
-    /// Voltage across the coil terminals (V).
+    /// Coil voltage, `coil+ − coil−` (`nodes[0] − nodes[1]`) (V).
     pub coil_voltage: f64,
     /// `true` when coil voltage exceeds the pickup threshold.
     pub contact_closed: bool,
 }
 
 /// Per-microcontroller results: per-pin GPIO output currents.
+///
+/// Never filled: sindr has no microcontroller element, so
+/// [`SimulationResult::mcu_results`] is always empty.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct McuResult {
@@ -136,6 +144,13 @@ pub struct TimestepSnapshot {
     /// Per-component voltage/current/power at this instant. A source with a
     /// waveform reports its value at this time, not its DC term.
     pub component_results: Vec<ComponentResult>,
+    /// Junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data at this instant, by component id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
 }
 
 /// Time-series data from a transient simulation.
@@ -198,6 +213,15 @@ pub struct SimulationResult {
     pub node_voltages: HashMap<String, f64>,
     /// Branch currents (A) for components that introduce a current unknown
     /// — voltage sources, op-amps, transformers, etc. Keyed by component id.
+    ///
+    /// The MNA convention: the current entering the element at `nodes[0]`
+    /// and leaving at `nodes[1]`, through the element. A source delivering
+    /// power reads **negative**: a 5 V supply feeding 5 mA into a load is
+    /// `-0.005`. For a VCVS, CCVS, op-amp or comparator it is the current
+    /// into the output node (`nodes[0]`, or the op-amp's `out`), so an
+    /// output sourcing current is negative too. For a voltage regulator it
+    /// is the current into its output pin (negative when it sources); its
+    /// [`ComponentResult`] has the output current as a positive number.
     pub branch_currents: HashMap<String, f64>,
     /// Per-component voltage, current, and power for every two-terminal
     /// component.
@@ -244,6 +268,14 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub convergence_aid: Option<ConvergenceAid>,
+    /// Self-heated junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data, by component id: the DC balance, or
+    /// the end of a transient. Empty when no part has thermal data.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -267,6 +299,27 @@ fn node_voltage(node: &str, node_map: &NodeMap, solution: &DVector<f64>) -> f64 
     match node_map.index(node) {
         Some(idx) => solution[idx],
         None => 0.0, // ground
+    }
+}
+
+/// A regulator's result: its pass element, input to output. `Vin − Vout`,
+/// the output current, and the power it dissipates, quiescent included.
+pub(crate) fn regulator_result(
+    id: &str,
+    nodes: &[String; 3],
+    model: &Option<sindr_devices::regulator::RegulatorParams>,
+    node_map: &NodeMap,
+    solution: &DVector<f64>,
+    branch: usize,
+) -> ComponentResult {
+    let (vin, vout, iout) =
+        crate::stamp::regulator_state(node_map, nodes, branch, Some(solution)).unwrap_or_default();
+    let params = model.unwrap_or_default();
+    ComponentResult {
+        id: id.to_string(),
+        voltage_across: vin - vout,
+        current_through: iout,
+        power: sindr_devices::regulator::regulator_dissipation(&params, vin, vout, iout),
     }
 }
 
@@ -796,21 +849,14 @@ pub fn extract_results(
                     power,
                 });
             }
-            CircuitElement::VoltageRegulator { id, nodes, voltage } => {
-                // Stamped as ideal voltage source between nodes[1] (output) and nodes[2] (gnd).
-                // Report voltage at output relative to the regulator's gnd node.
-                let vout = node_voltage(&nodes[1], node_map, solution);
-                let vgnd = node_voltage(&nodes[2], node_map, solution);
-                let v_across = vout - vgnd;
-                let i_through = solution[num_nodes + vsource_index];
-                let power = voltage * i_through;
-                branch_currents.insert(id.clone(), i_through);
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power,
-                });
+            CircuitElement::VoltageRegulator {
+                id, nodes, model, ..
+            } => {
+                let branch = num_nodes + vsource_index;
+                branch_currents.insert(id.clone(), solution[branch]);
+                component_results.push(regulator_result(
+                    id, nodes, model, node_map, solution, branch,
+                ));
                 vsource_index += 1;
             }
             CircuitElement::OpAmp { id, nodes, .. }
@@ -836,7 +882,7 @@ pub fn extract_results(
                     v_differential,
                     v_out,
                 });
-                vsource_index += 1;
+                vsource_index += component.branch_slots();
             }
         }
     }
@@ -851,6 +897,7 @@ pub fn extract_results(
         relay_results: relay_results_vec,
         mcu_results: vec![],
         convergence_aid: None,
+        junction_temperatures: HashMap::new(),
         transient: None,
     }
 }
@@ -873,6 +920,7 @@ mod tests {
             relay_results: vec![],
             mcu_results: vec![],
             convergence_aid: None,
+            junction_temperatures: HashMap::new(),
             transient: None,
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -894,17 +942,20 @@ mod tests {
             relay_results: vec![],
             mcu_results: vec![],
             convergence_aid: None,
+            junction_temperatures: HashMap::new(),
             transient: Some(TransientData {
                 timesteps: vec![
                     TimestepSnapshot {
                         time: 0.0,
                         node_voltages: HashMap::from([("n1".into(), 0.0)]),
                         component_results: vec![],
+                        junction_temperatures: HashMap::new(),
                     },
                     TimestepSnapshot {
                         time: 0.001,
                         node_voltages: HashMap::from([("n1".into(), 3.2)]),
                         component_results: vec![],
+                        junction_temperatures: HashMap::new(),
                     },
                 ],
                 time_step: 0.001,

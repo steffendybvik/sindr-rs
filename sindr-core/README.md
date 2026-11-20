@@ -53,7 +53,7 @@ let ids: Vec<&str> = flat.components.iter().map(|c| c.id()).collect();
 assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
 ```
 
-`Part` data is ignored by the simulator. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
+`Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `sindr::check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
 
 ## License
 

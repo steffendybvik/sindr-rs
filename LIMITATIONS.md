@@ -9,7 +9,7 @@ Status: pre-release alpha (`0.1.0-alpha.8`). Anything below may change.
 - DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
-- Thermistor, photoresistor, potentiometer, relay, fuse, ideal fixed-output voltage regulator
+- Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation)
 - Programmatic Rust API + serde JSON for circuits and results
 
 If your problem is "given an analog topology built in Rust, what are the node voltages and branch currents (possibly over time, frequency, or temperature)?", sindr is in scope.
@@ -65,8 +65,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 ### Device models
 
-- **No op-amp macromodel beyond ideal-with-rails.** No GBW, slew rate, input bias current, offset, output impedance, current limiting, or supply current. Real op-amp models from vendors cannot be loaded.
-- **No real regulator / reference / DC-DC controller models.** `VoltageRegulator` is an ideal voltage source on the output: no dropout, line/load regulation, quiescent current or current limit.
+- **Op-amp macromodel: single pole.** `OpAmpModel` gives open-loop gain, a dominant pole from GBW, slew rate, output resistance, input offset and bias current, and a rail clamp. There is no second pole or phase margin, no output current limit, no supply current, no input common-mode range, no noise and no CMRR/PSRR. Vendor op-amp models can't be loaded. Without a `model` the op-amp is a gain-1e5 VCVS with no rail clamp.
+- **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. No references, adjustable regulators (LM317 with its divider) or DC-DC controllers.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
@@ -95,8 +95,11 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 ### Self-heating & thermal
 
-- Temperature is a **per-device parameter**, not a state variable. The temp-sweep analysis re-solves at each temperature; it does not couple junction power dissipation back into junction temperature within a single solve.
-- **No electro-thermal network**, no thermal RC ladders, no `T(t)` co-simulated with `V(t)`. This matters for IGBT / power-MOSFET / LED designs where self-heating shifts the operating point.
+- **Self-heating is one thermal RC per part.** A part with `Part::thermal` runs at `ambient + P·Rθ` (iterated to a balance in DC, a thermal RC state in transient). There's no thermal coupling between parts (a shared heatsink, neighbours on a board), and no multi-pole Foster/Cauer ladder for the junction-to-case path.
+- **Only junction devices and the thermistor feel their temperature:** diodes, LEDs, Zeners, Schottkys, photodiodes, BJTs and thermistors. MOSFETs, JFETs, IGBTs and resistors report a junction temperature (and so get Tj-max checks), but their models have no temperature in them, so heating doesn't move their operating point. Power-MOSFET and IGBT runaway is not predicted.
+- **LEDs scale IS with silicon's bandgap**, so a hot LED's forward voltage rises instead of falling the ~2 mV/K a real one does.
+- **Self-heating applies to `solve_circuit`, `solve_circuit_with_initial_voltages` and `solve_transient`** (and `temperature_sweep`, which sets the ambient). AC, `.tf`, `.sens` and `dc_sweep` linearise around the unheated operating point.
+- In a transient the electrical step solves at the temperature from the step before. Thermal time constants are far longer than the electrical steps, so the lag doesn't matter unless the step is coarse compared with Rθ·Cθ.
 
 ### Tooling & UX
 
@@ -113,7 +116,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - Transformer coupling `k = 1.0` is mathematically singular — clamp to `≤ 0.999`.
 - Switches are modelled as `0.01 Ω` / `1 GΩ` resistors — they are not ideal, and very high-impedance circuits may need explicit values.
-- The op-amp / comparator macromodel is a saturating VCVS with gain `1e5` — it has no frequency response, so AC and transient closed-loop bandwidth predictions are not realistic.
+- An op-amp without a `model`, and every comparator, is a VCVS with gain `1e5` and no frequency response or rail clamp, so its closed-loop bandwidth isn't realistic. Give the op-amp an `OpAmpModel` for GBW and slew rate. Its stage starts from 0 V at t = 0, like the capacitors, so a transient opens with a short settle unless you seed it.
 - For accurate ringing amplitude in a resonant circuit, use `IntegrationMethod::Trapezoidal` with a step well below the period: Gear-2 and especially backward Euler damp it.
 - Photodiode / photoresistor / thermistor "stimulus" parameters (irradiance, light level, temperature) are **constants per solve**, not time-varying inputs. There is no environmental waveform.
 
@@ -121,7 +124,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - Need a vendor BJT / MOSFET? Fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
 - Need digital control around an analog plant? Drive the analog circuit step-by-step from your own Rust loop, sampling node voltages between transient calls and updating sources / switches between them. This is not co-simulation, but it works for slow control loops.
-- Need a Bode plot of a closed loop with a real op-amp? Replace the `OpAmp` element with a manually-built VCVS + RC pole network that approximates the part you care about.
+- Need a second pole or phase margin on an op-amp? Build it from VCVS stages and RC networks around an `OpAmp` with an `OpAmpModel`.
 - Need Monte Carlo? Loop in Rust over randomised `CircuitElement` parameter values; sindr is fast enough for thousands of solves on small circuits.
 
 ## Reporting gaps

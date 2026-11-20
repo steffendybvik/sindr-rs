@@ -99,7 +99,7 @@ impl Instance {
 /// The simulator ignores it.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Part {
     /// Reference designator (`"R1"`). `None` means the element id is the
     /// reference.
@@ -118,6 +118,150 @@ pub struct Part {
     /// Any other fields: manufacturer, MPN, tolerance, …
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
     pub fields: BTreeMap<String, String>,
+    /// Absolute maximum ratings from the datasheet. `sindr::check_ratings`
+    /// compares a simulation against them.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Ratings::is_empty"))]
+    pub ratings: Ratings,
+    /// How the part sheds heat. When set, the solver heats its junction by
+    /// the power it dissipates; see [`Thermal`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub thermal: Option<Thermal>,
+}
+
+/// A part's thermal path to ambient, for self-heating.
+///
+/// With it, the part's junction runs at `ambient + P·Rθ` in DC, or follows
+/// `Cθ·dT/dt = P − (T − ambient)/Rθ` in a transient, and the solver feeds
+/// that temperature back into the device (IS and kT/q for diodes, LEDs and
+/// BJTs; the thermistor's resistance). The element's own `temperature`
+/// field is then ignored.
+///
+/// Rθ is [`rth_jc`](Self::rth_jc) + [`rth_ca`](Self::rth_ca) when both are
+/// set (a part on a heatsink), otherwise [`rth_ja`](Self::rth_ja).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Thermal {
+    /// Junction to ambient (K/W), the datasheet's Rθja for the part on its
+    /// own.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_ja: Option<f64>,
+    /// Junction to case (K/W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_jc: Option<f64>,
+    /// Case to ambient through what the part is mounted on: interface pad
+    /// plus heatsink (K/W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_ca: Option<f64>,
+    /// Thermal capacitance (J/K). `None` in a transient means the junction
+    /// follows its power with no lag.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub cth: Option<f64>,
+    /// Ambient temperature (K). Default 300.15 K (27 °C).
+    pub ambient: f64,
+}
+
+impl Default for Thermal {
+    fn default() -> Self {
+        Self {
+            rth_ja: None,
+            rth_jc: None,
+            rth_ca: None,
+            cth: None,
+            ambient: 300.15,
+        }
+    }
+}
+
+impl Thermal {
+    /// A free-standing part: junction to ambient `rth_ja` (K/W).
+    pub fn junction_to_ambient(rth_ja: f64) -> Self {
+        Self {
+            rth_ja: Some(rth_ja),
+            ..Self::default()
+        }
+    }
+
+    /// A part on a heatsink: junction to case `rth_jc` plus case to ambient
+    /// `rth_ca` (K/W).
+    pub fn on_heatsink(rth_jc: f64, rth_ca: f64) -> Self {
+        Self {
+            rth_jc: Some(rth_jc),
+            rth_ca: Some(rth_ca),
+            ..Self::default()
+        }
+    }
+
+    /// The thermal resistance from junction to ambient (K/W) the solver
+    /// uses, or `None` when neither path is set.
+    pub fn resistance(&self) -> Option<f64> {
+        match (self.rth_jc, self.rth_ca) {
+            (Some(jc), Some(ca)) => Some(jc + ca),
+            _ => self.rth_ja,
+        }
+    }
+}
+
+/// Absolute maximum ratings: the datasheet limits a part must never pass.
+///
+/// Every limit is a magnitude in SI units and `None` when unknown. A rating
+/// a part needs but doesn't have is reported as unverified, never as a
+/// pass. Which ratings a component needs depends on its kind; see
+/// `sindr::ratings`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Ratings {
+    /// Power dissipation (W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub power: Option<f64>,
+    /// Voltage across the part (V): a capacitor's rated voltage, a
+    /// resistor's working voltage.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub voltage: Option<f64>,
+    /// Current through the part (A): an inductor's saturation current.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current: Option<f64>,
+    /// Diode reverse voltage, cathode above anode (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub reverse_voltage: Option<f64>,
+    /// Diode forward current, anode to cathode (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub forward_current: Option<f64>,
+    /// BJT or IGBT collector–emitter voltage, `|Vce|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vce: Option<f64>,
+    /// BJT collector–base voltage, `|Vcb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vcb: Option<f64>,
+    /// BJT emitter–base voltage, `|Veb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub veb: Option<f64>,
+    /// BJT or IGBT collector current, `|Ic|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub ic: Option<f64>,
+    /// MOSFET or JFET drain–source voltage, `|Vds|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vds: Option<f64>,
+    /// MOSFET or JFET gate–source voltage, `|Vgs|`; an IGBT's gate–emitter
+    /// voltage (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vgs: Option<f64>,
+    /// MOSFET or JFET drain current, `|Id|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub id: Option<f64>,
+    /// Maximum junction temperature (K): 423.15 K for a 150 °C part. Checked
+    /// against the junction temperature self-heating reports, so it needs
+    /// [`Part::thermal`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub tj_max: Option<f64>,
+}
+
+impl Ratings {
+    /// `true` when no limit is set.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Why a design can't be flattened.

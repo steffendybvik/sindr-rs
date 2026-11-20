@@ -21,8 +21,6 @@
 //! * **X** — should not appear in `flat.elements` (the flattener already
 //!   expanded them). Hitting one here is an internal bug.
 
-#![allow(dead_code)] // some helpers are exercised only via tests
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::circuit::{BjtModel, BjtParasiticCaps, DiodeModel};

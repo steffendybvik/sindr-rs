@@ -248,11 +248,25 @@ CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, al
 
 ```rust
 // nodes: [in_plus, in_minus, out]
-CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // supply rails, default ±15 V
+CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> } // rails, default ±15 V
 CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // default 5 V / 0 V
 ```
 
-Both are modeled as a high-gain VCVS (gain = 1×10⁵) that saturates at the supply rails.
+With `model: None` both are a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
+
+```rust
+use sindr::{CircuitElement, OpAmpModel};
+
+let u1 = CircuitElement::OpAmp {
+    id: "U1".into(),
+    nodes: ["in".into(), "fb".into(), "out".into()],
+    v_pos: 12.0,
+    v_neg: -12.0,
+    model: Some(OpAmpModel { gbw: Some(3e6), slew_rate: Some(13e6), r_out: 50.0, ..OpAmpModel::default() }),
+};
+```
+
+The pole and slew limit act in transient and AC runs. An op-amp doesn't count as reactive, so `solve_circuit` still runs DC for a circuit whose only dynamics are op-amps; call `solve_transient` to see them.
 
 ### Sensors / misc
 
@@ -268,10 +282,12 @@ CircuitElement::Relay {
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
 }
 CircuitElement::Fuse             { id, nodes: [String; 2], rating: f64, blown: bool } // 1 mΩ intact, 1 GΩ blown; rating is display-only
-CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64 }   // ideal source from output to gnd
+CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> }
 ```
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
+
+`VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin; without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
 
 ## Reading results
 
@@ -439,6 +455,65 @@ pub struct TempSweepPoint {
 ```
 
 `num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
+
+## Self-heating
+
+Give a part a thermal path and the solver heats its junction by what it dissipates, then feeds that temperature back into the device: IS and kT/q for diodes, LEDs, Zeners, Schottkys, photodiodes and BJTs, and the resistance of a thermistor. The DC solve iterates until power and temperature agree. A transient carries a thermal RC state per part (`Cθ·dT/dt = P − (T − ambient)/Rθ`), starting cold at ambient.
+
+```rust
+use sindr::{solve_circuit, Part, SimError, Thermal};
+
+// SOT-23 on its own (~500 K/W), or a TO-220 on a heatsink.
+circuit.parts.insert("Q2".into(), Part { thermal: Some(Thermal::junction_to_ambient(500.0)), ..Part::default() });
+circuit.parts.insert("Q3".into(), Part { thermal: Some(Thermal::on_heatsink(5.0, 10.0)), ..Part::default() });
+
+match solve_circuit(&circuit) {
+    Ok(result) => println!("Tj(Q2) = {:.1} K", result.junction_temperatures["Q2"]),
+    Err(SimError::ThermalRunaway { part, temperature }) => println!("{part} runs away past {temperature:.0} K"),
+    Err(e) => return Err(e),
+}
+```
+
+`Thermal` takes `rth_ja` (K/W), or `rth_jc` plus `rth_ca` for a part on a heatsink, an optional `cth` (J/K; without it a transient's junction follows its power with no lag), and `ambient` (K, default 300.15). With it, the element's own `temperature` field is ignored. `SimulationResult::junction_temperatures` and each `TimestepSnapshot`'s carry the result, and `Ratings::tj_max` is checked against them. When no balance exists (a junction past 1000 K, or the iteration never settles), the solve returns `SimError::ThermalRunaway`. MOSFETs, JFETs, IGBTs and resistors report a junction temperature, but their models don't depend on it.
+
+## Ratings checks
+
+Check a solved circuit against each part's absolute maximum ratings, so nothing gets powered past its datasheet limits. Ratings live on the component's `Part` (`circuit.parts`, keyed by component id). `check_ratings` looks at the DC operating point, or at every step of a transient, where inrush, inductive kickback and start-up peaks show up.
+
+```rust
+use sindr::{check_ratings, solve_transient, Part, Ratings, RatingStatus, TransientConfig};
+
+circuit.parts.insert("Q1".into(), Part {
+    ratings: Ratings { vce: Some(45.0), ic: Some(0.1), power: Some(0.5), ..Ratings::default() },
+    ..Part::default()
+});
+
+let result = solve_transient(&circuit, &TransientConfig::new(1e-3, 1e-6))?;
+let report = check_ratings(&circuit, &result)?;
+for c in report.exceeded() {
+    println!("{} {:?}: {:.3} {} at t = {:?} (limit {:?}, margin {:.0}%)",
+        c.part, c.rating, c.worst.unwrap(), c.rating.unit(), c.time, c.limit,
+        c.margin_percent.unwrap_or(f64::NAN));
+}
+assert!(report.is_safe()); // false while anything is exceeded *or* unverified
+```
+
+Each component kind has ratings it needs, checked whether set or not; a missing one is `RatingStatus::Unverified`, never a pass:
+
+| Component | Needs |
+|---|---|
+| resistor, potentiometer, thermistor, photoresistor | `power` |
+| capacitor | `voltage` |
+| inductor | `current` |
+| diode, Schottky, LED, photodiode | `reverse_voltage`, `forward_current`, `power` |
+| Zener | `power` |
+| varactor | `reverse_voltage` |
+| BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
+| MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
+| IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+| anything with `Part::thermal` | also `tj_max` |
+
+Any other rating set on a part is checked too: `power`, `voltage` and `current` on any component (on the port its `ComponentResult` reports), the rest on the devices they belong to. All limits are magnitudes, so PNP and PMOS parts use the same positive numbers. Transistor power is `|V·I|` on the Vce/Ic or Vds/Id port, without base or gate dissipation.
 
 ## Examples
 

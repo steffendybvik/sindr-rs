@@ -25,7 +25,8 @@ use crate::node_map::NodeMap;
 /// Frequency sweep spacing.
 #[derive(Debug, Clone, Copy)]
 pub enum FrequencySpacing {
-    /// Logarithmic spacing (decade-based).
+    /// Logarithmic spacing: `num_points` in total, evenly spaced in
+    /// log10(f) from `f_start` to `f_stop`. Not points per decade.
     Logarithmic,
     /// Linear spacing.
     Linear,
@@ -45,7 +46,8 @@ pub struct AcConfig {
     pub spacing: FrequencySpacing,
     /// ID of the AC source (voltage source with AC stimulus).
     pub source_id: String,
-    /// AC magnitude of the source.
+    /// AC amplitude of the source: volts, linear (not dB), at 0° phase.
+    /// Results scale with it; 1 V makes node voltages read as gain.
     pub ac_magnitude: f64,
 }
 
@@ -59,7 +61,10 @@ pub struct AcPoint {
 }
 
 impl AcPoint {
-    /// Get gain in dB for a node relative to AC source magnitude.
+    /// Gain in dB for a node: `20·log10(|V(node)| / source_magnitude)`, a
+    /// voltage ratio. `source_magnitude` is in volts, normally
+    /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
+    /// circuit.
     pub fn gain_db(&self, node: &str, source_magnitude: f64) -> Option<f64> {
         self.node_voltages.get(node).map(|v| {
             let gain = v.norm() / source_magnitude;
@@ -67,7 +72,9 @@ impl AcPoint {
         })
     }
 
-    /// Get phase in degrees for a node.
+    /// Phase of a node's voltage in degrees, in (−180°, 180°], relative to
+    /// the source (which is at 0°). `None` when the node isn't in the
+    /// circuit.
     pub fn phase_deg(&self, node: &str) -> Option<f64> {
         self.node_voltages.get(node).map(|v| v.arg().to_degrees())
     }
@@ -83,7 +90,8 @@ pub struct AcResult {
 }
 
 impl AcResult {
-    /// Extract gain (dB) curve for a node.
+    /// The gain curve for a node as `(frequency in Hz, gain in dB)` pairs,
+    /// one per point, using [`AcConfig::ac_magnitude`].
     pub fn gain_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()
@@ -94,7 +102,8 @@ impl AcResult {
             .collect()
     }
 
-    /// Extract phase (degrees) curve for a node.
+    /// The phase curve for a node as `(frequency in Hz, phase in degrees)`
+    /// pairs, one per point; see [`AcPoint::phase_deg`].
     pub fn phase_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()
@@ -437,6 +446,17 @@ pub(crate) fn bias_point(
             dc_solution[i] = v;
         }
     }
+    // A regulator's piece depends on its output current, its branch row.
+    for element in &circuit.components {
+        if let CircuitElement::VoltageRegulator { id, .. } = element {
+            if let (Some(k), Some(&i)) = (
+                circuit.vsource_branch_index(id),
+                dc_result.branch_currents.get(id),
+            ) {
+                dc_solution[num_nodes + k] = i;
+            }
+        }
+    }
     Ok((node_map, dc_solution))
 }
 
@@ -700,6 +720,45 @@ pub(crate) fn small_signal_system(
                 }
                 vsource_index += 2;
             }
+            // Modelled op-amp, linearised at the bias point: see `op_amp`.
+            CircuitElement::OpAmp {
+                nodes,
+                v_pos,
+                v_neg,
+                model: Some(model),
+                ..
+            } => {
+                let op = crate::op_amp::OpAmpStamp {
+                    model,
+                    nodes,
+                    ground: &circuit.ground_node,
+                    v_pos: *v_pos,
+                    v_neg: *v_neg,
+                    branch: num_nodes + vsource_index,
+                };
+                let br = op.branch;
+                let x = br + 1;
+                let one = Complex64::new(1.0, 0.0);
+                if let Some(o) = node_map.index(&nodes[2]) {
+                    a[(o, br)] += one;
+                    a[(br, o)] += one;
+                }
+                if let Some(g) = node_map.index(&circuit.ground_node) {
+                    a[(g, br)] -= one;
+                    a[(br, g)] -= one;
+                }
+                let (tau, c_x, c_u, slope) = op.small_signal(node_map, dc_solution);
+                a[(br, x)] -= Complex64::new(slope, 0.0);
+                a[(br, br)] -= Complex64::new(model.r_out, 0.0);
+                a[(x, x)] += Complex64::new(c_x, 0.0) + j_omega * tau;
+                if let Some(p) = node_map.index(&nodes[0]) {
+                    a[(x, p)] -= Complex64::new(c_u, 0.0);
+                }
+                if let Some(m) = node_map.index(&nodes[1]) {
+                    a[(x, m)] += Complex64::new(c_u, 0.0);
+                }
+                vsource_index += 2;
+            }
             // OpAmp/Comparator: high-gain VCVS (gain=1e5) — linear, stamp properly in AC
             CircuitElement::OpAmp { nodes, .. } | CircuitElement::Comparator { nodes, .. } => {
                 let branch = num_nodes + vsource_index;
@@ -850,22 +909,41 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
             }
-            // VoltageRegulator: ideal DC reference — AC small-signal = voltage source (zero AC)
-            // Stamped as ideal voltage source between nodes[1] (output) and nodes[2] (gnd).
-            CircuitElement::VoltageRegulator { nodes, .. } => {
+            // The piece of its characteristic the bias point is on: input
+            // ripple reaches the output through line regulation (or all of
+            // it in dropout), and load current through the output
+            // resistance. The quiescent current is DC only.
+            CircuitElement::VoltageRegulator {
+                nodes,
+                voltage,
+                model,
+                ..
+            } => {
                 let branch = num_nodes + vsource_index;
-                let p = node_map.index(&nodes[1]); // output
-                let q = node_map.index(&nodes[2]); // gnd
-                let one = Complex64::new(1.0, 0.0);
-                if let Some(pi) = p {
-                    a[(pi, branch)] += one;
-                    a[(branch, pi)] += one;
+                let piece = crate::stamp::regulator_piece_at(
+                    node_map,
+                    nodes,
+                    *voltage,
+                    model,
+                    branch,
+                    Some(dc_solution),
+                );
+                let c = |x: f64| Complex64::new(x, 0.0);
+                let input = node_map.index(&nodes[0]);
+                let out = node_map.index(&nodes[1]);
+                let gnd = node_map.index(&nodes[2]);
+                if let Some(o) = out {
+                    a[(o, branch)] += c(1.0);
+                    a[(branch, o)] += c(1.0);
                 }
-                if let Some(qi) = q {
-                    a[(qi, branch)] -= one;
-                    a[(branch, qi)] -= one;
+                if let Some(i) = input {
+                    a[(i, branch)] -= c(1.0);
+                    a[(branch, i)] -= c(piece.d_vin);
                 }
-                // Zero AC voltage (DC reference, not a signal source)
+                if let Some(g) = gnd {
+                    a[(branch, g)] += c(piece.d_vin - 1.0);
+                }
+                a[(branch, branch)] += c(piece.d_iout);
                 vsource_index += 1;
             }
         }

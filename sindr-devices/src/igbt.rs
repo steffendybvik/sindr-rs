@@ -41,10 +41,10 @@ pub struct IgbtCompanion {
     pub gm: f64,
     /// Output conductance ∂Ids/∂Vce (S): zero in saturation and cutoff.
     pub g_ce: f64,
-    /// Drain/collector current at operating point.
+    /// Collector current at the operating point (A), collector → emitter.
     pub ids: f64,
-    /// Companion current source value for MNA stamping:
-    /// `ids − gm·vge − g_ce·vce`.
+    /// Companion current source value for MNA stamping (A), collector →
+    /// emitter: `ids − gm·vge − g_ce·vce`.
     pub i_eq: f64,
 }
 

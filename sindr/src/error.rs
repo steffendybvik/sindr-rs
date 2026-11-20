@@ -109,6 +109,22 @@ pub enum SimError {
         /// over node indices of `|V_new[i] − V_prev[i]|`.
         max_step_volts: f64,
     },
+
+    /// Self-heating has no stable balance: a part's dissipation heats its
+    /// junction, which raises its current, faster than its thermal path can
+    /// carry the heat away. The real part would be destroyed.
+    #[error(
+        "thermal runaway in `{part}`: its junction passed {temperature:.0} K with no stable \
+         operating point. Lower its dissipation, add emitter degeneration, or give it a \
+         lower thermal resistance (heatsink)."
+    )]
+    ThermalRunaway {
+        /// The part that ran away (the hottest one whose temperature feeds
+        /// back into its model).
+        part: String,
+        /// Its junction temperature when the solve gave up (K).
+        temperature: f64,
+    },
 }
 
 #[cfg(test)]

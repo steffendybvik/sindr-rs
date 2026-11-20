@@ -99,6 +99,55 @@ impl Default for BjtModel {
 }
 
 /// MOSFET gate parasitic capacitances. All values in Farads.
+/// Op-amp macromodel parameters, for [`CircuitElement::OpAmp`]'s `model`.
+///
+/// The gain stage is a first-order lag towards `gain · (v₊ − v₋ + offset)`,
+/// clamped to the rails, with time constant `gain / (2π · gbw)`: open-loop
+/// gain `gain / (1 + s·τ)`, so a non-inverting stage of gain G has its
+/// −3 dB point near `gbw / G`. Its rate is limited to `slew_rate`. The
+/// output is that stage's voltage behind `r_out`.
+///
+/// The pole and the slew limit act in transient and AC analyses. At DC the
+/// stage sits at its clamped target. The op-amp's state doesn't count as
+/// reactive, so [`solve_circuit`]-style automatic routing still picks DC
+/// for a circuit whose only dynamics are op-amps; run a transient
+/// explicitly to see them. Like capacitors, the stage starts from rest
+/// (0 V) at t = 0.
+///
+/// [`solve_circuit`]: https://docs.rs/sindr/latest/sindr/fn.solve_circuit.html
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpAmpModel {
+    /// Open-loop DC gain (V/V), positive. Default 1e5 (100 dB).
+    pub gain: f64,
+    /// Gain-bandwidth product (Hz), positive; `None` for no pole. Default
+    /// 1 MHz.
+    pub gbw: Option<f64>,
+    /// Slew rate (V/s), positive; `None` for no limit. Needs `gbw`.
+    /// Default 0.5 V/µs.
+    pub slew_rate: Option<f64>,
+    /// Output resistance (Ω), zero or positive. Default 0.
+    pub r_out: f64,
+    /// Input offset voltage (V), added to `v₊ − v₋`. Default 0.
+    pub offset_voltage: f64,
+    /// Input bias current (A) drawn by each input, to ground. Default 0.
+    pub bias_current: f64,
+}
+
+impl Default for OpAmpModel {
+    fn default() -> Self {
+        Self {
+            gain: 1e5,
+            gbw: Some(1e6),
+            slew_rate: Some(0.5e6),
+            r_out: 0.0,
+            offset_voltage: 0.0,
+            bias_current: 0.0,
+        }
+    }
+}
+
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MosfetParasiticCaps {
@@ -464,20 +513,34 @@ pub enum CircuitElement {
         temperature: f64,
     },
 
-    /// Ideal op-amp (modelled as high-gain VCVS, gain=1e5).
-    /// nodes: [in_plus, in_minus, out]
+    /// Op-amp, output referred to ground.
+    ///
+    /// With `model: None` it is the near-ideal VCVS sindr has always used:
+    /// gain 1e5, no frequency response, no output resistance, and `v_pos` /
+    /// `v_neg` not enforced. With an [`OpAmpModel`] it gets a dominant pole
+    /// from the gain-bandwidth product, slew-rate limiting, output
+    /// resistance, input offset and bias current, and an output clamped to
+    /// `v_pos`/`v_neg`.
     #[cfg_attr(feature = "serde", serde(rename = "op_amp"))]
     OpAmp {
         /// Unique component identifier.
         id: String,
         /// Terminals `[in_plus, in_minus, out]`.
         nodes: [String; 3], // [in_plus, in_minus, out]
-        /// Positive supply rail / output clamp (V). Default 15.
+        /// Positive supply rail (V): the output's upper limit with a
+        /// `model`. Default 15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
         v_pos: f64,
-        /// Negative supply rail / output clamp (V). Default -15.
+        /// Negative supply rail (V): the output's lower limit with a
+        /// `model`. Default -15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
         v_neg: f64,
+        /// Macromodel parameters; `None` for the near-ideal VCVS.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<OpAmpModel>,
     },
 
     /// Ideal comparator (same VCVS stamp as OpAmp; output saturates to supply rails).
@@ -621,10 +684,17 @@ pub enum CircuitElement {
         blown: bool,
     },
 
-    /// Ideal linear voltage regulator — holds output node at a fixed regulated voltage.
+    /// Linear voltage regulator: holds the output at `voltage` above its
+    /// ground pin while it has headroom, and draws its output current plus
+    /// its quiescent current from the input.
     ///
-    /// Modelled as an ideal voltage source between output (`nodes[1]`) and gnd (`nodes[2]`).
-    /// The input node (`nodes[0]`) is wiring-only; it is not stamped into MNA.
+    /// Piecewise linear (see `sindr_devices::regulator`): out of headroom
+    /// the output follows the input down by the dropout; past the current
+    /// limit it holds the current. `model` sets dropout, quiescent current,
+    /// current limit and line and load regulation;
+    /// `RegulatorParams::lm7805()` and `::ams1117()` are datasheet presets.
+    /// Its result is the pass element: `Vin − Vout`, the output current,
+    /// and the power it dissipates.
     ///
     /// `nodes: [input, output, gnd]`
     #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
@@ -635,6 +705,13 @@ pub enum CircuitElement {
         nodes: [String; 3], // [input, output, gnd]
         /// Regulated output voltage (V). E.g. 5.0 for a 7805.
         voltage: f64,
+        /// Dropout, quiescent current, limit and regulation. `None` is an
+        /// ideal regulator that still can't put out more than it gets in.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<sindr_devices::regulator::RegulatorParams>,
     },
 }
 
@@ -773,6 +850,24 @@ impl CircuitElement {
             CircuitElement::Transformer { id, .. } => id,
             CircuitElement::Fuse { id, .. } => id,
             CircuitElement::VoltageRegulator { id, .. } => id,
+        }
+    }
+
+    /// Extra MNA unknowns the element adds after the node voltages: one
+    /// branch current for a voltage-type source, two for a transformer
+    /// (one per winding), and two for an op-amp with an [`OpAmpModel`]
+    /// (its output current, then its internal gain-stage voltage).
+    pub fn branch_slots(&self) -> usize {
+        match self {
+            CircuitElement::OpAmp { model: Some(_), .. } => 2,
+            CircuitElement::VoltageSource { .. }
+            | CircuitElement::Vcvs { .. }
+            | CircuitElement::Ccvs { .. }
+            | CircuitElement::OpAmp { .. }
+            | CircuitElement::Comparator { .. }
+            | CircuitElement::VoltageRegulator { .. } => 1,
+            CircuitElement::Transformer { .. } => 2,
+            _ => 0,
         }
     }
 
@@ -977,16 +1072,7 @@ impl Circuit {
     pub fn count_voltage_sources(&self) -> usize {
         self.components
             .iter()
-            .map(|c| match c {
-                CircuitElement::VoltageSource { .. }
-                | CircuitElement::Vcvs { .. }
-                | CircuitElement::Ccvs { .. }
-                | CircuitElement::OpAmp { .. }
-                | CircuitElement::Comparator { .. }
-                | CircuitElement::VoltageRegulator { .. } => 1,
-                CircuitElement::Transformer { .. } => 2, // Two branch current unknowns (I_L1, I_L2)
-                _ => 0,
-            })
+            .map(CircuitElement::branch_slots)
             .sum()
     }
 
@@ -995,7 +1081,8 @@ impl Circuit {
         self.components.iter().any(|c| {
             matches!(
                 c,
-                CircuitElement::Diode { .. }
+                CircuitElement::OpAmp { model: Some(_), .. }
+                    | CircuitElement::Diode { .. }
                     | CircuitElement::Led { .. }
                     | CircuitElement::Bjt { .. }
                     | CircuitElement::Mosfet { .. }
@@ -1004,8 +1091,9 @@ impl Circuit {
                     | CircuitElement::SchottkyDiode { .. }
                     | CircuitElement::Photodiode { .. }
                     | CircuitElement::Igbt { .. }
-                    | CircuitElement::Jfet { .. } // Thermistor is passive (temperature-dependent resistance, no NR)
-                                                  // Varactor is passive in DC (open circuit), no NR needed
+                    | CircuitElement::Jfet { .. }
+                    | CircuitElement::VoltageRegulator { .. } // Thermistor is passive (temperature-dependent resistance, no NR)
+                                                              // Varactor is passive in DC (open circuit), no NR needed
             )
         })
     }
@@ -1045,23 +1133,20 @@ impl Circuit {
     pub fn vsource_branch_index(&self, source_id: &str) -> Option<usize> {
         let mut idx = 0;
         for component in &self.components {
-            match component {
-                CircuitElement::VoltageSource { id, .. }
-                | CircuitElement::Vcvs { id, .. }
-                | CircuitElement::Ccvs { id, .. }
-                | CircuitElement::OpAmp { id, .. }
-                | CircuitElement::Comparator { id, .. }
-                | CircuitElement::VoltageRegulator { id, .. } => {
-                    if id == source_id {
-                        return Some(idx);
-                    }
-                    idx += 1;
-                }
-                CircuitElement::Transformer { .. } => {
-                    idx += 2; // Transformer uses 2 branch current slots
-                }
-                _ => {}
+            let slots = component.branch_slots();
+            let has_current = matches!(
+                component,
+                CircuitElement::VoltageSource { .. }
+                    | CircuitElement::Vcvs { .. }
+                    | CircuitElement::Ccvs { .. }
+                    | CircuitElement::OpAmp { .. }
+                    | CircuitElement::Comparator { .. }
+                    | CircuitElement::VoltageRegulator { .. }
+            );
+            if has_current && component.id() == source_id {
+                return Some(idx);
             }
+            idx += slots;
         }
         None
     }
@@ -1409,6 +1494,7 @@ mod tests {
                     nodes: ["in_p".into(), "in_m".into(), "out".into()],
                     v_pos: 15.0,
                     v_neg: -15.0,
+                    model: None,
                 },
                 CircuitElement::Comparator {
                     id: "U2".into(),

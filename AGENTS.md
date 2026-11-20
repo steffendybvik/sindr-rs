@@ -27,6 +27,8 @@ sindr-rs/
 │   │   ├── temp_sweep.rs       # temperature sweep
 │   │   ├── results.rs          # SimulationResult, ComponentResult, etc.
 │   │   ├── node_map.rs         # node-name → matrix-index mapping
+│   │   ├── ratings.rs          # check_ratings: absolute-maximum ratings vs. a result
+│   │   ├── thermal.rs          # self-heating: DC balance iteration, transient thermal RC
 │   │   ├── validation.rs       # circuit pre-flight checks
 │   │   ├── error.rs            # SimError variants
 │   │   ├── examples.rs         # named example circuits, runnable from list_examples / run_example
@@ -110,7 +112,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Transformer `k` must satisfy `k ≤ 0.999`.** `k = 1.0` is mathematically singular. Default is `0.999`.
 - **Voltage source `nodes[0]` is the positive terminal.** Easy to flip and end up with negative supply rails.
 - **Current source convention**: current flows from `nodes[0]` toward `nodes[1]`.
-- **Op-amp / comparator**: nodes are `[in_plus, in_minus, out]`. Macromodel is a saturating VCVS with gain `1e5` — no GBW, no slew rate. Don't try to predict realistic closed-loop bandwidth.
+- **Op-amp / comparator**: nodes are `[in_plus, in_minus, out]`, output referred to ground. Without `model` (and for every comparator) it's a VCVS with gain `1e5`: no GBW, no slew rate, and `v_pos`/`v_neg` are **not** enforced. `model: Some(OpAmpModel { .. })` adds a GBW pole, slew rate, output resistance, offset, bias current and the rail clamp. A modelled op-amp takes two MNA branch slots (`CircuitElement::branch_slots`), its output current then its gain-stage voltage, and makes the circuit nonlinear (Newton). It doesn't make the circuit reactive, so `solve_circuit` stays DC.
 - **BJT nodes**: `[base, collector, emitter]`. **MOSFET nodes**: `[gate, drain, source]`. **IGBT nodes**: `[gate, collector, emitter]`. Order matters; mismatched order silently produces wrong results.
 - **Switches** are `0.01 Ω` closed / `1 GΩ` open — not ideal. In high-impedance circuits prefer explicit resistors.
 - **Capacitors / inductors / varactors / transformers / waveforms automatically trigger transient analysis.** Don't expect a pure DC solve if any are present.
@@ -119,6 +121,9 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Junction `temperature` fields are kelvin** (300.15 K = 27 °C, the nominal). IS and the thermal voltage kT/q both follow it.
 - **PMOS `vto` is SPICE-signed:** negative for an enhancement PMOS, as `MosfetParams::default_pmos()` has it.
 - **The default integrator is Gear-2:** second order, no ringing, slightly dissipative over many periods. For ringing amplitude in a resonant tank use `IntegrationMethod::Trapezoidal`, but not on circuits with time constants far below the step, where it rings. `IntegrationMethod::BackwardEuler` reproduces results from before alpha.7.
+- **Voltage regulators drop out.** `VoltageRegulator { model: Some(RegulatorParams::lm7805()), .. }` needs about 2 V of headroom and draws its output plus 4.3 mA from the input; check `voltage_across` (`Vin − Vout`) and `power` on its result. `model: None` is ideal but can't boost.
+- **Self-heating is opt-in per part:** set `Part::thermal` (`Thermal::junction_to_ambient(rθja)` or `Thermal::on_heatsink(rθjc, rθca)`). Then the element's `temperature` field is ignored, and `SimError::ThermalRunaway` means the design has no thermal balance (add degeneration or a heatsink, don't retry). Only junction devices and thermistors feel the heat; MOSFET/IGBT models don't.
+- **Check ratings before calling a design done.** `check_ratings(&circuit, &result)` compares every part with the `Ratings` on its `Part`; for anything with switching or start-up, run it on a transient, since the DC operating point misses the peaks. `report.is_safe()` is false while any needed rating is missing, so fill them in rather than ignoring unverified checks.
 - **`ConvergenceFailed { iterations, max_step_volts }`**: usually a nonlinear element with no DC path to ground, or component values orders of magnitude outside typical ranges. `max_step_volts` is the max Newton step (not a KCL residual). The solver already retries with gmin stepping (homotopy ladder `1e-2` → `1e-12`) and then source stepping before giving up; `SimulationResult::convergence_aid` says which one a solve needed. If neither rescues it, perturb the circuit or pass a starting guess via `solve_circuit_with_initial_voltages` — don't blindly retry.
 
 When in doubt, run `cargo run --example list_examples` and copy the closest existing example; the bundled circuits are known-good.

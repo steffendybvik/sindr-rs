@@ -93,7 +93,7 @@ Pre-release alpha (`0.1.0-alpha.8`), [published on crates.io](https://crates.io/
 
 ### Scope & limitations
 
-sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, noise/Monte-Carlo/pole-zero analyses, BSIM-class device models, and self-heating co-simulation are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
+sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, noise/Monte-Carlo/pole-zero analyses, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
 To work on sindr itself, see [`CONTRIBUTING.md`](./CONTRIBUTING.md). AI coding agents (Claude Code, Codex, Cursor, etc.) should also read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
 
@@ -366,11 +366,25 @@ CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, al
 
 ```rust
 // nodes: [in_plus, in_minus, out]
-CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // supply rails, default ±15 V
+CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> } // rails, default ±15 V
 CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // default 5 V / 0 V
 ```
 
-Both are modeled as a high-gain VCVS (gain = 1×10⁵) that saturates at the supply rails.
+With `model: None` both are a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
+
+```rust
+use sindr::{CircuitElement, OpAmpModel};
+
+let u1 = CircuitElement::OpAmp {
+    id: "U1".into(),
+    nodes: ["in".into(), "fb".into(), "out".into()],
+    v_pos: 12.0,
+    v_neg: -12.0,
+    model: Some(OpAmpModel { gbw: Some(3e6), slew_rate: Some(13e6), r_out: 50.0, ..OpAmpModel::default() }),
+};
+```
+
+The pole and slew limit act in transient and AC runs. An op-amp doesn't count as reactive, so `solve_circuit` still runs DC for a circuit whose only dynamics are op-amps; call `solve_transient` to see them.
 
 #### Sensors / misc
 
@@ -386,10 +400,12 @@ CircuitElement::Relay {
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
 }
 CircuitElement::Fuse             { id, nodes: [String; 2], rating: f64, blown: bool } // 1 mΩ intact, 1 GΩ blown; rating is display-only
-CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64 }   // ideal source from output to gnd
+CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> }
 ```
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
+
+`VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin; without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
 
 ### Reading results
 
@@ -558,6 +574,65 @@ pub struct TempSweepPoint {
 
 `num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
 
+### Self-heating
+
+Give a part a thermal path and the solver heats its junction by what it dissipates, then feeds that temperature back into the device: IS and kT/q for diodes, LEDs, Zeners, Schottkys, photodiodes and BJTs, and the resistance of a thermistor. The DC solve iterates until power and temperature agree. A transient carries a thermal RC state per part (`Cθ·dT/dt = P − (T − ambient)/Rθ`), starting cold at ambient.
+
+```rust
+use sindr::{solve_circuit, Part, SimError, Thermal};
+
+// SOT-23 on its own (~500 K/W), or a TO-220 on a heatsink.
+circuit.parts.insert("Q2".into(), Part { thermal: Some(Thermal::junction_to_ambient(500.0)), ..Part::default() });
+circuit.parts.insert("Q3".into(), Part { thermal: Some(Thermal::on_heatsink(5.0, 10.0)), ..Part::default() });
+
+match solve_circuit(&circuit) {
+    Ok(result) => println!("Tj(Q2) = {:.1} K", result.junction_temperatures["Q2"]),
+    Err(SimError::ThermalRunaway { part, temperature }) => println!("{part} runs away past {temperature:.0} K"),
+    Err(e) => return Err(e),
+}
+```
+
+`Thermal` takes `rth_ja` (K/W), or `rth_jc` plus `rth_ca` for a part on a heatsink, an optional `cth` (J/K; without it a transient's junction follows its power with no lag), and `ambient` (K, default 300.15). With it, the element's own `temperature` field is ignored. `SimulationResult::junction_temperatures` and each `TimestepSnapshot`'s carry the result, and `Ratings::tj_max` is checked against them. When no balance exists (a junction past 1000 K, or the iteration never settles), the solve returns `SimError::ThermalRunaway`. MOSFETs, JFETs, IGBTs and resistors report a junction temperature, but their models don't depend on it.
+
+### Ratings checks
+
+Check a solved circuit against each part's absolute maximum ratings, so nothing gets powered past its datasheet limits. Ratings live on the component's `Part` (`circuit.parts`, keyed by component id). `check_ratings` looks at the DC operating point, or at every step of a transient, where inrush, inductive kickback and start-up peaks show up.
+
+```rust
+use sindr::{check_ratings, solve_transient, Part, Ratings, RatingStatus, TransientConfig};
+
+circuit.parts.insert("Q1".into(), Part {
+    ratings: Ratings { vce: Some(45.0), ic: Some(0.1), power: Some(0.5), ..Ratings::default() },
+    ..Part::default()
+});
+
+let result = solve_transient(&circuit, &TransientConfig::new(1e-3, 1e-6))?;
+let report = check_ratings(&circuit, &result)?;
+for c in report.exceeded() {
+    println!("{} {:?}: {:.3} {} at t = {:?} (limit {:?}, margin {:.0}%)",
+        c.part, c.rating, c.worst.unwrap(), c.rating.unit(), c.time, c.limit,
+        c.margin_percent.unwrap_or(f64::NAN));
+}
+assert!(report.is_safe()); // false while anything is exceeded *or* unverified
+```
+
+Each component kind has ratings it needs, checked whether set or not; a missing one is `RatingStatus::Unverified`, never a pass:
+
+| Component | Needs |
+|---|---|
+| resistor, potentiometer, thermistor, photoresistor | `power` |
+| capacitor | `voltage` |
+| inductor | `current` |
+| diode, Schottky, LED, photodiode | `reverse_voltage`, `forward_current`, `power` |
+| Zener | `power` |
+| varactor | `reverse_voltage` |
+| BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
+| MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
+| IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+| anything with `Part::thermal` | also `tj_max` |
+
+Any other rating set on a part is checked too: `power`, `voltage` and `current` on any component (on the port its `ComponentResult` reports), the rest on the devices they belong to. All limits are magnitudes, so PNP and PMOS parts use the same positive numbers. Transistor power is `|V·I|` on the Vce/Ic or Vds/Id port, without base or gate dissipation.
+
 ### Examples
 
 One small program per capability in [`examples/`](./examples), run with `cargo run -p sindr --example <name>`:
@@ -683,7 +758,7 @@ let ids: Vec<&str> = flat.components.iter().map(|c| c.id()).collect();
 assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
 ```
 
-`Part` data is ignored by the simulator. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
+`Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `sindr::check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
 
 ### License
 
@@ -712,6 +787,7 @@ Pure electronics device physics companion models for MNA circuit simulation.
 | `schottky` | Schottky diode | Shockley with Schottky IS/N (~0.3 V forward) |
 | `varactor` | Varactor diode | Voltage-dependent junction capacitance C_j(V) |
 | `thermistor` | NTC thermistor | Beta model R(T) = R₀·exp(β·(1/T − 1/T₀)) |
+| `regulator` | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation; LM7805 and AMS1117 presets |
 | `photodiode` | Photodiode | Diode + photocurrent offset |
 | `photoresistor` | Photoresistor (LDR) | Light-level-dependent resistance |
 
@@ -848,7 +924,7 @@ Status: pre-release alpha (`0.1.0-alpha.8`). Anything below may change.
 - DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
-- Thermistor, photoresistor, potentiometer, relay, fuse, ideal fixed-output voltage regulator
+- Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation)
 - Programmatic Rust API + serde JSON for circuits and results
 
 If your problem is "given an analog topology built in Rust, what are the node voltages and branch currents (possibly over time, frequency, or temperature)?", sindr is in scope.
@@ -904,8 +980,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Device models
 
-- **No op-amp macromodel beyond ideal-with-rails.** No GBW, slew rate, input bias current, offset, output impedance, current limiting, or supply current. Real op-amp models from vendors cannot be loaded.
-- **No real regulator / reference / DC-DC controller models.** `VoltageRegulator` is an ideal voltage source on the output: no dropout, line/load regulation, quiescent current or current limit.
+- **Op-amp macromodel: single pole.** `OpAmpModel` gives open-loop gain, a dominant pole from GBW, slew rate, output resistance, input offset and bias current, and a rail clamp. There is no second pole or phase margin, no output current limit, no supply current, no input common-mode range, no noise and no CMRR/PSRR. Vendor op-amp models can't be loaded. Without a `model` the op-amp is a gain-1e5 VCVS with no rail clamp.
+- **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. No references, adjustable regulators (LM317 with its divider) or DC-DC controllers.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
@@ -934,8 +1010,11 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Self-heating & thermal
 
-- Temperature is a **per-device parameter**, not a state variable. The temp-sweep analysis re-solves at each temperature; it does not couple junction power dissipation back into junction temperature within a single solve.
-- **No electro-thermal network**, no thermal RC ladders, no `T(t)` co-simulated with `V(t)`. This matters for IGBT / power-MOSFET / LED designs where self-heating shifts the operating point.
+- **Self-heating is one thermal RC per part.** A part with `Part::thermal` runs at `ambient + P·Rθ` (iterated to a balance in DC, a thermal RC state in transient). There's no thermal coupling between parts (a shared heatsink, neighbours on a board), and no multi-pole Foster/Cauer ladder for the junction-to-case path.
+- **Only junction devices and the thermistor feel their temperature:** diodes, LEDs, Zeners, Schottkys, photodiodes, BJTs and thermistors. MOSFETs, JFETs, IGBTs and resistors report a junction temperature (and so get Tj-max checks), but their models have no temperature in them, so heating doesn't move their operating point. Power-MOSFET and IGBT runaway is not predicted.
+- **LEDs scale IS with silicon's bandgap**, so a hot LED's forward voltage rises instead of falling the ~2 mV/K a real one does.
+- **Self-heating applies to `solve_circuit`, `solve_circuit_with_initial_voltages` and `solve_transient`** (and `temperature_sweep`, which sets the ambient). AC, `.tf`, `.sens` and `dc_sweep` linearise around the unheated operating point.
+- In a transient the electrical step solves at the temperature from the step before. Thermal time constants are far longer than the electrical steps, so the lag doesn't matter unless the step is coarse compared with Rθ·Cθ.
 
 #### Tooling & UX
 
@@ -952,7 +1031,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - Transformer coupling `k = 1.0` is mathematically singular — clamp to `≤ 0.999`.
 - Switches are modelled as `0.01 Ω` / `1 GΩ` resistors — they are not ideal, and very high-impedance circuits may need explicit values.
-- The op-amp / comparator macromodel is a saturating VCVS with gain `1e5` — it has no frequency response, so AC and transient closed-loop bandwidth predictions are not realistic.
+- An op-amp without a `model`, and every comparator, is a VCVS with gain `1e5` and no frequency response or rail clamp, so its closed-loop bandwidth isn't realistic. Give the op-amp an `OpAmpModel` for GBW and slew rate. Its stage starts from 0 V at t = 0, like the capacitors, so a transient opens with a short settle unless you seed it.
 - For accurate ringing amplitude in a resonant circuit, use `IntegrationMethod::Trapezoidal` with a step well below the period: Gear-2 and especially backward Euler damp it.
 - Photodiode / photoresistor / thermistor "stimulus" parameters (irradiance, light level, temperature) are **constants per solve**, not time-varying inputs. There is no environmental waveform.
 
@@ -960,7 +1039,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - Need a vendor BJT / MOSFET? Fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
 - Need digital control around an analog plant? Drive the analog circuit step-by-step from your own Rust loop, sampling node voltages between transient calls and updating sources / switches between them. This is not co-simulation, but it works for slow control loops.
-- Need a Bode plot of a closed loop with a real op-amp? Replace the `OpAmp` element with a manually-built VCVS + RC pole network that approximates the part you care about.
+- Need a second pole or phase margin on an op-amp? Build it from VCVS stages and RC networks around an `OpAmp` with an `OpAmpModel`.
 - Need Monte Carlo? Loop in Rust over randomised `CircuitElement` parameter values; sindr is fast enough for thousands of solves on small circuits.
 
 ### Reporting gaps
@@ -983,7 +1062,8 @@ Performs frequency-domain analysis by:
 ```rust
 /// Frequency sweep spacing.
 pub enum FrequencySpacing {
-    /// Logarithmic spacing (decade-based).
+    /// Logarithmic spacing: `num_points` in total, evenly spaced in
+    /// log10(f) from `f_start` to `f_stop`. Not points per decade.
     Logarithmic,
     /// Linear spacing.
     Linear,
@@ -1002,7 +1082,8 @@ pub struct AcConfig {
     pub spacing: FrequencySpacing,
     /// ID of the AC source (voltage source with AC stimulus).
     pub source_id: String,
-    /// AC magnitude of the source.
+    /// AC amplitude of the source: volts, linear (not dB), at 0° phase.
+    /// Results scale with it; 1 V makes node voltages read as gain.
     pub ac_magnitude: f64,
 }
 
@@ -1015,10 +1096,15 @@ pub struct AcPoint {
 }
 
 impl AcPoint {
-    /// Get gain in dB for a node relative to AC source magnitude.
+    /// Gain in dB for a node: `20·log10(|V(node)| / source_magnitude)`, a
+    /// voltage ratio. `source_magnitude` is in volts, normally
+    /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
+    /// circuit.
     pub fn gain_db(&self, node: &str, source_magnitude: f64) -> Option<f64> { … }
 
-    /// Get phase in degrees for a node.
+    /// Phase of a node's voltage in degrees, in (−180°, 180°], relative to
+    /// the source (which is at 0°). `None` when the node isn't in the
+    /// circuit.
     pub fn phase_deg(&self, node: &str) -> Option<f64> { … }
 }
 
@@ -1031,10 +1117,12 @@ pub struct AcResult {
 }
 
 impl AcResult {
-    /// Extract gain (dB) curve for a node.
+    /// The gain curve for a node as `(frequency in Hz, gain in dB)` pairs,
+    /// one per point, using [`AcConfig::ac_magnitude`].
     pub fn gain_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
 
-    /// Extract phase (degrees) curve for a node.
+    /// The phase curve for a node as `(frequency in Hz, phase in degrees)`
+    /// pairs, one per point; see [`AcPoint::phase_deg`].
     pub fn phase_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
 }
 
@@ -1160,10 +1248,16 @@ pub struct DcSweepResult {
 }
 
 impl DcSweepResult {
-    /// Extract a vector of (sweep_value, node_voltage) pairs for a given node.
+    /// `(sweep value in V, node voltage in V)` pairs for a node, one per
+    /// point.
     pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
 
-    /// Extract a vector of (sweep_value, current) pairs for a given component.
+    /// `(sweep value in V, current in A)` pairs for a component, one per
+    /// point. The current is its [`ComponentResult::current_through`]: from
+    /// `nodes[0]` to `nodes[1]` for a two-terminal part (the collector or
+    /// drain current for a transistor).
+    ///
+    /// [`ComponentResult::current_through`]: crate::ComponentResult::current_through
     pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> { … }
 }
 
@@ -1342,6 +1436,22 @@ pub enum SimError {
         /// over node indices of `|V_new[i] − V_prev[i]|`.
         max_step_volts: f64,
     },
+
+    /// Self-heating has no stable balance: a part's dissipation heats its
+    /// junction, which raises its current, faster than its thermal path can
+    /// carry the heat away. The real part would be destroyed.
+    #[error(
+        "thermal runaway in `{part}`: its junction passed {temperature:.0} K with no stable \
+         operating point. Lower its dissipation, add emitter degeneration, or give it a \
+         lower thermal resistance (heatsink)."
+    )]
+    ThermalRunaway {
+        /// The part that ran away (the hottest one whose temperature feeds
+        /// back into its model).
+        part: String,
+        /// Its junction temperature when the solve gave up (K).
+        temperature: f64,
+    },
 }
 ```
 
@@ -1489,6 +1599,8 @@ hierarchy is [`SimError::Design`].
 | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
+| Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
+| Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
 
 Not available: noise, distortion, pole-zero, AC sensitivity, Monte Carlo,
@@ -1505,8 +1617,10 @@ periodic steady state, S-parameters, variable-order integration.
 | JFET (N/P) | Shichman–Hodges square law |
 | IGBT | MOSFET-like gate control, square-law collector current |
 | Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
-| Op-amp, comparator | Saturating VCVS, gain 1e5; no GBW or slew rate |
+| Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
+| Comparator | VCVS of gain 1e5; no GBW or slew rate |
 | Transformer | Linear coupled inductors |
+| Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
 
 Parameters are Rust structs, not SPICE `.model` cards.
 
@@ -1655,6 +1769,8 @@ pub mod newton_raphson;
 
 pub mod node_map;
 
+pub mod ratings;
+
 pub mod results;
 
 pub mod sensitivity;
@@ -1673,17 +1789,19 @@ pub mod validation;
 
 pub use sindr_core::waveform;
 
-pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel};
+pub use circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
 
 pub use dc_sweep::{dc_sweep, DcSweepResult};
 
-pub use design::{Block, DesignError, Instance, Part};
+pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 
 pub use error::SimError;
 
 pub use mna::MnaSystem;
 
 pub use node_map::NodeMap;
+
+pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 
 pub use results:: { … }
 
@@ -1706,6 +1824,11 @@ pub use sindr_devices::igbt::IgbtParams;
 pub use sindr_devices::jfet::JfetKind;
 
 pub use sindr_devices::mosfet::MosfetKind;
+
+/// Linear regulator parameters and presets, for [`CircuitElement::VoltageRegulator`]'s `model`.
+pub use sindr_devices::regulator;
+
+pub use sindr_devices::regulator::RegulatorParams;
 
 pub use sindr_devices::varactor::VaractorParams;
 
@@ -1946,9 +2069,6 @@ pub const MAX_NR_ITERATIONS: usize = 100;
 /// Absolute voltage tolerance (V).
 pub const V_ABSTOL: f64 = 1e-6;
 
-/// Absolute current tolerance (A).
-pub const I_ABSTOL: f64 = 1e-12;
-
 /// Relative tolerance (dimensionless).
 pub const RELTOL: f64 = 1e-3;
 
@@ -2048,6 +2168,178 @@ impl NodeMap {
 }
 ```
 
+## `sindr/src/ratings.rs`
+
+Absolute-maximum ratings checks: did any part go past its datasheet
+limits?
+
+[`check_ratings`] compares a [`SimulationResult`] against the
+[`Ratings`] on each component's [`Part`](crate::Part) (looked up by
+component id in [`Circuit::parts`]). It looks at the DC operating point,
+or at every step of a transient, since peaks (inrush, inductive
+kickback, start-up) are what kill parts. For each part and rating it
+reports the worst value, when it happened, the limit and the margin left.
+
+Each component kind has ratings it needs, which are checked whether set
+or not. A needed rating that isn't set comes back
+[`RatingStatus::Unverified`], never as a pass:
+
+| Component | Needs |
+|---|---|
+| resistor, potentiometer, thermistor, photoresistor | `power` |
+| capacitor | `voltage` |
+| inductor | `current` |
+| diode, Schottky, LED, photodiode | `reverse_voltage`, `forward_current`, `power` |
+| Zener | `power` |
+| varactor | `reverse_voltage` |
+| BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
+| MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
+| IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+| voltage regulator | `voltage` (input, from its ground pin), `current` (output), `power` |
+
+A part with [`Thermal`](crate::Thermal) data also needs `tj_max`, checked
+against the junction temperature self-heating reports. Without thermal
+data there is no junction temperature, so a `tj_max` is unverified.
+
+Any other rating a part sets is checked as well. `power`, `voltage` and
+`current` work on every component, measured on the port its
+[`ComponentResult`] reports (Vce and Ic for a BJT). A rating the
+component has no way to measure, such as `vds` on a resistor, is
+unverified. Transistor power is `|V·I|` on that port, so a BJT's base
+dissipation is left out.
+
+```
+use sindr::{check_ratings, solve_circuit, Circuit, CircuitElement, Part, Ratings};
+
+let mut circuit = Circuit::new(
+    "0",
+    vec![
+        CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 12.0, waveform: None },
+        CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "0".into()], resistance: 100.0 },
+    ],
+);
+// A 1/8 W resistor across 12 V dissipates 1.44 W.
+circuit.parts.insert(
+    "R1".into(),
+    Part { ratings: Ratings { power: Some(0.125), ..Ratings::default() }, ..Part::default() },
+);
+
+let result = solve_circuit(&circuit).unwrap();
+let report = check_ratings(&circuit, &result).unwrap();
+let r1 = &report.exceeded()[0];
+assert_eq!(r1.part, "R1");
+assert!((r1.worst.unwrap() - 1.44).abs() < 1e-9);
+assert!(!report.is_safe());
+```
+
+```rust
+/// One absolute-maximum rating. Each is a magnitude; see [`Ratings`] for
+/// what it measures.
+pub enum RatingKind {
+    /// Power dissipation (W).
+    Power,
+    /// Voltage across the part (V).
+    Voltage,
+    /// Current through the part (A).
+    Current,
+    /// Diode reverse voltage (V).
+    ReverseVoltage,
+    /// Diode forward current (A).
+    ForwardCurrent,
+    /// Collector–emitter voltage (V).
+    Vce,
+    /// Collector–base voltage (V).
+    Vcb,
+    /// Emitter–base voltage (V).
+    Veb,
+    /// Collector current (A).
+    Ic,
+    /// Drain–source voltage (V).
+    Vds,
+    /// Gate–source (or IGBT gate–emitter) voltage (V).
+    Vgs,
+    /// Drain current (A).
+    Id,
+    /// Junction temperature (K), from self-heating.
+    Tj,
+}
+
+impl RatingKind {
+    /// The limit `ratings` sets for this kind, if any.
+    pub fn limit(self, ratings: &Ratings) -> Option<f64> { … }
+
+    /// SI unit symbol: `"W"`, `"V"`, `"A"` or `"K"`.
+    pub fn unit(self) -> &'static str { … }
+}
+
+/// How a part did against one rating.
+pub enum RatingStatus {
+    /// The worst value stayed at or under the limit.
+    Within,
+    /// The worst value went over the limit.
+    Exceeded,
+    /// Can't tell: the rating isn't set, or sindr can't measure it on this
+    /// component.
+    Unverified,
+}
+
+/// One part checked against one rating.
+pub struct RatingCheck {
+    /// Component id, flattened (`X1.Q1`).
+    pub part: String,
+    /// Which rating.
+    pub rating: RatingKind,
+    /// The limit, in the rating's unit. `None` when the part doesn't set it.
+    pub limit: Option<f64>,
+    /// The worst (largest) value the part saw, in the rating's unit. `None`
+    /// when sindr can't measure it on this component.
+    pub worst: Option<f64>,
+    /// When the worst value happened (s). `None` for a DC operating point.
+    pub time: Option<f64>,
+    /// Margin left, as a percentage of the limit: `100·(limit − worst)/limit`.
+    /// Negative when exceeded; `None` when unverified.
+    pub margin_percent: Option<f64>,
+    /// Within, exceeded or unverified.
+    pub status: RatingStatus,
+}
+
+/// Every rating checked on every part, in circuit order.
+pub struct RatingsReport {
+    /// One entry per part and rating.
+    pub checks: Vec<RatingCheck>,
+}
+
+impl RatingsReport {
+    /// Checks whose worst value went over the limit.
+    pub fn exceeded(&self) -> Vec<&RatingCheck> { … }
+
+    /// Checks that couldn't be verified.
+    pub fn unverified(&self) -> Vec<&RatingCheck> { … }
+
+    /// `true` only when every check is within its limit: nothing exceeded
+    /// and nothing unverified.
+    pub fn is_safe(&self) -> bool { … }
+
+    /// The checks for one part.
+    pub fn for_part<'a>(&'a self, part: &'a str) -> impl Iterator<Item = &'a RatingCheck> + 'a { … }
+}
+
+/// Check every component of `circuit` against the [`Ratings`] on its
+/// [`Part`](crate::Part), using `result` from any solve of that circuit.
+///
+/// With a transient in `result`, every timestep is checked (the first is
+/// the starting operating point); otherwise the DC operating point is. See
+/// the [module docs](self) for which ratings each component needs.
+///
+/// # Errors
+///
+/// [`SimError::Design`] when the circuit's hierarchy can't be flattened.
+pub fn check_ratings(
+    circuit: &Circuit,
+    result: &SimulationResult,
+) -> Result<RatingsReport, SimError> { … }
+```
+
 ## `sindr/src/results.rs`
 
 Solver output types.
@@ -2066,8 +2358,9 @@ appear in the circuit.
 /// dissipating energy. Components with more terminals report one port:
 /// BJTs and IGBTs give Vce and Ic, MOSFETs and JFETs give Vds and Id, with
 /// `power` as the magnitude `|V·I|` (their full results are in
-/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, and a
-/// transformer its primary.
+/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, a
+/// transformer its primary, and a voltage regulator its pass element
+/// (`Vin − Vout`, the output current, and its dissipation).
 pub struct ComponentResult {
     /// Component id (matches the id on the source [`CircuitElement`]).
     pub id: String,
@@ -2088,11 +2381,14 @@ pub struct BjtResult {
     pub vbe: f64,
     /// Collector–emitter voltage (V).
     pub vce: f64,
-    /// Base current (A).
+    /// Base current (A), into the base: positive for a conducting NPN,
+    /// negative for a PNP.
     pub ib: f64,
-    /// Collector current (A).
+    /// Collector current (A), into the collector: positive for a
+    /// conducting NPN, negative for a PNP.
     pub ic: f64,
-    /// Emitter current (A).
+    /// Emitter current (A), into the emitter: `−(ic + ib)` by KCL, so
+    /// negative for a conducting NPN and positive for a PNP.
     pub ie: f64,
     /// Collector dissipation `|Ic·Vce|` (W). The base's `Ib·Vbe` is left
     /// out.
@@ -2109,7 +2405,8 @@ pub struct MosfetResult {
     pub vgs: f64,
     /// Drain–source voltage (V).
     pub vds: f64,
-    /// Drain current (A).
+    /// Drain current (A), into the drain: positive for a conducting NMOS,
+    /// negative for a PMOS.
     pub id_current: f64,
     /// Total dissipation (W).
     pub power: f64,
@@ -2135,13 +2432,16 @@ pub struct OpAmpResult {
 pub struct RelayResult {
     /// Component id.
     pub id: String,
-    /// Voltage across the coil terminals (V).
+    /// Coil voltage, `coil+ − coil−` (`nodes[0] − nodes[1]`) (V).
     pub coil_voltage: f64,
     /// `true` when coil voltage exceeds the pickup threshold.
     pub contact_closed: bool,
 }
 
 /// Per-microcontroller results: per-pin GPIO output currents.
+///
+/// Never filled: sindr has no microcontroller element, so
+/// [`SimulationResult::mcu_results`] is always empty.
 pub struct McuResult {
     /// Component id.
     pub id: String,
@@ -2161,6 +2461,13 @@ pub struct TimestepSnapshot {
     /// Per-component voltage/current/power at this instant. A source with a
     /// waveform reports its value at this time, not its DC term.
     pub component_results: Vec<ComponentResult>,
+    /// Junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data at this instant, by component id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
 }
 
 /// Time-series data from a transient simulation.
@@ -2216,6 +2523,15 @@ pub struct SimulationResult {
     pub node_voltages: HashMap<String, f64>,
     /// Branch currents (A) for components that introduce a current unknown
     /// — voltage sources, op-amps, transformers, etc. Keyed by component id.
+    ///
+    /// The MNA convention: the current entering the element at `nodes[0]`
+    /// and leaving at `nodes[1]`, through the element. A source delivering
+    /// power reads **negative**: a 5 V supply feeding 5 mA into a load is
+    /// `-0.005`. For a VCVS, CCVS, op-amp or comparator it is the current
+    /// into the output node (`nodes[0]`, or the op-amp's `out`), so an
+    /// output sourcing current is negative too. For a voltage regulator it
+    /// is the current into its output pin (negative when it sources); its
+    /// [`ComponentResult`] has the output current as a positive number.
     pub branch_currents: HashMap<String, f64>,
     /// Per-component voltage, current, and power for every two-terminal
     /// component.
@@ -2262,6 +2578,14 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub convergence_aid: Option<ConvergenceAid>,
+    /// Self-heated junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data, by component id: the DC balance, or
+    /// the end of a transient. Empty when no part has thermal data.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -3974,7 +4298,9 @@ impl TransientConfig {
     /// ```
     pub fn with_initial_voltages(mut self, voltages: HashMap<String, f64>) -> Self { … }
 
-    /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A.
+    /// Start inductor (or relay coil) `id` at `amps` (A) instead of 0 A,
+    /// flowing from its first node to its second (`nodes[0] → nodes[1]`),
+    /// as [`initial_currents`](Self::initial_currents) says.
     /// An id that isn't an inductor or a relay with coil inductance (a
     /// transformer, for now) makes the run fail with
     /// [`SimError::InvalidComponent`].
@@ -4174,6 +4500,39 @@ pub struct BjtModel {
 }
 
 /// MOSFET gate parasitic capacitances. All values in Farads.
+/// Op-amp macromodel parameters, for [`CircuitElement::OpAmp`]'s `model`.
+///
+/// The gain stage is a first-order lag towards `gain · (v₊ − v₋ + offset)`,
+/// clamped to the rails, with time constant `gain / (2π · gbw)`: open-loop
+/// gain `gain / (1 + s·τ)`, so a non-inverting stage of gain G has its
+/// −3 dB point near `gbw / G`. Its rate is limited to `slew_rate`. The
+/// output is that stage's voltage behind `r_out`.
+///
+/// The pole and the slew limit act in transient and AC analyses. At DC the
+/// stage sits at its clamped target. The op-amp's state doesn't count as
+/// reactive, so [`solve_circuit`]-style automatic routing still picks DC
+/// for a circuit whose only dynamics are op-amps; run a transient
+/// explicitly to see them. Like capacitors, the stage starts from rest
+/// (0 V) at t = 0.
+///
+/// [`solve_circuit`]: https://docs.rs/sindr/latest/sindr/fn.solve_circuit.html
+pub struct OpAmpModel {
+    /// Open-loop DC gain (V/V), positive. Default 1e5 (100 dB).
+    pub gain: f64,
+    /// Gain-bandwidth product (Hz), positive; `None` for no pole. Default
+    /// 1 MHz.
+    pub gbw: Option<f64>,
+    /// Slew rate (V/s), positive; `None` for no limit. Needs `gbw`.
+    /// Default 0.5 V/µs.
+    pub slew_rate: Option<f64>,
+    /// Output resistance (Ω), zero or positive. Default 0.
+    pub r_out: f64,
+    /// Input offset voltage (V), added to `v₊ − v₋`. Default 0.
+    pub offset_voltage: f64,
+    /// Input bias current (A) drawn by each input, to ground. Default 0.
+    pub bias_current: f64,
+}
+
 pub struct MosfetParasiticCaps {
     /// Gate-Source capacitance (F). Typical: 100–500 pF for power MOSFETs.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -4534,20 +4893,34 @@ pub enum CircuitElement {
         temperature: f64,
     },
 
-    /// Ideal op-amp (modelled as high-gain VCVS, gain=1e5).
-    /// nodes: [in_plus, in_minus, out]
+    /// Op-amp, output referred to ground.
+    ///
+    /// With `model: None` it is the near-ideal VCVS sindr has always used:
+    /// gain 1e5, no frequency response, no output resistance, and `v_pos` /
+    /// `v_neg` not enforced. With an [`OpAmpModel`] it gets a dominant pole
+    /// from the gain-bandwidth product, slew-rate limiting, output
+    /// resistance, input offset and bias current, and an output clamped to
+    /// `v_pos`/`v_neg`.
     #[cfg_attr(feature = "serde", serde(rename = "op_amp"))]
     OpAmp {
         /// Unique component identifier.
         id: String,
         /// Terminals `[in_plus, in_minus, out]`.
         nodes: [String; 3], // [in_plus, in_minus, out]
-        /// Positive supply rail / output clamp (V). Default 15.
+        /// Positive supply rail (V): the output's upper limit with a
+        /// `model`. Default 15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
         v_pos: f64,
-        /// Negative supply rail / output clamp (V). Default -15.
+        /// Negative supply rail (V): the output's lower limit with a
+        /// `model`. Default -15.
         #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
         v_neg: f64,
+        /// Macromodel parameters; `None` for the near-ideal VCVS.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<OpAmpModel>,
     },
 
     /// Ideal comparator (same VCVS stamp as OpAmp; output saturates to supply rails).
@@ -4691,10 +5064,17 @@ pub enum CircuitElement {
         blown: bool,
     },
 
-    /// Ideal linear voltage regulator — holds output node at a fixed regulated voltage.
+    /// Linear voltage regulator: holds the output at `voltage` above its
+    /// ground pin while it has headroom, and draws its output current plus
+    /// its quiescent current from the input.
     ///
-    /// Modelled as an ideal voltage source between output (`nodes[1]`) and gnd (`nodes[2]`).
-    /// The input node (`nodes[0]`) is wiring-only; it is not stamped into MNA.
+    /// Piecewise linear (see `sindr_devices::regulator`): out of headroom
+    /// the output follows the input down by the dropout; past the current
+    /// limit it holds the current. `model` sets dropout, quiescent current,
+    /// current limit and line and load regulation;
+    /// `RegulatorParams::lm7805()` and `::ams1117()` are datasheet presets.
+    /// Its result is the pass element: `Vin − Vout`, the output current,
+    /// and the power it dissipates.
     ///
     /// `nodes: [input, output, gnd]`
     #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
@@ -4705,6 +5085,13 @@ pub enum CircuitElement {
         nodes: [String; 3], // [input, output, gnd]
         /// Regulated output voltage (V). E.g. 5.0 for a 7805.
         voltage: f64,
+        /// Dropout, quiescent current, limit and regulation. `None` is an
+        /// ideal regulator that still can't put out more than it gets in.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        model: Option<sindr_devices::regulator::RegulatorParams>,
     },
 }
 
@@ -4717,6 +5104,12 @@ impl CircuitElement {
 
     /// Returns the component identifier.
     pub fn id(&self) -> &str { … }
+
+    /// Extra MNA unknowns the element adds after the node voltages: one
+    /// branch current for a voltage-type source, two for a transformer
+    /// (one per winding), and two for an op-amp with an [`OpAmpModel`]
+    /// (its output current, then its internal gain-stage voltage).
+    pub fn branch_slots(&self) -> usize { … }
 
     /// Mutable [`nodes`](Self::nodes), for renaming nets.
     pub fn nodes_mut(&mut self) -> &mut [String] { … }
@@ -4935,6 +5328,114 @@ pub struct Part {
     /// Any other fields: manufacturer, MPN, tolerance, …
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
     pub fields: BTreeMap<String, String>,
+    /// Absolute maximum ratings from the datasheet. `sindr::check_ratings`
+    /// compares a simulation against them.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Ratings::is_empty"))]
+    pub ratings: Ratings,
+    /// How the part sheds heat. When set, the solver heats its junction by
+    /// the power it dissipates; see [`Thermal`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub thermal: Option<Thermal>,
+}
+
+/// A part's thermal path to ambient, for self-heating.
+///
+/// With it, the part's junction runs at `ambient + P·Rθ` in DC, or follows
+/// `Cθ·dT/dt = P − (T − ambient)/Rθ` in a transient, and the solver feeds
+/// that temperature back into the device (IS and kT/q for diodes, LEDs and
+/// BJTs; the thermistor's resistance). The element's own `temperature`
+/// field is then ignored.
+///
+/// Rθ is [`rth_jc`](Self::rth_jc) + [`rth_ca`](Self::rth_ca) when both are
+/// set (a part on a heatsink), otherwise [`rth_ja`](Self::rth_ja).
+pub struct Thermal {
+    /// Junction to ambient (K/W), the datasheet's Rθja for the part on its
+    /// own.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_ja: Option<f64>,
+    /// Junction to case (K/W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_jc: Option<f64>,
+    /// Case to ambient through what the part is mounted on: interface pad
+    /// plus heatsink (K/W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rth_ca: Option<f64>,
+    /// Thermal capacitance (J/K). `None` in a transient means the junction
+    /// follows its power with no lag.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub cth: Option<f64>,
+    /// Ambient temperature (K). Default 300.15 K (27 °C).
+    pub ambient: f64,
+}
+
+impl Thermal {
+    /// A free-standing part: junction to ambient `rth_ja` (K/W).
+    pub fn junction_to_ambient(rth_ja: f64) -> Self { … }
+
+    /// A part on a heatsink: junction to case `rth_jc` plus case to ambient
+    /// `rth_ca` (K/W).
+    pub fn on_heatsink(rth_jc: f64, rth_ca: f64) -> Self { … }
+
+    /// The thermal resistance from junction to ambient (K/W) the solver
+    /// uses, or `None` when neither path is set.
+    pub fn resistance(&self) -> Option<f64> { … }
+}
+
+/// Absolute maximum ratings: the datasheet limits a part must never pass.
+///
+/// Every limit is a magnitude in SI units and `None` when unknown. A rating
+/// a part needs but doesn't have is reported as unverified, never as a
+/// pass. Which ratings a component needs depends on its kind; see
+/// `sindr::ratings`.
+pub struct Ratings {
+    /// Power dissipation (W).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub power: Option<f64>,
+    /// Voltage across the part (V): a capacitor's rated voltage, a
+    /// resistor's working voltage.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub voltage: Option<f64>,
+    /// Current through the part (A): an inductor's saturation current.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current: Option<f64>,
+    /// Diode reverse voltage, cathode above anode (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub reverse_voltage: Option<f64>,
+    /// Diode forward current, anode to cathode (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub forward_current: Option<f64>,
+    /// BJT or IGBT collector–emitter voltage, `|Vce|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vce: Option<f64>,
+    /// BJT collector–base voltage, `|Vcb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vcb: Option<f64>,
+    /// BJT emitter–base voltage, `|Veb|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub veb: Option<f64>,
+    /// BJT or IGBT collector current, `|Ic|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub ic: Option<f64>,
+    /// MOSFET or JFET drain–source voltage, `|Vds|` (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vds: Option<f64>,
+    /// MOSFET or JFET gate–source voltage, `|Vgs|`; an IGBT's gate–emitter
+    /// voltage (V).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vgs: Option<f64>,
+    /// MOSFET or JFET drain current, `|Id|` (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub id: Option<f64>,
+    /// Maximum junction temperature (K): 423.15 K for a 150 °C part. Checked
+    /// against the junction temperature self-heating reports, so it needs
+    /// [`Part::thermal`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub tj_max: Option<f64>,
+}
+
+impl Ratings {
+    /// `true` when no limit is set.
+    pub fn is_empty(&self) -> bool { … }
 }
 
 /// Why a design can't be flattened.
@@ -5038,7 +5539,7 @@ pub mod waveform;
 
 pub use circuit:: { … }
 
-pub use design::{Block, DesignError, Instance, Part};
+pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 
 pub use waveform::Waveform;
 ```
@@ -5143,7 +5644,8 @@ pub enum Waveform {
     /// evaluates to `0.0` everywhere.
     #[cfg_attr(feature = "serde", serde(rename = "pwl"))]
     Pwl {
-        /// Breakpoints as `(time_s, value)` pairs sorted by time.
+        /// Breakpoints as `(time in s, value)` pairs sorted by time. The
+        /// value is V or A, matching the source it drives.
         points: Vec<(f64, f64)>,
     },
 }
@@ -5152,7 +5654,8 @@ pub enum Waveform {
 pub const MAX_BREAKPOINTS: usize = 10_000_000;
 
 impl Waveform {
-    /// Evaluate the waveform at time `t` (seconds).
+    /// The waveform's value at time `t` (s): volts on a voltage source,
+    /// amperes on a current source.
     pub fn evaluate(&self, t: f64) -> f64 { … }
 
     /// Times in `(0, t_end)` (s) where this waveform has a corner or a jump:
@@ -5263,9 +5766,10 @@ pub struct BjtCompanion {
     pub g_bc: f64, // B-C reverse junction conductance
     /// Early-voltage output conductance between C and E (S).
     pub g_ce: f64, // Early voltage output conductance between C and E
-    /// Collector current at the operating point (A).
+    /// Collector current at the operating point (A), into the collector, in
+    /// the NPN frame: a PNP caller negates it for the physical current.
     pub ic: f64, // collector current at operating point
-    /// Base current at the operating point (A).
+    /// Base current at the operating point (A), into the base, NPN frame.
     pub ib: f64, // base current at operating point
     /// B–E junction voltage at the operating point (V), for RHS computation.
     pub vbe: f64, // junction voltage (for RHS computation)
@@ -5283,9 +5787,11 @@ pub struct BjtCompanion {
 /// [`bjt_terminal_jacobian`].
 pub fn bjt_companion(vbe: f64, vbc: f64, params: &BjtParams) -> BjtCompanion { … }
 
-/// Base and collector currents `(ib, ic)` (A) at junction voltages
-/// `vbe`/`vbc` (V, sign-adjusted for PNP), including the Early effect the DC
-/// solve applies: `ic = i_tr + |i_tr|/VAF · vce` with `vce = vbe − vbc`.
+/// Base and collector currents `(ib, ic)` (A), each into its terminal, at
+/// junction voltages `vbe`/`vbc` (V). Both are in the NPN frame: for a PNP,
+/// pass the negated junction voltages and negate the currents. Includes the
+/// Early effect the DC solve applies: `ic = i_tr + |i_tr|/VAF · vce` with
+/// `vce = vbe − vbc`.
 ///
 /// This is the large-signal model that [`bjt_terminal_jacobian`]
 /// differentiates. The emitter current is `−(ib + ic)`.
@@ -5372,7 +5878,7 @@ impl DiodeParams {
     /// Standard silicon diode: IS = 1e-14 A, N = 1.0.
     pub fn silicon() -> Self { … }
 
-    /// LED with a given forward voltage at 20 mA.
+    /// LED with a given forward voltage (V) at 20 mA.
     ///
     /// IS is derived from the Shockley equation: IS = 0.020 / (exp(Vf / (N * VT)) - 1)
     /// with N = 2.0 (typical LED emission coefficient).
@@ -5416,10 +5922,13 @@ pub fn temperature_scale_is(is_t0: f64, t: f64, t0: f64, eg: f64, xti: f64, n: f
 /// `I = IS * (exp((v_d - I*RS) / (N*V_T)) - 1)`, with V_T at
 /// `params.temperature`, and the terminal conductance `g_j / (1 + RS*g_j)`
 /// is returned, so `g_d * v_d + i_eq` is the terminal current at `v_d`.
+///
+/// Units and signs: `v_d` is anode − cathode (V), `g_d` is in S and `i_eq`
+/// in A, both for current flowing anode → cathode.
 pub fn diode_companion(v_d: f64, params: &DiodeParams) -> (f64, f64) { … }
 
-/// Compute the diode current at terminal voltage `v_d`, including the drop
-/// across `params.rs`.
+/// Compute the diode current (A, anode → cathode) at terminal voltage
+/// `v_d` (V, anode − cathode), including the drop across `params.rs`.
 pub fn diode_current(v_d: f64, params: &DiodeParams) -> f64 { … }
 
 /// Critical voltage for voltage limiting.
@@ -5471,10 +5980,10 @@ pub struct IgbtCompanion {
     pub gm: f64,
     /// Output conductance ∂Ids/∂Vce (S): zero in saturation and cutoff.
     pub g_ce: f64,
-    /// Drain/collector current at operating point.
+    /// Collector current at the operating point (A), collector → emitter.
     pub ids: f64,
-    /// Companion current source value for MNA stamping:
-    /// `ids − gm·vge − g_ce·vce`.
+    /// Companion current source value for MNA stamping (A), collector →
+    /// emitter: `ids − gm·vge − g_ce·vce`.
     pub i_eq: f64,
 }
 
@@ -5523,13 +6032,15 @@ pub struct JfetCompanion {
     pub gm: f64,
     /// Drain–source conductance `∂Id/∂Vds` (S).
     pub gds: f64,
-    /// Equivalent current source for the MNA right-hand side (A).
+    /// Equivalent Norton current for the MNA right-hand side (A), drain →
+    /// source, in the N-channel frame (a P-channel caller negates it).
     pub i_eq: f64,
 }
 
 /// Compute JFET companion at operating point (vgs, vds).
 /// Nodes order: [gate, drain, source] — same as MOSFET convention.
-/// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0.
+/// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0 (A). `vgs`, `vds` and
+/// `vp` are in V.
 ///
 /// In the ohmic region `gm = 2·Idss·Vds/Vp²` keeps its sign, so it is
 /// negative when the drain is below the source.
@@ -5565,7 +6076,7 @@ pub enum LedColor {
 }
 
 impl LedColor {
-    /// Typical forward voltage at 20 mA for this colour.
+    /// Typical forward voltage (V) at 20 mA for this colour.
     pub fn forward_voltage(self) -> f64 { … }
 
     /// Parse from a lowercase string. Unknown strings default to `Red`.
@@ -5658,6 +6169,8 @@ pub mod photodiode;
 
 pub mod photoresistor;
 
+pub mod regulator;
+
 pub mod schottky;
 
 pub mod thermistor;
@@ -5748,18 +6261,19 @@ impl MosfetParams {
 
 /// Companion model output for MNA stamping.
 pub struct MosfetCompanion {
-    /// Drain current at operating point.
+    /// Drain current at the operating point (A), drain → source, in the
+    /// NMOS frame: callers mirror a PMOS (negate) to get its physical current.
     pub id: f64,
-    /// Transconductance: dId/dVgs.
+    /// Transconductance ∂Id/∂Vgs (S).
     pub gm: f64,
-    /// Output conductance: dId/dVds.
+    /// Output conductance ∂Id/∂Vds (S).
     pub gds: f64,
-    /// Body transconductance: dId/dVbs (from body effect). Zero when
+    /// Body transconductance ∂Id/∂Vbs (S), from the body effect. Zero when
     /// Vbs >= PHI, where the threshold stops depending on Vbs.
     pub gmb: f64,
     /// Operating region.
     pub region: MosfetRegion,
-    /// Effective threshold voltage (after body effect).
+    /// Effective threshold voltage after the body effect (V), NMOS frame.
     pub vth: f64,
 }
 
@@ -5826,8 +6340,10 @@ impl PhotodiodeParams {
 
 /// Linearized companion model for a photodiode at operating point v_d.
 ///
-/// Returns (g_d, i_eq) where i_eq includes the photocurrent offset.
-/// Photocurrent flows in reverse direction (opposite to diode forward current).
+/// Returns `(g_d, i_eq)`: conductance (S) and Norton current (A) for current
+/// flowing anode → cathode, at `v_d` = anode − cathode (V). `irradiance` is
+/// incident optical power in W (not W/m²). `i_eq` includes the
+/// photocurrent, which flows cathode → anode, opposite to forward current.
 pub fn photodiode_companion(v_d: f64, irradiance: f64, params: &PhotodiodeParams) -> (f64, f64) { … }
 ```
 
@@ -5857,6 +6373,106 @@ pub struct PhotoresistorParams {
 pub fn ldr_resistance(light_level: f64, params: &PhotoresistorParams) -> f64 { … }
 ```
 
+## `sindr-devices/src/regulator.rs`
+
+Linear voltage regulator: dropout, quiescent current, current limit,
+line and load regulation.
+
+The output is a piecewise-linear function of the input voltage and the
+output current, both measured from the regulator's ground pin:
+
+```text
+regulating: Vout = V + line·(Vin − (V + Vdo)) − Rout·Iout
+dropout:    Vout = Vin − Vdo − Rdo·Iout
+```
+
+whichever is lower. Past the current limit the output falls steeply, so
+the current stays within 1 % of the limit into any load, short circuits
+included. The input draws `Iout + Iq`.
+
+```rust
+/// Regulator parameters. [`Default`] is ideal: no dropout, no quiescent
+/// current, no limit, perfect regulation, but never more out than in.
+pub struct RegulatorParams {
+    /// Dropout voltage at no load (V): the least `Vin − Vout` it regulates
+    /// with.
+    pub dropout: f64,
+    /// Rise in dropout per ampere of output current (Ω), for a dropout that
+    /// grows with load.
+    pub dropout_resistance: f64,
+    /// Quiescent (ground-pin) current (A), drawn from the input on top of
+    /// the output current.
+    pub quiescent_current: f64,
+    /// Output current limit (A). `None` is unlimited.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current_limit: Option<f64>,
+    /// Line regulation: change in output per volt of input (V/V), around
+    /// the input where it just leaves dropout.
+    pub line_regulation: f64,
+    /// Load regulation as an output resistance (Ω): the output falls this
+    /// much per ampere drawn.
+    pub output_resistance: f64,
+}
+
+impl RegulatorParams {
+    /// An LM7805-class 5 V regulator, from the ST L78 and Fairchild LM78xx
+    /// datasheets at 25 °C: 2 V dropout (typical, 1 A), 4.3 mA quiescent
+    /// (typical), 2.2 A peak current, line regulation 3 mV over 7–25 V
+    /// (typical), load regulation 100 mV over 5 mA–1.5 A (maximum; no
+    /// typical is given). Short-circuit foldback (0.23 A at 35 V in) is not
+    /// modelled.
+    pub fn lm7805() -> Self { … }
+
+    /// An AMS1117-class low-dropout regulator, from its datasheet: 1.1 V
+    /// dropout at 0.8 A (typical), 5 mA quiescent (typical), 1.1 A current
+    /// limit (typical), line regulation 0.2 % and load regulation 0.4 %
+    /// (maxima) of a 3.3 V output, over 4.75–12 V in and 0–0.8 A out.
+    pub fn ams1117() -> Self { … }
+}
+
+/// Which part of its characteristic a regulator is on.
+pub enum RegulatorRegion {
+    /// Holding its set voltage (less line and load regulation).
+    Regulating,
+    /// Out of headroom: the output follows the input down.
+    Dropout,
+}
+
+/// The regulator's output on one linear piece:
+/// `Vout = offset + d_vin·Vin + d_iout·Iout`, all from the ground pin.
+pub struct RegulatorLinear {
+    /// Constant term (V).
+    pub offset: f64,
+    /// ∂Vout/∂Vin (V/V).
+    pub d_vin: f64,
+    /// ∂Vout/∂Iout (Ω), negative.
+    pub d_iout: f64,
+    /// Regulating or in dropout.
+    pub region: RegulatorRegion,
+    /// `true` when past the current limit.
+    pub limiting: bool,
+}
+
+impl RegulatorLinear {
+    /// The output voltage this piece gives at `vin`, `iout`.
+    pub fn vout(&self, vin: f64, iout: f64) -> f64 { … }
+}
+
+/// The piece of a regulator set to `voltage` that applies at input `vin`
+/// (V, from the ground pin) and output current `iout` (A, out of the output
+/// pin).
+pub fn regulator_piece(
+    params: &RegulatorParams,
+    voltage: f64,
+    vin: f64,
+    iout: f64,
+) -> RegulatorLinear { … }
+
+/// Power the regulator dissipates (W): `(Vin − Vout)·Iout + Vin·Iq`, with
+/// voltages from the ground pin.
+pub fn regulator_dissipation(params: &RegulatorParams, vin: f64, vout: f64, iout: f64) -> f64 { … }
+```
+
 ## `sindr-devices/src/schottky.rs`
 
 Schottky diode companion model.
@@ -5870,7 +6486,8 @@ voltage (~0.3V vs ~0.6V silicon). Reuses diode_companion().
 pub struct SchottkyParams {
     /// Saturation current (A). Higher than silicon due to lower barrier.
     pub is: f64,
-    /// Emission coefficient. ~1.0 for Schottky (more ideal than silicon).
+    /// Emission coefficient (dimensionless). ~1.0 for Schottky (more ideal
+    /// than silicon).
     pub n: f64,
 }
 
@@ -5881,7 +6498,8 @@ impl SchottkyParams {
 
 /// Linearized companion model for a Schottky diode at operating point v_d.
 ///
-/// Returns (g_d, i_eq): conductance and equivalent Norton current.
+/// Returns `(g_d, i_eq)`: conductance (S) and equivalent Norton current (A)
+/// for current flowing anode → cathode, at `v_d` = anode − cathode (V).
 /// Delegates to diode_companion with Schottky parameters.
 pub fn schottky_companion(v_d: f64, params: &SchottkyParams) -> (f64, f64) { … }
 ```
@@ -5939,7 +6557,8 @@ pub struct VaractorParams {
     pub m: f64,
 }
 
-/// Compute junction capacitance at voltage `v`.
+/// Junction capacitance (F) at `v` = anode − cathode (V); reverse bias is
+/// negative.
 ///
 /// C_j(V) = C_j0 / (1 - V/phi)^m
 ///
@@ -5948,9 +6567,10 @@ pub struct VaractorParams {
 /// For forward bias (V approaching phi), capacitance would diverge — clamp.
 pub fn junction_capacitance(v: f64, params: &VaractorParams) -> f64 { … }
 
-/// Compute the transient companion model for the varactor at `v_prev`.
+/// Compute the transient companion model for the varactor at `v_prev`
+/// (V, anode − cathode) over a step of `dt` seconds.
 ///
-/// Returns `(g_eq, i_eq)` where:
+/// Returns `(g_eq, i_eq)`, in S and A, where:
 /// - g_eq = C_j(v_prev) / dt  (backward Euler capacitor conductance)
 /// - i_eq = -g_eq * v_prev    (capacitor history current)
 ///
@@ -5972,11 +6592,11 @@ Reverse breakdown: linearised clamp at -Vz.
 ```rust
 /// Zener diode parameters.
 pub struct ZenerParams {
-    /// Breakdown voltage (positive, e.g. 5.1 for a BZX55C5V1).
+    /// Breakdown voltage (V), positive: 5.1 for a BZX55C5V1.
     pub vz: f64,
     /// Breakdown region dynamic resistance (Ω). Smaller = sharper knee.
     pub rz: f64,
-    /// Saturation current for the forward diode region.
+    /// Saturation current for the forward diode region (A).
     pub is: f64,
     /// Junction temperature (K). Default 300.15 K = 27°C. Sets the thermal
     /// voltage [`ZenerParams::vt`]; `is` is used as given.
@@ -5991,7 +6611,9 @@ impl ZenerParams {
     pub fn vt(&self) -> f64 { … }
 }
 
-/// Piecewise Zener companion model. Returns `(g_eq, i_eq)` for MNA stamping.
+/// Piecewise Zener companion model. Returns `(g_eq, i_eq)` for MNA stamping:
+/// `g_eq` in S and `i_eq` in A, for current flowing anode → cathode, at
+/// `v_d` = anode − cathode (V). Breakdown is `v_d ≤ −vz`.
 ///
 /// - `v_d > -vz`: standard Shockley companion (clamped to avoid overflow).
 /// - `v_d <= -vz`: linearised 1/rz clamp driving the junction to -Vz.
