@@ -56,7 +56,9 @@ solver.
 Rust, and their `.cir` is what `sindr::spice::to_netlist` writes for it. The
 test checks that the committed `.cir` still matches, so the golden is
 ngspice's answer for the very deck sindr exports. They pin the signs of E, G,
-F, H and I sources and the transformer's dot convention. After changing the
+F, H and I sources and the transformer's dot convention. Each test also
+reads the committed deck back with sindr's own parser and checks that
+against the same golden, so the E, G, F, H and K lines round-trip. After changing the
 exporter or one of these circuits:
 
 ```bash

@@ -294,6 +294,108 @@ fn element_id(input: &mut Input<'_>) -> ModalResult<(String, char, Range<usize>)
         .parse_next(input)
 }
 
+/// A line ending in `value`, with `id_span` for its start.
+fn element_line(
+    id: String,
+    prefix: char,
+    id_span: Range<usize>,
+    nodes: Vec<String>,
+    body: RawElementBody,
+    end: usize,
+) -> RawElement {
+    RawElement {
+        id,
+        prefix,
+        nodes,
+        body,
+        span: Span {
+            start: id_span.start,
+            end,
+            file: Arc::from(""),
+            src: Arc::default(),
+        },
+    }
+}
+
+/// `n` node names, each after whitespace.
+fn nodes_n(input: &mut Input<'_>, n: usize) -> ModalResult<Vec<String>> {
+    let mut nodes = Vec::with_capacity(n);
+    for _ in 0..n {
+        ws(input)?;
+        nodes.push(node_name(input)?.0);
+    }
+    Ok(nodes)
+}
+
+/// A trailing value expression and the end of the line.
+fn final_value(input: &mut Input<'_>) -> ModalResult<(ParamExpr, Range<usize>)> {
+    ws(input)?;
+    let value = value_expr(input)?;
+    ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(value)
+}
+
+/// Parse `E` / `G` linear voltage-controlled sources:
+/// `<id> n+ n- nc+ nc- <value>`.
+fn parse_voltage_controlled(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let nodes = nodes_n(input, 4)?;
+    let (value, val_span) = final_value(input)?;
+    let body = RawElementBody::VoltageControlled { value };
+    Ok(element_line(id, prefix, id_span, nodes, body, val_span.end))
+}
+
+/// Parse `F` / `H` linear current-controlled sources:
+/// `<id> n+ n- <vname> <value>`.
+fn parse_current_controlled(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let nodes = nodes_n(input, 2)?;
+    ws(input)?;
+    let (source, _) = ident(input)?;
+    let (value, val_span) = final_value(input)?;
+    let body = RawElementBody::CurrentControlled { source, value };
+    Ok(element_line(id, prefix, id_span, nodes, body, val_span.end))
+}
+
+/// Parse `K` mutual inductance: `<id> <lname1> <lname2> <k>`.
+fn parse_coupling(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    ws(input)?;
+    let (l1, _) = ident(input)?;
+    ws(input)?;
+    let (l2, _) = ident(input)?;
+    let (k, val_span) = final_value(input)?;
+    let body = RawElementBody::Coupling {
+        inductors: [l1, l2],
+        k,
+    };
+    Ok(element_line(
+        id,
+        prefix,
+        id_span,
+        Vec::new(),
+        body,
+        val_span.end,
+    ))
+}
+
+/// The nonlinear forms of `E`/`G`/`F`/`H` (`POLY`, `VALUE`, `TABLE`,
+/// `LAPLACE`), which sindr doesn't model.
+fn behavioural_form(line: &str) -> Option<&'static str> {
+    line.split(|c: char| c.is_whitespace() || c == '=' || c == '(' || c == '{')
+        .skip(1)
+        .find_map(|token| match token {
+            "poly" => Some("POLY"),
+            "value" => Some("VALUE"),
+            "table" => Some("TABLE"),
+            "laplace" => Some("LAPLACE"),
+            _ => None,
+        })
+}
+
 /// Parse `R / L / C` passive: `<id> n+ n- <value>`.
 fn parse_passive(input: &mut Input<'_>) -> ModalResult<RawElement> {
     let (id, prefix, id_span) = element_id(input)?;
@@ -1291,6 +1393,23 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             'd' => parse_diode(&mut input),
             'q' => parse_bjt(&mut input),
             'x' => parse_subckt_instance(&mut input),
+            'e' | 'g' | 'f' | 'h' => {
+                if let Some(form) = behavioural_form(trimmed) {
+                    return Err(LocalError::UnsupportedDevice {
+                        device: format!(
+                            "{form} form of a controlled source ({})",
+                            prefix.to_ascii_uppercase()
+                        ),
+                        span: 0..trimmed.len(),
+                    });
+                }
+                if matches!(prefix, 'e' | 'g') {
+                    parse_voltage_controlled(&mut input)
+                } else {
+                    parse_current_controlled(&mut input)
+                }
+            }
+            'k' => parse_coupling(&mut input),
             'm' => {
                 return Err(LocalError::UnsupportedDevice {
                     device: "MOSFET (M)".to_string(),
@@ -1309,7 +1428,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
                     span: 0..1,
                 });
             }
-            'k' | 's' => {
+            's' => {
                 return Err(LocalError::UnsupportedDevice {
                     device: format!("device prefix '{prefix}'"),
                     span: 0..1,

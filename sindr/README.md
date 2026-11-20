@@ -30,13 +30,13 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, linear E/G/F/H, K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
 ```
 
-`sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs. `parse_str` reads it back except for the E/G/F/H and K lines. Elements with no SPICE equivalent are an `ExportError`.
+`sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 
 ## Quick start
 

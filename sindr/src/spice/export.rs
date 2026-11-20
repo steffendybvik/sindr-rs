@@ -81,8 +81,7 @@ pub enum ExportError {
 /// Square, triangle and PWM waves become the `PULSE` that traces the same
 /// wave; a sine's phase becomes `SIN`'s delay.
 ///
-/// sindr's parser reads only R, L, C, V, I, D, Q, so a deck with E, G, F, H
-/// or K is for other simulators.
+/// sindr's parser reads every line written here back.
 ///
 /// # Names
 ///
