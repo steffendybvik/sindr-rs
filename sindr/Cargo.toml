@@ -9,7 +9,7 @@ repository = "https://github.com/steffendybvik/sindr-rs"
 homepage = "https://github.com/steffendybvik/sindr-rs"
 documentation = "https://docs.rs/sindr"
 readme = "README.md"
-keywords = ["electronics", "simulation", "spice", "circuit", "mna"]
+keywords = ["electronics", "simulation", "spice", "circuit", "eda"]
 categories = ["science", "simulation"]
 
 [package.metadata.docs.rs]

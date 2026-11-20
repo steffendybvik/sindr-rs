@@ -62,9 +62,11 @@ On the staging branch, before its PR into `main`:
 4. **AGENTS.md.** Update "Common pitfalls when generating circuits via this
    API" and "Things NOT to do" for anything this release changed. `CLAUDE.md`
    only points to `AGENTS.md`; keep it that way.
-5. **llms-full.txt.** `python3 scripts/gen_llms_full.py`, commit the result.
+5. **Accuracy.** `python3 scripts/accuracy_table.py` and commit
+   `docs/ACCURACY.md` and the README table if they moved.
+6. **llms-full.txt.** `python3 scripts/gen_llms_full.py`, commit the result.
    CI's `llms-full.txt` job fails if it's stale.
-6. **Docs build.** These must pass (CI runs them too):
+7. **Docs build.** These must pass (CI runs them too):
 
    ```bash
    cargo test --workspace --all-features      # includes doctests
@@ -73,8 +75,8 @@ On the staging branch, before its PR into `main`:
    RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --workspace --no-deps --all-features
    ```
 
-7. **Read it.** Open `target/doc/sindr/index.html` and skim the front page,
+8. **Read it.** Open `target/doc/sindr/index.html` and skim the front page,
    the `spice` badge and a few element docs as a docs.rs reader would. Skim
    `llms.txt` as an LLM would: could you write a working circuit from it?
-8. **Publish** `sindr-devices` first, then `sindr-core`, then `sindr`. After docs.rs has built,
+9. **Publish** `sindr-devices` first, then `sindr-core`, then `sindr`. After docs.rs has built,
    check the published pages render and show the feature badges.

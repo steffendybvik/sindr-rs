@@ -1,5 +1,10 @@
-//! Rust circuit simulator. SPICE-style MNA solver with built-in
-//! semiconductor device models.
+//! A circuit simulator you embed in Rust: build a circuit as a typed value,
+//! solve it natively or in WebAssembly, and get back numbers checked against
+//! ngspice. Pure Rust, no C libraries, no global state. Besides voltages and
+//! currents it answers design questions: whether each part stays inside its
+//! ratings ([`check_ratings`]) and whether a spec passes ([`check_specs`]).
+//! Accuracy against ngspice is tabled in the
+//! [repository](https://github.com/steffendybvik/sindr-rs/blob/main/docs/ACCURACY.md).
 //!
 //! `sindr` solves a [`Circuit`] — a list of components and a ground node —
 //! and returns voltages, currents, and power for every component. The solver
@@ -27,39 +32,23 @@
 //!
 //! # Quick start
 //!
-//! Build a voltage divider, solve it, read the divided voltage:
+//! How much current does a red LED draw from 5 V through 220 Ω?
 //!
 //! ```
-//! use sindr::{Circuit, CircuitElement, solve_circuit};
+//! use sindr::{solve_circuit, Circuit, CircuitElement};
 //!
-//! let circuit = Circuit {
-//!     ground_node: "0".into(),
-//!     components: vec![
-//!         CircuitElement::VoltageSource {
-//!             id: "V1".into(),
-//!             nodes: ["n1".into(), "0".into()],
-//!             voltage: 10.0,
-//!             waveform: None,
-//!         },
-//!         CircuitElement::Resistor {
-//!             id: "R1".into(),
-//!             nodes: ["n1".into(), "n2".into()],
-//!             resistance: 1_000.0,
-//!         },
-//!         CircuitElement::Resistor {
-//!             id: "R2".into(),
-//!             nodes: ["n2".into(), "0".into()],
-//!             resistance: 2_000.0,
-//!         },
-//!     ],
-//!     ..Default::default()
-//! };
+//! let circuit = Circuit::new("gnd", vec![
+//!     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "gnd".into()], voltage: 5.0, waveform: None },
+//!     CircuitElement::Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 220.0 },
+//!     CircuitElement::Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 },
+//! ]);
+//! let result = solve_circuit(&circuit)?;
+//! let led = result.component_results.iter().find(|c| c.id == "D1").unwrap();
+//! println!("{:.1} mA, {:.1} mW", led.current_through * 1e3, led.power * 1e3);
 //!
-//! let result = solve_circuit(&circuit).unwrap();
-//!
-//! // V_n2 = 10 V * R2/(R1+R2) = 10 * 2/3 ≈ 6.667 V
-//! let v_n2 = result.node_voltages["n2"];
-//! assert!((v_n2 - 6.6667).abs() < 1e-3);
+//! // About 1.8 V across the LED leaves about 3.2 V across R1.
+//! assert!((led.current_through - 3.2 / 220.0).abs() < 1.5e-3);
+//! # Ok::<(), sindr::SimError>(())
 //! ```
 //!
 //! # Data model and hierarchy
