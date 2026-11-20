@@ -51,43 +51,10 @@ The alphas end with `0.1.0`. From there on, versions are plain `0.x`: a
 breaking change bumps the minor version, anything else the patch. The last
 `0.x` before 1.0 is the freeze candidate.
 
-## Now
+## Between releases
 
-- Netlist-and-bench import API for editors: components, terminals and nets
-  in, a `Circuit` and a test bench out, with errors that name the part
-- Release `0.1.0`
-- README and docs.rs front page with the accuracy table, benchmarks and an
-  honest comparison with other options
-- Coverage of every common schematic symbol, and the elements still
-  missing: SPDT switch, crystal, ferrite bead
-
-## Next
-
-**Stability**
-- Convergence errors that name the node and component that won't settle
-- `#![forbid(unsafe_code)]` in every crate
-- Solver options: tolerances, iteration budget, gmin ladder
-- CI builds for `wasm32-unknown-unknown`, `cargo-semver-checks` and
-  `cargo-deny`
-
-**Type safety (breaking, before the freeze)**
-- Typed node and component handles in place of string ids
-- A smaller public module surface
-- Possibly unit newtypes (ohms, farads, volts) at the public API
-
-**Performance**
-- Benchmarks against ngspice: time per call when embedded, and throughput
-  across threads
-- Benchmarks for every analysis and the SPICE front end
-
-**Physics**
-- Gummel-Poon BJT, so vendor `.model` cards load
-- JFET junction capacitances
-- More of the SPICE dialect: DC and AC specs on sources, non-ASCII node names
-
-**Tests**
-- Serde round trips for every circuit and result type
-- One end-to-end test per device
+What shipped is in [`CHANGELOG.md`](./CHANGELOG.md). The plan for the next
+release is tracked separately and summarised here when it ships.
 
 ## After 1.0
 
