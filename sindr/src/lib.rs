@@ -246,6 +246,7 @@
 //! - [`Waveform`] — time-varying source shapes
 //! - [`SimError`] — what can go wrong
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
 #![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]

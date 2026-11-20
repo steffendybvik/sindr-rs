@@ -17,7 +17,7 @@ A circuit simulator you embed in Rust: build a circuit as a typed value, solve i
 ### Why sindr
 
 - **Typed in, typed out.** A `Circuit` is a Rust value (or JSON), results are structs, and errors are a `SimError` enum you can match on, not text on stderr.
-- **Pure Rust, no C.** No `unsafe` in the solver, no libngspice to install, no global state: run as many simulations in parallel threads as you like.
+- **Pure Rust, no C.** No `unsafe` in any crate (each has `#![forbid(unsafe_code)]`), no libngspice to install, no global state: run as many simulations in parallel threads as you like.
 - **Builds for WebAssembly.** `wasm32-unknown-unknown` with every feature on, so the same engine runs in a web app.
 - **Answers design questions.** `check_ratings` says whether each part stays inside its absolute maximum ratings, self-heating flags thermal runaway, and `check_specs` turns `.meas`-style measurements into pass/fail with margins.
 - **Real parts as primitives.** 31 element types: the usual R, L, C, sources and semiconductors, plus LEDs, zeners, regulators, op-amps, comparators, relays, fuses, switches, potentiometers, thermistors, photoresistors, transformers and batteries.
