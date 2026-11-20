@@ -206,8 +206,9 @@ pub struct ParsedNetlist {
     ///
     /// Order matches declaration order in the source.
     pub analyses: Vec<AnalysisRequest>,
-    /// `.ic` node voltages (V), keyed by node name: the state a transient
-    /// starts from. Pass them to
+    /// `.ic` node voltages (V), keyed by node name: where a transient
+    /// starts, or with no `uic` what its operating point holds them at.
+    /// Pass them to
     /// [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
     /// Only top-level cards are read.
     pub initial_conditions: HashMap<String, f64>,

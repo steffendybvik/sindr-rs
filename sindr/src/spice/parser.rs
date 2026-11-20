@@ -669,7 +669,7 @@ fn parse_card_node_values(input: &mut Input<'_>, kind: NodeValueKind) -> ModalRe
     Ok(RawCard::NodeValues(kind, values, Span::detached()))
 }
 
-/// Parse `.tran tstep tstop [tstart]`.
+/// Parse `.tran tstep tstop [tstart [tmax]] [uic]`.
 fn parse_card_tran(input: &mut Input<'_>) -> ModalResult<RawCard> {
     let mut args: Vec<ParamExpr> = Vec::new();
     loop {
@@ -682,11 +682,20 @@ fn parse_card_tran(input: &mut Input<'_>) -> ModalResult<RawCard> {
             Err(_) => break,
         }
     }
-    if args.len() < 2 || args.len() > 3 {
+    // Case is already folded.
+    let uic = !input.is_empty() && {
+        let (word, _) = ident(input)?;
+        ws(input)?;
+        if word != "uic" || !input.is_empty() {
+            return Err(ErrMode::from_input(input));
+        }
+        true
+    };
+    if args.len() < 2 || args.len() > 4 {
         return Err(ErrMode::from_input(input));
     }
     Ok(RawCard::Analysis(
-        RawAnalysis::Tran { args },
+        RawAnalysis::Tran { args, uic },
         Span::detached(),
     ))
 }
@@ -1405,13 +1414,29 @@ mod tests {
     fn cards_tran() {
         let card = parse_one_card_local(".tran 1u 1m").unwrap();
         match card {
-            RawCard::Analysis(RawAnalysis::Tran { args }, _) => {
+            RawCard::Analysis(RawAnalysis::Tran { args, uic }, _) => {
+                assert!(!uic);
                 assert_eq!(args.len(), 2);
                 assert!((must_num(&args[0]) - 1e-6).abs() < 1e-15);
                 assert!((must_num(&args[1]) - 1e-3).abs() < 1e-12);
             }
             other => panic!("got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cards_tran_uic_and_tmax() {
+        let card = parse_one_card_local(".tran 1u 1m 0 10n uic").unwrap();
+        match card {
+            RawCard::Analysis(RawAnalysis::Tran { args, uic }, _) => {
+                assert!(uic);
+                assert_eq!(args.len(), 4);
+                assert!((must_num(&args[3]) - 1e-8).abs() < 1e-20);
+            }
+            other => panic!("got {other:?}"),
+        }
+        assert!(parse_one_card_local(".tran 1u 1m bogus").is_err());
+        assert!(parse_one_card_local(".tran 1u 1m uic 5").is_err());
     }
 
     #[test]

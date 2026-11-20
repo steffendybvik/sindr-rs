@@ -612,11 +612,11 @@ fn build_analysis(
 ) -> Result<AnalysisRequest, SpiceParseError> {
     match raw {
         RawAnalysis::Op => Ok(AnalysisRequest::Op),
-        RawAnalysis::Tran { args } => {
-            if args.len() != 2 && args.len() != 3 {
+        RawAnalysis::Tran { args, uic } => {
+            if !(2..=4).contains(&args.len()) {
                 return Err(SpiceParseError::ArityMismatch {
                     card: ".tran".to_string(),
-                    expected: "2 or 3 args (tstep tstop [tstart])".to_string(),
+                    expected: "2 to 4 args (tstep tstop [tstart [tmax]])".to_string(),
                     got: args.len(),
                     src: NamedSource::new("<build>", String::new()),
                     bad_span: (0, 0).into(),
@@ -624,15 +624,20 @@ fn build_analysis(
             }
             let tstep = eval_finite(&args[0], scope, ".tran", "tstep")?;
             let tstop = eval_finite(&args[1], scope, ".tran", "tstop")?;
-            let tstart = if args.len() == 3 {
-                Some(eval_finite(&args[2], scope, ".tran", "tstart")?)
-            } else {
-                None
+            let tstart = match args.get(2) {
+                Some(arg) => Some(eval_finite(arg, scope, ".tran", "tstart")?),
+                None => None,
+            };
+            let tmax = match args.get(3) {
+                Some(arg) => Some(eval_finite(arg, scope, ".tran", "tmax")?),
+                None => None,
             };
             Ok(AnalysisRequest::Tran {
                 tstep,
                 tstop,
                 tstart,
+                tmax,
+                uic: *uic,
             })
         }
         RawAnalysis::Dc { source, args } => {
@@ -964,6 +969,7 @@ mod tests {
         let cards = vec![RawCard::Analysis(
             RawAnalysis::Tran {
                 args: vec![ParamExpr::Number(1e-6), ParamExpr::Number(1e-3)],
+                uic: false,
             },
             Span::detached(),
         )];
@@ -974,6 +980,7 @@ mod tests {
                 tstep,
                 tstop,
                 tstart,
+                ..
             } => {
                 assert_eq!(*tstep, 1e-6);
                 assert_eq!(*tstop, 1e-3);
@@ -1050,6 +1057,7 @@ mod tests {
         let cards = vec![RawCard::Analysis(
             RawAnalysis::Tran {
                 args: vec![ParamExpr::Number(f64::INFINITY), ParamExpr::Number(1e-3)],
+                uic: false,
             },
             Span::detached(),
         )];

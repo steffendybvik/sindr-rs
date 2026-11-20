@@ -681,9 +681,14 @@ fn ac_exported_transformer() {
 /// largest error, about 0.03 % of full scale, comes from the backward-Euler
 /// first step; allow 0.1 %. (Backward Euler alone peaks near 0.4 %.)
 fn check_tran(case: &'static str, vectors: &[&str]) {
-    let golden = Golden::load(case);
     let result = solve_circuit(&parse(case)).unwrap();
-    let tran = result.transient.expect("transient result");
+    compare_tran(case, vectors, &result.transient.expect("transient result"));
+}
+
+/// Each of `vectors` in `tran` against the golden, resampled onto sindr's
+/// steps, to 0.1 % of full scale.
+fn compare_tran(case: &'static str, vectors: &[&str], tran: &sindr::TransientData) {
+    let golden = Golden::load(case);
     let times: Vec<f64> = tran.timesteps.iter().map(|s| s.time).collect();
 
     let mut check = Check::new(case);
@@ -739,6 +744,24 @@ fn tran_rc_step() {
 #[test]
 fn tran_rl_step() {
     check_tran("tran_rl_step", &["v(a)", "i(v1)"]);
+}
+
+/// `.tran` without `UIC`: both start from the DC operating point (the
+/// pulse's 1 V low, the cap charged, the inductor carrying its current),
+/// sit there until the pulse at 1 ms, then respond to it. The golden is
+/// ngspice's own steps (TMAX 1 µs, not resampled), so the pulse edge isn't
+/// smeared.
+#[test]
+fn tran_op_start() {
+    let config = sindr::TransientConfig::new(3e-3, 20e-6)
+        .with_tmax(1e-6)
+        .with_start(sindr::TransientStart::OperatingPoint);
+    let result = sindr::solve_transient(&parse("tran_op_start"), &config).unwrap();
+    compare_tran(
+        "tran_op_start",
+        &["v(a)", "i(v1)"],
+        &result.transient.unwrap(),
+    );
 }
 
 // ---------------------------------------------------------------- temperature
