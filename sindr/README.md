@@ -303,7 +303,9 @@ CircuitElement::Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 
 CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 }
 ```
 
-`control_source` is the `id` of the voltage source whose branch current is sensed.
+`control_source` is the `id` of the voltage source whose branch current is sensed, positive from its `+` terminal through it to `-`, as in SPICE.
+
+The current sources follow SPICE's `G` and `F` and sindr's own `CurrentSource`: a positive `I_out` flows through the source from `out_from` to `out_to`, so it is drawn out of `out_from` and pushed into `out_to`.
 
 ### Op-amp / Comparator
 

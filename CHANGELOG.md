@@ -235,6 +235,14 @@ staged as `0.1.0-alpha.8`.
 
 ### Changed
 
+- **Breaking (results):** `Vccs` and `Cccs` drive their current the way
+  `CurrentSource` and SPICE's `G` and `F` do: a positive `gm·V_control` or
+  `alpha·I_control` flows through the source from `nodes[0]` to
+  `nodes[1]`. They drove it the other way, so the same `nodes` meant
+  opposite directions on neighbouring variants, and `to_netlist` swapped
+  their nodes to make up for it. To keep a circuit's old behaviour, swap
+  each `Vccs` and `Cccs` element's two `nodes`. Exported decks no longer
+  swap them.
 - **Deprecated:** `solve_circuit_with_initial_voltages` and the
   `solve_ac`, `solve_noise`, `solve_tf` and `solve_sensitivity`
   `_with_initial_voltages` variants. Use a `Solver` whose

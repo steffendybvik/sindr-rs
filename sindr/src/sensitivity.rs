@@ -228,7 +228,7 @@ pub(crate) fn solve_sensitivity_with(
                 gm,
             } => {
                 let control = v(node(&control_nodes[0])) - v(node(&control_nodes[1]));
-                let s = (lambda(node(&nodes[0])) - lambda(node(&nodes[1]))) * control;
+                let s = (lambda(node(&nodes[1])) - lambda(node(&nodes[0]))) * control;
                 (id, SensParameter::Transconductance, *gm, s)
             }
             _ => continue,
