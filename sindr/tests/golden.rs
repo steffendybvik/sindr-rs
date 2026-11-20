@@ -886,6 +886,45 @@ fn tran_op_start() {
     );
 }
 
+/// Runs the deck's own `.tran` (and `.ic`) as ngspice does, through
+/// `ParsedNetlist::transient_config`, and compares `vectors`.
+fn check_deck_tran(case: &'static str, vectors: &[&str]) -> sindr::TransientData {
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    let config = netlist.transient_config().expect(".tran in the deck");
+    let tran = sindr::solve_transient(&netlist.circuit, &config)
+        .unwrap()
+        .transient
+        .unwrap();
+    compare_tran(case, vectors, &tran);
+    tran
+}
+
+/// `.ic` without `UIC`: `a` is held at 3 V while the operating point is
+/// solved, so C1 starts charged to 3 V, and C2, not listed, at its
+/// operating point (1 V). Then `a` decays to the divider's 0.5 V.
+#[test]
+fn tran_ic_op() {
+    let tran = check_deck_tran("tran_ic_op", &["v(a)", "v(b)"]);
+    assert!((tran.timesteps[0].node_voltages["b"] - 1.0).abs() < 1e-3);
+}
+
+/// The same deck with `UIC`: C1 starts at its `.ic` 3 V, and C2, not
+/// listed, uncharged, so `b` charges towards 1 V.
+#[test]
+fn tran_ic_uic() {
+    let tran = check_deck_tran("tran_ic_uic", &["v(a)", "v(b)"]);
+    assert!(tran.timesteps[0].node_voltages["b"] < 1e-2);
+}
+
+/// `.tran … tstart`: integrated from 0, so the pulse train has charged C1
+/// for 1.25 ms, but kept only from there on. sindr's first step lands on
+/// tstart; ngspice's first saved point is its first step past it.
+#[test]
+fn tran_tstart() {
+    let tran = check_deck_tran("tran_tstart", &["v(a)", "i(v1)"]);
+    assert!((tran.timesteps[0].time - 1.25e-3).abs() < 1e-12);
+}
+
 // ---------------------------------------------------------------- temperature
 
 #[test]

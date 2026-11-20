@@ -14,8 +14,9 @@ pub enum AnalysisRequest {
         tstep: f64,
         /// Stop time in seconds.
         tstop: f64,
-        /// Optional start time (s). Read but not used: sindr's results
-        /// start at 0.
+        /// Optional start time (s), SPICE's TSTART: the run is integrated
+        /// from 0, and the result starts here
+        /// ([`with_tstart`](crate::TransientConfig::with_tstart)).
         tstart: Option<f64>,
         /// Optional largest step (s), SPICE's TMAX.
         tmax: Option<f64>,
@@ -172,10 +173,10 @@ impl AnalysisRequest {
     /// or with `uic` from the initial conditions alone
     /// ([`TransientStart::InitialConditions`](crate::TransientStart::InitialConditions)).
     /// `tmax` caps the step. The deck's `.ic` values aren't in the config:
-    /// add [`ParsedNetlist::initial_conditions`](crate::spice::ParsedNetlist::initial_conditions)
-    /// with [`with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
-    /// `tstart` is not applied: the result holds every step from the first
-    /// one on.
+    /// [`ParsedNetlist::transient_config`](crate::spice::ParsedNetlist::transient_config)
+    /// adds them.
+    /// `tstart` keeps the result from that time on
+    /// ([`with_tstart`](crate::TransientConfig::with_tstart)).
     ///
     /// ```
     /// use sindr::spice::parse_str;
@@ -193,16 +194,18 @@ impl AnalysisRequest {
             AnalysisRequest::Tran {
                 tstep,
                 tstop,
+                tstart,
                 tmax,
                 uic,
-                ..
             } => {
                 let start = if *uic {
                     crate::TransientStart::InitialConditions
                 } else {
                     crate::TransientStart::OperatingPoint
                 };
-                let config = crate::TransientConfig::new(*tstop, *tstep).with_start(start);
+                let config = crate::TransientConfig::new(*tstop, *tstep)
+                    .with_start(start)
+                    .with_tstart(tstart.unwrap_or(0.0));
                 Some(match tmax {
                     Some(tmax) => config.with_tmax(*tmax),
                     None => config,
