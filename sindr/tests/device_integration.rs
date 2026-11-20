@@ -518,94 +518,173 @@ fn thermistor_divider_follows_temperature() {
 }
 
 // ----- Comparator ---------------------------------------------------------
-// Closed form: the comparator is a VCVS of gain 1e5 from (in+ − in−) to
-// out, with no rail clamp (LIMITATIONS), so a 10 µV overdrive gives ±1 V.
-// The rails aren't enforced: this pins today's behaviour, not a real part's.
+// Closed form: the comparator has gain 1e5 from (in+ − in−) to out, its
+// output clamped to [v_neg, v_pos]. 10 µV of overdrive gives 1 V, inside
+// the rails; 1 V of overdrive either way pins the output to a rail.
+
+fn comparator(v_pos: f64, v_neg: f64) -> CircuitElement {
+    CircuitElement::Comparator {
+        id: "U1".into(),
+        nodes: ["in".into(), "ref".into(), "out".into()],
+        v_pos,
+        v_neg,
+    }
+}
 
 #[test]
-fn comparator_is_a_gain_1e5_vcvs() {
+fn comparator_output_is_clamped_to_its_rails() {
     let make = |overdrive: f64| Circuit {
         ground_node: "0".into(),
         components: vec![
             vsrc("Vref", "ref", "0", 1.0),
             vsrc("Vin", "in", "0", 1.0 + overdrive),
-            CircuitElement::Comparator {
-                id: "U1".into(),
-                nodes: ["in".into(), "ref".into(), "out".into()],
-                v_pos: 5.0,
-                v_neg: 0.0,
-            },
+            comparator(5.0, -3.0),
             resistor("Rload", "out", "0", 10_000.0),
         ],
         ..Default::default()
     };
-    for overdrive in [10e-6, -10e-6, 0.0] {
+    for (overdrive, out) in [
+        (10e-6, 1.0),
+        (-10e-6, -1.0),
+        (0.0, 0.0),
+        (1.0, 5.0),
+        (-1.0, -3.0),
+    ] {
         let r = solve_circuit(&make(overdrive)).expect("solves");
-        assert_relative_eq!(node(&r, "out"), 1e5 * overdrive, epsilon = 1e-6);
+        assert_relative_eq!(node(&r, "out"), out, epsilon = 1e-6);
+        let op = &r.op_amp_results[0];
+        assert_relative_eq!(op.v_out, out, epsilon = 1e-6);
     }
 }
 
-/// The same comparator in transient and AC: it has no state, so a pulse
-/// on in+ shows on the output at once, and AC gain is flat at 100 dB.
+/// A comparator inside a feedback loop that ends up saturated: the clamp
+/// has no slope there, so Newton has to start from the unclamped solve.
 #[test]
-fn comparator_in_transient_and_ac() {
-    use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
-    use sindr::{solve_transient, TransientConfig, Waveform};
-
+fn comparator_saturates_in_a_feedback_loop() {
+    // Non-inverting stage of gain 11 on 1 V: 11 V wanted, 5 V available.
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            vsrc("Vref", "ref", "0", 0.0),
-            CircuitElement::VoltageSource {
-                id: "Vin".into(),
-                nodes: ["in".into(), "0".into()],
-                voltage: 0.0,
-                waveform: Some(Waveform::Pulse {
-                    v1: 0.0,
-                    v2: 10e-6,
-                    delay: 1e-6,
-                    rise_time: 1e-9,
-                    fall_time: 1e-9,
-                    pulse_width: 1.0,
-                    period: 2.0,
-                }),
-            },
+            vsrc("Vin", "in", "0", 1.0),
             CircuitElement::Comparator {
                 id: "U1".into(),
-                nodes: ["in".into(), "ref".into(), "out".into()],
+                nodes: ["in".into(), "fb".into(), "out".into()],
                 v_pos: 5.0,
                 v_neg: 0.0,
             },
+            resistor("Rf", "out", "fb", 10_000.0),
+            resistor("Rg", "fb", "0", 1_000.0),
+        ],
+        ..Default::default()
+    };
+    let r = solve_circuit(&circuit).expect("solves");
+    assert_relative_eq!(node(&r, "out"), 5.0, epsilon = 1e-6);
+}
+
+#[test]
+fn comparator_rails_must_be_ordered() {
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            vsrc("Vin", "in", "0", 1.0),
+            vsrc("Vref", "ref", "0", 0.0),
+            comparator(0.0, 5.0),
             resistor("Rload", "out", "0", 10_000.0),
         ],
         ..Default::default()
     };
-    let tr = solve_transient(&circuit, &TransientConfig::new(5e-6, 1e-7)).expect("transient");
-    let steps = &tr.transient.as_ref().expect("transient data").timesteps;
-    let out_at = |t: f64| {
-        steps
-            .iter()
-            .min_by(|a, b| (a.time - t).abs().total_cmp(&(b.time - t).abs()))
-            .map(|s| s.node_voltages["out"])
-            .expect("a step")
-    };
-    assert_relative_eq!(out_at(0.5e-6), 0.0, epsilon = 1e-9);
-    assert_relative_eq!(out_at(4e-6), 1.0, epsilon = 1e-6);
+    assert!(matches!(
+        solve_circuit(&circuit),
+        Err(SimError::InvalidComponent(msg)) if msg.contains("v_pos")
+    ));
+}
 
-    let ac = solve_ac(
-        &circuit,
-        &AcConfig {
-            f_start: 1.0,
-            f_stop: 1e6,
-            num_points: 7,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "Vin".into(),
-            ac_magnitude: 1.0,
-        },
-    )
-    .expect("ac");
-    for point in &ac.points {
-        assert_relative_eq!(point.node_voltages["out"].norm(), 1e5, max_relative = 1e-9);
+/// The same comparator in transient: it has no state, so a ±1 V step on
+/// in+ swings the output from one rail to the other at once.
+#[test]
+fn comparator_switches_between_rails_in_transient() {
+    use sindr::{solve_transient, TransientConfig, Waveform};
+
+    for (v1, v2, before, after) in [(-1.0, 1.0, -3.0, 5.0), (1.0, -1.0, 5.0, -3.0)] {
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                vsrc("Vref", "ref", "0", 0.0),
+                CircuitElement::VoltageSource {
+                    id: "Vin".into(),
+                    nodes: ["in".into(), "0".into()],
+                    voltage: 0.0,
+                    waveform: Some(Waveform::Pulse {
+                        v1,
+                        v2,
+                        delay: 1e-6,
+                        rise_time: 1e-9,
+                        fall_time: 1e-9,
+                        pulse_width: 1.0,
+                        period: 2.0,
+                    }),
+                },
+                comparator(5.0, -3.0),
+                resistor("Rload", "out", "0", 10_000.0),
+            ],
+            ..Default::default()
+        };
+        let tr = solve_transient(&circuit, &TransientConfig::new(5e-6, 1e-7)).expect("transient");
+        let steps = &tr.transient.as_ref().expect("transient data").timesteps;
+        let out_at = |t: f64| {
+            steps
+                .iter()
+                .min_by(|a, b| (a.time - t).abs().total_cmp(&(b.time - t).abs()))
+                .map(|s| s.node_voltages["out"])
+                .expect("a step")
+        };
+        assert_relative_eq!(out_at(0.5e-6), before, epsilon = 1e-6);
+        assert_relative_eq!(out_at(4e-6), after, epsilon = 1e-6);
+        let peak = steps
+            .iter()
+            .map(|s| s.node_voltages["out"].abs())
+            .fold(0.0, f64::max);
+        assert!(peak <= 5.0 + 1e-6, "output left the rails: {peak} V");
+    }
+}
+
+/// AC gain is flat at 100 dB with the output between the rails, and zero
+/// with it pinned to one.
+#[test]
+fn comparator_in_ac() {
+    use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+
+    for (bias, gain) in [(0.0, 1e5), (1.0, 0.0)] {
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                vsrc("Vref", "ref", "0", 0.0),
+                vsrc("Vin", "in", "0", bias),
+                comparator(5.0, -3.0),
+                resistor("Rload", "out", "0", 10_000.0),
+            ],
+            ..Default::default()
+        };
+        let ac = solve_ac(
+            &circuit,
+            &AcConfig {
+                f_start: 1.0,
+                f_stop: 1e6,
+                num_points: 7,
+                spacing: FrequencySpacing::Logarithmic,
+                source_id: "Vin".into(),
+                ac_magnitude: 1.0,
+            },
+        )
+        .expect("ac");
+        for point in &ac.points {
+            assert_relative_eq!(
+                point.node_voltages["out"].norm(),
+                gain,
+                max_relative = 1e-9,
+                epsilon = 1e-6
+            );
+        }
     }
 }
 

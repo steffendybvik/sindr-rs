@@ -16,10 +16,13 @@
 //! it pulls `x` back, so a saturated stage sits within about `|v₊ − v₋|` of
 //! the rail instead of winding up towards `u`, and recovers quickly.
 //! `K = gain`. Within the rails `sat(x) = x` and the term vanishes.
+//!
+//! A comparator is the same stamp with [`COMPARATOR`]: gain 1e5 and no pole,
+//! so its output follows the clamped gain stage instantly.
 
 use nalgebra::DVector;
 
-use crate::circuit::OpAmpModel;
+use crate::circuit::{CircuitElement, OpAmpModel};
 use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
@@ -29,7 +32,19 @@ use crate::stamp::stamp_current_source;
 /// output bends over smoothly instead of with a kink Newton can't follow.
 const KNEE: f64 = 0.01;
 
-/// The terminals and unknowns of one modelled op-amp.
+/// A comparator's model: the unmodelled op-amp's gain of 1e5 with no pole,
+/// slew limit, output resistance, offset or bias, so it differs from that
+/// op-amp only in holding its output between the rails.
+pub(crate) const COMPARATOR: OpAmpModel = OpAmpModel {
+    gain: 1e5,
+    gbw: None,
+    slew_rate: None,
+    r_out: 0.0,
+    offset_voltage: 0.0,
+    bias_current: 0.0,
+};
+
+/// The terminals and unknowns of one modelled op-amp or comparator.
 pub(crate) struct OpAmpStamp<'a> {
     pub model: &'a OpAmpModel,
     /// `[in_plus, in_minus, out]`.
@@ -56,7 +71,37 @@ pub(crate) fn clamp(u: f64, lo: f64, hi: f64) -> (f64, f64) {
     (u - over + under, 1.0 - d_over - d_under)
 }
 
-impl OpAmpStamp<'_> {
+impl<'a> OpAmpStamp<'a> {
+    /// The stamp of an element whose output is clamped to its rails: an
+    /// op-amp with a model, or a comparator. `None` for anything else.
+    /// `branch` is its first MNA branch slot.
+    pub(crate) fn of(element: &'a CircuitElement, ground: &'a str, branch: usize) -> Option<Self> {
+        let (model, nodes, v_pos, v_neg) = match element {
+            CircuitElement::OpAmp {
+                nodes,
+                v_pos,
+                v_neg,
+                model: Some(model),
+                ..
+            } => (model, nodes, *v_pos, *v_neg),
+            CircuitElement::Comparator {
+                nodes,
+                v_pos,
+                v_neg,
+                ..
+            } => (&COMPARATOR, nodes, *v_pos, *v_neg),
+            _ => return None,
+        };
+        Some(Self {
+            model,
+            nodes,
+            ground,
+            v_pos,
+            v_neg,
+            branch,
+        })
+    }
+
     fn stage(&self) -> usize {
         self.branch + 1
     }

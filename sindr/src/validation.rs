@@ -391,8 +391,18 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             finite("k", *k, "")
         }
         CircuitElement::Fuse { rating, .. } => positive("rating", *rating, " A"),
-        CircuitElement::Comparator { v_pos, v_neg, .. }
-        | CircuitElement::OpAmp { v_pos, v_neg, .. } => {
+        CircuitElement::Comparator { v_pos, v_neg, .. } => {
+            finite("v_pos", *v_pos, " V")?;
+            finite("v_neg", *v_neg, " V")?;
+            if v_pos <= v_neg {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: v_pos {v_pos} V must be above v_neg {v_neg} V",
+                    comp.id()
+                )));
+            }
+            Ok(())
+        }
+        CircuitElement::OpAmp { v_pos, v_neg, .. } => {
             finite("v_pos", *v_pos, " V")?;
             finite("v_neg", *v_neg, " V")
         }

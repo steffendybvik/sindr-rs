@@ -356,6 +356,13 @@ staged as `0.1.0-alpha.8`.
   Results, controlled sources and sweeps look components up by id, so the
   second was silently shadowed by the first. A SPICE deck that names two
   elements alike now fails to solve.
+- **Breaking (results):** a comparator's output now stays between its
+  `v_neg` and `v_pos` rails. It was a linear VCVS of gain 1e5 that ignored
+  them, so 10 mV of overdrive put 1 kV on the output. It is now the
+  op-amp macromodel's rail clamp with gain 1e5 and no pole, so it takes
+  Newton, two MNA branch slots (output current, then gain-stage voltage)
+  and, at a rail, has zero small-signal gain in AC. A comparator whose
+  `v_pos` is not above `v_neg` is an `InvalidComponent`.
 
 ## [0.1.0-alpha.7] - 2026-11-16
 

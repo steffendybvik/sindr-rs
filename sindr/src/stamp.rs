@@ -285,34 +285,18 @@ pub fn stamp_circuit(
                     stamp_diode_companion(system, node_map, nodes, vp, &params);
                 }
             }
-            CircuitElement::OpAmp {
-                nodes,
-                v_pos,
-                v_neg,
-                model: Some(model),
-                ..
-            } => {
-                let op = crate::op_amp::OpAmpStamp {
-                    model,
-                    nodes,
-                    ground: &circuit.ground_node,
-                    v_pos: *v_pos,
-                    v_neg: *v_neg,
-                    branch: num_nodes + vsource_index,
-                };
-                op.stamp_dc(system, node_map, v_prev);
+            // Clamped to its rails: a modelled op-amp or a comparator.
+            CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. } => {
+                let branch = num_nodes + vsource_index;
+                if let Some(op) =
+                    crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, branch)
+                {
+                    op.stamp_dc(system, node_map, v_prev);
+                }
                 vsource_index += 2;
             }
             // OpAmp: ideal high-gain VCVS (gain=1e5). OUT is relative to circuit ground.
             CircuitElement::OpAmp { nodes, .. } => {
-                let branch = num_nodes + vsource_index;
-                let out_nodes: [String; 2] = [nodes[2].clone(), circuit.ground_node.clone()];
-                let ctrl_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
-                stamp_vcvs(system, node_map, &out_nodes, &ctrl_nodes, 1e5, branch);
-                vsource_index += 1;
-            }
-            // Comparator: identical VCVS stamp to OpAmp; output saturates naturally at rails.
-            CircuitElement::Comparator { nodes, .. } => {
                 let branch = num_nodes + vsource_index;
                 let out_nodes: [String; 2] = [nodes[2].clone(), circuit.ground_node.clone()];
                 let ctrl_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
