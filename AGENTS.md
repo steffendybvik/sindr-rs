@@ -18,15 +18,22 @@ sindr-rs/
 │   │   ├── waveform.rs         # sine, pulse, square, triangle, PWM, PWL
 │   │   ├── mna.rs              # MNA matrix assembly
 │   │   ├── stamp.rs            # per-element matrix stamping
+│   │   ├── op_amp.rs           # op-amp / comparator macromodel stamps
+│   │   ├── composite.rs        # SPDT switch, crystal, ferrite bead as networks of simpler elements
+│   │   ├── battery_state.rs    # battery Norton equivalent and state of charge
+│   │   ├── device_params.rs    # effective device parameters from element fields
 │   │   ├── newton_raphson.rs   # nonlinear DC solver
+│   │   ├── solver.rs           # SolverOptions and Solver (.options, .nodeset)
 │   │   ├── transient.rs        # transient stepper (TransientConfig, solve_transient)
 │   │   ├── integration.rs      # Gear-2 / trapezoidal / backward-Euler formulas
 │   │   ├── ac_analysis.rs      # small-signal AC (and the linearised system .tf reuses)
+│   │   ├── noise.rs            # .noise: thermal, shot and flicker noise
 │   │   ├── transfer_function.rs # .tf: DC small-signal gain, Rin, Rout
 │   │   ├── sensitivity.rs      # .sens: DC adjoint sensitivity
 │   │   ├── dc_sweep.rs         # parameter sweep
 │   │   ├── temp_sweep.rs       # temperature sweep
 │   │   ├── results.rs          # SimulationResult, ComponentResult, etc.
+│   │   ├── csv.rs              # to_csv on transient, AC and sweep results
 │   │   ├── node_map.rs         # node-name → matrix-index mapping
 │   │   ├── ratings.rs          # check_ratings: absolute-maximum ratings vs. a result
 │   │   ├── measure.rs          # measurements (.meas) and specs: check_specs, pass/fail and margin
@@ -37,12 +44,12 @@ sindr-rs/
 │   │   ├── examples.rs         # named example circuits, runnable from list_examples / run_example
 │   │   └── spice/              # SPICE3 netlist parser (optional `spice` feature)
 │   │       └── {mod,parser,preprocess,flatten,build,ast,param_eval,si,
-│   │            analysis,error,source_map}.rs
+│   │            analysis,error,export,source_map}.rs
 │   ├── examples/               # cargo run --example targets
 │   └── tests/                  # integration tests (+ spice fixtures/)
 ├── sindr-devices/      # device physics (no solver dep)
 │   └── src/{diode,bjt,mosfet,igbt,jfet,varactor,schottky,zener,led,
-│            photodiode,photoresistor,thermistor}.rs
+│            photodiode,photoresistor,thermistor,battery,inductor,regulator}.rs
 ├── docs/RELEASING.md    # where capabilities are documented + release checklist
 ├── scripts/gen_llms_full.py  # regenerates llms-full.txt
 ├── llms.txt            # short index for LLMs (llmstxt.org)
@@ -115,7 +122,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **No loops of voltage sources or inductors.** An inductor is a short at DC, so a loop of inductors (or of inductors and voltage sources) is `SingularMatrix`, in AC too, which solves the DC operating point first. Put a small resistor in the loop.
 - **Transformer `k` must satisfy `k ≤ 0.999`.** `k = 1.0` is mathematically singular. Default is `0.999`.
 - **Voltage source `nodes[0]` is the positive terminal.** Easy to flip and end up with negative supply rails.
-- **Current source convention**: current flows from `nodes[0]` toward `nodes[1]`.
+- **Current source convention**: current flows through the source from `nodes[0]` to `nodes[1]` (drawn out of `nodes[0]`, pushed into `nodes[1]`), as SPICE's `I`. `Vccs` and `Cccs` follow the same rule, as SPICE's `G` and `F`.
 - **Op-amp / comparator**: nodes are `[in_plus, in_minus, out]`, output referred to ground. An op-amp without `model` is a VCVS with gain `1e5`: no GBW, no slew rate, and `v_pos`/`v_neg` are **not** enforced. `model: Some(OpAmpModel { .. })` adds a GBW pole, slew rate, output resistance, offset, bias current and the rail clamp. A comparator is that macromodel with gain `1e5` and no pole (`op_amp::COMPARATOR`), so its output is clamped to `v_neg`/`v_pos`. A modelled op-amp or a comparator takes two MNA branch slots (`CircuitElement::branch_slots`), its output current then its gain-stage voltage, and makes the circuit nonlinear (Newton). It doesn't make the circuit reactive, so `solve_circuit` stays DC.
 - **BJT nodes**: `[base, collector, emitter]`. **MOSFET nodes**: `[gate, drain, source]`. **IGBT nodes**: `[gate, collector, emitter]`. Order matters; mismatched order silently produces wrong results.
 - **Switches** are `0.01 Ω` closed / `1 GΩ` open — not ideal. In high-impedance circuits prefer explicit resistors.
@@ -124,7 +131,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **`solve_circuit` picks the transient span itself:** 5·τ_max and τ_max/50 from every R·C and L/R pair, with a 1 µs floor on dt (so τ below ~0.2 µs gives a single step). When the span matters, call `solve_transient` with a `TransientConfig`; for a SPICE deck, `AnalysisRequest::transient_config()` turns its `.tran` card into one.
 - **Junction `temperature` fields are kelvin** (300.15 K = 27 °C, the nominal). IS and the thermal voltage kT/q both follow it.
 - **PMOS `vto` is SPICE-signed:** negative for an enhancement PMOS, as `MosfetParams::default_pmos()` has it.
-- **The default integrator is Gear-2:** second order, no ringing, slightly dissipative over many periods. For ringing amplitude in a resonant tank use `IntegrationMethod::Trapezoidal`, but not on circuits with time constants far below the step, where it rings. `IntegrationMethod::BackwardEuler` reproduces results from before alpha.7.
+- **The default integrator is Gear-2:** second order, no ringing, slightly dissipative over many periods. For ringing amplitude in a resonant tank use `IntegrationMethod::Trapezoidal`, but not on circuits with time constants far below the step, where it rings. `IntegrationMethod::BackwardEuler` reproduces results from before 0.1.0-alpha.7.
 - **Voltage regulators drop out.** `VoltageRegulator { model: Some(RegulatorParams::lm7805()), .. }` needs about 2 V of headroom and draws its output plus 4.3 mA from the input; check `voltage_across` (`Vin − Vout`) and `power` on its result. `model: None` is ideal but can't boost.
 - **Self-heating is opt-in per part:** set `Part::thermal` (`Thermal::junction_to_ambient(rθja)` or `Thermal::on_heatsink(rθjc, rθca)`). Then the element's `temperature` field is ignored, and `SimError::ThermalRunaway` means the design has no thermal balance (add degeneration or a heatsink, don't retry). Only junction devices and thermistors feel the heat; MOSFET/IGBT models don't.
 - **Check ratings before calling a design done.** `check_ratings(&circuit, &result)` compares every part with the `Ratings` on its `Part`; for anything with switching or start-up, run it on a transient, since the DC operating point misses the peaks. `report.is_safe()` is false while any needed rating is missing, so fill them in rather than ignoring unverified checks.

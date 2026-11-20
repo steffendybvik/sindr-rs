@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -30,13 +30,13 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.op`, `.ic`, `.nodeset`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
 ```
 
-`sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs and `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
+`sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs. `parse_str` reads it back except for the E/G/F/H and K lines. Elements with no SPICE equivalent are an `ExportError`.
 
 ## Quick start
 
@@ -108,7 +108,7 @@ CircuitElement::VoltageSource { id, nodes: [String; 2], voltage: f64, waveform: 
 CircuitElement::CurrentSource { id, nodes: [String; 2], current: f64, waveform: Option<Waveform> }
 ```
 
-`nodes[0]` is the positive terminal for voltage sources; current flows from `nodes[0]` toward `nodes[1]` for current sources.
+`nodes[0]` is the positive terminal for voltage sources. A current source's current flows through it from `nodes[0]` to `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`, as SPICE's `I` does.
 
 A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
 
@@ -312,7 +312,7 @@ The current sources follow SPICE's `G` and `F` and sindr's own `CurrentSource`: 
 ```rust
 // nodes: [in_plus, in_minus, out]
 CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> } // rails, default ±15 V
-CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // output low / high, default ±15 V
+CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // output high / low, default ±15 V
 ```
 
 With `model: None` the op-amp is a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. A comparator has the same gain and no frequency response, but its output is clamped to `v_neg`/`v_pos`, so overdrive beyond `v_pos / 1e5` (50 µV for a 5 V rail) pins it to a rail in DC, transient and AC (where its gain at a rail is zero). It has no hysteresis or open-collector output; `v_pos` must be above `v_neg`. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
@@ -350,7 +350,7 @@ CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
 
-`VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin; without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
+`VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin (a negative `voltage` is a negative regulator such as a 7905: the same characteristic mirrored, with the input below ground and the output current flowing in at the output pin); without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
 
 ## Hierarchy and part data
 
@@ -764,6 +764,7 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 
 ```rust
 pub enum SimError {
+    Design(DesignError),
     NoGround,
     DisconnectedNodes(Vec<String>),
     FloatingNode(String),
@@ -778,10 +779,14 @@ pub enum SimError {
         components: Vec<String>,
         at: SolvePoint,
     },
+    ThermalRunaway { part: String, temperature: f64 },
+    Measurement { name: String, reason: String },
 }
 ```
 
 `ConvergenceFailed` means Newton-Raphson did not converge — usually caused by a nonlinear circuit with no DC path to ground, or component values far outside typical operating ranges. The `max_step_volts` field gives the largest per-node Newton step (V) on the final iteration, useful for distinguishing slow convergence from genuine divergence. `node` is the node that took it, `components` the parts on that node, and `at` where the analysis failed (`SolvePoint::OperatingPoint`, `DcSweep`, `Temperature` or `Transient { time }`), so the message points at the part to fix. (Note: this is a step magnitude `max_i |V_new[i] − V_prev[i]|`, not a KCL residual `|F(x)|`.)
+
+`ThermalRunaway` means self-heating found no thermal balance (`temperature` is the junction's, in K, when the solve gave up), `Measurement` that a measurement couldn't be taken on a result, and `Design` that the block hierarchy can't be flattened.
 
 ## Solver routing
 
