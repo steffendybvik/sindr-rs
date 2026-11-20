@@ -15,9 +15,12 @@ largest deviation over every quantity and point the case checks;
 |---|---|---|---|
 | `op_bjt_card` | Operating point | 6e-7 | 1e-6 |
 | `op_bjt_ce` | Operating point | 4e-7 | 1e-5 |
+| `op_bjt_pnp` | Operating point | 4e-7 | 1e-6 |
 | `op_diode` | Operating point | 3e-7 | 1e-6 |
 | `op_diode_series` | Operating point | 3e-7 | 1e-6 |
 | `op_exported_controlled` | Operating point | 2e-9 | 1e-6 |
+| `op_exported_spdt` | Operating point | 5e-10 | 1e-6 |
+| `op_global` | Operating point | 0 | 1e-6 |
 | `op_jfet` | Operating point | 7e-6 | 2e-5 |
 | `op_led` | Operating point | 3e-7 | 1e-6 |
 | `op_mosfet_cs` | Operating point | 2e-8 | 1e-5 |
@@ -36,6 +39,8 @@ largest deviation over every quantity and point the case checks;
 | `ac_bjt_caps` | AC | 4e-7 · 3e-5° | 1e-6 · 1e-4° |
 | `ac_bjt_ce` | AC | 8e-7 | 1e-6 |
 | `ac_diode` | AC | 3e-7 · 9e-6° | 1e-6 · 1e-4° |
+| `ac_exported_crystal` | AC | 5e-9 · 6e-8° | 1e-6 · 1e-4° |
+| `ac_exported_ferrite_bead` | AC | 4e-9 · 5e-8° | 1e-8 · 1e-4° |
 | `ac_exported_transformer` | AC | 3e-9 · 5e-8° | 1e-6 · 1e-4° |
 | `ac_jfet` | AC | 3e-6 · 1e-4° | 2e-5 · 1e-3° |
 | `ac_mosfet_cs` | AC | 5e-9 · 6e-7° | 1e-6 · 1e-4° |

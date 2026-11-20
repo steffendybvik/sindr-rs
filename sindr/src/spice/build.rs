@@ -79,7 +79,8 @@ pub(crate) fn build_netlist(
             .or_default()
             .push(element);
     }
-    let circuit = assemble(scopes, &flat.instances);
+    let mut circuit = assemble(scopes, &flat.instances);
+    circuit.globals.clone_from(&flat.globals);
     let components = circuit
         .flattened()
         .map_err(|e| card_error(format!("internal: {e}")))?

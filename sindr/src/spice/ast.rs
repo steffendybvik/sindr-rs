@@ -52,6 +52,8 @@ pub(crate) enum RawCard {
     /// `.options`: `name=value` pairs and bare flags (`None`), and the
     /// card's source line.
     Options(Vec<(String, Option<ParamExpr>)>, Span),
+    /// `.global`: nets shared by every subckt body under the same name.
+    Global(Vec<String>),
     /// `.ends [name]` marker; only meaningful inside a subckt body.
     Ends(Option<String>),
 }
