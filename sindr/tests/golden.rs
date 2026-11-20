@@ -115,11 +115,28 @@ const JFET: (Tol, Tol) = (
     },
 );
 
+/// How a quantity's error is measured, for the accuracy table.
+#[derive(Clone, Copy)]
+enum Unit {
+    /// Relative to the reference, floored at `abs / rel`.
+    Rel,
+    /// As a fraction of this full scale.
+    FullScale(f64),
+    /// In degrees.
+    Deg,
+}
+
 /// Collects every quantity of a case, then fails once with the worst
 /// deviation of each quantity that's out of tolerance.
+///
+/// With `SINDR_ACCURACY` set to a file, each case also appends its worst
+/// error and tolerance per unit there, a JSON object a line, for
+/// `scripts/accuracy_table.py`.
 struct Check {
     case: &'static str,
     report: String,
+    /// Worst (error, allowed) by unit: relative, full scale, degrees.
+    worst: [Option<(f64, f64)>; 3],
 }
 
 impl Check {
@@ -127,12 +144,43 @@ impl Check {
         Self {
             case,
             report: String::new(),
+            worst: [None; 3],
         }
     }
 
     fn series(&mut self, quantity: &str, scale: &[f64], got: &[f64], want: &[f64], tol: Tol) {
+        self.series_in(quantity, scale, got, want, tol, Unit::Rel);
+    }
+
+    /// As [`series`](Self::series), to `fraction` of `full_scale`.
+    fn series_fs(
+        &mut self,
+        quantity: &str,
+        scale: &[f64],
+        got: &[f64],
+        want: &[f64],
+        fraction: f64,
+        full_scale: f64,
+    ) {
+        let tol = Tol {
+            rel: 0.0,
+            abs: fraction * full_scale,
+        };
+        self.series_in(quantity, scale, got, want, tol, Unit::FullScale(full_scale));
+    }
+
+    fn series_in(
+        &mut self,
+        quantity: &str,
+        scale: &[f64],
+        got: &[f64],
+        want: &[f64],
+        tol: Tol,
+        unit: Unit,
+    ) {
         assert_eq!(got.len(), want.len(), "{}: {quantity} length", self.case);
         let mut worst: Option<(f64, usize)> = None;
+        let mut largest = 0.0_f64;
         for (i, (g, w)) in got.iter().zip(want).enumerate() {
             // A NaN from sindr counts as the worst possible deviation.
             let excess = (g - w).abs() - (tol.abs + tol.rel * w.abs());
@@ -143,6 +191,24 @@ impl Check {
             };
             if excess > 0.0 && worst.is_none_or(|(e, _)| excess > e) {
                 worst = Some((excess, i));
+            }
+            let err = match unit {
+                Unit::Rel if tol.rel > 0.0 => (g - w).abs() / w.abs().max(tol.abs / tol.rel),
+                Unit::Rel => continue,
+                Unit::FullScale(fs) => (g - w).abs() / fs,
+                Unit::Deg => (g - w).abs(),
+            };
+            largest = largest.max(if err.is_nan() { f64::INFINITY } else { err });
+        }
+        let (slot, allowed) = match unit {
+            Unit::Rel => (0, tol.rel),
+            Unit::FullScale(fs) => (1, tol.abs / fs),
+            Unit::Deg => (2, tol.abs),
+        };
+        if !(matches!(unit, Unit::Rel) && tol.rel == 0.0) {
+            let entry = &mut self.worst[slot];
+            if entry.is_none_or(|(e, _)| largest > e) {
+                *entry = Some((largest, allowed));
             }
         }
         if let Some((_, i)) = worst {
@@ -162,6 +228,24 @@ impl Check {
     }
 
     fn finish(self) {
+        if let Some(path) = std::env::var_os("SINDR_ACCURACY") {
+            let fields: Vec<String> = ["rel", "fs", "deg"]
+                .iter()
+                .zip(self.worst)
+                .filter_map(|(name, w)| {
+                    w.map(|(err, allowed)| format!("\"{name}\": [{err:e}, {allowed:e}]"))
+                })
+                .collect();
+            let line = format!("{{\"case\": \"{}\", {}}}\n", self.case, fields.join(", "));
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("open SINDR_ACCURACY");
+            file.write_all(line.as_bytes())
+                .expect("write SINDR_ACCURACY");
+        }
         assert!(
             self.report.is_empty(),
             "{} deviates from ngspice:\n{}",
@@ -534,7 +618,7 @@ fn check_ac(
                 p + 360.0 * ((w - p) / 360.0).round()
             })
             .collect();
-        check.series(
+        check.series_in(
             "phase (deg)",
             &scale,
             &phase,
@@ -545,6 +629,7 @@ fn check_ac(
                 // to ε rad.
                 abs: mag_tol.rel.to_degrees().max(1e-4),
             },
+            Unit::Deg,
         );
     }
     check.finish();
@@ -995,16 +1080,7 @@ fn compare_tran_within(
             .iter()
             .map(|&t| interpolate(&scale, &want_all, t))
             .collect();
-        check.series(
-            name,
-            &times,
-            &got,
-            &want,
-            Tol {
-                rel: 0.0,
-                abs: fraction * full_scale,
-            },
-        );
+        check.series_fs(name, &times, &got, &want, fraction, full_scale);
     }
     check.finish();
 }
@@ -1422,16 +1498,7 @@ fn tran_diode_recovery() {
             .iter()
             .map(|&t| interpolate(&scale, &want_all, t))
             .collect();
-        check.series(
-            name,
-            &times,
-            &got,
-            &want,
-            Tol {
-                rel: 0.0,
-                abs: 2e-2 * full_scale,
-            },
-        );
+        check.series_fs(name, &times, &got, &want, 2e-2, full_scale);
     }
     check.finish();
 
