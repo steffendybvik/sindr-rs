@@ -99,7 +99,8 @@ jobs:
           done
 
   coverage:
-    # Report only, no threshold: the per-file table lands in the job summary.
+    # The per-file table lands in the job summary. Core files have a floor
+    # (scripts/coverage_floor.py); the rest is reported only.
     name: coverage
     runs-on: ubuntu-latest
     steps:
@@ -117,6 +118,10 @@ jobs:
             cat coverage.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Coverage floor
+        run: |
+          set -o pipefail
+          python3 scripts/coverage_floor.py coverage.txt | tee -a "$GITHUB_STEP_SUMMARY"
 
   version-bumped:
     # Fails if a PR to main leaves any crate version unchanged from main.

@@ -195,6 +195,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LED's Vf, so Vf rose with temperature and a self-heated LED drew less
   current as it warmed. Each colour now has an effective EG fitted to
   −2 mV/K. Temperature sweeps and self-heated results for LEDs change.
+- A P-channel JFET's current and power in a transient were wrong: the
+  transient mirrored its voltages into the N-channel frame before the model,
+  which mirrors them again. A self-biased P-JFET reported 12.7 mA where it
+  conducted 4.0 mA. Node voltages were right; only the reported
+  `current_through` and `power` were off. Transient and DC now share one
+  calculation.
+- `solve_transient` (and `solve_circuit` when it routes to transient) left
+  `op_amp_results` and `relay_results` empty. They now hold the last step's
+  values, as DC does.
 
 ## [0.1.0-alpha.7] - 2026-11-16
 

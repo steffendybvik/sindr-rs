@@ -47,9 +47,16 @@ python3 scripts/gen_llms_full.py --check
 - Parsers and evaluators get `proptest` properties (see `spice/si.rs` and
   `spice/param_eval.rs`). If one fails, proptest writes the shrunk case to
   `sindr/proptest-regressions/`; commit that file with the fix.
-- The `coverage` CI job reports per-file line coverage in the job summary. It
-  only reports and never fails a build. Locally:
-  `cargo llvm-cov --workspace --all-features --summary-only`.
+- The `coverage` CI job reports per-file line coverage in the job summary,
+  and fails if `stamp.rs`, `transient.rs`, `newton_raphson.rs`, `mna.rs` or
+  the total drops below its floor in `scripts/coverage_floor.py`. Locally:
+
+  ```bash
+  cargo llvm-cov --workspace --all-features --summary-only > coverage.txt
+  python3 scripts/coverage_floor.py coverage.txt
+  ```
+
+  Raise a floor when coverage rises. Lower one only with a reason in the PR.
 
 ## Versions and the CHANGELOG
 
