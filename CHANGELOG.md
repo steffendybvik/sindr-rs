@@ -16,7 +16,7 @@ staged as `0.1.0-alpha.8`.
 
 ### Added
 
-- `SolverOptions` and `Solver` (SIN-68). The tolerances (`reltol`,
+- `SolverOptions` and `Solver`. The tolerances (`reltol`,
   `vntol`, `trtol`), the Newton iteration budget, the gmin-stepping
   ladder, source stepping, the transient step cap and a `nodeset` are
   options now, not constants. `Solver::new(options)` runs every analysis
