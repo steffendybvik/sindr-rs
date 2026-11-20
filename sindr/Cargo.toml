@@ -68,3 +68,12 @@ harness = false
 [[bench]]
 name = "newton"
 harness = false
+
+[[bench]]
+name = "analyses"
+harness = false
+
+[[bench]]
+name = "spice"
+harness = false
+required-features = ["spice"]

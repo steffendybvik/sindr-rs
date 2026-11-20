@@ -75,13 +75,13 @@ python3 scripts/gen_llms_full.py --check
   for strict, then a deck) also run on stable in `fuzz_seed_decks_do_not_panic`,
   and the `fuzz` workflow runs the target for ten minutes every week.
 - Benchmarks live in `sindr/benches/` (criterion). The `benchmarks` CI job
-  runs `transient` and `newton` on a PR's base and on the PR, and fails if any
+  runs `transient`, `newton`, `analyses` and `spice` on a PR's base and on the PR, and fails if any
   case is more than 25 % slower. To check locally before pushing:
 
   ```bash
-  cargo bench -p sindr --bench transient --bench newton -- --quick --save-baseline base
+  cargo bench -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline base
   # make the change
-  cargo bench -p sindr --bench transient --bench newton -- --quick --save-baseline head
+  cargo bench -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline head
   python3 scripts/bench_compare.py base head
   ```
 

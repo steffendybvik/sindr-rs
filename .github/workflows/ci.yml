@@ -141,15 +141,15 @@ jobs:
           set -euo pipefail
           git checkout -q ${{ github.event.pull_request.base.sha }}
           benches=""
-          for b in transient newton; do
+          for b in transient newton analyses spice; do
             [ -f "sindr/benches/$b.rs" ] && benches="$benches --bench $b"
           done
           if [ -n "$benches" ]; then
-            cargo bench -q -p sindr $benches -- --quick --save-baseline base
+            cargo bench -q -p sindr --features spice $benches -- --quick --save-baseline base
           fi
           git checkout -q ${{ github.event.pull_request.head.sha }}
       - name: PR
-        run: cargo bench -q -p sindr --bench transient --bench newton -- --quick --save-baseline head
+        run: cargo bench -q -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline head
       - name: Compare
         run: |
           set -o pipefail
