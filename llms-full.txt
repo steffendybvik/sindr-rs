@@ -1672,9 +1672,9 @@ pub enum SimError {
     #[error("Invalid component: {0}")]
     InvalidComponent(String),
 
-    /// A resistor has zero or negative resistance.
+    /// A resistor's resistance is zero, negative or not finite.
     #[error(
-        "Resistor \"{0}\" has zero or negative resistance, which is not physically meaningful."
+        "Resistor \"{0}\" has a zero, negative or non-finite resistance, which is not physically meaningful."
     )]
     InvalidResistance(String),
 
@@ -5572,8 +5572,11 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 /// 1. Ground node exists (at least one component touches it)
 /// 2. All nodes reachable from ground (BFS connectivity)
 /// 3. No floating nodes (every non-ground node has degree >= 2)
-/// 4. Device values the models can use: every `temperature` field positive
-///    and finite (K), and a BJT's `bf` positive and finite
+/// 4. Unique component ids
+/// 5. Values the models can use: resistances, inductances and every
+///    `temperature` (K) positive and finite, capacitances zero or more,
+///    source values and controlled-source gains finite, a BJT's `bf`
+///    positive and finite, and the device-model fields each check names
 ///
 /// # Errors
 ///
@@ -5586,9 +5589,11 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 /// Returns [`SimError::FloatingNode`] naming the first node with fewer than
 /// 2 connections.
 ///
-/// Returns [`SimError::InvalidComponent`] naming the component, field and
-/// value for a `temperature` that is zero, negative or not finite, or a BJT
-/// `bf` that isn't positive and finite.
+/// Returns [`SimError::InvalidResistance`] for a resistor whose resistance
+/// is zero, negative or not finite.
+///
+/// Returns [`SimError::InvalidComponent`] for a repeated id, or naming the
+/// component, field and value for any other value out of range.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> { … }
 ```
 
