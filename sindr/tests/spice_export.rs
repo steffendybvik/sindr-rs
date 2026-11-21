@@ -630,7 +630,11 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
             id: "M1".into(),
             nodes: three("a", "b", "0"),
             kind: sindr::MosfetKind::Nmos,
-            params: MosfetParams::default_nmos(),
+            // A level-1 card's flicker noise needs a gate oxide.
+            params: MosfetParams {
+                kf: 1e-25,
+                ..MosfetParams::default_nmos()
+            },
             parasitic_caps: None,
             body_diode: None,
         },
@@ -639,7 +643,8 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
             nodes: three("a", "b", "0"),
             kind: sindr::JfetKind::NChannel,
             idss: 10e-3,
-            vp: -2.0,
+            // SPICE's N-channel VTO is below 0.
+            vp: 2.0,
         },
         CircuitElement::Igbt {
             id: "Z1".into(),

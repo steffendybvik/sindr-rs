@@ -1,0 +1,13 @@
+dc: the same power MOSFET subcircuit held off while its drain is pulled below its source: the subckt's body diode conducts
+VD a 0 0
+VG g 0 0
+RL a d 1
+X1 d g 0 pwrfet
+.subckt pwrfet drain gate source
+RG gate g1 2
+M1 drain g1 source source mcore
+DBODY source drain dbody
+.model mcore NMOS(LEVEL=1 KP=20 VTO=2.8 LAMBDA=0.003 CGSO=1.2n CGDO=0.15n IS=0)
+.model dbody D(IS=2.1e-12 N=1.05 RS=8m CJO=600p TT=40n BV=60 IBV=250u)
+.ends
+.end

@@ -30,10 +30,14 @@ Diode and BJT cases are SPICE decks that both simulators read, `.model` card
 included. sindr reads `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV` from a `D` card and `IS`, `BF`, `BR`,
 `NF`, `NR`, `VAF` from an `NPN`/`PNP` card, and rejects any other parameter
 (the goldens parse in strict mode), so a card here can't quietly lose one.
-`dc_diode_1n4148` and `op_bjt_card` use non-default values. MOSFET, JFET,
-LED, Schottky and photodiode have no SPICE card in sindr, so those tests
-build the `Circuit` in Rust, element for element, and the `.cir` is read
-only by ngspice. Each one passes its circuit through `in_deck`
+`dc_diode_1n4148` and `op_bjt_card` use non-default values. The MOSFET
+and JFET decks are read by sindr's parser too (`op_fet_decks_parse`,
+`ac_fet_decks_parse`, `ac_mosfet_card`, `op_pjf`, and the vendor-style
+subcircuit `dc_power_mosfet_subckt` / `dc_power_mosfet_body`, whose
+`.model` cards sit inside the `.subckt`). LED, Schottky and photodiode
+have no SPICE card in sindr, so those tests, and the Rust-built twins of
+the FET decks, build the `Circuit` in Rust, element for element, and the
+`.cir` is read only by ngspice. Each one passes its circuit through `in_deck`
 (`tests/support/deck_parity.rs`), which reads the `.cir` and fails unless
 every element matches: names, nodes, values, and each `.model` parameter
 against the Rust parameter it stands for (`KP·W/L` against `kp`,

@@ -1,0 +1,23 @@
+op_exported_fets: written by sindr::spice::to_netlist
+vdd vdd 0 DC 12
+rjd vdd jd 1000
+rjs js 0 220
+rjg jg 0 1e6
+j1 jd jg js jmod1
+rps vdd ps 330
+rpg pg vdd 1e6
+rpd pd 0 1000
+j2 pd pg ps jmod2
+vg1 g1 0 DC 3
+rd1 vdd d1 10000
+m1 d1 g1 0 0 mmod1 W=1 L=1
+Dm1_body 0 d1 dmod1
+vg2 g2 0 DC 5
+rd2 d2 0 10000
+m2 d2 g2 vdd vdd mmod2 W=1 L=1
+.model jmod1 NJF(VTO=-2 BETA=0.0025 IS=0)
+.model jmod2 PJF(VTO=-2.5 BETA=0.002 IS=0)
+.model mmod1 NMOS(LEVEL=1 KP=2e-4 VTO=0.7 LAMBDA=0.02 GAMMA=0.4 PHI=0.6 CGSO=0 CGDO=0 IS=0 CBD=0 PB=0.8 MJ=0.5 FC=0.5)
+.model dmod1 D(IS=1e-12 N=1.2 RS=0.05 IBV=2.5e-4 BV=60)
+.model mmod2 PMOS(LEVEL=1 KP=1e-4 VTO=-0.7 LAMBDA=0.02 GAMMA=0.4 PHI=0.6 CGSO=1e-11 CGDO=2e-12 IS=1e-14 CBD=5e-12 PB=0.8 MJ=0.5 FC=0.5)
+.end

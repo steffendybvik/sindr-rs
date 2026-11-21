@@ -133,14 +133,16 @@
 //! ## SPICE input (feature `spice`)
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q,
-//! linear E/G/F/H, K (two coupled `L` lines) and X elements, with `[DC] v`,
+//! M, J, linear E/G/F/H, K (two coupled `L` lines) and X elements, with `[DC] v`,
 //! `AC mag [phase]` and a waveform on V and I lines in any order;
 //! `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 //! `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
 //! `.ac`, `.tf`, `.sens`, `.noise` and `.tran`. `.model` cards fill in what
 //! sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 //! `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
-//! `NR`, `VAF`, `KF`, `AF`). Not read: MOSFET (M) and JFET (J) elements,
+//! `NR`, `VAF`, `KF`, `AF`; level-1 MOSFETs: `KP`, `VTO`, `LAMBDA`, `GAMMA`,
+//! `PHI`, `LD`, `CGSO`, `CGDO`, `CGBO` and the drain–bulk junction; JFETs:
+//! `VTO`, `BETA`), inside a `.subckt` or at the top level. Not read:
 //! `B` sources, the `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms of E/G/F/H, and
 //! couplings of more than two inductors.
 //! [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
