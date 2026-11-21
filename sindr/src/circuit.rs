@@ -958,44 +958,54 @@ pub enum CircuitElement {
     },
 }
 
+#[cfg(feature = "serde")]
 fn default_bf() -> f64 {
     100.0
 }
 
+#[cfg(feature = "serde")]
 fn default_temperature() -> f64 {
     298.15
 }
 
 /// Default junction temperature for IS-bearing devices (K).
 /// 300.15 K = 27°C, the SPICE reference temperature for IS.
+#[cfg(feature = "serde")]
 fn default_junction_temperature() -> f64 {
     300.15
 }
 
+#[cfg(feature = "serde")]
 fn default_relay_coil_resistance() -> f64 {
     500.0
 }
 
+#[cfg(feature = "serde")]
 fn default_v_pos() -> f64 {
     15.0
 }
 
+#[cfg(feature = "serde")]
 fn default_v_neg() -> f64 {
     -15.0
 }
 
+#[cfg(feature = "serde")]
 fn default_coupling() -> f64 {
     0.999
 }
 
+#[cfg(feature = "serde")]
 fn default_fuse_rating() -> f64 {
     1.0
 }
 
+#[cfg(feature = "serde")]
 fn default_jfet_idss() -> f64 {
     10e-3 // 10 mA typical
 }
 
+#[cfg(feature = "serde")]
 fn default_jfet_vp() -> f64 {
     -2.0 // -2V pinch-off (N-channel default)
 }

@@ -109,6 +109,7 @@ pub enum Waveform {
 /// Most breakpoints [`Waveform::breakpoints`] returns.
 pub const MAX_BREAKPOINTS: usize = 10_000_000;
 
+#[cfg(feature = "serde")]
 fn default_duty() -> f64 {
     0.5
 }
