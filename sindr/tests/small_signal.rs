@@ -386,3 +386,215 @@ fn igbt_ac_matches_dc() {
     };
     assert_ac_matches_dc("IGBT", &circuit, &[3.0, 5.5, 6.0, 15.0]);
 }
+
+/// Linear parts: what AC stamps must be what DC stamps, whatever state the
+/// part is in (an open switch, a blown fuse).
+#[test]
+fn resistive_parts_ac_matches_dc() {
+    let two = |id: &str, device: CircuitElement| (id.to_string(), two_terminal(device));
+    let nodes = || ["n2".to_string(), "0".to_string()];
+    let cases = vec![
+        two(
+            "closed switch",
+            CircuitElement::Switch {
+                id: "S1".into(),
+                nodes: nodes(),
+                closed: true,
+            },
+        ),
+        two(
+            "open switch",
+            CircuitElement::Switch {
+                id: "S1".into(),
+                nodes: nodes(),
+                closed: false,
+            },
+        ),
+        two(
+            "closed pushbutton",
+            CircuitElement::Pushbutton {
+                id: "S1".into(),
+                nodes: nodes(),
+                closed: true,
+            },
+        ),
+        two(
+            "open pushbutton",
+            CircuitElement::Pushbutton {
+                id: "S1".into(),
+                nodes: nodes(),
+                closed: false,
+            },
+        ),
+        two(
+            "photoresistor",
+            CircuitElement::Photoresistor {
+                id: "LDR1".into(),
+                nodes: nodes(),
+                light_level: 0.4,
+            },
+        ),
+        two(
+            "thermistor",
+            CircuitElement::Thermistor {
+                id: "TH1".into(),
+                nodes: nodes(),
+                temperature: 330.0,
+            },
+        ),
+        two(
+            "battery without a polarisation pair",
+            CircuitElement::Battery {
+                id: "B1".into(),
+                nodes: nodes(),
+                params: sindr_devices::battery::BatteryParams::constant(3.0, 1.0, 10.0),
+                state_of_charge: 0.5,
+            },
+        ),
+        two(
+            "intact fuse",
+            CircuitElement::Fuse {
+                id: "F1".into(),
+                nodes: nodes(),
+                rating: 1.0,
+                blown: false,
+            },
+        ),
+        two(
+            "blown fuse",
+            CircuitElement::Fuse {
+                id: "F1".into(),
+                nodes: nodes(),
+                rating: 1.0,
+                blown: true,
+            },
+        ),
+        (
+            "potentiometer".to_string(),
+            Circuit::new(
+                "0",
+                vec![
+                    vsource("V1", "in", "0", 0.0),
+                    CircuitElement::Potentiometer {
+                        id: "P1".into(),
+                        nodes: ["in".into(), "w".into(), "0".into()],
+                        resistance: 10e3,
+                        position: 0.3,
+                    },
+                    resistor("RL", "w", "0", 4.7e3),
+                ],
+            ),
+        ),
+    ];
+    for (name, circuit) in &cases {
+        assert_ac_matches_dc(name, circuit, &[0.0, 2.0]);
+    }
+}
+
+/// Every controlled source at once, each with an output or control terminal
+/// off ground, plus an unmodelled op-amp with its inverting input grounded.
+#[test]
+fn controlled_sources_ac_matches_dc() {
+    let circuit = Circuit::new(
+        "0",
+        vec![
+            vsource("V1", "in", "0", 0.0),
+            resistor("R1", "in", "n2", 1e3),
+            resistor("R2", "n2", "m", 1e3),
+            resistor("R3", "m", "0", 1e3),
+            // E1 drives e below ground: its positive terminal is ground.
+            CircuitElement::Vcvs {
+                id: "E1".into(),
+                nodes: ["0".into(), "e".into()],
+                control_nodes: ["n2".into(), "m".into()],
+                gain: 2.0,
+            },
+            resistor("RE", "e", "0", 1e3),
+            CircuitElement::Vccs {
+                id: "G1".into(),
+                nodes: ["0".into(), "g".into()],
+                control_nodes: ["n2".into(), "m".into()],
+                gm: 1e-3,
+            },
+            resistor("RG", "g", "0", 2e3),
+            CircuitElement::Ccvs {
+                id: "H1".into(),
+                nodes: ["h".into(), "0".into()],
+                control_source: "V1".into(),
+                rm: 500.0,
+            },
+            resistor("RH", "h", "0", 1e3),
+            CircuitElement::Cccs {
+                id: "F1".into(),
+                nodes: ["0".into(), "f".into()],
+                control_source: "V1".into(),
+                alpha: 0.5,
+            },
+            resistor("RF", "f", "0", 1e3),
+            CircuitElement::OpAmp {
+                id: "U1".into(),
+                nodes: ["m".into(), "0".into(), "o".into()],
+                v_pos: 15.0,
+                v_neg: -15.0,
+                model: None,
+            },
+            resistor("RO", "o", "0", 10e3),
+            // The same sources the other way round: output from a node
+            // into ground, or a control terminal on ground.
+            CircuitElement::Vcvs {
+                id: "E2".into(),
+                nodes: ["e2".into(), "0".into()],
+                control_nodes: ["0".into(), "m".into()],
+                gain: 3.0,
+            },
+            resistor("RE2", "e2", "0", 1e3),
+            CircuitElement::Vccs {
+                id: "G2".into(),
+                nodes: ["g2".into(), "0".into()],
+                control_nodes: ["n2".into(), "m".into()],
+                gm: 2e-3,
+            },
+            resistor("RG2", "g2", "0", 1e3),
+            CircuitElement::Ccvs {
+                id: "H2".into(),
+                nodes: ["0".into(), "h2".into()],
+                control_source: "V1".into(),
+                rm: 200.0,
+            },
+            resistor("RH2", "h2", "0", 1e3),
+            CircuitElement::Cccs {
+                id: "F2".into(),
+                nodes: ["f2".into(), "0".into()],
+                control_source: "V1".into(),
+                alpha: 2.0,
+            },
+            resistor("RF2", "f2", "0", 1e3),
+            // A source with its positive terminal on ground.
+            vsource("V3", "0", "nv", 1.0),
+            resistor("RV3", "nv", "n2", 1e3),
+        ],
+    );
+    assert_ac_matches_dc("controlled sources", &circuit, &[0.0, 1e-4]);
+}
+
+/// A regulator whose ground pin sits on a resistor, so its output follows
+/// that pin: in regulation (12 V in), in dropout (6 V in), and below dropout
+/// (1 V in), where the output is off and the quiescent current ramps.
+#[test]
+fn regulator_with_a_lifted_ground_pin_ac_matches_dc() {
+    let circuit = Circuit::new(
+        "0",
+        vec![
+            vsource("V1", "in", "0", 0.0),
+            CircuitElement::VoltageRegulator {
+                id: "U1".into(),
+                nodes: ["in".into(), "out".into(), "adj".into()],
+                voltage: 5.0,
+                model: Some(sindr::RegulatorParams::lm7805()),
+            },
+            resistor("RADJ", "adj", "0", 100.0),
+            resistor("RL", "out", "0", 100.0),
+        ],
+    );
+    assert_ac_matches_dc("regulator", &circuit, &[12.0, 6.0, 1.0]);
+}

@@ -873,13 +873,10 @@ pub(crate) fn small_signal_system(
                 let br = op.branch;
                 let x = br + 1;
                 let one = Complex64::new(1.0, 0.0);
+                // The output is referred to ground, which has no row.
                 if let Some(o) = node_map.index(&nodes[2]) {
                     a[(o, br)] += one;
                     a[(br, o)] += one;
-                }
-                if let Some(g) = node_map.index(&circuit.ground_node) {
-                    a[(g, br)] -= one;
-                    a[(br, g)] -= one;
                 }
                 let (tau, c_x, c_u, slope) = op.small_signal(node_map, dc_solution);
                 a[(br, x)] -= Complex64::new(slope, 0.0);
@@ -895,8 +892,7 @@ pub(crate) fn small_signal_system(
             // Unmodelled op-amp: high-gain VCVS (gain=1e5), linear.
             CircuitElement::OpAmp { nodes, .. } => {
                 let branch = num_nodes + vsource_index;
-                let p = node_map.index(&nodes[2]); // out
-                let gnd = node_map.index(&circuit.ground_node);
+                let p = node_map.index(&nodes[2]); // out, referred to ground
                 let cp = node_map.index(&nodes[0]); // in+
                 let cq = node_map.index(&nodes[1]); // in-
                 let one = Complex64::new(1.0, 0.0);
@@ -904,15 +900,7 @@ pub(crate) fn small_signal_system(
 
                 if let Some(pi) = p {
                     a[(pi, branch)] += one;
-                }
-                if let Some(qi) = gnd {
-                    a[(qi, branch)] -= one;
-                }
-                if let Some(pi) = p {
                     a[(branch, pi)] += one;
-                }
-                if let Some(qi) = gnd {
-                    a[(branch, qi)] -= one;
                 }
                 if let Some(cpi) = cp {
                     a[(branch, cpi)] -= gain;
@@ -1046,7 +1034,8 @@ pub(crate) fn small_signal_system(
             // The piece of its characteristic the bias point is on: input
             // ripple reaches the output through line regulation (or all of
             // it in dropout), and load current through the output
-            // resistance. The quiescent current is DC only.
+            // resistance. The quiescent current only matters below dropout, where it
+            // ramps with the input.
             CircuitElement::VoltageRegulator {
                 nodes,
                 voltage,
@@ -1078,6 +1067,25 @@ pub(crate) fn small_signal_system(
                     a[(branch, g)] += c(piece.d_vin - 1.0);
                 }
                 a[(branch, branch)] += c(piece.d_iout);
+                // The quiescent current is fixed above dropout; below it, it
+                // ramps with the input, a conductance from input to ground.
+                if let Some(params) = model {
+                    let vin =
+                        crate::stamp::regulator_state(node_map, nodes, branch, Some(dc_solution))
+                            .map_or(0.0, |(vin, _, _)| vin);
+                    let (_, g_q) =
+                        sindr_devices::regulator::regulator_quiescent(params, *voltage, vin);
+                    for (r, col, sign) in [
+                        (input, input, 1.0),
+                        (input, gnd, -1.0),
+                        (gnd, input, -1.0),
+                        (gnd, gnd, 1.0),
+                    ] {
+                        if let (Some(r), Some(col)) = (r, col) {
+                            a[(r, col)] += c(sign * g_q);
+                        }
+                    }
+                }
                 vsource_index += 1;
             }
         }
@@ -1705,6 +1713,122 @@ mod tests {
             temperature: 300.15,
         };
         assert_ac_matches_dc_slope("photodiode, forward", behind(forward, 1_000.0), 2.0, "out");
+    }
+
+    /// The AC response at one frequency of `VIN` into `circuit`.
+    fn ac_at(circuit: &Circuit, f: f64) -> HashMap<String, Complex64> {
+        let config = AcConfig {
+            f_start: f,
+            f_stop: f,
+            num_points: 1,
+            spacing: FrequencySpacing::Linear,
+            source_id: "VIN".into(),
+            ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
+        };
+        solve_ac(circuit, &config)
+            .unwrap()
+            .points
+            .remove(0)
+            .node_voltages
+    }
+
+    /// A reverse-biased diode card with CJO and no RS is an RC low-pass
+    /// with C = CJO/(1 + V_R/VJ)^M. At 3 V reverse with VJ = 1 and M = 0.5
+    /// that is CJO/2, so at ω = 1/(R·CJO/2) the gain is 1/√2 at −45°. The
+    /// leakage (IS·R ≈ 1e-10 V) is far below the tolerance.
+    #[test]
+    fn diode_card_without_rs_is_its_junction_capacitance_in_ac() {
+        let r = 10_000.0;
+        let cjo = 20e-12;
+        let f_c = 1.0 / (2.0 * std::f64::consts::PI * r * cjo / 2.0);
+        let circuit = with(vec![
+            vsrc("VIN", "in", 3.0),
+            res("R1", "in", "out", r),
+            CircuitElement::Diode {
+                id: "D1".into(),
+                nodes: ["0".into(), "out".into()],
+                temperature: 300.15,
+                model: Some(crate::circuit::DiodeModel {
+                    cjo,
+                    ..Default::default()
+                }),
+            },
+        ]);
+        let v = ac_at(&circuit, f_c)["out"];
+        assert!(
+            (v.norm() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-8,
+            "|H| = {}",
+            v.norm()
+        );
+        assert!((v.arg().to_degrees() + 45.0).abs() < 1e-6, "{v}");
+    }
+
+    /// An inductor is a short at 0 Hz (linear spacing may start there) and
+    /// `jωL` above it: behind R, `H = jωL/(R + jωL)`, `j/(1 + j)` at
+    /// ω = R/L.
+    #[test]
+    fn inductor_shorts_at_dc_and_is_jwl_above_it() {
+        let (r, l) = (1e3, 1e-3);
+        let f_c = r / (2.0 * std::f64::consts::PI * l);
+        let circuit = with(vec![
+            vsrc("VIN", "in", 0.0),
+            res("R1", "in", "out", r),
+            CircuitElement::Inductor {
+                id: "L1".into(),
+                nodes: ["out".into(), "0".into()],
+                inductance: l,
+                saturation: None,
+            },
+        ]);
+        let config = AcConfig {
+            f_start: 0.0,
+            f_stop: f_c,
+            num_points: 2,
+            spacing: FrequencySpacing::Linear,
+            source_id: "VIN".into(),
+            ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
+        };
+        let points = solve_ac(&circuit, &config).unwrap().points;
+        assert_eq!(points[0].frequency, 0.0);
+        // 1 kΩ against the 1e12 S short.
+        assert!(points[0].node_voltages["out"].norm() < 1e-12);
+        let h = points[1].node_voltages["out"];
+        let expected = Complex64::new(0.0, 1.0) / Complex64::new(1.0, 1.0);
+        assert!((h - expected).norm() < 1e-12, "{h}");
+    }
+
+    /// An inverting amplifier on the modelled op-amp (in+ grounded) is the
+    /// single-pole closed loop `−(RF/R1) / (1 + (1 + RF/R1)/A(jω))` with
+    /// `A = A0/(1 + jf/fp)`, `fp = GBW/A0`: 10 Hz for the default model.
+    #[test]
+    fn modelled_inverting_amplifier_follows_the_single_pole_loop() {
+        let model = crate::circuit::OpAmpModel::default();
+        let (r1, rf) = (1e3, 10e3);
+        let circuit = with(vec![
+            vsrc("VIN", "in", 0.0),
+            res("R1", "in", "fb", r1),
+            res("RF", "fb", "out", rf),
+            res("RL", "out", "0", 10e3),
+            CircuitElement::OpAmp {
+                id: "U1".into(),
+                nodes: ["0".into(), "fb".into(), "out".into()],
+                v_pos: 15.0,
+                v_neg: -15.0,
+                model: Some(model),
+            },
+        ]);
+        let fp = model.gbw.unwrap() / model.gain;
+        for f in [1.0, 1e3] {
+            let a = Complex64::new(model.gain, 0.0) / Complex64::new(1.0, f / fp);
+            let expected = -(rf / r1) / (1.0 + (1.0 + rf / r1) / a);
+            let h = ac_at(&circuit, f)["out"];
+            assert!(
+                (h - expected).norm() < 1e-6 * expected.norm(),
+                "{f} Hz: {h} vs {expected}"
+            );
+        }
     }
 
     /// A reverse-biased varactor behind R is an RC low-pass with

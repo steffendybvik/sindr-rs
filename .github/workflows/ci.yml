@@ -151,8 +151,8 @@ jobs:
           done
 
   coverage:
-    # The per-file table lands in the job summary. Core files have a floor
-    # (scripts/coverage_floor.py); the rest is reported only.
+    # The per-file table lands in the job summary. Every source file has a
+    # floor (scripts/coverage_floor.py).
     name: coverage
     runs-on: ubuntu-latest
     steps:

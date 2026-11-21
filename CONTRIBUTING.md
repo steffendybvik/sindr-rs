@@ -59,8 +59,11 @@ python3 scripts/gen_llms_full.py --check
   `spice/param_eval.rs`). If one fails, proptest writes the shrunk case to
   `sindr/proptest-regressions/`; commit that file with the fix.
 - The `coverage` CI job reports per-file line coverage in the job summary,
-  and fails if `stamp.rs`, `transient.rs`, `newton_raphson.rs`, `mna.rs` or
-  the total drops below its floor in `scripts/coverage_floor.py`. Locally:
+  and fails if any source file, or the total, drops below its floor in
+  `scripts/coverage_floor.py`. Every file sits close to full coverage; what
+  is left is defensive branches validation already rules out. A new test
+  asserts behaviour (a closed form, an ngspice golden, an invariant or an
+  exact error), not just that a line ran. Locally:
 
   ```bash
   cargo llvm-cov --workspace --all-features --summary-only > coverage.txt

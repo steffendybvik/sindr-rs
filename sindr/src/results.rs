@@ -300,6 +300,7 @@ fn node_voltage(node: &str, node_map: &NodeMap, solution: &DVector<f64>) -> f64 
 pub(crate) fn regulator_result(
     id: &str,
     nodes: &[String; 3],
+    voltage: f64,
     model: &Option<sindr_devices::regulator::RegulatorParams>,
     node_map: &NodeMap,
     solution: &DVector<f64>,
@@ -312,7 +313,7 @@ pub(crate) fn regulator_result(
         id: id.to_string(),
         voltage_across: vin - vout,
         current_through: iout,
-        power: sindr_devices::regulator::regulator_dissipation(&params, vin, vout, iout),
+        power: sindr_devices::regulator::regulator_dissipation(&params, voltage, vin, vout, iout),
     }
 }
 
@@ -852,12 +853,15 @@ pub fn extract_results(
                 });
             }
             CircuitElement::VoltageRegulator {
-                id, nodes, model, ..
+                id,
+                nodes,
+                voltage,
+                model,
             } => {
                 let branch = num_nodes + vsource_index;
                 branch_currents.insert(id.clone(), solution[branch]);
                 component_results.push(regulator_result(
-                    id, nodes, model, node_map, solution, branch,
+                    id, nodes, *voltage, model, node_map, solution, branch,
                 ));
                 vsource_index += 1;
             }
@@ -1051,5 +1055,107 @@ mod tests {
         assert_eq!(td.time_step, 0.001);
         assert_eq!(td.duration, 0.002);
         assert_eq!(td.timesteps[1].node_voltages["n1"], 3.2);
+    }
+}
+
+#[cfg(test)]
+mod extract_tests {
+    use super::*;
+    use crate::circuit::CircuitElement;
+    use crate::device_params;
+
+    /// `extract_results` on elements the analyses lower before solving (a
+    /// Zener to a diode, C open, L and transformer windings to 0 V
+    /// sources): each still reports what it carries at a given solution,
+    /// and a transformer's two branch slots keep later sources reading
+    /// their own branch current.
+    #[test]
+    fn raw_elements_report_their_dc_terminal_values() {
+        let two = |a: &str, b: &str| -> [String; 2] { [a.into(), b.into()] };
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::ZenerDiode {
+                    id: "DZ1".into(),
+                    nodes: two("0", "a"),
+                    vz: 5.1,
+                    temperature: 300.15,
+                },
+                CircuitElement::Varactor {
+                    id: "CV1".into(),
+                    nodes: two("b", "a"),
+                    params: sindr_devices::varactor::VaractorParams::default(),
+                },
+                CircuitElement::Capacitor {
+                    id: "C1".into(),
+                    nodes: two("a", "0"),
+                    capacitance: 1e-6,
+                },
+                CircuitElement::Inductor {
+                    id: "L1".into(),
+                    nodes: two("a", "b"),
+                    inductance: 1e-3,
+                    saturation: None,
+                },
+                CircuitElement::Transformer {
+                    id: "T1".into(),
+                    nodes: ["a".into(), "b".into(), "b".into(), "0".into()],
+                    l1: 1e-3,
+                    l2: 1e-3,
+                    k: 0.99,
+                },
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: two("a", "0"),
+                    voltage: 6.0,
+                    waveform: None,
+                },
+            ],
+        );
+        let node_map = NodeMap::from_circuit(&circuit);
+        let n = node_map.num_nodes();
+        // V(a) = 6, V(b) = 2; branches: T1 primary, T1 secondary, V1.
+        let mut solution = DVector::zeros(n + 3);
+        solution[node_map.index("a").unwrap()] = 6.0;
+        solution[node_map.index("b").unwrap()] = 2.0;
+        solution[n + 2] = -0.25;
+        let result = extract_results(&circuit, &node_map, &solution, n);
+        let get = |id: &str| {
+            result
+                .component_results
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("no result for {id}"))
+        };
+
+        // The Zener sits 6 V reverse-biased, past its 5.1 V knee: the
+        // diode model's breakdown current, reported in the forward sense.
+        let dz = get("DZ1");
+        let expected =
+            sindr_devices::diode::diode_current(-6.0, &device_params::zener_diode(5.1, 300.15));
+        assert_eq!(dz.voltage_across, -6.0);
+        assert_eq!(dz.current_through, expected);
+        assert!(expected < -1e-3, "in breakdown: {expected} A");
+        assert_eq!(dz.power, -6.0 * expected);
+
+        let cv = get("CV1");
+        assert_eq!(
+            (cv.voltage_across, cv.current_through, cv.power),
+            (-4.0, 0.0, 0.0)
+        );
+        for id in ["C1", "L1"] {
+            let r = get(id);
+            assert_eq!(
+                (r.voltage_across, r.current_through, r.power),
+                (0.0, 0.0, 0.0)
+            );
+        }
+        let t1 = get("T1");
+        assert_eq!(
+            (t1.voltage_across, t1.current_through, t1.power),
+            (4.0, 0.0, 0.0)
+        );
+        assert_eq!(get("V1").current_through, -0.25);
+        assert_eq!(result.branch_currents["V1"], -0.25);
     }
 }

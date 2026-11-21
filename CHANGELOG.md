@@ -31,6 +31,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A modelled regulator with no input stays off. Below the dropout voltage
+  its output could fall under the ground pin (an unpowered LM7805 drove
+  −2 V into 1 kΩ), and its quiescent current, drawn whatever the input,
+  pulled an undriven input negative. The output now floors at the ground
+  pin, and the quiescent current ramps in from 0 V to the dropout voltage.
+  `regulator_dissipation` takes the set voltage, and
+  `regulator_quiescent` gives the current drawn.
+- `solve_noise` names a missing reference node as the reference; before,
+  the error called it the output node.
+- `AnalysisRequest::ac_config` and `noise_config` sweep the frequencies
+  ngspice does. A `.ac dec` over a decade or more is ⌊points·decades⌋
+  equal log steps to `fstop`, and every other `dec` or `oct` sweep steps
+  by 10^(1/points) or 2^(1/points) from `fstart` and stops at the last
+  point not past `fstop`. Before, a band that wasn't a whole number of
+  decades or octaves got `round(points·span) + 1` points spread from
+  `fstart` to `fstop`: 18 for `.ac dec 10 1 50`, where ngspice has 17.
+- The SPICE parser warns about a `.model` or `.subckt` inside a `.subckt`,
+  which it skips; before, it dropped them without a word, so an element
+  using one failed as undefined with no hint why.
+- A `.include` or `.lib` card without a readable path is a syntax error
+  that says what the card takes, not "internal: unresolved include
+  reached parser". The lenient warning about ignored `.model` parameters
+  names the deck's file, where it named none.
 - `dc_sweep` and `dc_sweep_nested` solve each point as an operating point
   (capacitors open, inductors shorted), as SPICE's `.dc` does. Before, a
   circuit with a capacitor, inductor or waveform source ran a transient

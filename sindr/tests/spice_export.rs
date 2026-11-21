@@ -585,3 +585,343 @@ fn globals_round_trip() {
     assert!((b.node_voltages["a"] - 2.5).abs() < 1e-9);
     assert!((b.node_voltages["b"] - 3.75).abs() < 1e-9);
 }
+
+fn s(names: &[&str]) -> Vec<String> {
+    names.iter().map(|n| n.to_string()).collect()
+}
+
+fn two(a: &str, b: &str) -> [String; 2] {
+    [a.into(), b.into()]
+}
+
+fn three(a: &str, b: &str, c: &str) -> [String; 3] {
+    [a.into(), b.into(), c.into()]
+}
+
+/// Each element with no SPICE3 primitive is `Unsupported`, naming it, so a
+/// deck never silently loses a part.
+#[test]
+fn every_element_without_a_spice_primitive_is_unsupported() {
+    use sindr::circuit::BjtParasiticCaps;
+    use sindr_devices::mosfet::MosfetParams;
+    let t_nom = 300.15;
+    let cases = vec![
+        CircuitElement::Battery {
+            id: "B1".into(),
+            nodes: two("a", "0"),
+            params: sindr::battery::BatteryParams::lithium_ion(2.0, 0.05),
+            state_of_charge: 0.5,
+        },
+        CircuitElement::Bjt {
+            id: "Q1".into(),
+            nodes: three("a", "b", "0"),
+            kind: BjtKind::Npn,
+            bf: 100.0,
+            temperature: t_nom,
+            parasitic_caps: Some(BjtParasiticCaps {
+                cbe: 10e-12,
+                cbc: 2e-12,
+            }),
+            model: None,
+        },
+        CircuitElement::Mosfet {
+            id: "M1".into(),
+            nodes: three("a", "b", "0"),
+            kind: sindr::MosfetKind::Nmos,
+            params: MosfetParams::default_nmos(),
+            parasitic_caps: None,
+            body_diode: None,
+        },
+        CircuitElement::Jfet {
+            id: "J1".into(),
+            nodes: three("a", "b", "0"),
+            kind: sindr::JfetKind::NChannel,
+            idss: 10e-3,
+            vp: -2.0,
+        },
+        CircuitElement::Igbt {
+            id: "Z1".into(),
+            nodes: three("a", "b", "0"),
+            params: sindr::IgbtParams::default(),
+        },
+        CircuitElement::ZenerDiode {
+            id: "DZ1".into(),
+            nodes: two("a", "0"),
+            vz: 5.1,
+            temperature: t_nom,
+        },
+        CircuitElement::OpAmp {
+            id: "U1".into(),
+            nodes: three("a", "b", "c"),
+            v_pos: 15.0,
+            v_neg: -15.0,
+            model: None,
+        },
+        CircuitElement::Comparator {
+            id: "U2".into(),
+            nodes: three("a", "b", "c"),
+            v_pos: 5.0,
+            v_neg: 0.0,
+        },
+        CircuitElement::Relay {
+            id: "K9".into(),
+            nodes: ["a".into(), "0".into(), "b".into(), "c".into()],
+            coil_resistance: 100.0,
+            pickup_voltage: 3.0,
+            inductance: 1e-3,
+        },
+        CircuitElement::Photodiode {
+            id: "PD1".into(),
+            nodes: two("a", "0"),
+            irradiance: 1.0,
+            temperature: t_nom,
+        },
+        CircuitElement::Varactor {
+            id: "CV1".into(),
+            nodes: two("a", "0"),
+            params: sindr::VaractorParams::default(),
+        },
+        CircuitElement::VoltageRegulator {
+            id: "REG1".into(),
+            nodes: three("a", "b", "0"),
+            voltage: 5.0,
+            model: None,
+        },
+        CircuitElement::Crystal {
+            id: "Y1".into(),
+            nodes: two("a", "0"),
+            params: sindr::CrystalParams {
+                frequency: 1e6,
+                esr: -1.0,
+                c0: 1e-12,
+                cm: 1e-15,
+            },
+        },
+    ];
+    for element in cases {
+        let id = element.id().to_string();
+        let mut circuit = one_resistor("R1", "a", "0");
+        circuit.components.push(element);
+        match to_netlist(&circuit, "t") {
+            Err(ExportError::Unsupported { id: got, .. }) => assert_eq!(got, id),
+            other => panic!("{id}: expected Unsupported, got {other:?}"),
+        }
+    }
+}
+
+/// Waveforms with no SPICE form: a periodic wave of zero frequency has no
+/// PULSE period, and a sine of zero frequency can't carry its phase as a
+/// delay.
+#[test]
+fn waveforms_without_a_spice_form_are_unsupported() {
+    for wave in [
+        Waveform::Square {
+            amplitude: 1.0,
+            frequency: 0.0,
+            offset: 0.0,
+            duty: 0.5,
+        },
+        Waveform::Triangle {
+            amplitude: 1.0,
+            frequency: f64::INFINITY,
+            offset: 0.0,
+        },
+        Waveform::Sine {
+            amplitude: 1.0,
+            frequency: 0.0,
+            offset: 0.0,
+            phase: 0.3,
+        },
+    ] {
+        let err = to_netlist(&source_with(wave.clone(), 0.0), "t").unwrap_err();
+        assert!(
+            matches!(&err, ExportError::Unsupported { id, .. } if id == "V1"),
+            "{wave:?}: {err}"
+        );
+    }
+}
+
+/// A PWL with no points is the source's static value, written as a
+/// one-point PWL that parses back to the same constant.
+#[test]
+fn empty_pwl_round_trips_to_its_static_value() {
+    let circuit = source_with(Waveform::Pwl { points: vec![] }, 1.5);
+    let deck = to_netlist(&circuit, "t").unwrap();
+    assert!(deck.contains("V1 a 0 PWL(0 1.5)"), "{deck}");
+    let back = parse_str(&deck).unwrap().circuit;
+    for t in [0.0, 1e-3, 1.0] {
+        assert_eq!(source_value(&back, t), source_value(&circuit, t), "t = {t}");
+    }
+}
+
+/// Parts written as a resistor or a Shockley diode: the deck must solve to
+/// the same operating point as the original.
+#[test]
+fn equivalent_parts_round_trip_to_the_same_operating_point() {
+    let supply = CircuitElement::VoltageSource {
+        id: "V1".into(),
+        nodes: two("in", "0"),
+        voltage: 5.0,
+        waveform: None,
+    };
+    let feed = |id: &str, to: &str| CircuitElement::Resistor {
+        id: id.into(),
+        nodes: two("in", to),
+        resistance: 1e3,
+    };
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            supply,
+            feed("R1", "led"),
+            CircuitElement::Led {
+                id: "D1".into(),
+                nodes: two("led", "0"),
+                color: "red".into(),
+                temperature: 300.15,
+            },
+            feed("R2", "sch"),
+            CircuitElement::SchottkyDiode {
+                id: "D2".into(),
+                nodes: two("sch", "0"),
+                temperature: 300.15,
+            },
+            feed("R3", "ldr"),
+            CircuitElement::Photoresistor {
+                id: "LDR1".into(),
+                nodes: two("ldr", "0"),
+                light_level: 0.3,
+            },
+            feed("R4", "ntc"),
+            CircuitElement::Thermistor {
+                id: "TH1".into(),
+                nodes: two("ntc", "0"),
+                temperature: 320.0,
+            },
+            feed("R5", "sw"),
+            CircuitElement::Switch {
+                id: "S1".into(),
+                nodes: two("sw", "0"),
+                closed: false,
+            },
+            feed("R6", "pb"),
+            CircuitElement::Pushbutton {
+                id: "S2".into(),
+                nodes: two("pb", "0"),
+                closed: true,
+            },
+            feed("R7", "fuse"),
+            CircuitElement::Fuse {
+                id: "F1".into(),
+                nodes: two("fuse", "0"),
+                rating: 1.0,
+                blown: true,
+            },
+            // An inductor is a short at DC: `l` sits at 0 V.
+            feed("R8", "l"),
+            CircuitElement::Inductor {
+                id: "L1".into(),
+                nodes: two("l", "0"),
+                inductance: 1e-3,
+                saturation: None,
+            },
+        ],
+        ..Default::default()
+    };
+    let deck = to_netlist(&circuit, "parts").unwrap();
+    let parsed = parse_str(&deck).unwrap_or_else(|e| panic!("{e}\n{deck}"));
+    let a = sindr::solve_op(&circuit).unwrap();
+    let b = sindr::solve_op(&parsed.circuit).unwrap();
+    assert_same_solution("parts", &circuit, &a, &b);
+    // The LED and the Schottky get different cards.
+    assert_eq!(deck.matches(".model dmod").count(), 2, "{deck}");
+}
+
+/// Identical BJTs share one `.model` card; a different polarity gets its own.
+#[test]
+fn bjts_share_identical_model_cards() {
+    let bjt = |id: &str, nodes: [&str; 3], kind| CircuitElement::Bjt {
+        id: id.into(),
+        nodes: three(nodes[0], nodes[1], nodes[2]),
+        kind,
+        bf: 80.0,
+        temperature: 300.15,
+        parasitic_caps: None,
+        model: None,
+    };
+    let r = |id: &str, a: &str, b: &str, ohms: f64| CircuitElement::Resistor {
+        id: id.into(),
+        nodes: two(a, b),
+        resistance: ohms,
+    };
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            CircuitElement::VoltageSource {
+                id: "VCC".into(),
+                nodes: two("vcc", "0"),
+                voltage: 5.0,
+                waveform: None,
+            },
+            r("RB1", "vcc", "b1", 470e3),
+            r("RC1", "vcc", "c1", 1e3),
+            bjt("Q1", ["b1", "c1", "0"], BjtKind::Npn),
+            r("RB2", "vcc", "b2", 470e3),
+            r("RC2", "vcc", "c2", 2e3),
+            bjt("Q2", ["b2", "c2", "0"], BjtKind::Npn),
+            // A PNP high-side switch, its base pulled to ground.
+            r("RB3", "b3", "0", 470e3),
+            r("RC3", "c3", "0", 1e3),
+            bjt("Q3", ["b3", "c3", "vcc"], BjtKind::Pnp),
+        ],
+        ..Default::default()
+    };
+    let deck = to_netlist(&circuit, "bjts").unwrap();
+    let models: Vec<_> = deck.lines().filter(|l| l.starts_with(".model")).collect();
+    assert_eq!(models.len(), 2, "{deck}");
+    assert!(models[0].starts_with(".model qmod1 NPN("), "{deck}");
+    assert!(models[1].starts_with(".model qmod2 PNP("), "{deck}");
+    assert!(deck.contains("Q2 c2 b2 0 qmod1"), "{deck}");
+    let parsed = parse_str(&deck).unwrap();
+    let a = sindr::solve_op(&circuit).unwrap();
+    let b = sindr::solve_op(&parsed.circuit).unwrap();
+    assert_same_solution("bjts", &circuit, &a, &b);
+}
+
+/// SPICE names that a part's extra lines need, or block names that fold to
+/// the same, are rejected rather than written twice.
+#[test]
+fn names_that_would_clash_once_written_are_rejected() {
+    // A potentiometer writes `R<id>_top`, which another resistor already is.
+    let mut circuit = one_resistor("Rpot_top", "a", "0");
+    circuit.components.push(CircuitElement::Potentiometer {
+        id: "Rpot".into(),
+        nodes: three("a", "w", "0"),
+        resistance: 1e3,
+        position: 0.5,
+    });
+    match to_netlist(&circuit, "t").unwrap_err() {
+        ExportError::BadName { what, name, reason } => {
+            assert_eq!((what, name.as_str()), ("element", "Rpot"));
+            assert!(reason.contains("Rpot_top"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let block = || sindr::Block {
+        ports: s(&["p"]),
+        components: vec![CircuitElement::Resistor {
+            id: "R1".into(),
+            nodes: two("p", "0"),
+            resistance: 1.0,
+        }],
+        ..Default::default()
+    };
+    let mut circuit = one_resistor("R1", "a", "0");
+    circuit.blocks.insert("Amp".into(), block());
+    circuit.blocks.insert("amp".into(), block());
+    match to_netlist(&circuit, "t").unwrap_err() {
+        ExportError::BadName { what, .. } => assert_eq!(what, "block"),
+        other => panic!("{other:?}"),
+    }
+}

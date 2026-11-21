@@ -1466,4 +1466,282 @@ mod tests {
             .unwrap();
         assert!(ir > 0.9e-3 && ir <= 1.0e-3 + 1e-9, "{ir}");
     }
+
+    fn reason(result: Result<f64, SimError>) -> String {
+        match result {
+            Err(SimError::Measurement { reason, .. }) => reason,
+            other => panic!("expected a measurement error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signals_display_as_spice_expressions() {
+        assert_eq!(Signal::v("out").to_string(), "v(out)");
+        assert_eq!(Signal::v("out").db().to_string(), "vdb(out)");
+        assert_eq!(Signal::v("out").phase().to_string(), "vp(out)");
+        assert_eq!(Signal::v_diff("a", "b").to_string(), "v(a,b)");
+        assert_eq!(Signal::v_diff("a", "b").db().to_string(), "vdb(a,b)");
+        assert_eq!(Signal::i("R1").to_string(), "i(R1)");
+        assert_eq!(Signal::i("R1").db().to_string(), "idb(R1)");
+        assert_eq!(Signal::i("R1").phase().to_string(), "ip(R1)");
+    }
+
+    fn divider() -> Circuit {
+        Circuit::new(
+            "0",
+            vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["in".into(), "0".into()],
+                    voltage: 10.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["in".into(), "out".into()],
+                    resistance: 1e3,
+                },
+                CircuitElement::Resistor {
+                    id: "R2".into(),
+                    nodes: ["out".into(), "0".into()],
+                    resistance: 1e3,
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn real_results_read_db_but_not_phase() {
+        let op = solve_circuit(&divider()).unwrap();
+        let final_of =
+            |signal: Signal| Measurement::new("m", Measure::stat(signal, Stat::Final)).on(&op);
+        // 5 V is 20·log10(5) dBV.
+        close(
+            final_of(Signal::v("out").db()).unwrap(),
+            20.0 * 5f64.log10(),
+            1e-9,
+        );
+        let phase = reason(final_of(Signal::v("out").phase()));
+        assert_eq!(
+            phase,
+            "`vp(out)` reads a phase, which only an AC result has"
+        );
+        // 0 V in dB is −∞: an error, not a number that passes a spec.
+        let zero = reason(final_of(Signal::v("0").db()));
+        assert_eq!(zero, "the value isn't finite (-inf)");
+        let unknown = reason(final_of(Signal::i("R9")));
+        assert_eq!(unknown, "no component `R9` with a current in the result");
+    }
+
+    #[test]
+    fn sweeps_propagate_an_unreadable_signal() {
+        let sweep = dc_sweep(&divider(), "V1", 0.0, 1.0, 3).unwrap();
+        let err = Measurement::new("m", Measure::stat(Signal::v("nope"), Stat::Max)).on(&sweep);
+        assert_eq!(reason(err), "no node `nope` in the result");
+    }
+
+    #[test]
+    fn temperature_sweep_is_measured_against_kelvin() {
+        // A diode's forward drop falls about 2 mV/K: the trace's x axis is
+        // the temperature, so its maximum is at the coldest point.
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::CurrentSource {
+                    id: "I1".into(),
+                    nodes: ["0".into(), "a".into()],
+                    current: 1e-3,
+                    waveform: None,
+                },
+                CircuitElement::Diode {
+                    id: "D1".into(),
+                    nodes: ["a".into(), "0".into()],
+                    temperature: 300.15,
+                    model: None,
+                },
+            ],
+        );
+        let sweep = crate::temperature_sweep(&circuit, 250.0, 350.0, 5).unwrap();
+        let coldest = Measurement::new("vmax", Measure::find(Signal::v("a"), 250.0))
+            .on(&sweep)
+            .unwrap();
+        let max = Measurement::new("vmax", Measure::stat(Signal::v("a"), Stat::Max))
+            .on(&sweep)
+            .unwrap();
+        assert_eq!(coldest, max);
+        let hottest = Measurement::new("v", Measure::find(Signal::v("a"), 350.0))
+            .on(&sweep)
+            .unwrap();
+        assert!(hottest < coldest - 0.1, "{hottest} vs {coldest}");
+        let missing = Measurement::new("m", Measure::stat(Signal::v("nope"), Stat::Max)).on(&sweep);
+        assert_eq!(reason(missing), "no node `nope` in the result");
+    }
+
+    #[test]
+    fn ac_result_names_a_missing_node() {
+        let config = AcConfig {
+            f_start: 1.0,
+            f_stop: 10.0,
+            num_points: 2,
+            spacing: FrequencySpacing::Logarithmic,
+            source_id: "V1".into(),
+            ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
+        };
+        let ac = solve_ac(&rc(None), &config).unwrap();
+        let err = Measurement::new("m", Measure::find(Signal::v_diff("out", "nope"), 1.0)).on(&ac);
+        assert_eq!(reason(err), "no node `nope` in the result");
+    }
+
+    #[test]
+    fn windows_are_checked_and_clip_to_a_point() {
+        let p = [(0.0, 0.0), (10.0, 10.0)];
+        let avg = Measure::stat(Signal::v("x"), Stat::Avg);
+        let backwards = Measurement::new("m", avg.clone())
+            .window(4.0, 2.0)
+            .on(&Points(p.to_vec()));
+        assert_eq!(reason(backwards), "the window runs backwards (4 to 2)");
+        let empty = Measurement::new("m", avg.clone()).on(&Points(vec![]));
+        assert_eq!(reason(empty), "the result has no points");
+        // A zero-width window is the one interpolated sample.
+        let point = Measurement::new("m", Measure::stat(Signal::v("x"), Stat::Final))
+            .window(3.0, 3.0)
+            .on(&Points(p.to_vec()))
+            .unwrap();
+        close(point, 3.0, 1e-12);
+    }
+
+    #[test]
+    fn find_at_the_first_sample_is_that_sample() {
+        let p = [(1.0, 7.0), (2.0, 9.0)];
+        assert_eq!(
+            measure(&p, Measure::find(Signal::v("x"), 1.0)).unwrap(),
+            7.0
+        );
+        let outside = reason(measure(&p, Measure::find(Signal::v("x"), 0.5)));
+        assert_eq!(outside, "x = 0.5 is outside the result (1 to 2)");
+    }
+
+    #[test]
+    fn crossing_occurrences_are_counted_from_one() {
+        let s = sine(1000);
+        let zeroth = measure(&s, Measure::When(Crossing::new(Signal::v("x"), 0.5).nth(0)));
+        assert_eq!(reason(zeroth), "crossings count from 1");
+        let never = measure(
+            &s,
+            Measure::When(Crossing::new(Signal::v("x"), 2.0).falling().last()),
+        );
+        assert_eq!(
+            reason(never),
+            "`v(x)` never falls through 2 at all (found 0 such crossing(s); it spans -1 to 1)"
+        );
+        let cross = measure(&s, Measure::When(Crossing::new(Signal::v("x"), 2.0).last()));
+        assert!(reason(cross).starts_with("`v(x)` never crosses 2 at all"));
+    }
+
+    #[test]
+    fn transition_arguments_are_checked() {
+        let ramp = [(0.0, 0.0), (1.0, 1.0)];
+        let with = |edge, low, high| {
+            measure(
+                &ramp,
+                Measure::Transition {
+                    signal: Signal::v("x"),
+                    edge,
+                    low,
+                    high,
+                },
+            )
+        };
+        for (low, high) in [(0.9, 0.1), (-0.1, 0.9), (0.1, 1.5), (0.5, 0.5)] {
+            let err = reason(with(Edge::Rise, low, high));
+            assert!(
+                err.starts_with("transition fractions must satisfy"),
+                "{err}"
+            );
+        }
+        assert_eq!(
+            reason(with(Edge::Cross, 0.1, 0.9)),
+            "a transition is a rise or a fall"
+        );
+        // A ramp that only rises has no fall.
+        assert_eq!(
+            reason(with(Edge::Fall, 0.1, 0.9)),
+            "the signal never falls through 0.1"
+        );
+    }
+
+    #[test]
+    fn settling_from_below_and_already_settled() {
+        // Rises 0 → 1 linearly over 1 s and holds: within ±0.1 of 1 from
+        // t = 0.9, entered from below.
+        let p = [(0.0, 0.0), (1.0, 1.0), (2.0, 1.0)];
+        close(
+            measure(&p, Measure::settling(Signal::v("x"), 0.1)).unwrap(),
+            0.9,
+            1e-12,
+        );
+        let flat = [(0.0, 1.0), (1.0, 1.0)];
+        assert_eq!(
+            measure(&flat, Measure::settling(Signal::v("x"), 0.1)).unwrap(),
+            0.0
+        );
+        for band in [0.0, -1.0, f64::NAN] {
+            let err = reason(measure(&p, Measure::settling(Signal::v("x"), band)));
+            assert!(
+                err.starts_with("the settling band must be above 0"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn bandwidth_needs_the_signal_to_fall() {
+        // `Points` ignores the view, so this trace is already in dB: flat at
+        // 1 dB, never 3 dB down.
+        let flat = [(1.0, 1.0), (10.0, 1.0)];
+        let err = reason(measure(&flat, Measure::bandwidth(Signal::v("x"))));
+        assert_eq!(
+            err,
+            "the signal never falls 3 dB below its 1.000 dB peak within the sweep"
+        );
+    }
+
+    #[test]
+    fn at_least_passes_on_its_limit_and_merge_keeps_both_ratings() {
+        let op = solve_circuit(&divider()).unwrap();
+        let vout = || Measurement::new("vout", Measure::stat(Signal::v("out"), Stat::Final));
+        let pass = Spec::new(vout()).at_least(5.0).check(&op);
+        assert_eq!(pass.status, SpecStatus::Pass);
+        close(pass.margin.unwrap(), 0.0, 1e-9);
+        let fail = Spec::new(vout()).at_least(6.0).check(&op);
+        assert_eq!(fail.status, SpecStatus::Fail);
+        close(fail.margin.unwrap(), -1.0, 1e-9);
+
+        let check = |part: &str| crate::RatingCheck {
+            part: part.into(),
+            rating: crate::RatingKind::Power,
+            limit: Some(1.0),
+            worst: Some(0.5),
+            time: None,
+            margin_percent: Some(50.0),
+            status: crate::RatingStatus::Within,
+        };
+        let ratings = |part: &str| RatingsReport {
+            checks: vec![check(part)],
+        };
+        let merged = check_specs(&op, &[])
+            .with_ratings(ratings("R1"))
+            .merge(check_specs(&op, &[]).with_ratings(ratings("R2")));
+        let parts: Vec<_> = merged
+            .ratings
+            .as_ref()
+            .unwrap()
+            .checks
+            .iter()
+            .map(|c| c.part.as_str())
+            .collect();
+        assert_eq!(parts, ["R1", "R2"]);
+        assert!(merged.passed());
+    }
 }

@@ -132,6 +132,7 @@ pub(crate) fn flatten(
     for card in cards {
         match card {
             RawCard::Subckt(s) => {
+                warn_nested_definitions(&s, warnings);
                 subckts.insert(s.name.clone(), s);
             }
             RawCard::Model(m) => {
@@ -184,10 +185,12 @@ pub(crate) fn flatten(
     let mut active_stack: HashSet<String> = HashSet::new();
 
     for el in top_elements {
-        if matches!(el.body, RawElementBody::Subckt { .. }) {
+        if let RawElementBody::Subckt { name, params } = &el.body {
+            let call = (name.clone(), params.clone());
             let local_nodes = el.nodes.clone();
             expand_instance(
                 el,
+                call,
                 local_nodes,
                 &[],
                 &subckts,
@@ -221,9 +224,34 @@ pub(crate) fn flatten(
     })
 }
 
+/// Warn about each `.model` and `.subckt` inside `subckt`'s body: they are
+/// skipped, so an element using one fails as if it were undefined.
+fn warn_nested_definitions(subckt: &RawSubckt, warnings: &mut Vec<ParseWarning>) {
+    for card in &subckt.body {
+        let (what, span) = match card {
+            RawCard::Model(m) => (format!("`.model {}`", m.name), Some(&m.span)),
+            RawCard::Subckt(inner) => (format!("`.subckt {}`", inner.name), None),
+            _ => continue,
+        };
+        warnings.push(ParseWarning {
+            message: format!(
+                "{what} inside `.subckt {}` is ignored; sindr reads `.model` and `.subckt` \
+                 definitions only at the top level",
+                subckt.name
+            ),
+            span: span.map(|s| (s.start, s.end.saturating_sub(s.start)).into()),
+            file: span.map(|s| s.file.to_string()),
+        });
+    }
+}
+
 /// Recursive expansion of one `X<inst>` subckt instance.
+///
+/// `call` is the instance's subckt name and its `name=value` overrides.
+#[allow(clippy::too_many_arguments)]
 fn expand_instance(
     inst: RawElement,
+    call: (String, Vec<(String, ParamExpr)>),
     local_nodes: Vec<String>,
     parent_path: &[String],
     subckts: &HashMap<String, RawSubckt>,
@@ -231,10 +259,7 @@ fn expand_instance(
     active_stack: &mut HashSet<String>,
     sink: &mut Sink,
 ) -> Result<(), SpiceParseError> {
-    let (subckt_name, instance_overrides) = match &inst.body {
-        RawElementBody::Subckt { name, params } => (name.clone(), params.clone()),
-        _ => unreachable!("expand_instance called on non-subckt element"),
-    };
+    let (subckt_name, instance_overrides) = call;
 
     let def = match subckts.get(&subckt_name) {
         Some(d) => d,
@@ -307,7 +332,7 @@ fn expand_instance(
     for body_card in &def.body {
         match body_card {
             RawCard::Element(child) => {
-                if matches!(child.body, RawElementBody::Subckt { .. }) {
+                if let RawElementBody::Subckt { name, params } = &child.body {
                     // For nested X-instances, do NOT pre-prefix the id —
                     // recurse with the parent's instance_path and let the
                     // recursive call append the raw child id once. We
@@ -322,6 +347,7 @@ fn expand_instance(
                         .collect();
                     expand_instance(
                         nested,
+                        (name.clone(), params.clone()),
                         child.nodes.clone(),
                         &instance_path,
                         subckts,
@@ -367,11 +393,9 @@ fn expand_instance(
             }
             RawCard::Subckt(_) | RawCard::Model(_) => {
                 // Nested .subckt / .model definitions are not supported
-                // (they would change visibility rules); skip with a
-                // warning. The grammar already accepts them, so this
-                // keeps lowering robust to vendor decks with nested
-                // definitions even if we cannot use them.
-                // No-op for now.
+                // (they would change visibility rules). Pass 1 warned
+                // about each one; the grammar accepts them, so a vendor
+                // deck with nested definitions still lowers.
             }
             RawCard::Analysis(..)
             | RawCard::Global(_)
@@ -389,18 +413,15 @@ fn expand_instance(
     Ok(())
 }
 
-/// Apply hierarchical renaming to a body element.
+/// Apply hierarchical renaming to a body element. `instance_path` always
+/// holds at least the instance being expanded.
 fn rename_element(
     src: &RawElement,
     instance_path: &[String],
     port_map: &HashMap<String, String>,
 ) -> RawElement {
     let prefix = instance_path.join(".");
-    let new_id = if prefix.is_empty() {
-        src.id.clone()
-    } else {
-        format!("{prefix}.{}", src.id)
-    };
+    let new_id = format!("{prefix}.{}", src.id);
     let new_nodes = src
         .nodes
         .iter()
@@ -423,13 +444,9 @@ fn rename_node(nd: &str, prefix: &str, port_map: &HashMap<String, String>) -> St
     if nd == "0" {
         return "0".to_string();
     }
-    if let Some(caller) = port_map.get(nd) {
-        return caller.clone();
-    }
-    if prefix.is_empty() {
-        nd.to_string()
-    } else {
-        format!("{prefix}.{nd}")
+    match port_map.get(nd) {
+        Some(caller) => caller.clone(),
+        None => format!("{prefix}.{nd}"),
     }
 }
 

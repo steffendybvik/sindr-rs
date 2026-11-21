@@ -444,4 +444,30 @@ mod tests {
         let a = MnaMatrix::<f64>::sparse(3);
         assert!(a.solve(&DVector::zeros(3)).is_err());
     }
+
+    /// Reading an entry a sparse matrix never stored is zero, as dense.
+    #[test]
+    fn sparse_reads_unstored_entries_as_zero() {
+        let mut a = MnaMatrix::<f64>::sparse(3);
+        a[(0, 0)] = 2.0;
+        assert_eq!(a[(0, 0)], 2.0);
+        assert_eq!(a[(2, 1)], 0.0);
+        assert_eq!(a.to_dense(), {
+            let mut d = DMatrix::zeros(3, 3);
+            d[(0, 0)] = 2.0;
+            d
+        });
+    }
+
+    /// A solve that produces a NaN or an infinity is an error, not an
+    /// answer, in either storage.
+    #[test]
+    fn non_finite_solution_is_invalid() {
+        for mut a in [MnaMatrix::<f64>::dense(2), MnaMatrix::<f64>::sparse(2)] {
+            a[(0, 0)] = 1.0;
+            a[(1, 1)] = 1.0;
+            let b = DVector::from_vec(vec![1.0, f64::INFINITY]);
+            assert!(matches!(a.solve(&b), Err(SimError::InvalidSolution)));
+        }
+    }
 }

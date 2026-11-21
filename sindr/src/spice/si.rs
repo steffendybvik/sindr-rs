@@ -174,6 +174,14 @@ mod tests {
         assert_eq!(val("1e-3"), 1e-3);
     }
 
+    /// An `e` with no digits after it isn't an exponent; it's read as unit
+    /// decoration, so `2e` is 2 and `2e-` stops before the sign.
+    #[test]
+    fn e_without_digits_is_not_an_exponent() {
+        assert_eq!(val("2e"), 2.0);
+        assert_eq!(parse_number("2e-"), Some((2.0, 2)));
+    }
+
     #[test]
     fn leading_dot() {
         assert_eq!(val(".5"), 0.5);

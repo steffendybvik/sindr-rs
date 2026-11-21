@@ -357,3 +357,286 @@ fn fuzz_seed_decks_do_not_panic() {
     }
     assert!(seen > 0, "no seeds in {}", dir.display());
 }
+
+// ----- Malformed element and directive lines -------------------------------
+
+/// `* t\nV1 a 0 1\nR1 a 0 1k\n<line>\n.end\n`, parsed strictly.
+fn with_line(line: &str) -> (String, SpiceParseError) {
+    let deck = format!("* t\nV1 a 0 1\nR1 a 0 1k\n{line}\n.end\n");
+    let err = parse_str(&deck).expect_err(line);
+    (deck, err)
+}
+
+/// Lines the grammar rejects: a `Syntax` error naming the element letter or
+/// the card, labelled over the whole line.
+#[test]
+fn malformed_lines_are_syntax_errors_over_the_line() {
+    for (line, what) in [
+        // Trailing tokens after the value or model.
+        ("R2 a 0 1k 2k", "malformed `r` element"),
+        ("D2 a 0 dm extra", "malformed `d` element"),
+        ("E1 a 0 a 0 2 extra", "malformed `e` element"),
+        // Too few nodes for the letter.
+        ("R2 a 1k", "malformed `r` element"),
+        ("E1 a b 2", "malformed `e` element"),
+        ("F1 a 0 1", "malformed `f` element"),
+        ("Q1 c b qmod", "malformed `q` element"),
+        // A token that can't be a node ends the node list early.
+        ("Q1 c b e {x} qmod", "malformed `q` element"),
+        ("X1 a sub (x)", "malformed `x` element"),
+        // `ac1` isn't the `AC` keyword followed by 1.
+        ("V2 b 0 ac1", "malformed `v` element"),
+        ("V2 b 0 ac {", "malformed `v` element"),
+        // Waveform argument counts SPICE3 defines.
+        ("V2 b 0 PULSE(0 1 0)", "malformed `v` element"),
+        ("V2 b 0 SIN(0 1)", "malformed `v` element"),
+        ("V2 b 0 SIN(0 1 1k 0 0 7)", "malformed `v` element"),
+        ("V2 b 0 PWL(0 1 1m)", "malformed `v` element"),
+        // Directives.
+        (".tran 1u", "malformed `.tran` directive"),
+        (".tran 1u 1m 0 1u 2u", "malformed `.tran` directive"),
+        (".tran 1u 1m foo", "malformed `.tran` directive"),
+        (".tran 1u 1m uic extra", "malformed `.tran` directive"),
+        (".dc V1 0 1", "malformed `.dc` directive"),
+        (".dc V1 0 1 0.1 V1", "malformed `.dc` directive"),
+        (".ac foo 10 1 1k", "malformed `.ac` directive"),
+        (
+            ".noise v(a) v1 dec 10 1 1k 5 6",
+            "malformed `.noise` directive",
+        ),
+        (".", "expected a control-card keyword after `.`"),
+    ] {
+        let (deck, err) = with_line(line);
+        match &err {
+            SpiceParseError::Syntax { message, .. } => assert_eq!(message, what, "{line}"),
+            other => panic!("{line}: expected Syntax, got {other:?}"),
+        }
+        assert_eq!(labelled(&err, &deck), [line], "{line}");
+    }
+}
+
+/// Values the grammar accepts but the builder rejects once evaluated; each
+/// points at its card.
+#[test]
+fn values_out_of_range_name_the_field() {
+    for (line, what) in [
+        (
+            ".noise v(a) v1 dec 0 1 1k",
+            "`.noise` points must be a positive integer in 1..=10000000 (got 0)",
+        ),
+        (
+            ".noise v(a) v1 dec 10 0 1k",
+            "`.noise` fstart must be above 0, where flicker noise is finite (got 0)",
+        ),
+        (
+            ".noise v(a) v1 lin 10 2k 1k",
+            "`.noise` fstart 2000 is above fstop 1000",
+        ),
+        (
+            ".ac lin 10 -1 10",
+            "`.ac` fstart must be at least 0 (got -1)",
+        ),
+        (".ac dec 10 1 1e400", "value is inf, not a finite number"),
+        (".tran 1u {-1e400}", "value is -inf, not a finite number"),
+        (
+            ".ic v(a)={1e400-1e400}",
+            "value is NaN, not a finite number",
+        ),
+    ] {
+        let (deck, err) = with_line(line);
+        match &err {
+            SpiceParseError::Syntax { message, .. } => assert_eq!(message, what, "{line}"),
+            other => panic!("{line}: expected Syntax, got {other:?}"),
+        }
+        assert_eq!(labelled(&err, &deck), [line], "{line}");
+    }
+}
+
+/// An undefined parameter anywhere an expression is evaluated late (a
+/// waveform, `.meas`, `.ic`, `.options`, a subckt's parameters) names the
+/// parameter and points at the line that used it.
+#[test]
+fn undefined_params_point_at_the_line_that_uses_them() {
+    for (line, labelled_text) in [
+        (
+            "V2 p 0 PULSE(0 {nope} 0 1n 1n 1u 2u)",
+            "V2 p 0 PULSE(0 {nope} 0 1n 1n 1u 2u)",
+        ),
+        ("V2 p 0 SIN(0 {nope} 1k)", "V2 p 0 SIN(0 {nope} 1k)"),
+        ("V2 p 0 ac {nope}", "V2 p 0 ac {nope}"),
+        (
+            ".meas tran x find v(a) at={nope}",
+            ".meas tran x find v(a) at={nope}",
+        ),
+        (
+            ".meas tran x when v(a)={nope}",
+            ".meas tran x when v(a)={nope}",
+        ),
+        (
+            ".meas tran x avg v(a) from={nope}",
+            ".meas tran x avg v(a) from={nope}",
+        ),
+        (
+            ".meas tran x trig v(a) val=1 targ v(a) val={nope}",
+            ".meas tran x trig v(a) val=1 targ v(a) val={nope}",
+        ),
+        (".ic v(a)={nope}", ".ic v(a)={nope}"),
+        (".options reltol={nope}", ".options reltol={nope}"),
+        (
+            ".subckt s p q R={nope}\nR9 p q {R}\n.ends\nX1 a 0 s",
+            "X1 a 0 s",
+        ),
+        (
+            ".subckt s p q R=1\nR9 p q {R}\n.ends\nX1 a 0 s R={nope}",
+            "X1 a 0 s R={nope}",
+        ),
+        (
+            ".subckt s p q\n.param k={nope}\nR9 p q 1k\n.ends\nX1 a 0 s",
+            ".param k={nope}",
+        ),
+    ] {
+        let (deck, err) = with_line(line);
+        assert!(
+            matches!(&err, SpiceParseError::UndefinedParam { name, .. } if name == "nope"),
+            "{line}: {err:?}"
+        );
+        assert_eq!(labelled(&err, &deck), [labelled_text], "{line}");
+    }
+}
+
+#[test]
+fn a_bjt_on_a_diode_model_is_an_unsupported_model_type() {
+    let (deck, err) = with_line("Q1 c b e dmod\n.model dmod D");
+    match &err {
+        SpiceParseError::UnsupportedModelType { kind, name, .. } => {
+            assert_eq!((kind.as_str(), name.as_str()), ("d", "dmod"));
+        }
+        other => panic!("expected UnsupportedModelType, got {other:?}"),
+    }
+    assert_eq!(labelled(&err, &deck), ["Q1 c b e dmod"]);
+}
+
+/// Behavioural sources and the nonlinear forms of `E`/`G`/`F`/`H` are
+/// unsupported devices: fatal in strict mode, a warning (and no element)
+/// in lenient mode.
+#[test]
+fn behavioural_forms_are_unsupported_devices() {
+    use sindr::spice::{parse_str_with_options, ParseOptions};
+    for (line, device) in [
+        ("B1 a 0 v=1", "behavioural source (B)"),
+        (
+            "E1 a 0 a 0 table {v(a)} = (0,0) (1,1)",
+            "TABLE form of a controlled source (E)",
+        ),
+        (
+            "G1 a 0 laplace {v(a)} = {1/s}",
+            "LAPLACE form of a controlled source (G)",
+        ),
+    ] {
+        let (_, err) = with_line(line);
+        assert!(
+            matches!(&err, SpiceParseError::UnsupportedDevice { device: d, .. } if d == device),
+            "{line}: {err:?}"
+        );
+        let deck = format!("* t\nV1 a 0 1\nR1 a 0 1k\n{line}\n.end\n");
+        let lenient =
+            parse_str_with_options(&deck, ParseOptions::default().with_strict(false)).unwrap();
+        assert_eq!(lenient.circuit.components.len(), 2, "{line}");
+        let warnings: Vec<_> = lenient.warnings.iter().map(|w| &w.message).collect();
+        assert_eq!(
+            warnings,
+            [&format!("unsupported device '{device}'")],
+            "{line}"
+        );
+    }
+}
+
+/// `.meas` cards the parser can't read, with the reason it gives.
+#[test]
+fn malformed_meas_cards_say_why() {
+    for (card, why) in [
+        (".meas", "expected `tran`, `ac` or `dc`"),
+        (".meas tran x avg v(a))", "unbalanced `)`"),
+        (".meas tran x avg (v(a)", "unbalanced brackets in `(v(a)`"),
+        (".meas tran x avg 'v(a)", "unclosed quote"),
+        (".meas tran x avg v()", "found `v()`"),
+        (".meas tran x avg v(a,b,c)", "found `v(a,b,c)`"),
+        (".meas tran x avg q(a)", "found `q(a)`"),
+        (".meas tran x avg i(a,b)", "found `i(a,b)`"),
+        (".meas tran x avg v(a) from", "expected `from=<value>`"),
+        (".meas tran x avg v(a) from=", "`from=` needs a value"),
+        (".meas tran x avg v(a) from=abc", "expected a number"),
+        (".meas tran x when v(a)", "expected `<signal>=<level>`"),
+        (".meas tran x when v(a) 1", "expected `<signal>=<level>`"),
+        (".meas tran x when v(a)=", "expected a level after `=`"),
+        (".meas tran x when v(a)=1 cross=0", "takes a count from 1"),
+        (
+            ".meas tran x when v(a)=1 at=1",
+            "`at=` isn't supported here",
+        ),
+        (
+            ".meas tran x trig v(a) rise=1 targ v(a) val=1",
+            "`trig` needs `val=<level>`",
+        ),
+        (
+            ".meas tran x trig v(a) val=1 targ v(a) foo=1",
+            "`foo=` isn't supported here (on `targ`)",
+        ),
+        (".meas tran x trig", "expected a signal after `trig`"),
+        (
+            ".meas tran x trig v(a) val=1 targ",
+            "expected a signal after `targ`",
+        ),
+        (".meas tran x bogus v(a)", "unknown measurement `bogus`"),
+        (".meas tran", "expected a name for the measurement"),
+        (".meas tran x", "expected what to measure"),
+        (".meas tran x find", "expected a signal"),
+    ] {
+        let (deck, err) = with_line(card);
+        match &err {
+            SpiceParseError::Syntax { message, .. } => {
+                assert!(message.starts_with("`.meas`: "), "{card}: {message}");
+                assert!(message.contains(why), "{card}: {message}");
+            }
+            other => panic!("{card}: expected Syntax, got {other:?}"),
+        }
+        assert_eq!(labelled(&err, &deck), [card], "{card}");
+    }
+}
+
+/// An include card the preprocessor couldn't read used to reach the parser
+/// as "internal: unresolved include reached parser", as if sindr were at
+/// fault.
+#[test]
+fn malformed_include_cards_say_what_they_take() {
+    for (line, what) in [
+        (".include", "`.include` takes exactly one file path"),
+        (
+            ".include a.cir b.cir",
+            "`.include` takes exactly one file path",
+        ),
+        (".include 'a.cir", "`.include` takes exactly one file path"),
+        (".lib", "`.lib` takes a file path"),
+        (".lib \"parts.lib", "`.lib` takes a file path"),
+        (".lib fast", "`.lib <section>` alone only opens a section"),
+    ] {
+        let (deck, err) = with_line(line);
+        match &err {
+            SpiceParseError::Syntax { message, .. } => {
+                assert!(message.contains(what), "{line}: {message}")
+            }
+            other => panic!("{line}: expected Syntax, got {other:?}"),
+        }
+        assert_eq!(labelled(&err, &deck), [line], "{line}");
+    }
+}
+
+/// The nesting cap holds inside an `AC` spec too, where the magnitude is
+/// optional: running into it is an error, not "no magnitude".
+#[test]
+fn deeply_nested_ac_magnitude_is_an_error() {
+    let open = "(".repeat(5_000);
+    let close = ")".repeat(5_000);
+    let (_, err) = with_line(&format!("V2 b 0 ac {{{open}1{close}}}\nR2 b 0 1"));
+    assert!(matches!(err, SpiceParseError::Syntax { .. }), "{err:?}");
+}

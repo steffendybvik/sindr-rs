@@ -612,4 +612,67 @@ mod tests {
         };
         assert_relative_eq!(pulse.period().unwrap(), 2e-3, epsilon = 1e-15);
     }
+
+    #[test]
+    fn pwl_returns_an_interior_breakpoint_exactly() {
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1.0, 1.0), (2.0, -1.0), (3.0, 0.0)],
+        };
+        assert_eq!(w.evaluate(1.0), 1.0);
+        assert_eq!(w.evaluate(2.0), -1.0);
+    }
+
+    #[test]
+    fn periodic_waveforms_have_a_period_only_above_0_hz() {
+        let kinds = |frequency: f64| {
+            [
+                Waveform::Square {
+                    amplitude: 1.0,
+                    frequency,
+                    offset: 0.0,
+                    duty: 0.5,
+                },
+                Waveform::Triangle {
+                    amplitude: 1.0,
+                    frequency,
+                    offset: 0.0,
+                },
+                Waveform::Pwm {
+                    amplitude: 1.0,
+                    frequency,
+                    duty: 0.25,
+                    offset: 0.0,
+                },
+                Waveform::Sine {
+                    amplitude: 1.0,
+                    frequency,
+                    offset: 0.0,
+                    phase: 0.0,
+                },
+            ]
+        };
+        for w in kinds(250.0) {
+            assert_relative_eq!(w.period().unwrap(), 4e-3, epsilon = 1e-15);
+        }
+        for w in kinds(0.0) {
+            assert_eq!(w.period(), None, "{w:?}");
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn square_duty_defaults_to_half_in_json() {
+        let w: Waveform =
+            serde_json::from_str(r#"{"type":"square","amplitude":1.0,"frequency":1000.0}"#)
+                .unwrap();
+        assert_eq!(
+            w,
+            Waveform::Square {
+                amplitude: 1.0,
+                frequency: 1000.0,
+                offset: 0.0,
+                duty: 0.5,
+            }
+        );
+    }
 }

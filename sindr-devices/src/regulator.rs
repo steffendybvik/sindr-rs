@@ -144,10 +144,21 @@ pub fn regulator_piece(
         region: RegulatorRegion::Dropout,
         limiting: false,
     };
-    let mut piece = if dropout.vout(vin, iout) < regulating.vout(vin, iout) {
-        dropout
-    } else {
+    // With no input left the pass element is off: the output can't be
+    // driven below the ground pin, only pulled there by its load. The floor
+    // meets the dropout piece at `Vin = dropout`, so the characteristic
+    // stays continuous.
+    let off = RegulatorLinear {
+        offset: 0.0,
+        d_vin: 0.0,
+        ..dropout
+    };
+    let mut piece = if dropout.vout(vin, iout) >= regulating.vout(vin, iout) {
         regulating
+    } else if dropout.vout(vin, iout) < off.vout(vin, iout) {
+        off
+    } else {
+        dropout
     };
     if let Some(limit) = params.current_limit.filter(|l| *l > 0.0) {
         if iout > limit {
@@ -160,11 +171,41 @@ pub fn regulator_piece(
     piece
 }
 
-/// Power the regulator dissipates (W): `(Vin − Vout)·Iout + |Vin|·Iq`, with
-/// voltages from the ground pin. Both terms are positive for a negative
-/// regulator too, where `Vin`, `Vout` and `Iout` are all negative.
-pub fn regulator_dissipation(params: &RegulatorParams, vin: f64, vout: f64, iout: f64) -> f64 {
-    (vin - vout) * iout + vin.abs() * params.quiescent_current
+/// The quiescent current a regulator set to `voltage` draws from its input
+/// at `vin` (V, from the ground pin), as `i0 + g·Vin` (A, into the input and
+/// out at the ground pin). It is the full `quiescent_current` once the input
+/// reaches the dropout voltage (0.1 V at least), ramps linearly to 0 below
+/// that, and is 0 with no input. Mirrored for a negative `voltage`.
+pub fn regulator_quiescent(params: &RegulatorParams, voltage: f64, vin: f64) -> (f64, f64) {
+    if voltage < 0.0 {
+        let (i0, g) = regulator_quiescent(params, -voltage, -vin);
+        return (-i0, g);
+    }
+    let iq = params.quiescent_current;
+    let knee = params.dropout.max(0.1);
+    if vin <= 0.0 {
+        (0.0, 0.0)
+    } else if vin >= knee {
+        (iq, 0.0)
+    } else {
+        (0.0, iq / knee)
+    }
+}
+
+/// Power a regulator set to `voltage` dissipates (W): `(Vin − Vout)·Iout +
+/// Vin·Iq`, with voltages from the ground pin and `Iq` the quiescent current
+/// drawn at `vin` ([`regulator_quiescent`]). Both terms are positive for a
+/// negative regulator too, where `Vin`, `Vout`, `Iout` and `Iq` are all
+/// negative.
+pub fn regulator_dissipation(
+    params: &RegulatorParams,
+    voltage: f64,
+    vin: f64,
+    vout: f64,
+    iout: f64,
+) -> f64 {
+    let (i0, g) = regulator_quiescent(params, voltage, vin);
+    (vin - vout) * iout + vin * (i0 + g * vin)
 }
 
 #[cfg(test)]
@@ -214,7 +255,7 @@ mod tests {
         let piece = regulator_piece(&p, -5.0, -12.0, -0.5);
         assert_eq!(piece.region, RegulatorRegion::Regulating);
         assert!((piece.vout(-12.0, -0.5) + 5.0).abs() < 0.05);
-        let pd = regulator_dissipation(&p, -12.0, -5.0, -0.5);
+        let pd = regulator_dissipation(&p, -5.0, -12.0, -5.0, -0.5);
         assert!((pd - (3.5 + 12.0 * 4.3e-3)).abs() < 1e-12, "{pd}");
     }
 

@@ -222,3 +222,85 @@ fn ac_bias_point_takes_a_nodeset() {
         "{plain} vs {seeded}"
     );
 }
+
+/// Initial conditions the circuit can't take are rejected with the reason,
+/// not ignored: a ground node off 0 V, a node it doesn't have, a current
+/// on a relay without coil inductance. Ground held at 0 V is fine.
+#[test]
+fn impossible_initial_conditions_are_rejected() {
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            CircuitElement::VoltageSource {
+                id: "V1".into(),
+                nodes: ["in".into(), "0".into()],
+                voltage: 5.0,
+                waveform: None,
+            },
+            resistor("R1", "in", "a", 1e3),
+            CircuitElement::Capacitor {
+                id: "C1".into(),
+                nodes: ["a".into(), "0".into()],
+                capacitance: 1e-6,
+            },
+            CircuitElement::Relay {
+                id: "K1".into(),
+                nodes: ["in".into(), "0".into(), "in".into(), "x".into()],
+                coil_resistance: 500.0,
+                pickup_voltage: 3.0,
+                inductance: 0.0,
+            },
+            resistor("RX", "x", "0", 1e3),
+        ],
+        ..Default::default()
+    };
+    let base = TransientConfig::new(1e-3, 1e-5);
+    let rejected = |config: TransientConfig| match solve_transient(&circuit, &config) {
+        Err(sindr::SimError::InvalidComponent(msg)) => msg,
+        other => panic!("expected InvalidComponent, got {other:?}"),
+    };
+    let ics = |pairs: &[(&str, f64)]| {
+        pairs
+            .iter()
+            .map(|&(n, v)| (n.to_string(), v))
+            .collect::<HashMap<_, _>>()
+    };
+    assert_eq!(
+        rejected(base.clone().with_initial_voltages(ics(&[("0", 1.0)]))),
+        "transient: ground node '0' can't start at 1 V"
+    );
+    assert_eq!(
+        rejected(base.clone().with_initial_voltages(ics(&[("b", 1.0)]))),
+        "transient: initial voltage 1 V for node 'b', which the circuit doesn't have"
+    );
+    let relay = rejected(base.clone().with_initial_current("K1", 1e-3));
+    assert!(
+        relay.contains("'K1'") && relay.contains("is a relay with no coil inductance"),
+        "{relay}"
+    );
+
+    // Ground at 0 V says nothing new, so it's accepted, and held at the
+    // operating point it's left out of the `.ic` clamps.
+    for start in [
+        sindr::TransientStart::InitialConditions,
+        sindr::TransientStart::OperatingPoint,
+    ] {
+        let config = base
+            .clone()
+            .with_start(start)
+            .with_initial_voltages(ics(&[("0", 0.0), ("a", 2.0)]));
+        let tran = solve_transient(&circuit, &config)
+            .unwrap()
+            .transient
+            .unwrap();
+        // From 2 V toward 5 V through τ = 1 ms: 5 − 3·e^(−t/τ).
+        let first = &tran.timesteps[0];
+        let want = 5.0 - 3.0 * (-first.time / 1e-3).exp();
+        let got = first.node_voltages["a"];
+        assert!(
+            (got - want).abs() < 1e-6,
+            "{start:?}: V(a) = {got} at t = {}, want {want}",
+            first.time
+        );
+    }
+}

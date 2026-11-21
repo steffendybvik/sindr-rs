@@ -368,6 +368,63 @@ fn transformer_inductance_that_is_zero() {
 
 // -------------------------------------------------------------- bad decks
 
+/// A Zener needs a positive breakdown voltage: zero, negative or NaN is
+/// refused by name before it is lowered to a diode, in every analysis.
+#[test]
+fn zener_without_a_breakdown_voltage_is_rejected() {
+    for vz in [0.0, -5.1, f64::NAN] {
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                v("V1", "in", "0", 12.0),
+                r("R1", "in", "k", 1e3),
+                CircuitElement::ZenerDiode {
+                    id: "DZ1".into(),
+                    nodes: ["0".into(), "k".into()],
+                    vz,
+                    temperature: 300.15,
+                },
+            ],
+        );
+        every_analysis_fails(&circuit, |analysis, err| match err {
+            SimError::InvalidComponent(msg) => assert_eq!(
+                msg,
+                format!("`DZ1`: vz {vz} V must be a positive, finite number"),
+                "{analysis}"
+            ),
+            other => panic!("{analysis}: expected InvalidComponent, got {other:?}"),
+        });
+    }
+}
+
+/// A modelled op-amp's rails must leave room between them.
+#[test]
+fn op_amp_rails_must_not_cross() {
+    for (v_pos, v_neg) in [(5.0, 5.0), (-5.0, 5.0)] {
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                v("V1", "in", "0", 1.0),
+                CircuitElement::OpAmp {
+                    id: "U1".into(),
+                    nodes: ["in".into(), "out".into(), "out".into()],
+                    v_pos,
+                    v_neg,
+                    model: Some(sindr::OpAmpModel::default()),
+                },
+                r("RL", "out", "0", 1e3),
+            ],
+        );
+        match validate_circuit(&circuit) {
+            Err(SimError::InvalidComponent(msg)) => assert_eq!(
+                msg,
+                format!("`U1`: v_pos {v_pos} V must be above v_neg {v_neg} V")
+            ),
+            other => panic!("expected InvalidComponent, got {other:?}"),
+        }
+    }
+}
+
 #[cfg(feature = "spice")]
 mod decks {
     use sindr::spice::{parse_str, SpiceParseError};

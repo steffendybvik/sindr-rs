@@ -201,10 +201,12 @@ fn stamp_circuit_transient(
 
     for component in &circuit.components {
         match component {
-            // Split into their parts by `solver_circuit` first.
+            // Split into their parts, or lowered to a diode, by
+            // `solver_circuit` first.
             CircuitElement::SwitchSpdt { .. }
             | CircuitElement::Crystal { .. }
-            | CircuitElement::FerriteBead { .. } => {}
+            | CircuitElement::FerriteBead { .. }
+            | CircuitElement::ZenerDiode { .. } => {}
             CircuitElement::Resistor {
                 id,
                 nodes,
@@ -458,20 +460,6 @@ fn stamp_circuit_transient(
                 let contact_nodes: [String; 2] = [nodes[2].clone(), nodes[3].clone()];
                 stamp_resistor(system, node_map, &contact_nodes, contact_r);
             }
-            CircuitElement::ZenerDiode {
-                nodes,
-                vz,
-                temperature,
-                ..
-            } => {
-                stamp_diode_companion(
-                    system,
-                    node_map,
-                    nodes,
-                    v_prev,
-                    &device_params::zener_diode(*vz, *temperature),
-                );
-            }
             CircuitElement::SchottkyDiode {
                 nodes, temperature, ..
             } => {
@@ -631,10 +619,12 @@ fn extract_timestep_results(
 
     for component in &circuit.components {
         match component {
-            // Split into their parts by `solver_circuit` first.
+            // Split into their parts, or lowered to a diode, by
+            // `solver_circuit` first.
             CircuitElement::SwitchSpdt { .. }
             | CircuitElement::Crystal { .. }
-            | CircuitElement::FerriteBead { .. } => {}
+            | CircuitElement::FerriteBead { .. }
+            | CircuitElement::ZenerDiode { .. } => {}
             // Needs its state's history; `battery::finish_step` reports it.
             CircuitElement::Battery { .. } => {}
             CircuitElement::Resistor {
@@ -983,27 +973,6 @@ fn extract_timestep_results(
                 // contact result as separate push for accounting
                 let _ = contact_i;
             }
-            CircuitElement::ZenerDiode {
-                id,
-                nodes,
-                vz,
-                temperature,
-                ..
-            } => {
-                let va = node_voltage(&nodes[0], node_map, solution);
-                let vk = node_voltage(&nodes[1], node_map, solution);
-                let v_across = va - vk;
-                let i_through = sindr_devices::diode::diode_current(
-                    v_across,
-                    &device_params::zener_diode(*vz, *temperature),
-                );
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power: v_across * i_through,
-                });
-            }
             CircuitElement::OpAmp { id, nodes, .. }
             | CircuitElement::Comparator { id, nodes, .. } => {
                 let v_out = node_voltage(&nodes[2], node_map, solution);
@@ -1175,11 +1144,15 @@ fn extract_timestep_results(
                 });
             }
             CircuitElement::VoltageRegulator {
-                id, nodes, model, ..
+                id,
+                nodes,
+                voltage,
+                model,
             } => {
                 component_results.push(crate::results::regulator_result(
                     id,
                     nodes,
+                    *voltage,
                     model,
                     node_map,
                     solution,
@@ -2658,6 +2631,7 @@ mod tests {
     use super::*;
     use crate::circuit::Circuit;
     use crate::solve_circuit;
+    use crate::waveform::Waveform;
     use approx::assert_relative_eq;
 
     /// Test 4: Auto-duration calculation for known RC circuit.
@@ -3450,5 +3424,159 @@ mod tests {
             v_coll_with_caps.is_finite(),
             "With-caps collector voltage should be finite"
         );
+    }
+
+    fn circuit_of(components: Vec<CircuitElement>) -> Circuit {
+        Circuit {
+            ground_node: "0".into(),
+            components,
+            ..Default::default()
+        }
+    }
+
+    fn capacitor(id: &str, a: &str, farads: f64) -> CircuitElement {
+        CircuitElement::Capacitor {
+            id: id.into(),
+            nodes: [a.into(), "0".into()],
+            capacitance: farads,
+        }
+    }
+
+    /// A switch's resistance pairs with every capacitor: 0.01 Ω closed,
+    /// 1 GΩ open, so an open switch across 1 nF is a 1 s time constant.
+    #[test]
+    fn calculate_duration_counts_a_switch_as_its_resistance() {
+        for (closed, r) in [(true, SWITCH_R_CLOSED), (false, SWITCH_R_OPEN)] {
+            let circuit = circuit_of(vec![
+                CircuitElement::Switch {
+                    id: "S1".into(),
+                    nodes: ["a".into(), "0".into()],
+                    closed,
+                },
+                capacitor("C1", "a", 1e-9),
+            ]);
+            let tau = r * 1e-9;
+            let (duration, dt) = calculate_duration(&circuit);
+            assert_relative_eq!(duration, 5.0 * tau, max_relative = 1e-12);
+            assert_relative_eq!(dt, (tau / 50.0).max(1e-6), max_relative = 1e-12);
+        }
+    }
+
+    /// L/R skips resistances under 0.02 Ω, which would otherwise make a
+    /// closed switch in series with an inductor look like a 100 s
+    /// time constant.
+    #[test]
+    fn calculate_duration_skips_switch_like_resistances_for_l_over_r() {
+        let circuit = circuit_of(vec![
+            CircuitElement::Switch {
+                id: "S1".into(),
+                nodes: ["a".into(), "b".into()],
+                closed: true,
+            },
+            CircuitElement::Inductor {
+                id: "L1".into(),
+                nodes: ["b".into(), "0".into()],
+                inductance: 1.0,
+                saturation: None,
+            },
+            CircuitElement::Resistor {
+                id: "R1".into(),
+                nodes: ["a".into(), "0".into()],
+                resistance: 100.0,
+            },
+        ]);
+        // Only L/R = 1 H / 100 Ω = 10 ms counts.
+        let (duration, dt) = calculate_duration(&circuit);
+        assert_relative_eq!(duration, 50e-3, max_relative = 1e-12);
+        assert_relative_eq!(dt, 0.2e-3, max_relative = 1e-12);
+    }
+
+    /// A battery's series resistance and its RC pair both pair with the
+    /// pair's capacitance: τ = max(r_series, r)·c.
+    #[test]
+    fn calculate_duration_includes_a_battery_rc_pair() {
+        let battery = |rc| CircuitElement::Battery {
+            id: "B1".into(),
+            nodes: ["a".into(), "0".into()],
+            params: sindr_devices::battery::BatteryParams {
+                rc,
+                ..sindr_devices::battery::BatteryParams::constant(3.7, 1.0, 0.1)
+            },
+            state_of_charge: 1.0,
+        };
+        let with_rc = circuit_of(vec![battery(Some(sindr_devices::battery::BatteryRc {
+            r: 0.05,
+            c: 1000.0,
+        }))]);
+        let (duration, _) = calculate_duration(&with_rc);
+        assert_relative_eq!(duration, 5.0 * 0.1 * 1000.0, max_relative = 1e-12);
+
+        // No pair: nothing to charge, so the 1 ms fallback.
+        let (duration, dt) = calculate_duration(&circuit_of(vec![battery(None)]));
+        assert_relative_eq!(duration, 5e-3, max_relative = 1e-12);
+        assert_relative_eq!(dt, 2e-5, max_relative = 1e-12);
+    }
+
+    /// With several periodic sources the longest period sets the span;
+    /// a waveform without a period (PWL, or a 0 Hz sine) adds nothing.
+    #[test]
+    fn calculate_duration_takes_the_longest_waveform_period() {
+        let source = |id: &str, node: &str, waveform| CircuitElement::VoltageSource {
+            id: id.into(),
+            nodes: [node.into(), "0".into()],
+            voltage: 0.0,
+            waveform: Some(waveform),
+        };
+        let load = |id: &str, node: &str| CircuitElement::Resistor {
+            id: id.into(),
+            nodes: [node.into(), "0".into()],
+            resistance: 1e3,
+        };
+        let circuit = circuit_of(vec![
+            source(
+                "V1",
+                "a",
+                Waveform::Square {
+                    amplitude: 1.0,
+                    frequency: 1e3,
+                    offset: 0.0,
+                    duty: 0.5,
+                },
+            ),
+            load("R1", "a"),
+            source(
+                "V2",
+                "b",
+                Waveform::Triangle {
+                    amplitude: 1.0,
+                    frequency: 100.0,
+                    offset: 0.0,
+                },
+            ),
+            load("R2", "b"),
+            source(
+                "V3",
+                "c",
+                Waveform::Pwl {
+                    points: vec![(0.0, 0.0), (1.0, 1.0)],
+                },
+            ),
+            load("R3", "c"),
+            source(
+                "V4",
+                "d",
+                Waveform::Sine {
+                    amplitude: 1.0,
+                    frequency: 0.0,
+                    offset: 0.0,
+                    phase: 0.0,
+                },
+            ),
+            load("R4", "d"),
+        ]);
+        // T = 10 ms from the triangle: 3 periods, 100 points per period.
+        let (duration, dt) = calculate_duration(&circuit);
+        assert_relative_eq!(duration, 30e-3, max_relative = 1e-12);
+        assert_relative_eq!(dt, 0.1e-3, max_relative = 1e-12);
     }
 }

@@ -263,6 +263,63 @@ fn bad_parameters_name_the_part() {
     }
 }
 
+fn crystal_with(c0: f64) -> CircuitElement {
+    CircuitElement::Crystal {
+        id: "y1".into(),
+        nodes: ["in".into(), "out".into()],
+        params: CrystalParams {
+            frequency: 8e6,
+            esr: 30.0,
+            c0,
+            cm: 15e-15,
+        },
+    }
+}
+
+#[test]
+fn crystal_without_c0_is_its_motional_arm_alone() {
+    // With no shunt capacitance the crystal is Rm–Lm–Cm in series, so at
+    // series resonance it is a pure 30 Ω.
+    assert_eq!(lower(&crystal_with(0.0)).unwrap().unwrap().len(), 3);
+    let z = ac_impedance(crystal_with(0.0), 8e6);
+    assert!((z.re - 30.0).abs() < 1e-6 && z.im.abs() < 1e-6, "{z}");
+}
+
+#[test]
+fn negative_or_nan_c0_is_refused() {
+    for c0 in [-1e-12, f64::NAN] {
+        match lower(&crystal_with(c0)) {
+            Err(SimError::InvalidComponent(msg)) => {
+                assert!(msg.contains("y1") && msg.contains("c0"), "{msg}")
+            }
+            other => panic!("c0 = {c0}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_circuit_that_cannot_flatten_is_left_as_it_is() {
+    // `fold` and `strip_nodes` run after a solve, which has flattened the
+    // circuit already; given one that doesn't flatten they change nothing.
+    let mut broken = spdt(SpdtPosition::A);
+    broken
+        .instances
+        .push(crate::design::Instance::new("X1", "missing", ["in"]));
+    assert!(broken.flatten().is_err());
+
+    let mut res = solve_circuit(&spdt(SpdtPosition::A)).unwrap();
+    res.node_voltages.insert("s1#x".into(), 1.0);
+    let before = res.component_results.len();
+    fold(&broken, &mut res);
+    assert_eq!(res.node_voltages.get("s1#x"), Some(&1.0));
+    assert_eq!(res.component_results.len(), before);
+
+    strip_nodes(&broken, &mut res.node_voltages);
+    assert!(res.node_voltages.contains_key("s1#x"));
+    strip_nodes(&spdt(SpdtPosition::A), &mut res.node_voltages);
+    assert!(!res.node_voltages.contains_key("s1#x"));
+}
+
 #[test]
 fn a_part_id_already_taken_is_refused() {
     let mut circuit = spdt(SpdtPosition::A);
