@@ -343,6 +343,7 @@ fn transformer_inductance_that_is_zero() {
                 l1: 0.0,
                 l2: 1.0,
                 k: 0.999,
+                saturation: None,
             },
             r("R2", "s", "0", 100.0),
         ],

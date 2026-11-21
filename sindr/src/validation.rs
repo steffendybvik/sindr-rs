@@ -415,10 +415,36 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             positive("resistance", *resistance, " Ω")?;
             finite("position", *position, "")
         }
-        CircuitElement::Transformer { l1, l2, k, .. } => {
+        CircuitElement::Transformer {
+            l1,
+            l2,
+            k,
+            saturation,
+            ..
+        } => {
             positive("l1", *l1, " H")?;
             positive("l2", *l2, " H")?;
-            finite("k", *k, "")
+            finite("k", *k, "")?;
+            if let Some(sat) = saturation {
+                if *k <= 0.0 {
+                    return Err(SimError::InvalidComponent(format!(
+                        "`{}`: a saturating core needs coupling, but k is {k}",
+                        comp.id()
+                    )));
+                }
+                positive("saturation.i_sat", sat.i_sat, " A")?;
+                positive("saturation.l_sat", sat.l_sat, " H")?;
+                let magnetising = *k * *l1;
+                if sat.l_sat > magnetising {
+                    return Err(SimError::InvalidComponent(format!(
+                        "`{}`: saturation.l_sat {} H must not exceed the magnetising \
+                         inductance k·l1 = {magnetising} H",
+                        comp.id(),
+                        sat.l_sat,
+                    )));
+                }
+            }
+            Ok(())
         }
         CircuitElement::Fuse { rating, .. } => positive("rating", *rating, " A"),
         CircuitElement::Comparator { v_pos, v_neg, .. } => {

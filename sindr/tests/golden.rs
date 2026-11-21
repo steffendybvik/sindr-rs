@@ -1273,6 +1273,7 @@ fn ac_exported_transformer() {
                 l1: 1e-3,
                 l2: 4e-3,
                 k: 0.99,
+                saturation: None,
             },
             resistor("rl", "s", "0", 1e3),
         ],

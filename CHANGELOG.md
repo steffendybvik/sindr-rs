@@ -61,9 +61,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spec on every run, and `ratings_over` checks every part's ratings on
   every run of a Monte Carlo or corner `Sampling`. Each reports its worst
   run with the tolerance values behind it.
+- `CircuitElement::Transformer` takes an optional `saturation`, on a
+  magnetising branch: leakage `(1 − k)·L` on each winding and `k·L1` on
+  the primary carrying the shared core flux. A transformer driven past
+  its volt-second rating, or with a DC bias as in a forward or flyback
+  converter, now draws a magnetising current that climbs once the core
+  saturates. AC and noise use the incremental inductance at the DC
+  bias. Without it, the transformer is the same linear coupled pair.
 
 ### Changed
 
+- **Breaking:** `CircuitElement::Transformer` has a `saturation` field,
+  so a literal needs `saturation: None`. With serde a missing field is
+  `None`.
 - **Breaking:** `DiodeModel` and `BjtModel` gained fields, so a struct
   literal that names every field needs `eg` and `xti` too. One that ends
   in `..Default::default()` is unaffected.

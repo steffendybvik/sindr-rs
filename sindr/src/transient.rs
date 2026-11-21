@@ -547,15 +547,28 @@ fn stamp_circuit_transient(
                 stamp_igbt_companion(system, node_map, nodes, v_prev, params);
             }
             CircuitElement::Transformer {
-                nodes, l1, l2, k, ..
+                nodes,
+                l1,
+                l2,
+                k,
+                saturation,
+                ..
             } => {
-                let (z, rhs) = integ.coupled(
-                    transformer_inductances(*l1, *l2, *k),
-                    [&inds[ind_index], &inds[ind_index + 1]],
-                );
-                ind_index += 2;
                 let k1 = num_nodes + vsource_index;
                 let k2 = num_nodes + vsource_index + 1;
+                let h = [&inds[ind_index], &inds[ind_index + 1]];
+                let (z, rhs) = match saturation {
+                    None => integ.coupled(transformer_inductances(*l1, *l2, *k), h),
+                    // Its histories hold fluxes. Linearised at the Newton
+                    // iterate's winding currents.
+                    Some(sat) => {
+                        let at = |k: usize| v_prev.get(k).copied().unwrap_or(0.0);
+                        let i = [at(k1), at(k2)];
+                        let (lambda, l) = transformer_flux(*l1, *l2, *k, sat, i);
+                        integ.coupled_nonlinear(l, lambda, i, h)
+                    }
+                };
+                ind_index += 2;
                 vsource_index += 2;
                 stamp_transformer_companion(system, node_map, nodes, z, rhs, k1, k2);
             }
@@ -1113,7 +1126,12 @@ fn extract_timestep_results(
                     power: (comp.ids * vce).abs(),
                 });
             }
-            CircuitElement::Transformer { id, nodes, .. } => {
+            CircuitElement::Transformer {
+                id,
+                nodes,
+                saturation,
+                ..
+            } => {
                 // Primary winding voltages and currents
                 let v_p1 = node_voltage(&nodes[0], node_map, solution);
                 let v_q1 = node_voltage(&nodes[1], node_map, solution);
@@ -1127,8 +1145,16 @@ fn extract_timestep_results(
                 vsource_index += 2;
                 // Winding rate is the branch-convention voltage (see
                 // Integrator::coupled).
-                new_inds.push(inds_prev[ind_index].push(i1_now, v_primary));
-                new_inds.push(inds_prev[ind_index + 1].push(i2_now, v_secondary));
+                // A saturating core's histories hold fluxes.
+                let (x1, x2) = match saturation {
+                    None => (i1_now, i2_now),
+                    Some(_) => (
+                        integ.flux(v_primary, &inds_prev[ind_index]),
+                        integ.flux(v_secondary, &inds_prev[ind_index + 1]),
+                    ),
+                };
+                new_inds.push(inds_prev[ind_index].push(x1, v_primary));
+                new_inds.push(inds_prev[ind_index + 1].push(x2, v_secondary));
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_primary,
@@ -1801,9 +1827,28 @@ pub(crate) fn run_transient(
             CircuitElement::Relay { id, inductance, .. } if *inductance > 0.0 => {
                 inds.push(current(id));
             }
-            CircuitElement::Transformer { id, .. } => {
-                inds.push(current(id)); // primary
-                inds.push(current(&secondary_winding(id))); // secondary
+            CircuitElement::Transformer {
+                id,
+                l1,
+                l2,
+                k,
+                saturation,
+                ..
+            } => {
+                let (primary, secondary) = (current(id), current(&secondary_winding(id)));
+                match saturation {
+                    None => {
+                        inds.push(primary);
+                        inds.push(secondary);
+                    }
+                    // A saturating core's histories hold fluxes.
+                    Some(sat) => {
+                        let i = [primary.x1, secondary.x1];
+                        let (lambda, _) = transformer_flux(*l1, *l2, *k, sat, i);
+                        inds.push(History::at(lambda[0]));
+                        inds.push(History::at(lambda[1]));
+                    }
+                }
             }
             CircuitElement::Bjt {
                 id,
@@ -2633,6 +2678,37 @@ fn transformer_inductances(l1: f64, l2: f64, k: f64) -> [[f64; 2]; 2] {
     [[l1, m], [m, l2]]
 }
 
+/// Winding fluxes (Wb) and incremental inductance matrix `dλ/di` (H) of a
+/// transformer with a saturating core, at winding currents `i` (A).
+///
+/// Each winding has leakage `(1 − k)·L`; the magnetising inductance `k·L1`
+/// on the primary carries `im = i1 + n·i2`, n = √(L2/L1), and saturates as
+/// `sat`. Its flux links the primary once and the secondary n times:
+/// `λ1 = (1 − k)·L1·i1 + λm(im)`, `λ2 = (1 − k)·L2·i2 + n·λm(im)`. With a
+/// linear λm = k·L1·im these are the coupled inductors of
+/// [`transformer_inductances`].
+pub(crate) fn transformer_flux(
+    l1: f64,
+    l2: f64,
+    k: f64,
+    sat: &inductor::InductorSaturation,
+    i: [f64; 2],
+) -> ([f64; 2], [[f64; 2]; 2]) {
+    let n = (l2 / l1).sqrt();
+    let lm = k * l1;
+    let im = i[0] + n * i[1];
+    let flux_m = inductor::flux(im, lm, sat);
+    let lm_inc = inductor::incremental_inductance(im, lm, sat);
+    let (ll1, ll2) = ((1.0 - k) * l1, (1.0 - k) * l2);
+    (
+        [ll1 * i[0] + flux_m, ll2 * i[1] + n * flux_m],
+        [
+            [ll1 + lm_inc, n * lm_inc],
+            [n * lm_inc, ll2 + n * n * lm_inc],
+        ],
+    )
+}
+
 /// Stamp a companion branch between `nodes`: conductance `g` plus the
 /// history current `i_hist`, so the current from `nodes[0]` to `nodes[1]`
 /// is `g·v + i_hist`.
@@ -3086,6 +3162,7 @@ mod tests {
                     l1: 1e-3, // 1 mH primary
                     l2: 4e-3, // 4 mH secondary (n = sqrt(4/1) = 2)
                     k: 0.999, // near-ideal coupling
+                    saturation: None,
                 },
                 // Secondary load: 1 kOhm
                 CircuitElement::Resistor {

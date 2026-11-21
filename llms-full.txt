@@ -1306,7 +1306,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
 - **No SiC / GaN device models.**
 - **Crystals and ferrite beads are linear networks.** A crystal is the Butterworth–Van Dyke model: no overtones, spurious modes, drive-level dependence or aging. A ferrite bead is R + L ∥ R (∥ C) with no DC-bias derating, so its impedance doesn't fall with current as a real bead's does.
-- **Magnetics: a saturating inductor, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), but there's no hysteresis, remanence, core loss or temperature dependence, and SPICE export refuses a saturating inductor. `Transformer` is linear coupled inductors: no shared saturating core.
+- **Magnetics: saturating cores, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), and so can a `Transformer`'s magnetising branch, which carries the shared core flux behind each winding's leakage. There's no hysteresis, remanence, core loss or temperature dependence, a transformer has two windings, and SPICE export refuses a saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
 - **No piezo / MEMS / electro-mechanical coupling.**
 - **No switched-capacitor primitives** (sample-and-hold, charge-redistribution).
@@ -2344,6 +2344,15 @@ pub enum CircuitElement {
     /// In transient: coupled-inductor companion with 2 branch current unknowns,
     /// each winding `V = L·dI/dt` plus the mutual term. The windings start at
     /// 0 A; an initial current on a transformer is rejected.
+    ///
+    /// With `saturation`, the core is modelled as a leakage inductance
+    /// `(1 − k)·L` on each winding and a magnetising inductance `k·L1` on the
+    /// primary carrying the shared core flux, driven by the magnetising
+    /// current `i1 + n·i2` (n = √(L2/L1), the turns ratio). That branch
+    /// saturates as a saturating [`Inductor`](Self::Inductor) does, so a
+    /// winding driven past its volt-second rating, or with a DC bias, draws
+    /// a magnetising current that climbs once the core saturates. Without
+    /// it the pair is linear and identical to the coupled inductors above.
     #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
     Transformer {
         /// Unique component identifier.
@@ -2357,6 +2366,14 @@ pub enum CircuitElement {
         /// Coupling coefficient (unitless) in `[0, 0.999]`. Default 0.999 (near-ideal).
         #[cfg_attr(feature = "serde", serde(default = "default_coupling"))]
         k: f64, // Coupling coefficient [0, 0.999]. Default 0.999 (near-ideal).
+        /// Core saturation, on the magnetising branch: `i_sat` is the
+        /// magnetising current referred to the primary, and `l_sat` at
+        /// most the magnetising inductance `k·l1`. `None` is a linear core.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        saturation: Option<sindr_devices::inductor::InductorSaturation>,
     },
 
     /// Fuse between two nodes.
@@ -4375,7 +4392,7 @@ periodic steady state, S-parameters, variable-order integration.
 | Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
 | Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
 | Comparator | Gain 1e5, output clamped to its rails; no GBW, slew rate or hysteresis |
-| Transformer | Linear coupled inductors |
+| Transformer | Coupled inductors; optional saturating core |
 | Battery | Open-circuit voltage by state of charge behind R0 and an optional R1‖C1; state of charge falls with charge drawn ([`battery::BatteryParams`]; Li-ion and CR2032 presets) |
 | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
 | Crystal | Butterworth–Van Dyke: `Rm`–`Lm`–`Cm` beside `C0` ([`CrystalParams`]) |

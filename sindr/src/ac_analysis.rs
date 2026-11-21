@@ -519,7 +519,9 @@ pub(crate) fn at_junction_temperatures<'a>(
 
 /// `circuit` with each saturating inductor replaced by a linear one at its
 /// incremental inductance `dλ/di` at the DC current `dc` carries through it
-/// (the DC equivalent shorts it with a 0 V source of the same id).
+/// (the DC equivalent shorts it with a 0 V source of the same id), and each
+/// saturating transformer by the linear pair whose inductance matrix is its
+/// incremental one at the DC winding currents (`id` and `id#2`).
 pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationResult) -> Circuit {
     let mut out = circuit.clone();
     for element in &mut out.components {
@@ -533,6 +535,23 @@ pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationRes
             if let Some(sat) = saturation.take() {
                 let i = dc.branch_currents.get(id.as_str()).copied().unwrap_or(0.0);
                 *inductance = sindr_devices::inductor::incremental_inductance(i, *inductance, &sat);
+            }
+        }
+        if let CircuitElement::Transformer {
+            id,
+            l1,
+            l2,
+            k,
+            saturation,
+            ..
+        } = element
+        {
+            if let Some(sat) = saturation.take() {
+                let current = |w: &str| dc.branch_currents.get(w).copied().unwrap_or(0.0);
+                let i = [current(id), current(&format!("{id}#2"))];
+                let (_, l) = crate::transient::transformer_flux(*l1, *l2, *k, &sat, i);
+                (*l1, *l2) = (l[0][0], l[1][1]);
+                *k = l[0][1] / (l[0][0] * l[1][1]).sqrt();
             }
         }
     }

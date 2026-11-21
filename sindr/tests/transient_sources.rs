@@ -189,6 +189,7 @@ fn initial_conditions_that_name_nothing_are_errors() {
         l1: 1e-3,
         l2: 1e-3,
         k: 0.99,
+        saturation: None,
     });
     circuit.components.push(resistor("RS", "s", "0", 1e3));
     let base = || TransientConfig::new(1e-3, 10e-6);

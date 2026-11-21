@@ -71,6 +71,7 @@ fn controlled_circuit() -> Circuit {
                 l1: 1e-3,
                 l2: 4e-3,
                 k: 0.99,
+                saturation: None,
             },
             resistor("rs", "s", "0", 1e3),
         ],

@@ -891,6 +891,15 @@ pub enum CircuitElement {
     /// In transient: coupled-inductor companion with 2 branch current unknowns,
     /// each winding `V = L·dI/dt` plus the mutual term. The windings start at
     /// 0 A; an initial current on a transformer is rejected.
+    ///
+    /// With `saturation`, the core is modelled as a leakage inductance
+    /// `(1 − k)·L` on each winding and a magnetising inductance `k·L1` on the
+    /// primary carrying the shared core flux, driven by the magnetising
+    /// current `i1 + n·i2` (n = √(L2/L1), the turns ratio). That branch
+    /// saturates as a saturating [`Inductor`](Self::Inductor) does, so a
+    /// winding driven past its volt-second rating, or with a DC bias, draws
+    /// a magnetising current that climbs once the core saturates. Without
+    /// it the pair is linear and identical to the coupled inductors above.
     #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
     Transformer {
         /// Unique component identifier.
@@ -904,6 +913,14 @@ pub enum CircuitElement {
         /// Coupling coefficient (unitless) in `[0, 0.999]`. Default 0.999 (near-ideal).
         #[cfg_attr(feature = "serde", serde(default = "default_coupling"))]
         k: f64, // Coupling coefficient [0, 0.999]. Default 0.999 (near-ideal).
+        /// Core saturation, on the magnetising branch: `i_sat` is the
+        /// magnetising current referred to the primary, and `l_sat` at
+        /// most the magnetising inductance `k·l1`. `None` is a linear core.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        saturation: Option<sindr_devices::inductor::InductorSaturation>,
     },
 
     /// Fuse between two nodes.
@@ -1464,6 +1481,10 @@ impl Circuit {
                 CircuitElement::OpAmp { model: Some(_), .. }
                     | CircuitElement::Comparator { .. }
                     | CircuitElement::Inductor {
+                        saturation: Some(_),
+                        ..
+                    }
+                    | CircuitElement::Transformer {
                         saturation: Some(_),
                         ..
                     }
@@ -2135,6 +2156,7 @@ mod tests {
                 l1: 1.0,
                 l2: 1.0,
                 k: 0.99,
+                saturation: None,
             },
             CircuitElement::Fuse {
                 id: "FU".into(),
@@ -2226,6 +2248,7 @@ mod tests {
                     l1: 1.0,
                     l2: 1.0,
                     k: 0.99,
+                    saturation: None,
                 },
                 v("V2"),
             ],
@@ -2266,6 +2289,7 @@ mod tests {
                 l1: 1e-3,
                 l2: 4e-3,
                 k: 0.999,
+                saturation: None,
             },
             CircuitElement::Fuse {
                 id: "F1".into(),

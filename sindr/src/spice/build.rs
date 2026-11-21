@@ -240,6 +240,7 @@ fn couple(
         l1,
         l2,
         k,
+        saturation: None,
     };
     let (first, last) = (i1.min(i2), i1.max(i2));
     elements.remove(last);
