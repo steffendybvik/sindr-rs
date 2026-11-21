@@ -81,11 +81,12 @@
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 //! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
+//! | Monte Carlo and corners | [`variation::monte_carlo`], [`variation::corners`] | Any analysis repeated with parts drawn within their tolerances (uniform or Gaussian, seeded) or at every low/high corner; each [`measure::Measurement`] per run, with mean, standard deviation, min, max and yield |
 //! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 //! | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 //!
-//! Not available: distortion, pole-zero, AC sensitivity, Monte Carlo,
+//! Not available: distortion, pole-zero, AC sensitivity,
 //! periodic steady state, S-parameters, variable-order integration.
 //!
 //! ## Device models
@@ -166,6 +167,8 @@
 //!   (voltage divider, BJT amp, RC transient, etc.) with ids and
 //!   descriptions. The circuits themselves are always in [`examples`].
 //! - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
+//! - `parallel` — [`variation`] spreads its runs over one thread per core.
+//!   Off by default, and serial anyway where there are no threads (wasm).
 //!
 //! ```toml
 //! [dependencies]
@@ -318,6 +321,7 @@ mod thermal;
 pub mod transfer_function;
 mod transient;
 pub mod validation;
+pub mod variation;
 pub mod waveform;
 
 pub use ac_analysis::{solve_ac, AcConfig, AcPoint, AcResult, FrequencySpacing};
