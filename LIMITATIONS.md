@@ -56,7 +56,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.disto` / harmonic distortion | ❌ | |
 | `.pz` (pole-zero) | ❌ | |
 | `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
-| Monte Carlo / worst-case / corner analysis | ❌ | no parameter-distribution sampling |
+| Monte Carlo / worst-case / corner analysis | ✅ | `variation::monte_carlo` and `variation::corners`, over resistance, capacitance, inductance and source values (uniform or Gaussian, independent, seeded). No correlated tolerances, no device-model parameters, no `.mc` / `.step` cards |
 | `.fft` on transient output | ❌ | user-side only |
 | `.meas` (measurements) | ⚠️ | `sindr::measure`: statistics, `FIND … AT`, `WHEN`, `TRIG`/`TARG`, plus rise/fall, settling and −3 dB in the API. No `FIND … WHEN`, `DERIV` or `PARAM=`; no currents on AC results |
 | Periodic steady-state (PSS / shooting / harmonic balance) | ❌ | relevant for switching converters, RF |
@@ -126,7 +126,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - Need a vendor BJT / MOSFET? Fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
 - Need digital control around an analog plant? Drive the analog circuit step-by-step from your own Rust loop, sampling node voltages between transient calls and updating sources / switches between them. This is not co-simulation, but it works for slow control loops.
 - Need a second pole or phase margin on an op-amp? Build it from VCVS stages and RC networks around an `OpAmp` with an `OpAmpModel`.
-- Need Monte Carlo? Loop in Rust over randomised `CircuitElement` parameter values; sindr is fast enough for thousands of solves on small circuits.
+- Need a tolerance on a device-model parameter, or correlated parts? Loop in Rust over your own variations of the `Circuit`; sindr is fast enough for thousands of solves on small circuits.
 
 ## Reporting gaps
 

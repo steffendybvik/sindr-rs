@@ -167,7 +167,7 @@ cargo run --example parse_netlist --features spice
 
 ### Scope & limitations
 
-sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, Monte-Carlo/pole-zero analyses, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
+sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, pole-zero analysis, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
 Where it's heading on the way to 1.0 is in [`ROADMAP.md`](./ROADMAP.md). To work on sindr itself, see [`CONTRIBUTING.md`](./CONTRIBUTING.md). AI coding agents (Claude Code, Codex, Cursor, etc.) should also read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
 
@@ -850,6 +850,27 @@ match solve_circuit(&circuit) {
 
 `Thermal` takes `rth_ja` (K/W), or `rth_jc` plus `rth_ca` for a part on a heatsink, an optional `cth` (J/K; without it a transient's junction follows its power with no lag), and `ambient` (K, default 300.15). With it, the element's own `temperature` field is ignored. `SimulationResult::junction_temperatures` and each `TimestepSnapshot`'s carry the result, and `Ratings::tj_max` is checked against them. When no balance exists (a junction past 1000 K, or the iteration never settles), the solve returns `SimError::ThermalRunaway`. AC, `.tf`, `.sens` and `.noise` solve the same heated bias point and linearise each device at its junction temperature. MOSFETs, JFETs, IGBTs and resistors report a junction temperature, but their models don't depend on it.
 
+### Monte Carlo and corners
+
+`sindr::variation` repeats any analysis with parts varied within their tolerances and takes your `Measurement`s on every run:
+
+```rust,ignore
+use sindr::variation::{corners, monte_carlo, Corners, MonteCarloConfig, Parameter, Tolerance};
+
+// Every resistor ±1 % (Gaussian, the band at 3σ), and C1 ±10 % uniform.
+let mut tolerances = Tolerance::on_every(&circuit, Parameter::Resistance, 0.01);
+tolerances.push(Tolerance::uniform("c1", Parameter::Capacitance, 0.10));
+
+let mc = monte_carlo(&circuit, &MonteCarloConfig::new(tolerances.clone(), 1000).with_seed(1),
+                     &[bandwidth], |c| solve_ac(c, &ac))?;
+let s = mc.stats("f3db").unwrap();          // mean, std_dev, min, max, measured, failed
+let yield_ = mc.yield_within("f3db", 1.4e3, 1.8e3);
+
+let worst = corners(&circuit, &tolerances, &Corners::All, &[bandwidth], |c| solve_ac(c, &ac))?;
+```
+
+A `Tolerance` varies one component's resistance, capacitance, inductance or source value by a relative band, uniformly or Gaussian (`sigmas` standard deviations across the band, 3 by default). `corners` runs every low/high combination (up to 16 tolerances) or a `Corners::List`. Each run draws from its own seeded stream, so a seed repeats exactly, and the `parallel` feature spreads runs across threads without changing them. A run whose analysis fails is kept with its error, and counted in `failed`.
+
 ### Ratings checks
 
 Check a solved circuit against each part's absolute maximum ratings, so nothing gets powered past its datasheet limits. Ratings live on the component's `Part` (`circuit.parts`, keyed by component id). `check_ratings` looks at the DC operating point, or at every step of a transient, where inrush, inductive kickback and start-up peaks show up.
@@ -1264,7 +1285,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.disto` / harmonic distortion | ❌ | |
 | `.pz` (pole-zero) | ❌ | |
 | `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
-| Monte Carlo / worst-case / corner analysis | ❌ | no parameter-distribution sampling |
+| Monte Carlo / worst-case / corner analysis | ✅ | `variation::monte_carlo` and `variation::corners`, over resistance, capacitance, inductance and source values (uniform or Gaussian, independent, seeded). No correlated tolerances, no device-model parameters, no `.mc` / `.step` cards |
 | `.fft` on transient output | ❌ | user-side only |
 | `.meas` (measurements) | ⚠️ | `sindr::measure`: statistics, `FIND … AT`, `WHEN`, `TRIG`/`TARG`, plus rise/fall, settling and −3 dB in the API. No `FIND … WHEN`, `DERIV` or `PARAM=`; no currents on AC results |
 | Periodic steady-state (PSS / shooting / harmonic balance) | ❌ | relevant for switching converters, RF |
@@ -1334,7 +1355,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - Need a vendor BJT / MOSFET? Fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
 - Need digital control around an analog plant? Drive the analog circuit step-by-step from your own Rust loop, sampling node voltages between transient calls and updating sources / switches between them. This is not co-simulation, but it works for slow control loops.
 - Need a second pole or phase margin on an op-amp? Build it from VCVS stages and RC networks around an `OpAmp` with an `OpAmpModel`.
-- Need Monte Carlo? Loop in Rust over randomised `CircuitElement` parameter values; sindr is fast enough for thousands of solves on small circuits.
+- Need a tolerance on a device-model parameter, or correlated parts? Loop in Rust over your own variations of the `Circuit`; sindr is fast enough for thousands of solves on small circuits.
 
 ### Reporting gaps
 
@@ -4302,11 +4323,12 @@ hierarchy is [`SimError::Design`].
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
+| Monte Carlo and corners | [`variation::monte_carlo`], [`variation::corners`] | Any analysis repeated with parts drawn within their tolerances (uniform or Gaussian, seeded) or at every low/high corner; each [`measure::Measurement`] per run, with mean, standard deviation, min, max and yield |
 | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 
-Not available: distortion, pole-zero, AC sensitivity, Monte Carlo,
+Not available: distortion, pole-zero, AC sensitivity,
 periodic steady state, S-parameters, variable-order integration.
 
 #### Device models
@@ -4396,6 +4418,8 @@ The full list of what sindr doesn't do is in
   (voltage divider, BJT amp, RC transient, etc.) with ids and
   descriptions. The circuits themselves are always in [`examples`].
 - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
+- `parallel` — [`variation`] spreads its runs over one thread per core.
+  Off by default, and serial anyway where there are no threads (wasm).
 
 ```toml
 [dependencies]
@@ -7533,6 +7557,244 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 /// Returns [`SimError::InvalidComponent`] for a repeated id, or naming the
 /// component, field and value for any other value out of range.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> { … }
+```
+
+## `sindr/src/variation.rs`
+
+Monte Carlo and corner analysis: how a circuit's measurements spread
+when its parts vary within their tolerances.
+
+A [`Tolerance`] says how one parameter of one component varies: by how
+much, and with which [`Distribution`]. [`monte_carlo`] draws every
+tolerance at random for each of its runs; [`corners`] sets each at its
+low or high end, every combination or a chosen list. Both wrap any
+analysis, as a closure from a [`Circuit`] to a result, and take each
+[`Measurement`] on every run. A run that fails (a convergence failure,
+say) is recorded, not fatal.
+
+The draws come from a seeded generator, and each run's from its own
+index, so a run repeats exactly from its seed whether runs go one after
+another or, with the `parallel` feature, across threads.
+
+```
+use sindr::measure::{Measure, Measurement, Signal, Stat};
+use sindr::variation::{monte_carlo, MonteCarloConfig, Parameter, Tolerance};
+use sindr::{solve_op, Circuit, CircuitElement};
+
+let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+    id: id.into(),
+    nodes: [a.into(), b.into()],
+    resistance: 10e3,
+};
+let divider = Circuit::new(
+    "0",
+    vec![
+        CircuitElement::VoltageSource {
+            id: "v1".into(),
+            nodes: ["in".into(), "0".into()],
+            voltage: 10.0,
+            waveform: None,
+        },
+        r("r1", "in", "out"),
+        r("r2", "out", "0"),
+    ],
+);
+// Every resistor ±1 %, 3σ Gaussian.
+let tolerances = Tolerance::on_every(&divider, Parameter::Resistance, 0.01);
+let config = MonteCarloConfig::new(tolerances, 200).with_seed(7);
+let vout = Measurement::new("vout", Measure::stat(Signal::v("out"), Stat::Avg));
+let result = monte_carlo(&divider, &config, &[vout], solve_op)?;
+let stats = result.stats("vout").unwrap();
+assert!((stats.mean - 5.0).abs() < 0.01);
+assert!(stats.min > 4.9 && stats.max < 5.1);
+```
+
+```rust
+/// Which parameter of a component a [`Tolerance`] varies.
+pub enum Parameter {
+    /// A resistor's resistance (Ω).
+    Resistance,
+    /// A capacitor's capacitance (F).
+    Capacitance,
+    /// An inductor's inductance (H).
+    Inductance,
+    /// A voltage source's DC voltage (V).
+    Voltage,
+    /// A current source's DC current (A).
+    Current,
+}
+
+/// How a [`Tolerance`]'s parameter is drawn in [`monte_carlo`].
+pub enum Distribution {
+    /// Evenly across `nominal·(1 ± relative)`.
+    Uniform,
+    /// Normal about the nominal, with the band `relative` at `sigmas`
+    /// standard deviations: a 1 % part at 3σ has σ = 0.33 %. Unclipped, so
+    /// a draw falls outside the band about 0.27 % of the time at 3σ.
+    Gaussian {
+        /// Standard deviations the band spans, above 0.
+        sigmas: f64,
+    },
+}
+
+/// How one parameter of one component varies.
+pub struct Tolerance {
+    /// The component's id, flattened (`x1.r3` inside an instance).
+    pub component: String,
+    /// Which of its parameters.
+    pub parameter: Parameter,
+    /// The band as a fraction of the nominal value, in `[0, 1)`: 0.05
+    /// for 5 %.
+    pub relative: f64,
+    /// How [`monte_carlo`] draws within it.
+    pub distribution: Distribution,
+}
+
+impl Tolerance {
+    /// `parameter` of `component` within `relative`, Gaussian at 3σ, as
+    /// a part's tolerance is usually specified.
+    pub fn new(component: impl Into<String>, parameter: Parameter, relative: f64) -> Self { … }
+
+    /// The same, drawn uniformly across the band.
+    pub fn uniform(component: impl Into<String>, parameter: Parameter, relative: f64) -> Self { … }
+
+    /// With `distribution` in place of the default.
+    pub fn with_distribution(mut self, distribution: Distribution) -> Self { … }
+
+    /// A tolerance of `relative` on `parameter` of every component of
+    /// `circuit` that has it, hierarchy included, each independent.
+    pub fn on_every(circuit: &Circuit, parameter: Parameter, relative: f64) -> Vec<Tolerance> { … }
+}
+
+/// Configuration of a [`monte_carlo`] analysis.
+pub struct MonteCarloConfig {
+    /// What varies.
+    pub tolerances: Vec<Tolerance>,
+    /// Number of runs, at least 1.
+    pub runs: usize,
+    /// Seed of the draws: the same seed gives the same runs.
+    pub seed: u64,
+}
+
+impl MonteCarloConfig {
+    /// `runs` runs over `tolerances`, with seed 0.
+    pub fn new(tolerances: Vec<Tolerance>, runs: usize) -> Self { … }
+
+    /// With `seed` in place of 0.
+    pub fn with_seed(mut self, seed: u64) -> Self { … }
+}
+
+/// Where a [`Tolerance`] sits in one corner of a [`corners`] analysis.
+pub enum Corner {
+    /// `nominal·(1 − relative)`.
+    Low,
+    /// The nominal value.
+    Nominal,
+    /// `nominal·(1 + relative)`.
+    High,
+}
+
+/// Which corners a [`corners`] analysis runs.
+pub enum Corners {
+    /// Every low/high combination: 2ⁿ runs for n tolerances, at most
+    /// [`MAX_CORNER_TOLERANCES`] of them.
+    All,
+    /// These corners, each a [`Corner`] per tolerance in order.
+    List(Vec<Vec<Corner>>),
+}
+
+/// Most tolerances [`Corners::All`] takes: 2¹⁶ = 65 536 runs.
+pub const MAX_CORNER_TOLERANCES: usize = 16;
+
+/// One run of a [`monte_carlo`] or [`corners`] analysis.
+pub struct VariationRun {
+    /// Each tolerance's parameter value in this run, in order.
+    pub values: Vec<f64>,
+    /// Each measurement, in order, or why it couldn't be taken: the
+    /// analysis failing gives every measurement its error.
+    pub measurements: Vec<Result<f64, String>>,
+}
+
+/// One measurement's spread over the runs it could be taken on.
+pub struct MeasurementStats {
+    /// The measurement's name.
+    pub name: String,
+    /// Mean over the measured runs.
+    pub mean: f64,
+    /// Sample standard deviation (n − 1); 0 for one run.
+    pub std_dev: f64,
+    /// Smallest value.
+    pub min: f64,
+    /// Largest value.
+    pub max: f64,
+    /// Runs it was taken on.
+    pub measured: usize,
+    /// Runs it couldn't be taken on.
+    pub failed: usize,
+}
+
+/// Result of a [`monte_carlo`] or [`corners`] analysis.
+pub struct VariationResult {
+    /// The tolerances, in the order each run's `values` follow.
+    pub tolerances: Vec<Tolerance>,
+    /// Every run, in order.
+    pub runs: Vec<VariationRun>,
+    /// One entry per measurement, in order. NaN statistics when no run
+    /// could take it.
+    pub stats: Vec<MeasurementStats>,
+}
+
+impl VariationResult {
+    /// The statistics of the measurement called `name`.
+    pub fn stats(&self, name: &str) -> Option<&MeasurementStats> { … }
+
+    /// The fraction of runs whose measurement `name` lies in
+    /// `[min, max]`; a run that couldn't take it fails. `None` for an
+    /// unknown name.
+    pub fn yield_within(&self, name: &str, min: f64, max: f64) -> Option<f64> { … }
+}
+
+/// Runs `analysis` `config.runs` times, each with every tolerance drawn
+/// afresh, and takes `measurements` on each result.
+///
+/// # Errors
+///
+/// [`SimError::InvalidComponent`] for a tolerance on a component that
+/// isn't there or doesn't have its parameter, a relative band outside
+/// `[0, 1)`, a Gaussian whose `sigmas` isn't above 0, or no runs. A run
+/// that fails isn't an error: see [`VariationRun::measurements`].
+pub fn monte_carlo<R, F>(
+    circuit: &Circuit,
+    config: &MonteCarloConfig,
+    measurements: &[Measurement],
+    analysis: F,
+) -> Result<VariationResult, SimError>
+where
+    R: Measurable,
+    F: Fn(&Circuit) -> Result<R, SimError> + Sync,
+ { … }
+
+/// Runs `analysis` with each tolerance at the low or high end of its band
+/// (or nominal), for every combination or the listed ones, and takes
+/// `measurements` on each result. A tolerance's distribution doesn't
+/// matter here.
+///
+/// # Errors
+///
+/// As [`monte_carlo`], and for more than [`MAX_CORNER_TOLERANCES`]
+/// tolerances with [`Corners::All`], or a listed corner whose length isn't
+/// the number of tolerances.
+pub fn corners<R, F>(
+    circuit: &Circuit,
+    tolerances: &[Tolerance],
+    which: &Corners,
+    measurements: &[Measurement],
+    analysis: F,
+) -> Result<VariationResult, SimError>
+where
+    R: Measurable,
+    F: Fn(&Circuit) -> Result<R, SimError> + Sync,
+ { … }
 ```
 
 ## `sindr/src/waveform.rs`

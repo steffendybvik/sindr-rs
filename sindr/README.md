@@ -658,6 +658,27 @@ match solve_circuit(&circuit) {
 
 `Thermal` takes `rth_ja` (K/W), or `rth_jc` plus `rth_ca` for a part on a heatsink, an optional `cth` (J/K; without it a transient's junction follows its power with no lag), and `ambient` (K, default 300.15). With it, the element's own `temperature` field is ignored. `SimulationResult::junction_temperatures` and each `TimestepSnapshot`'s carry the result, and `Ratings::tj_max` is checked against them. When no balance exists (a junction past 1000 K, or the iteration never settles), the solve returns `SimError::ThermalRunaway`. AC, `.tf`, `.sens` and `.noise` solve the same heated bias point and linearise each device at its junction temperature. MOSFETs, JFETs, IGBTs and resistors report a junction temperature, but their models don't depend on it.
 
+## Monte Carlo and corners
+
+`sindr::variation` repeats any analysis with parts varied within their tolerances and takes your `Measurement`s on every run:
+
+```rust,ignore
+use sindr::variation::{corners, monte_carlo, Corners, MonteCarloConfig, Parameter, Tolerance};
+
+// Every resistor ±1 % (Gaussian, the band at 3σ), and C1 ±10 % uniform.
+let mut tolerances = Tolerance::on_every(&circuit, Parameter::Resistance, 0.01);
+tolerances.push(Tolerance::uniform("c1", Parameter::Capacitance, 0.10));
+
+let mc = monte_carlo(&circuit, &MonteCarloConfig::new(tolerances.clone(), 1000).with_seed(1),
+                     &[bandwidth], |c| solve_ac(c, &ac))?;
+let s = mc.stats("f3db").unwrap();          // mean, std_dev, min, max, measured, failed
+let yield_ = mc.yield_within("f3db", 1.4e3, 1.8e3);
+
+let worst = corners(&circuit, &tolerances, &Corners::All, &[bandwidth], |c| solve_ac(c, &ac))?;
+```
+
+A `Tolerance` varies one component's resistance, capacitance, inductance or source value by a relative band, uniformly or Gaussian (`sigmas` standard deviations across the band, 3 by default). `corners` runs every low/high combination (up to 16 tolerances) or a `Corners::List`. Each run draws from its own seeded stream, so a seed repeats exactly, and the `parallel` feature spreads runs across threads without changing them. A run whose analysis fails is kept with its error, and counted in `failed`.
+
 ## Ratings checks
 
 Check a solved circuit against each part's absolute maximum ratings, so nothing gets powered past its datasheet limits. Ratings live on the component's `Part` (`circuit.parts`, keyed by component id). `check_ratings` looks at the DC operating point, or at every step of a transient, where inrush, inductive kickback and start-up peaks show up.
