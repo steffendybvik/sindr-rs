@@ -24,7 +24,7 @@ pub struct HierarchyPath {
 impl HierarchyPath {
     /// Separator used when flattening hierarchical node names.
     ///
-    /// `.` matches the convention used by ngspice / xyce.
+    /// `.` matches the convention SPICE simulators use, ngspice among them.
     pub fn flatten_separator() -> char {
         '.'
     }
