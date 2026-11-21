@@ -151,7 +151,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, linear E/G/F/H, K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 
@@ -222,7 +222,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, linear E/G/F/H, K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -499,7 +499,12 @@ CircuitElement::Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 
 
 // Current-controlled current source: I_out = alpha × I_ctrl
 CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 }
+
+// Behavioural source (SPICE's B): a voltage or current set by an expression
+CircuitElement::Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression }
 ```
+
+A behavioural source's `expr` is `Expression::parse("v(a)*v(b)")?` and the like: `v(n)`, `v(n,m)`, `i(source)` (the branch current of a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source), `time`, arithmetic, comparisons, `c ? a : b` and ngspice's functions (`exp`, `tanh`, `limit`, `min`, `u`, …). `BehaviouralOutput::Voltage` holds `V(n+) − V(n-)` at the expression; `Current` drives it from `n+` to `n-`. Newton gets the exact Jacobian by automatic differentiation; AC linearises at the bias point. In JSON the expression is its text: `{"type": "behavioural", "output": "voltage", "expr": "v(a)*v(b)", …}`.
 
 `control_source` is the `id` of the voltage source whose branch current is sensed, positive from its `+` terminal through it to `-`, as in SPICE.
 
@@ -1262,11 +1267,11 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage, behavioural (`B`) sources and the `POLY`/`VALUE`/`TABLE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
-- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, B, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
-- **No Verilog-A / behavioural device language.** Adding a new device means writing a Rust companion model.
+- **Behavioural sources are expressions, not a device language.** `CircuitElement::Behavioural` (SPICE's `B`) is one voltage or current set by an expression of node voltages, branch currents and time. There is no Verilog-A, no internal state or charge (`ddt`, `idt`), and no XSPICE code models; a new device with its own state means writing a Rust companion model. Steps and comparisons in an expression have zero slope, so a hard switch can stall Newton where a smooth one (`tanh`) converges.
 
 #### Analyses
 
@@ -1705,6 +1710,14 @@ pub struct MosfetParasiticCaps {
     /// Gate-Drain capacitance (Miller capacitance) (F). Typical: 10–100 pF.
     #[cfg_attr(feature = "serde", serde(default))]
     pub cgd: f64,
+}
+
+/// What a [`CircuitElement::Behavioural`] source's expression sets.
+pub enum BehaviouralOutput {
+    /// The voltage across the source, `n+` over `n-` (V): SPICE's `V=`.
+    Voltage,
+    /// The current through the source from `n+` to `n-` (A): SPICE's `I=`.
+    Current,
 }
 
 /// Which throw of a [`CircuitElement::SwitchSpdt`] the common terminal
@@ -2428,6 +2441,43 @@ pub enum CircuitElement {
         nodes: [String; 2],
         /// The equivalent circuit.
         params: FerriteBeadParams,
+    },
+
+    /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
+    /// voltage or current set by an [`Expression`] of node voltages,
+    /// branch currents and time.
+    ///
+    /// A voltage output holds `V(nodes[0]) − V(nodes[1])` at the
+    /// expression, and like a [`CircuitElement::VoltageSource`] has a
+    /// branch current others can read with `i(id)`. A current output
+    /// drives the expression's value through the source from `nodes[0]` to
+    /// `nodes[1]`, as a [`CircuitElement::CurrentSource`] does. Newton
+    /// stamps it with the expression's exact gradient, AC analysis
+    /// linearises it at the bias point, and `time` reads the transient's
+    /// time (0 elsewhere).
+    ///
+    /// ```
+    /// use sindr::{BehaviouralOutput, CircuitElement};
+    /// use sindr::expression::Expression;
+    ///
+    /// let multiplier = CircuitElement::Behavioural {
+    ///     id: "b1".into(),
+    ///     nodes: ["out".into(), "0".into()],
+    ///     output: BehaviouralOutput::Voltage,
+    ///     expr: Expression::parse("v(a)*v(b)")?,
+    /// };
+    /// # Ok::<(), sindr::expression::ExpressionError>(())
+    /// ```
+    #[cfg_attr(feature = "serde", serde(rename = "behavioural"))]
+    Behavioural {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[n+, n-]`.
+        nodes: [String; 2],
+        /// Whether the expression is a voltage or a current.
+        output: BehaviouralOutput,
+        /// The value, in volts or amperes.
+        expr: Expression,
     },
 }
 
@@ -3372,6 +3422,107 @@ pub fn npn_switch() -> Circuit { … }
 pub use meta::{get_examples, ExampleCircuit};
 ```
 
+## `sindr/src/expression.rs`
+
+Behavioural expressions: the right-hand side of SPICE's `B` sources,
+such as `v(a)*v(b)` or `1m*tanh(v(in,ref)/26m)`.
+
+An [`Expression`] is parsed from text once and evaluated at every
+Newton iteration, together with its exact gradient by forward-mode
+automatic differentiation, so a
+[`Behavioural`](crate::CircuitElement::Behavioural) source stamps the true
+Jacobian rather than a finite-difference guess.
+
+### Syntax
+
+| Form | Meaning |
+|---|---|
+| `v(n)`, `v(n,m)` | node voltage, or the voltage of `n` over `m` (V) |
+| `i(src)` | current through a voltage-defined element (A): an independent or behavioural voltage source, VCVS, CCVS, op-amp output or regulator |
+| `time` | simulation time (s); 0 outside a transient |
+| `pi` | π |
+| `2.5`, `1e-3`, `4.7k`, `10meg`, `26m` | numbers, with SPICE's suffixes (`t g meg k m u n p f mil`) |
+| `+ - * / ^` (or `**`) | arithmetic; `^` binds tightest and to the right, so `-2^2` is −4 |
+| `== != < <= > >=`, `&& \|\| !` | comparisons and logic, 1 for true and 0 for false |
+| `c ? a : b` | `a` where `c` is non-zero, otherwise `b` |
+
+Functions: `abs sqrt exp ln log log10 sin cos tan asin acos atan sinh
+cosh tanh` (one argument; `log` is natural, as in ngspice), `atan2 pow
+pwr min max` (two), `limit(x, lo, hi)`, and the step-like `u` (1 for
+`x > 0`), `uramp` (`max(x, 0)`), `sgn`, `floor`, `ceil`. Function and
+variable names ignore case; node and source names are kept as written.
+
+Steps, comparisons and the branches of `?:` have zero derivative, so
+Newton sees each smooth piece on its own: keep transitions smooth (with
+`tanh`, say) where convergence matters.
+
+```
+use sindr::expression::Expression;
+
+let e = Expression::parse("v(a) * v(b) + 2m")?;
+assert_eq!(e.to_string(), "v(a)*v(b)+0.002");
+assert_eq!(e.evaluate(&[3.0, 4.0]), 12.002);
+```
+
+```rust
+/// A parsed behavioural expression. See the [module docs](self) for the
+/// syntax.
+///
+/// It prints as canonical text, which parses back to an equal
+/// expression; with the `serde` feature it is serialised as that text.
+pub struct Expression {
+    root: Node,
+    variables: Vec<Variable>,
+}
+
+/// A quantity an [`Expression`] reads from the circuit.
+pub enum Variable {
+    /// `v(node)` or `v(node, reference)`: in volts.
+    Voltage {
+        /// The node.
+        node: String,
+        /// The node it is measured against; ground when `None`.
+        reference: Option<String>,
+    },
+    /// `i(source)`: the branch current of a voltage-defined element, in
+    /// amperes, flowing into its first node.
+    Current {
+        /// The element's id.
+        source: String,
+    },
+    /// `time`, in seconds.
+    Time,
+}
+
+/// Why text isn't an [`Expression`].
+pub struct ExpressionError {
+    /// What is wrong.
+    pub message: String,
+    /// Byte offset into `text` where it was noticed.
+    pub position: usize,
+    /// The text that was parsed.
+    pub text: String,
+}
+
+impl Expression {
+    /// Parses `text`. See the [module docs](self) for the syntax.
+    ///
+    /// # Errors
+    ///
+    /// [`ExpressionError`] for text that isn't an expression, an unknown
+    /// function or name, or a function given the wrong number of arguments.
+    pub fn parse(text: &str) -> Result<Expression, ExpressionError> { … }
+
+    /// The quantities the expression reads, in the order
+    /// [`evaluate`](Self::evaluate) takes their values.
+    pub fn variables(&self) -> &[Variable] { … }
+
+    /// The expression's value with each of [`variables`](Self::variables)
+    /// at the matching entry of `values`. A missing value reads as 0.
+    pub fn evaluate(&self, values: &[f64]) -> f64 { … }
+}
+```
+
 ## `sindr/src/import/bench.rs`
 
 The test bench: what a schematic leaves out, and the analysis to run.
@@ -4227,7 +4378,8 @@ keyed by the caller's component and net ids, and every
 #### SPICE input (feature `spice`)
 
 [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q,
-linear E/G/F/H, K (two coupled `L` lines) and X elements, with `[DC] v`,
+B (behavioural, also E/G `VALUE=` and E/G/F/H `POLY`), linear E/G/F/H, K (two coupled `L`
+lines) and X elements, with `[DC] v`,
 `AC mag [phase]` and a waveform on V and I lines in any order;
 `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
@@ -4235,10 +4387,18 @@ linear E/G/F/H, K (two coupled `L` lines) and X elements, with `[DC] v`,
 sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
 `NR`, `VAF`, `KF`, `AF`). Not read: MOSFET (M) and JFET (J) elements,
-`B` sources, the `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms of E/G/F/H, and
+the `TABLE`/`LAPLACE` forms of E/G/F/H, and
 couplings of more than two inductors.
 [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
-sources and `.subckt`s included.
+and behavioural sources and `.subckt`s included.
+
+#### Behavioural sources
+
+[`CircuitElement::Behavioural`] is a voltage or current set by an
+[`expression::Expression`] of node voltages, branch currents and time,
+such as `v(a)*v(b)` or `1m*tanh(v(in)/26m)`. Newton stamps its exact
+gradient (forward-mode automatic differentiation), AC linearises it at
+the bias point, and transient reads `time`.
 
 The full list of what sindr doesn't do is in
 [LIMITATIONS.md](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
@@ -4377,6 +4537,8 @@ pub mod error;
 pub mod import;
 
 pub mod measure;
+
+pub mod expression;
 
 pub mod mna;
 
@@ -6119,7 +6281,7 @@ pub enum SpiceParseError {
     #[error("unknown device prefix '{prefix}'")]
     #[diagnostic(
         code(sindr::spice::unknown_device),
-        help("supported device prefixes: R, L, C, V, I, D, Q, E, G, F, H, K, X")
+        help("supported device prefixes: R, L, C, V, I, D, Q, B, E, G, F, H, K, X")
     )]
     UnknownDevice {
         /// The unrecognised prefix character.
@@ -6153,7 +6315,7 @@ pub enum SpiceParseError {
     #[error("unsupported device '{device}'")]
     #[diagnostic(
         code(sindr::spice::unsupported_device),
-        help("the parser currently supports: R, L, C, V, I, D, Q, E, G, F, H, K, X. M (MOSFET), J (JFET), B (behavioural) and the POLY/VALUE/TABLE/LAPLACE forms of E/G/F/H are not implemented yet.")
+        help("the parser currently supports: R, L, C, V, I, D, Q, B, E, G, F, H, K, X, with the POLY form of E/G/F/H and the VALUE form of E/G. M (MOSFET), J (JFET) and the TABLE/LAPLACE forms are not implemented yet.")
     )]
     UnsupportedDevice {
         /// Element id that triggered the error.
@@ -6440,6 +6602,7 @@ pub enum ExportError {
 /// | `VoltageSource`, `CurrentSource` | `V`, `I`, with `DC` or a waveform |
 /// | `Diode`, `Bjt` | `D`, `Q`, with a `.model` card |
 /// | `Vcvs`, `Vccs`, `Ccvs`, `Cccs` | `E`, `G`, `H`, `F` |
+/// | `Behavioural` | `B n+ n- V={expr}` or `I={expr}`, its nodes and sources by their deck names |
 /// | `Transformer` | two `L` and a `K` |
 /// | `Switch`, `Pushbutton`, `Fuse` | `R` at the resistance sindr stamps |
 /// | `SwitchSpdt` | two `R`, common to each throw |
@@ -6545,7 +6708,8 @@ SPICE3 netlist parser for the sindr circuit simulator.
 Parses a practical subset of Berkeley SPICE3f5 netlists into a
 [`crate::Circuit`] plus structured analysis directives. The supported
 device set tracks what `sindr` can solve: R, L, C, V, I, D, Q (NPN/PNP),
-the linear controlled sources E, G, F and H, K (two coupled `L` lines,
+B (behavioural), the linear controlled sources E, G, F and H (and their
+`POLY` form, and the `VALUE` form of E and G), K (two coupled `L` lines,
 read as one [`Transformer`](crate::CircuitElement::Transformer)) and X
 (subcircuit instance). Subcircuits declared with `.subckt` /
 `.ends` become [`Block`](crate::Block)s and X lines
@@ -6679,9 +6843,30 @@ scope (the top level, or the same `.subckt` body). A `K` line replaces
 its two `L` lines, which must be in its scope, with one transformer named
 after the `K` line: primary from `lname1`, secondary from `lname2`, the
 first node of each its dot. Each `L` can be coupled once; sindr has no
-three-winding transformer. The nonlinear forms (`POLY`, `VALUE`,
-`TABLE`, `LAPLACE`) are unsupported devices: an error in strict mode, a
-warning (and the line dropped) in lenient mode.
+three-winding transformer. The nonlinear forms `TABLE` and `LAPLACE`
+are unsupported devices: an error in strict mode, a warning
+(and the line dropped) in lenient mode.
+
+### Behavioural sources
+
+| Line | Into |
+|---|---|
+| `Bxxx n+ n- V={expr}`, `Exxx n+ n- VALUE={expr}` | [`Behavioural`](crate::CircuitElement::Behavioural), a voltage |
+| `Bxxx n+ n- I={expr}`, `Gxxx n+ n- VALUE={expr}` | [`Behavioural`](crate::CircuitElement::Behavioural), a current from `n+` to `n-` |
+| `Exxx`/`Hxxx n+ n- POLY(n) …` | a behavioural voltage: the polynomial of `n` node-pair voltages (E) or `V`-line currents (H) |
+| `Gxxx`/`Fxxx n+ n- POLY(n) …` | a behavioural current, the same of voltages (G) or currents (F) |
+
+`POLY` coefficients follow SPICE2's order: by total degree, and within
+one degree over the controls in nondecreasing index order, so for two
+`p0 + p1·x1 + p2·x2 + p3·x1² + p4·x1·x2 + p5·x2² + …`. A
+one-dimensional `POLY` with one coefficient is its linear term, as in
+SPICE2 and PSpice (ngspice refuses it).
+
+The expression runs to the end of the card, braces optional, in the
+syntax of [`Expression`](crate::expression::Expression): `v(n)`,
+`v(n,m)`, `i(vname)`, `time`, arithmetic, comparisons, `?:` and
+ngspice's functions. A `.param` name inside it reads as its value. Inside
+a `.subckt` it reads that body's own nodes and `V` lines.
 
 ### Values
 
@@ -7355,6 +7540,7 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 ///    `temperature` (K) positive and finite, capacitances zero or more,
 ///    source values and controlled-source gains finite, a BJT's `bf`
 ///    positive and finite, and the device-model fields each check names
+/// 6. A behavioural source's `i(src)` names a voltage-defined element
 ///
 /// # Errors
 ///

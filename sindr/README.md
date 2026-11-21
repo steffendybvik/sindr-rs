@@ -30,7 +30,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, linear E/G/F/H, K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -307,7 +307,12 @@ CircuitElement::Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 
 
 // Current-controlled current source: I_out = alpha × I_ctrl
 CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 }
+
+// Behavioural source (SPICE's B): a voltage or current set by an expression
+CircuitElement::Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression }
 ```
+
+A behavioural source's `expr` is `Expression::parse("v(a)*v(b)")?` and the like: `v(n)`, `v(n,m)`, `i(source)` (the branch current of a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source), `time`, arithmetic, comparisons, `c ? a : b` and ngspice's functions (`exp`, `tanh`, `limit`, `min`, `u`, …). `BehaviouralOutput::Voltage` holds `V(n+) − V(n-)` at the expression; `Current` drives it from `n+` to `n-`. Newton gets the exact Jacobian by automatic differentiation; AC linearises at the bias point. In JSON the expression is its text: `{"type": "behavioural", "output": "voltage", "expr": "v(a)*v(b)", …}`.
 
 `control_source` is the `id` of the voltage source whose branch current is sensed, positive from its `+` terminal through it to `-`, as in SPICE.
 

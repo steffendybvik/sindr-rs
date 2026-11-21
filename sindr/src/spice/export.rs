@@ -8,8 +8,9 @@ use thiserror::Error;
 
 use crate::circuit::{BjtModel, DiodeModel};
 use crate::design::{DesignError, Instance};
+use crate::expression::Variable;
 use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
-use crate::{device_params, BjtKind, Circuit, CircuitElement, Waveform};
+use crate::{device_params, BehaviouralOutput, BjtKind, Circuit, CircuitElement, Waveform};
 
 /// Resistance of an intact fuse, as sindr stamps it (Ω).
 const FUSE_R_INTACT: f64 = 0.001;
@@ -68,6 +69,7 @@ pub enum ExportError {
 /// | `VoltageSource`, `CurrentSource` | `V`, `I`, with `DC` or a waveform |
 /// | `Diode`, `Bjt` | `D`, `Q`, with a `.model` card |
 /// | `Vcvs`, `Vccs`, `Ccvs`, `Cccs` | `E`, `G`, `H`, `F` |
+/// | `Behavioural` | `B n+ n- V={expr}` or `I={expr}`, its nodes and sources by their deck names |
 /// | `Transformer` | two `L` and a `K` |
 /// | `Switch`, `Pushbutton`, `Fuse` | `R` at the resistance sindr stamps |
 /// | `SwitchSpdt` | two `R`, common to each throw |
@@ -386,6 +388,46 @@ impl<'a> Deck<'a> {
                     };
                     self.two_terminal(&part_name, &nodes, value)?;
                 }
+                Ok(())
+            }
+            CircuitElement::Behavioural {
+                nodes,
+                output,
+                expr,
+                ..
+            } => {
+                // The expression reads nodes and sources by their deck names.
+                let mut deck_names = HashMap::new();
+                for variable in expr.variables() {
+                    match variable {
+                        Variable::Voltage { node, reference } => {
+                            for n in std::iter::once(node).chain(reference) {
+                                deck_names.insert(n.clone(), self.node(n)?);
+                            }
+                        }
+                        Variable::Current { source } => {
+                            let deck = self.names.get(source.as_str()).cloned().ok_or_else(|| {
+                                ExportError::BadName {
+                                    what: "element",
+                                    name: id.to_string(),
+                                    reason: format!(
+                                        "its expression reads i({source}), which isn't in the circuit"
+                                    ),
+                                }
+                            })?;
+                            deck_names.insert(source.clone(), deck);
+                        }
+                        _ => {}
+                    }
+                }
+                let mut expr = expr.clone();
+                expr.rename(|n| deck_names[n].clone(), |s| deck_names[s].clone());
+                let key = match output {
+                    BehaviouralOutput::Current => 'I',
+                    _ => 'V',
+                };
+                let nodes = self.nodes(nodes)?;
+                self.line(format!("{name} {nodes} {key}={{{expr}}}"));
                 Ok(())
             }
             CircuitElement::Battery { .. } => Err(unsupported(
@@ -720,6 +762,7 @@ fn spice_letter(component: &CircuitElement) -> char {
         CircuitElement::Transformer { .. } => 'K',
         CircuitElement::Mosfet { .. } => 'M',
         CircuitElement::Jfet { .. } => 'J',
+        CircuitElement::Behavioural { .. } => 'B',
         _ => 'R',
     }
 }

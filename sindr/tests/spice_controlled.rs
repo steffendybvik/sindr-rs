@@ -264,13 +264,13 @@ fn current_control_must_be_a_voltage_source() {
 
 #[test]
 fn nonlinear_forms_are_unsupported_not_malformed() {
-    let deck = "t\nV1 a 0 1\nR1 a 0 1k\nE1 b 0 VALUE={V(a)*2}\nR2 b 0 1k\n.end\n";
+    let deck = "t\nV1 a 0 1\nR1 a 0 1k\nG1 0 b LAPLACE {v(a)} = {1/s}\nR2 b 0 1k\n.end\n";
     assert!(error_of(deck).contains("UnsupportedDevice"));
-    let poly = "t\nV1 a 0 1\nR1 a 0 1k\nG1 0 b POLY(1) a 0 0 1m\nR2 b 0 1k\n.end\n";
-    assert!(error_of(poly).contains("UnsupportedDevice"));
+    let table = "t\nV1 a 0 1\nR1 a 0 1k\nE1 b 0 TABLE {V(a)} = (0,0) (1,1)\nR2 b 0 1k\n.end\n";
+    assert!(error_of(table).contains("UnsupportedDevice"));
 
     // Lenient mode drops the line with a warning, as for other unsupported devices.
     let parsed = parse_str_with_options(deck, ParseOptions::default().with_strict(false)).unwrap();
     assert_eq!(parsed.warnings.len(), 1);
-    assert!(parsed.circuit.components.iter().all(|c| c.id() != "e1"));
+    assert!(parsed.circuit.components.iter().all(|c| c.id() != "g1"));
 }
