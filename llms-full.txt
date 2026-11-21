@@ -2089,43 +2089,6 @@ pub enum CircuitElement {
         alpha: f64,
     },
 
-    /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
-    /// voltage or current set by an [`Expression`] of node voltages,
-    /// branch currents and time.
-    ///
-    /// A voltage output holds `V(nodes[0]) − V(nodes[1])` at the
-    /// expression, and like a [`CircuitElement::VoltageSource`] has a
-    /// branch current others can read with `i(id)`. A current output
-    /// drives the expression's value through the source from `nodes[0]` to
-    /// `nodes[1]`, as a [`CircuitElement::CurrentSource`] does. Newton
-    /// stamps it with the expression's exact gradient, AC analysis
-    /// linearises it at the bias point, and `time` reads the transient's
-    /// time (0 elsewhere).
-    ///
-    /// ```
-    /// use sindr::{BehaviouralOutput, CircuitElement};
-    /// use sindr::expression::Expression;
-    ///
-    /// let multiplier = CircuitElement::Behavioural {
-    ///     id: "b1".into(),
-    ///     nodes: ["out".into(), "0".into()],
-    ///     output: BehaviouralOutput::Voltage,
-    ///     expr: Expression::parse("v(a)*v(b)")?,
-    /// };
-    /// # Ok::<(), sindr::expression::ExpressionError>(())
-    /// ```
-    #[cfg_attr(feature = "serde", serde(rename = "behavioural"))]
-    Behavioural {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[n+, n-]`.
-        nodes: [String; 2],
-        /// Whether the expression is a voltage or a current.
-        output: BehaviouralOutput,
-        /// The value, in volts or amperes.
-        expr: Expression,
-    },
-
     /// Pushbutton (momentary switch): identical behaviour to Switch.
     /// When closed = true, current flows; when false, open circuit.
     #[cfg_attr(feature = "serde", serde(rename = "pushbutton"))]
@@ -2455,6 +2418,43 @@ pub enum CircuitElement {
         nodes: [String; 2],
         /// The equivalent circuit.
         params: FerriteBeadParams,
+    },
+
+    /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
+    /// voltage or current set by an [`Expression`] of node voltages,
+    /// branch currents and time.
+    ///
+    /// A voltage output holds `V(nodes[0]) − V(nodes[1])` at the
+    /// expression, and like a [`CircuitElement::VoltageSource`] has a
+    /// branch current others can read with `i(id)`. A current output
+    /// drives the expression's value through the source from `nodes[0]` to
+    /// `nodes[1]`, as a [`CircuitElement::CurrentSource`] does. Newton
+    /// stamps it with the expression's exact gradient, AC analysis
+    /// linearises it at the bias point, and `time` reads the transient's
+    /// time (0 elsewhere).
+    ///
+    /// ```
+    /// use sindr::{BehaviouralOutput, CircuitElement};
+    /// use sindr::expression::Expression;
+    ///
+    /// let multiplier = CircuitElement::Behavioural {
+    ///     id: "b1".into(),
+    ///     nodes: ["out".into(), "0".into()],
+    ///     output: BehaviouralOutput::Voltage,
+    ///     expr: Expression::parse("v(a)*v(b)")?,
+    /// };
+    /// # Ok::<(), sindr::expression::ExpressionError>(())
+    /// ```
+    #[cfg_attr(feature = "serde", serde(rename = "behavioural"))]
+    Behavioural {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[n+, n-]`.
+        nodes: [String; 2],
+        /// Whether the expression is a voltage or a current.
+        output: BehaviouralOutput,
+        /// The value, in volts or amperes.
+        expr: Expression,
     },
 }
 
