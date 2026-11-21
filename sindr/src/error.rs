@@ -147,6 +147,32 @@ pub enum SimError {
         /// Why it couldn't be taken.
         reason: String,
     },
+
+    /// A behavioural source's expression isn't finite (it overflowed, or
+    /// left its domain) at the voltages and currents it read.
+    ///
+    /// During a solve this is a failed iterate, not a final answer: Newton
+    /// shortens the step, and gmin and source stepping, or a shorter
+    /// transient step, are tried before this is returned.
+    #[error("`{component}`'s expression `{expression}` isn't finite at {inputs}")]
+    NotFinite {
+        /// The behavioural source.
+        component: String,
+        /// Its expression.
+        expression: String,
+        /// What it read, as `v(a) = 20, time = 0`.
+        inputs: String,
+    },
+}
+
+impl SimError {
+    /// A failure a smaller step or a convergence aid can get past.
+    pub(crate) fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            SimError::ConvergenceFailed { .. } | SimError::NotFinite { .. }
+        )
+    }
 }
 
 /// Where in an analysis a solve failed, carried by

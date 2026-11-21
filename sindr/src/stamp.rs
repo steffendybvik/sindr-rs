@@ -1066,6 +1066,29 @@ pub fn stamp_ccvs(
     system.a[(branch, ctrl_branch)] -= rm;
 }
 
+/// Checks every behavioural expression is finite at the solution `x`.
+///
+/// Newton accepts its last step without stamping it, so a source whose
+/// expression left its domain on that step (`asin` just past 1) would
+/// otherwise be reported at a point where it has no value.
+///
+/// # Errors
+///
+/// [`SimError::NotFinite`] for the first one that isn't.
+pub(crate) fn behavioural_finite_at(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    x: &DVector<f64>,
+    t: f64,
+) -> Result<(), SimError> {
+    for component in &circuit.components {
+        if let CircuitElement::Behavioural { id, expr, .. } = component {
+            behavioural_linearisation(circuit, node_map, id, expr, x, t)?;
+        }
+    }
+    Ok(())
+}
+
 /// A behavioural source's expression linearised at `x` (the MNA unknowns)
 /// and time `t`: `f(x) ≈ c + Σ jacobian[k].1 · x[jacobian[k].0]`.
 ///
@@ -1131,15 +1154,17 @@ pub(crate) fn behavioural_linearisation(
         }
     }
     if !f.is_finite() {
-        return Err(SimError::InvalidComponent(format!(
-            "`{id}`'s expression `{expr}` isn't finite at {}",
-            expr.variables()
+        return Err(SimError::NotFinite {
+            component: id.to_string(),
+            expression: expr.to_string(),
+            inputs: expr
+                .variables()
                 .iter()
                 .zip(&values)
                 .map(|(v, x)| format!("{} = {x}", variable_name(v)))
                 .collect::<Vec<_>>()
-                .join(", ")
-        )));
+                .join(", "),
+        });
     }
     let mut jacobian: Vec<(usize, f64)> = Vec::new();
     for (cols, g) in columns.iter().zip(&gradient) {
