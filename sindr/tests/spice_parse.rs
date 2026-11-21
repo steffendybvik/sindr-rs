@@ -271,9 +271,8 @@ fn continuation_lines() {
     );
 }
 
-/// sindr reads `.model` and `.subckt` only at the top level. One inside a
-/// `.subckt` used to be dropped without a word, leaving an element that
-/// uses it "undefined"; now each is named in a warning.
+/// sindr reads `.subckt` only at the top level. One inside a `.subckt`
+/// is named in a warning; a `.model` there is read (next test).
 #[test]
 fn nested_definitions_are_skipped_with_a_warning() {
     let deck = "* n\n.subckt amp in out\n.model dloc D(IS=1e-14)\n\
@@ -283,27 +282,57 @@ fn nested_definitions_are_skipped_with_a_warning() {
     assert_eq!(
         warnings(&netlist),
         [
-            "`.model dloc` inside `.subckt amp` is ignored; sindr reads `.model` and \
-             `.subckt` definitions only at the top level",
-            "`.subckt inner` inside `.subckt amp` is ignored; sindr reads `.model` and \
-             `.subckt` definitions only at the top level",
+            "`.subckt inner` inside `.subckt amp` is ignored; sindr reads `.subckt` \
+          definitions only at the top level"
         ]
-    );
-    let span = netlist.warnings[0]
-        .span
-        .expect("the .model warning has a span");
-    assert_eq!(
-        &deck[span.offset()..span.offset() + span.len()],
-        ".model dloc D(IS=1e-14)"
     );
     // The body's own elements still expand.
     let flat = netlist.circuit.flattened().unwrap();
     assert!(flat.components.iter().any(|c| c.id() == "x1.r1"));
+}
 
-    // An element that uses the nested model still fails, as undefined.
-    let uses = deck.replace("R1 in out 1k", "D1 in out dloc");
+/// A `.model` inside a `.subckt` is that body's own: its elements use it
+/// ahead of a top-level card of the same name, and nothing outside sees it.
+#[test]
+fn subckt_models_are_local_and_shadow_top_level_ones() {
+    let deck = "* m
+.model d1n D(IS=1e-9)
+                .subckt clamp a k
+D1 a k d1n
+.model d1n D(IS=2e-14 N=1.5)
+.ends
+                V1 a 0 1
+X1 a 0 clamp
+D2 a 0 d1n
+.end
+";
+    let netlist = parse_str(deck).unwrap();
+    assert!(netlist.warnings.is_empty(), "{:?}", netlist.warnings);
+    let flat = netlist.circuit.flatten().unwrap();
+    let model = |id: &str| {
+        flat.components
+            .iter()
+            .find_map(|c| match c {
+                CircuitElement::Diode { id: i, model, .. } if i == id => *model,
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no diode {id}"))
+    };
+    assert_eq!((model("x1.d1").is, model("x1.d1").n), (2e-14, 1.5));
+    assert_eq!(model("d2").is, 1e-9);
+    // Outside the subckt, its card isn't there.
+    let outside = "* m
+.subckt clamp a k
+.model dloc D
+R1 a k 1k
+.ends
+                   V1 a 0 1
+X1 a 0 clamp
+D2 a 0 dloc
+.end
+";
     assert!(matches!(
-        parse_str(&uses),
+        parse_str(outside),
         Err(SpiceParseError::UndefinedModel { name, .. }) if name == "dloc"
     ));
 }

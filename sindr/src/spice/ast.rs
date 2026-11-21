@@ -88,6 +88,22 @@ pub(crate) enum RawElementBody {
         model: String,
         substrate: Option<String>,
     },
+    /// M — `nd ng ns nb model [name=value ...] [flag ...]`: the four
+    /// nodes in SPICE order, the `.model` it references, instance
+    /// parameters (`W`, `L`, `M`, …) and bare flags (`OFF`).
+    Mosfet {
+        model: String,
+        params: Vec<(String, ParamExpr)>,
+        flags: Vec<String>,
+    },
+    /// J — `nd ng ns model [area] [flag ...]`: the three nodes in SPICE
+    /// order, the `.model` it references, the optional area factor and
+    /// bare flags (`OFF`).
+    Jfet {
+        model: String,
+        area: Option<ParamExpr>,
+        flags: Vec<String>,
+    },
     /// E / G — `n+ n- nc+ nc- value`: the four nodes, output pair first.
     VoltageControlled { value: ParamExpr },
     /// F / H — `n+ n- vname value`: the two output nodes and the voltage

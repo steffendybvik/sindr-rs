@@ -646,6 +646,90 @@ fn parse_bjt(input: &mut Input<'_>) -> ModalResult<RawElement> {
     })
 }
 
+/// Parse `M` MOSFET: `<id> nd ng ns nb <model> [name=val ...] [flag ...]`.
+/// **Node order is preserved as parsed (drain, gate, source, bulk).** The
+/// lowering pass reorders to sindr's `[gate, drain, source]` and checks the
+/// bulk.
+fn parse_mosfet(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let mut nodes = Vec::with_capacity(4);
+    for _ in 0..4 {
+        ws(input)?;
+        nodes.push(node_name(input)?.0);
+    }
+    ws(input)?;
+    let (model, _) = node_name(input)?;
+    let (params, flags) = instance_tail(input)?;
+    Ok(RawElement {
+        id,
+        prefix,
+        nodes,
+        body: RawElementBody::Mosfet {
+            model,
+            params,
+            flags,
+        },
+        span: Span {
+            start: id_span.start,
+            end: id_span.end,
+            file: Arc::from(""),
+            src: Arc::default(),
+        },
+    })
+}
+
+/// Parse `J` JFET: `<id> nd ng ns <model> [area] [flag ...]`. **Node order
+/// is preserved as parsed (drain, gate, source).**
+fn parse_jfet(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let mut nodes = Vec::with_capacity(3);
+    for _ in 0..3 {
+        ws(input)?;
+        nodes.push(node_name(input)?.0);
+    }
+    ws(input)?;
+    let (model, _) = node_name(input)?;
+    ws(input)?;
+    let area = opt(value_expr).parse_next(input)?.map(|(e, _)| e);
+    let (params, flags) = instance_tail(input)?;
+    if !params.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawElement {
+        id,
+        prefix,
+        nodes,
+        body: RawElementBody::Jfet { model, area, flags },
+        span: Span {
+            start: id_span.start,
+            end: id_span.end,
+            file: Arc::from(""),
+            src: Arc::default(),
+        },
+    })
+}
+
+/// The rest of a device line after its model name: `name=val` pairs and
+/// bare flags, in any order, to the end of the line.
+#[allow(clippy::type_complexity)]
+fn instance_tail(input: &mut Input<'_>) -> ModalResult<(Vec<(String, ParamExpr)>, Vec<String>)> {
+    let mut params = Vec::new();
+    let mut flags = Vec::new();
+    loop {
+        ws(input)?;
+        if input.is_empty() {
+            return Ok((params, flags));
+        }
+        let cp = input.checkpoint();
+        if let Ok(pair) = param_assign.parse_next(input) {
+            params.push(pair);
+            continue;
+        }
+        input.reset(&cp);
+        flags.push(node_name(input)?.0);
+    }
+}
+
 /// Parse `X` subckt instance: `<id> [nodes...] <subckt_name> [name=val ...]`.
 fn parse_subckt_instance(input: &mut Input<'_>) -> ModalResult<RawElement> {
     let (id, prefix, id_span) = element_id(input)?;
@@ -1474,18 +1558,8 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
                 }
             }
             'k' => parse_coupling(&mut input),
-            'm' => {
-                return Err(LocalError::UnsupportedDevice {
-                    device: "MOSFET (M)".to_string(),
-                    span: 0..1,
-                });
-            }
-            'j' => {
-                return Err(LocalError::UnsupportedDevice {
-                    device: "JFET (J)".to_string(),
-                    span: 0..1,
-                });
-            }
+            'm' => parse_mosfet(&mut input),
+            'j' => parse_jfet(&mut input),
             'b' => {
                 return Err(LocalError::UnsupportedDevice {
                     device: "behavioural source (B)".to_string(),
@@ -1990,14 +2064,66 @@ mod tests {
     }
 
     #[test]
-    fn elements_unsupported_mosfet() {
-        let result = parse_one_card_local("m1 d g s mosmod");
-        match result {
-            Err(LocalError::UnsupportedDevice { device, .. }) => {
-                assert!(device.contains("MOSFET"), "device = {device:?}");
+    fn elements_mosfet_keeps_spice_order_params_and_flags() {
+        let card = parse_one_card_local("m1 d g s b 2n7002 w=20u l=2u off m=2").unwrap();
+        let RawCard::Element(el) = card else { panic!() };
+        assert_eq!(el.prefix, 'm');
+        assert_eq!(el.nodes, ["d", "g", "s", "b"]);
+        match el.body {
+            RawElementBody::Mosfet {
+                model,
+                params,
+                flags,
+            } => {
+                assert_eq!(model, "2n7002");
+                let names: Vec<_> = params.iter().map(|(k, _)| k.as_str()).collect();
+                assert_eq!(names, ["w", "l", "m"]);
+                assert!((must_num(&params[0].1) - 20e-6).abs() < 1e-15);
+                assert_eq!(flags, ["off"]);
             }
-            other => panic!("expected UnsupportedDevice(MOSFET), got {other:?}"),
+            other => panic!("got {other:?}"),
         }
+    }
+
+    #[test]
+    fn elements_mosfet_needs_four_nodes_and_a_model() {
+        assert!(matches!(
+            parse_one_card_local("m1 d g s mosmod"),
+            Err(LocalError::Syntax { .. })
+        ));
+    }
+
+    #[test]
+    fn elements_jfet_with_and_without_area() {
+        let RawCard::Element(el) = parse_one_card_local("j1 d g s jmod").unwrap() else {
+            panic!()
+        };
+        assert_eq!(el.nodes, ["d", "g", "s"]);
+        match el.body {
+            RawElementBody::Jfet { model, area, flags } => {
+                assert_eq!(model, "jmod");
+                assert!(area.is_none() && flags.is_empty());
+            }
+            other => panic!("got {other:?}"),
+        }
+        let RawCard::Element(el) = parse_one_card_local("j2 d g s jmod 2.5 off").unwrap() else {
+            panic!()
+        };
+        match el.body {
+            RawElementBody::Jfet { area, flags, .. } => {
+                assert!((must_num(&area.unwrap()) - 2.5).abs() < 1e-12);
+                assert_eq!(flags, ["off"]);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn elements_jfet_refuses_named_parameters() {
+        assert!(matches!(
+            parse_one_card_local("j1 d g s jmod area=2"),
+            Err(LocalError::Syntax { .. })
+        ));
     }
 
     #[test]

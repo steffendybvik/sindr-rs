@@ -131,8 +131,9 @@ pub(crate) fn flatten(
 
     for card in cards {
         match card {
-            RawCard::Subckt(s) => {
+            RawCard::Subckt(mut s) => {
                 warn_nested_definitions(&s, warnings);
+                scope_local_models(&mut s, &mut models);
                 subckts.insert(s.name.clone(), s);
             }
             RawCard::Model(m) => {
@@ -224,24 +225,58 @@ pub(crate) fn flatten(
     })
 }
 
-/// Warn about each `.model` and `.subckt` inside `subckt`'s body: they are
-/// skipped, so an element using one fails as if it were undefined.
+/// Warn about each `.subckt` inside `subckt`'s body: it is skipped, so an
+/// instance of it fails as if it were undefined.
 fn warn_nested_definitions(subckt: &RawSubckt, warnings: &mut Vec<ParseWarning>) {
     for card in &subckt.body {
-        let (what, span) = match card {
-            RawCard::Model(m) => (format!("`.model {}`", m.name), Some(&m.span)),
-            RawCard::Subckt(inner) => (format!("`.subckt {}`", inner.name), None),
-            _ => continue,
+        let RawCard::Subckt(inner) = card else {
+            continue;
         };
         warnings.push(ParseWarning {
             message: format!(
-                "{what} inside `.subckt {}` is ignored; sindr reads `.model` and `.subckt` \
+                "`.subckt {}` inside `.subckt {}` is ignored; sindr reads `.subckt` \
                  definitions only at the top level",
-                subckt.name
+                inner.name, subckt.name
             ),
-            span: span.map(|s| (s.start, s.end.saturating_sub(s.start)).into()),
-            file: span.map(|s| s.file.to_string()),
+            span: None,
+            file: None,
         });
+    }
+}
+
+/// A `.model` inside a `.subckt` body is visible to that body only, and
+/// shadows a top-level card of the same name, as in SPICE. Each goes into
+/// `models` as `<subckt>:<model>` (`:` can't appear in a name the parser
+/// reads, so it never meets a top-level card), and the body's elements
+/// that name it are pointed at that.
+fn scope_local_models(subckt: &mut RawSubckt, models: &mut HashMap<String, RawModel>) {
+    let mut local = HashMap::new();
+    for card in &subckt.body {
+        if let RawCard::Model(m) = card {
+            let scoped = format!("{}:{}", subckt.name, m.name);
+            local.insert(m.name.clone(), scoped.clone());
+            let mut m = m.clone();
+            m.name.clone_from(&scoped);
+            models.insert(scoped, m);
+        }
+    }
+    if local.is_empty() {
+        return;
+    }
+    for card in &mut subckt.body {
+        let RawCard::Element(el) = card else {
+            continue;
+        };
+        let model = match &mut el.body {
+            RawElementBody::Diode { model }
+            | RawElementBody::Bjt { model, .. }
+            | RawElementBody::Mosfet { model, .. }
+            | RawElementBody::Jfet { model, .. } => model,
+            _ => continue,
+        };
+        if let Some(scoped) = local.get(model.as_str()) {
+            model.clone_from(scoped);
+        }
     }
 }
 
@@ -391,11 +426,15 @@ fn expand_instance(
                     return Err(eval_error_to_parse_error(e, "<param>").locate(span));
                 }
             }
-            RawCard::Subckt(_) | RawCard::Model(_) => {
-                // Nested .subckt / .model definitions are not supported
-                // (they would change visibility rules). Pass 1 warned
-                // about each one; the grammar accepts them, so a vendor
-                // deck with nested definitions still lowers.
+            RawCard::Model(_) => {
+                // Pass 1 moved it into the model table, scoped to this
+                // subckt.
+            }
+            RawCard::Subckt(_) => {
+                // Nested .subckt definitions are not supported (they would
+                // change visibility rules). Pass 1 warned about each one;
+                // the grammar accepts them, so a vendor deck with nested
+                // definitions still lowers.
             }
             RawCard::Analysis(..)
             | RawCard::Global(_)

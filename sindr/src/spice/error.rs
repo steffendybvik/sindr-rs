@@ -29,7 +29,7 @@ pub enum SpiceParseError {
     #[error("unknown device prefix '{prefix}'")]
     #[diagnostic(
         code(sindr::spice::unknown_device),
-        help("supported device prefixes: R, L, C, V, I, D, Q, E, G, F, H, K, X")
+        help("supported device prefixes: R, L, C, V, I, D, Q, M, J, E, G, F, H, K, X")
     )]
     UnknownDevice {
         /// The unrecognised prefix character.
@@ -63,7 +63,7 @@ pub enum SpiceParseError {
     #[error("unsupported device '{device}'")]
     #[diagnostic(
         code(sindr::spice::unsupported_device),
-        help("the parser currently supports: R, L, C, V, I, D, Q, E, G, F, H, K, X. M (MOSFET), J (JFET), B (behavioural) and the POLY/VALUE/TABLE/LAPLACE forms of E/G/F/H are not implemented yet.")
+        help("the parser currently supports: R, L, C, V, I, D, Q, M, J, E, G, F, H, K, X. B (behavioural) and the POLY/VALUE/TABLE/LAPLACE forms of E/G/F/H are not implemented yet.")
     )]
     UnsupportedDevice {
         /// Element id that triggered the error.
@@ -80,7 +80,7 @@ pub enum SpiceParseError {
     #[error("unsupported model type '{kind}' on model '{name}'")]
     #[diagnostic(
         code(sindr::spice::unsupported_model_type),
-        help("sindr currently supports model types: D, NPN, PNP")
+        help("sindr currently supports model types: D, NPN, PNP, NMOS, PMOS, NJF, PJF")
     )]
     UnsupportedModelType {
         /// Model type token (e.g. `NMOS`).

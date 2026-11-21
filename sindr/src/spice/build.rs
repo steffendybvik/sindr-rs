@@ -30,9 +30,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::circuit::{BjtModel, BjtParasiticCaps, DiodeModel};
+use crate::circuit::{BjtModel, BjtParasiticCaps, DiodeModel, MosfetParasiticCaps};
 use crate::design::{Block, Instance};
-use crate::{BjtKind, Circuit, CircuitElement, Waveform};
+use crate::devices::mosfet::MosfetParams;
+use crate::{BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind, Waveform};
 use miette::NamedSource;
 
 use crate::spice::analysis::{AcStimulus, AcSweep, AnalysisRequest, MeasureRequest};
@@ -450,6 +451,23 @@ fn build_element(
             })
         }
 
+        RawElementBody::Mosfet {
+            model,
+            params,
+            flags,
+        } => build_mosfet(raw, model, params, flags, models, &scope, strict, warnings),
+
+        RawElementBody::Jfet { model, area, flags } => build_jfet(
+            raw,
+            model,
+            area.as_ref(),
+            flags,
+            models,
+            &scope,
+            strict,
+            warnings,
+        ),
+
         // sindr's controlled sources take SPICE's node order and current
         // direction, so the nodes go across as written.
         RawElementBody::VoltageControlled { value } => {
@@ -631,6 +649,301 @@ const KEY_ALIASES: &[(&str, &str)] = &[
 
 /// `.model NPN`/`PNP` parameters sindr's Ebers–Moll transistor uses.
 const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf", "kf", "af"];
+
+/// `.model NMOS`/`PMOS` parameters sindr's level-1 MOSFET uses. `vj` and
+/// `m` are `PB` and `MJ` under [`KEY_ALIASES`]; `cbs` is the source–bulk
+/// junction, shorted with the bulk tied to the source.
+const MOSFET_KEYS: &[&str] = &[
+    "level", "kp", "vto", "lambda", "gamma", "phi", "ld", "cgso", "cgdo", "cgbo", "is", "cbd",
+    "cbs", "vj", "m", "fc", "rd", "rs",
+];
+
+/// `.model NJF`/`PJF` parameters sindr's JFET uses. `is`, `lambda`, `rd`,
+/// `rs`, `cgs`, `cgd` and `b` are read only at the value that leaves
+/// SPICE's model the same as sindr's.
+const JFET_KEYS: &[&str] = &["vto", "beta", "is", "lambda", "rd", "rs", "cgs", "cgd", "b"];
+
+/// MOSFET card parameters sindr's model has no field for, read only at the
+/// value that switches them off in SPICE.
+const MOSFET_NEUTRAL: &[(&str, f64)] = &[("rd", 0.0), ("rs", 0.0)];
+
+/// The same for a JFET card.
+const JFET_NEUTRAL: &[(&str, f64)] = &[
+    ("is", 0.0),
+    ("lambda", 0.0),
+    ("rd", 0.0),
+    ("rs", 0.0),
+    ("cgs", 0.0),
+    ("cgd", 0.0),
+    ("b", 1.0),
+];
+
+/// M-line geometry that only scales parameters sindr rejects (`JS`, `CJ`,
+/// `CJSW`, `RSH`), so dropping it changes nothing.
+const MOSFET_GEOMETRY: &[&str] = &["ad", "as", "pd", "ps", "nrd", "nrs"];
+
+/// Something on a device line sindr can't honour: an error in strict mode,
+/// otherwise a warning, once per message.
+fn unsupported(
+    message: String,
+    file: &str,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<(), SpiceParseError> {
+    if strict {
+        return Err(card_error(message));
+    }
+    let message = format!("{message}; ignored");
+    if !warnings.iter().any(|w| w.message == message) {
+        warnings.push(ParseWarning {
+            message,
+            span: None,
+            file: Some(file.to_string()),
+        });
+    }
+    Ok(())
+}
+
+/// The model card of a FET line, checked against the kinds it may be.
+fn fet_model<'a>(
+    raw: &crate::spice::ast::RawElement,
+    model: &str,
+    models: &'a HashMap<String, RawModel>,
+    kinds: [&str; 2],
+) -> Result<(&'a RawModel, bool), SpiceParseError> {
+    let m = lookup_model(model, models, raw)?;
+    let kind = m.kind.to_ascii_lowercase();
+    if kind != kinds[0] && kind != kinds[1] {
+        return Err(SpiceParseError::UnsupportedModelType {
+            kind: m.kind.clone(),
+            name: m.name.clone(),
+            src: NamedSource::new(&*raw.span.file, String::new()),
+            bad_span: span_of(raw),
+        });
+    }
+    Ok((m, kind == kinds[1]))
+}
+
+/// A card's parameters as a map, with each `neutral` key checked.
+fn fet_params(
+    m: &RawModel,
+    known: &[&'static str],
+    neutral: &[(&str, f64)],
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<HashMap<&'static str, f64>, SpiceParseError> {
+    let params: HashMap<_, _> = model_params(m, known, scope, strict, warnings)?
+        .into_iter()
+        .collect();
+    for (key, neutral) in neutral {
+        if let Some(value) = params.get(key).filter(|v| **v != *neutral) {
+            unsupported(
+                format!(
+                    "`.model {}` {}={value}: sindr's {} model has no {}",
+                    m.name,
+                    key.to_ascii_uppercase(),
+                    m.kind.to_ascii_uppercase(),
+                    key.to_ascii_uppercase()
+                ),
+                &m.span.file,
+                strict,
+                warnings,
+            )?;
+        }
+    }
+    Ok(params)
+}
+
+/// Bare flags on a FET line (`OFF`) have no meaning to sindr.
+fn fet_flags(
+    raw: &crate::spice::ast::RawElement,
+    flags: &[String],
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<(), SpiceParseError> {
+    for flag in flags {
+        unsupported(
+            format!(
+                "`{}`: `{}` not supported",
+                raw.id,
+                flag.to_ascii_uppercase()
+            ),
+            &raw.span.file,
+            strict,
+            warnings,
+        )?;
+    }
+    Ok(())
+}
+
+/// Lower an `M` line onto sindr's three-terminal level-1 MOSFET, as SPICE
+/// level 1 with ngspice's defaults (`W = L = 100 µm`, `KP = 2e-5`):
+///
+/// * `kp = KP·W/(L − 2·LD)·M`; `VTO`, `LAMBDA`, `GAMMA`, `PHI` as written.
+/// * `CGSO·W + CGBO·(L − 2·LD)` and `CGDO·W`, times `M`, are the fixed gate
+///   capacitances (the bulk is the source, so gate–bulk is gate–source).
+/// * The drain–bulk junction (`IS`, default 1e-14 A, `CBD`, `PB`, `MJ`,
+///   `FC`, times `M`) is the body diode.
+///
+/// A `LEVEL` other than 1 is an error. A bulk node other than the source
+/// and any other card parameter are errors in strict mode and warnings
+/// otherwise.
+#[allow(clippy::too_many_arguments)]
+fn build_mosfet(
+    raw: &crate::spice::ast::RawElement,
+    model: &str,
+    instance: &[(String, ParamExpr)],
+    flags: &[String],
+    models: &HashMap<String, RawModel>,
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<CircuitElement, SpiceParseError> {
+    let (m, pmos) = fet_model(raw, model, models, ["nmos", "pmos"])?;
+    let card = fet_params(m, MOSFET_KEYS, MOSFET_NEUTRAL, scope, strict, warnings)?;
+    let get = |key: &str, default: f64| card.get(key).copied().unwrap_or(default);
+    let file = &*raw.span.file;
+    // Another level is a different model, not a parameter to drop: read as
+    // level 1 it would solve to the wrong answer, so even lenient mode
+    // refuses it.
+    let level = get("level", 1.0);
+    if level != 1.0 {
+        return Err(card_error(format!(
+            "`.model {}` LEVEL={level}: sindr's MOSFET is level 1",
+            m.name
+        )));
+    }
+    let [d, g, s, b]: [String; 4] = raw.nodes.clone().try_into().map_err(|_| {
+        card_error(format!(
+            "`{}` needs four nodes: drain gate source bulk",
+            raw.id
+        ))
+    })?;
+    if b != s {
+        unsupported(
+            format!(
+                "`{}` bulk `{b}` isn't its source `{s}`: sindr's MOSFET ties the body to the source",
+                raw.id
+            ),
+            file,
+            strict,
+            warnings,
+        )?;
+    }
+    fet_flags(raw, flags, strict, warnings)?;
+
+    let (mut w, mut l, mut mult) = (100e-6, 100e-6, 1.0);
+    for (key, expr) in instance {
+        let value = eval_or_lift(expr, scope)?;
+        match key.to_ascii_lowercase().as_str() {
+            "w" => w = value,
+            "l" => l = value,
+            "m" => mult = value,
+            other if MOSFET_GEOMETRY.contains(&other) => {}
+            other => unsupported(
+                format!(
+                    "`{}`: instance parameter `{}` not supported",
+                    raw.id,
+                    other.to_ascii_uppercase()
+                ),
+                file,
+                strict,
+                warnings,
+            )?,
+        }
+    }
+    let l_eff = l - 2.0 * get("ld", 0.0);
+    if !(w > 0.0 && l_eff > 0.0 && mult > 0.0) {
+        return Err(card_error(format!(
+            "`{}` needs W, L − 2·LD and M above 0 (W={w}, L−2·LD={l_eff}, M={mult})",
+            raw.id
+        )));
+    }
+
+    let params = MosfetParams {
+        kp: get("kp", 2e-5) * w / l_eff * mult,
+        vto: get("vto", 0.0),
+        lambda: get("lambda", 0.0),
+        gamma: get("gamma", 0.0),
+        phi: get("phi", 0.6),
+        ..MosfetParams::default()
+    };
+    let cgs = (get("cgso", 0.0) * w + get("cgbo", 0.0) * l_eff) * mult;
+    let cgd = get("cgdo", 0.0) * w * mult;
+    let parasitic_caps = (cgs > 0.0 || cgd > 0.0).then_some(MosfetParasiticCaps { cgs, cgd });
+    let is = get("is", 1e-14) * mult;
+    let cbd = get("cbd", 0.0) * mult;
+    let body_diode = (is > 0.0 || cbd > 0.0).then(|| DiodeModel {
+        is,
+        cjo: cbd,
+        vj: get("vj", 0.8),
+        m: get("m", 0.5),
+        fc: get("fc", 0.5),
+        ..DiodeModel::default()
+    });
+    Ok(CircuitElement::Mosfet {
+        id: raw.id.clone(),
+        nodes: [g, d, s],
+        kind: if pmos {
+            MosfetKind::Pmos
+        } else {
+            MosfetKind::Nmos
+        },
+        params,
+        parasitic_caps,
+        body_diode,
+    })
+}
+
+/// Lower a `J` line onto sindr's JFET: `idss = BETA·VTO²·area`, and the
+/// pinch-off `vp` is `VTO` (default −2 V), signed as sindr's
+/// [`JfetKind`] expects (negative for N-channel, positive for P-channel).
+/// sindr's JFET has no gate junction, channel-length modulation, series
+/// resistance or capacitance, so a card that sets them is refused in
+/// strict mode.
+#[allow(clippy::too_many_arguments)]
+fn build_jfet(
+    raw: &crate::spice::ast::RawElement,
+    model: &str,
+    area: Option<&ParamExpr>,
+    flags: &[String],
+    models: &HashMap<String, RawModel>,
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<CircuitElement, SpiceParseError> {
+    let (m, pjf) = fet_model(raw, model, models, ["njf", "pjf"])?;
+    let card = fet_params(m, JFET_KEYS, JFET_NEUTRAL, scope, strict, warnings)?;
+    fet_flags(raw, flags, strict, warnings)?;
+    let [d, g, s]: [String; 3] =
+        raw.nodes.clone().try_into().map_err(|_| {
+            card_error(format!("`{}` needs three nodes: drain gate source", raw.id))
+        })?;
+    let vto = card.get("vto").copied().unwrap_or(-2.0);
+    let beta = card.get("beta").copied().unwrap_or(1e-4);
+    let area = area
+        .map(|a| eval_or_lift(a, scope))
+        .transpose()?
+        .unwrap_or(1.0);
+    if !(vto < 0.0 && beta > 0.0 && area > 0.0) {
+        return Err(card_error(format!(
+            "`{}` needs VTO below 0 and BETA and area above 0 (VTO={vto}, BETA={beta}, area={area})",
+            raw.id
+        )));
+    }
+    Ok(CircuitElement::Jfet {
+        id: raw.id.clone(),
+        nodes: [g, d, s],
+        kind: if pjf {
+            JfetKind::PChannel
+        } else {
+            JfetKind::NChannel
+        },
+        idss: beta * vto * vto * area,
+        vp: if pjf { -vto } else { vto },
+    })
+}
 
 /// `.model` parameters that describe the part rather than its behaviour
 /// (vendor model libraries add them). They are dropped without a word,
