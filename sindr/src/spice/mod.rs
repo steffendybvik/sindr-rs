@@ -3,7 +3,9 @@
 //! Parses a practical subset of Berkeley SPICE3f5 netlists into a
 //! [`crate::Circuit`] plus structured analysis directives. The supported
 //! device set tracks what `sindr` can solve: R, L, C, V, I, D, Q (NPN/PNP),
-//! and X (subcircuit instance). Subcircuits declared with `.subckt` /
+//! the linear controlled sources E, G, F and H, K (two coupled `L` lines,
+//! read as one [`Transformer`](crate::CircuitElement::Transformer)) and X
+//! (subcircuit instance). Subcircuits declared with `.subckt` /
 //! `.ends` become [`Block`](crate::Block)s and X lines
 //! [`Instance`](crate::Instance)s; the solver flattens them with
 //! `.`-separated hierarchical naming ([`Circuit::flatten`](crate::Circuit::flatten)),
@@ -117,6 +119,26 @@
 //! Part annotations that don't affect the simulation (`MFG`, `TYPE`,
 //! `VCEO`, `ICRATING`, `IAVE`, `VPK`) are dropped without a word.
 //!
+//! # Controlled sources and coupling
+//!
+//! | Line | Into |
+//! |---|---|
+//! | `Exxx n+ n- nc+ nc- gain` | [`Vcvs`](crate::CircuitElement::Vcvs) |
+//! | `Gxxx n+ n- nc+ nc- gm` | [`Vccs`](crate::CircuitElement::Vccs) |
+//! | `Fxxx n+ n- vname alpha` | [`Cccs`](crate::CircuitElement::Cccs) |
+//! | `Hxxx n+ n- vname rm` | [`Ccvs`](crate::CircuitElement::Ccvs) |
+//! | `Kxxx lname1 lname2 k` | [`Transformer`](crate::CircuitElement::Transformer) |
+//!
+//! Nodes and current directions are SPICE's, so they map across as
+//! written. An `F` or `H` line's `vname` must be a `V` line in the same
+//! scope (the top level, or the same `.subckt` body). A `K` line replaces
+//! its two `L` lines, which must be in its scope, with one transformer named
+//! after the `K` line: primary from `lname1`, secondary from `lname2`, the
+//! first node of each its dot. Each `L` can be coupled once; sindr has no
+//! three-winding transformer. The nonlinear forms (`POLY`, `VALUE`,
+//! `TABLE`, `LAPLACE`) are unsupported devices: an error in strict mode, a
+//! warning (and the line dropped) in lenient mode.
+//!
 //! # Values
 //!
 //! Numbers take SPICE's case-insensitive suffixes: `t` (1e12), `g` (1e9),
@@ -172,8 +194,8 @@
 //!
 //! [`to_netlist`] writes a [`Circuit`](crate::Circuit) as a SPICE deck that
 //! ngspice runs; its docs list what each element is written as. [`parse_str`]
-//! reads back the R, L, C, V, I, D, Q and X lines, but not the E, G, F, H
-//! and K lines written for controlled sources and transformers.
+//! reads every line it writes back, so an exported deck parses to a circuit
+//! that solves the same (a transformer comes back named after its `K` line).
 //!
 //! Known gaps against full SPICE3 are listed in the repository's
 //! [`LIMITATIONS.md`](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).

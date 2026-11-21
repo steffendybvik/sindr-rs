@@ -251,7 +251,7 @@ fn unknown_card_names_it() {
 
 #[test]
 fn unsupported_device_names_its_prefix() {
-    let err = parse_str("* t\nV1 a 0 1\nR1 a 0 1k\nK1 L1 L2 0.5\n.end\n").unwrap_err();
+    let err = parse_str("* t\nV1 a 0 1\nR1 a 0 1k\nS1 a 0 c 0 sw\n.end\n").unwrap_err();
     assert!(matches!(err, SpiceParseError::UnsupportedDevice { .. }));
 }
 

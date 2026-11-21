@@ -20,6 +20,11 @@
 //!   error in strict mode, naming it. **SPICE node
 //!   order on the Q line is `[c, b, e]`; sindr's `Bjt::nodes` is
 //!   `[b, c, e]`** — transpose at this layer.
+//! * **E / G / F / H** — evaluate the gain and emit `Vcvs` / `Vccs` /
+//!   `Cccs` / `Ccvs` with the nodes as written (sindr uses SPICE's
+//!   directions). An `F`/`H` control must be a `V` line in the same scope.
+//! * **K** — after its scope's elements are built, replace the two `L`
+//!   lines it names with one `Transformer` named after the `K` line.
 //! * **X** — should not appear in `flat.elements` (the flattener already
 //!   expanded them). Hitting one here is an internal bug.
 
@@ -58,7 +63,20 @@ pub(crate) fn build_netlist(
     // blocks. Building from the renamed id keeps diagnostics naming the
     // full path (`x1.r3`).
     let mut scopes: HashMap<&[String], Vec<CircuitElement>> = HashMap::new();
+    // `K` lines, applied per scope once all its `L` lines are built.
+    let mut couplings: Vec<Coupling<'_>> = Vec::new();
     for fe in &flat.elements {
+        if let RawElementBody::Coupling { inductors, k } = &fe.raw.body {
+            let scope = scope_from_snapshot(&fe.scope_snapshot);
+            let k = eval_or_lift(k, &scope).map_err(|e| e.locate(&fe.raw.span))?;
+            couplings.push(Coupling {
+                id: local_id(&fe.raw.id, &fe.instance_path),
+                inductors,
+                k,
+                fe,
+            });
+            continue;
+        }
         let mut raw = fe.raw.clone();
         raw.nodes.clone_from(&fe.local_nodes);
         let local = FlatElement {
@@ -69,15 +87,22 @@ pub(crate) fn build_netlist(
         };
         let mut element = build_element(&local, &flat.models, strict, warnings)
             .map_err(|e| e.locate(&fe.raw.span))?;
-        if !fe.instance_path.is_empty() {
-            let prefix_len = fe.instance_path.iter().map(|p| p.len() + 1).sum::<usize>();
-            let id = element.id_mut();
-            *id = id.split_off(prefix_len);
-        }
+        *element.id_mut() = local_id(&fe.raw.id, &fe.instance_path);
         scopes
             .entry(fe.instance_path.as_slice())
             .or_default()
             .push(element);
+    }
+    for coupling in couplings {
+        let elements = scopes
+            .entry(coupling.fe.instance_path.as_slice())
+            .or_default();
+        couple(elements, coupling)?;
+    }
+    for fe in &flat.elements {
+        if let RawElementBody::CurrentControlled { source, .. } = &fe.raw.body {
+            check_control_source(&scopes, fe, source)?;
+        }
     }
     let mut circuit = assemble(scopes, &flat.instances);
     circuit.globals.clone_from(&flat.globals);
@@ -131,6 +156,95 @@ pub(crate) fn build_netlist(
         source_map: flat.source_map,
         title,
     })
+}
+
+/// An element's id inside its subckt body: `x1.x2.r3` → `r3`.
+fn local_id(id: &str, instance_path: &[String]) -> String {
+    let prefix_len = instance_path.iter().map(|p| p.len() + 1).sum::<usize>();
+    id.get(prefix_len..).unwrap_or(id).to_string()
+}
+
+/// A `K` line waiting for its scope's `L` lines.
+struct Coupling<'a> {
+    id: String,
+    inductors: &'a [String; 2],
+    k: f64,
+    fe: &'a FlatElement,
+}
+
+/// Replace the two inductors a `K` line names with one
+/// [`CircuitElement::Transformer`], where the first of them stood. Each
+/// inductor's first node is its dot, as in SPICE.
+fn couple(
+    elements: &mut Vec<CircuitElement>,
+    coupling: Coupling<'_>,
+) -> Result<(), SpiceParseError> {
+    let Coupling {
+        id,
+        inductors: [l1, l2],
+        k,
+        fe,
+    } = coupling;
+    let fail = |message: String| card_error(message).locate(&fe.raw.span);
+    if l1 == l2 {
+        return Err(fail(format!("`{id}` couples `{l1}` to itself")));
+    }
+    let find = |name: &str| {
+        elements
+            .iter()
+            .position(|e| matches!(e, CircuitElement::Inductor { id, .. } if id == name))
+            .ok_or_else(|| {
+                fail(format!(
+                    "`{id}` couples `{name}`, which isn't an `L` line in the same scope \
+                     (or another `K` line already couples it)"
+                ))
+            })
+    };
+    let (i1, i2) = (find(l1)?, find(l2)?);
+    let winding = |i: usize| match &elements[i] {
+        CircuitElement::Inductor {
+            nodes, inductance, ..
+        } => Some((nodes.clone(), *inductance)),
+        _ => None,
+    };
+    let (Some(([p1, q1], l1)), Some(([p2, q2], l2))) = (winding(i1), winding(i2)) else {
+        return Err(fail(format!("internal: `{id}` lost its inductors")));
+    };
+    let transformer = CircuitElement::Transformer {
+        id,
+        nodes: [p1, q1, p2, q2],
+        l1,
+        l2,
+        k,
+    };
+    let (first, last) = (i1.min(i2), i1.max(i2));
+    elements.remove(last);
+    elements[first] = transformer;
+    Ok(())
+}
+
+/// An `F` or `H` line's controlling source must be a `V` line in the same
+/// scope: the solver would otherwise leave the output at zero.
+fn check_control_source(
+    scopes: &HashMap<&[String], Vec<CircuitElement>>,
+    fe: &FlatElement,
+    source: &str,
+) -> Result<(), SpiceParseError> {
+    let found = scopes
+        .get(fe.instance_path.as_slice())
+        .is_some_and(|elements| {
+            elements
+                .iter()
+                .any(|e| matches!(e, CircuitElement::VoltageSource { id, .. } if id == source))
+        });
+    if found {
+        return Ok(());
+    }
+    Err(card_error(format!(
+        "`{}` is controlled by `{source}`, which isn't a `V` line in the same scope",
+        local_id(&fe.raw.id, &fe.instance_path)
+    ))
+    .locate(&fe.raw.span))
 }
 
 fn build_element(
@@ -310,6 +424,58 @@ fn build_element(
                 model,
             })
         }
+
+        // sindr's controlled sources take SPICE's node order and current
+        // direction, so the nodes go across as written.
+        RawElementBody::VoltageControlled { value } => {
+            let v = eval_or_lift(value, &scope)?;
+            let [p, n, cp, cn]: [String; 4] =
+                raw.nodes.clone().try_into().map_err(|_| {
+                    card_error(format!("`{}` needs four nodes: n+ n- nc+ nc-", raw.id))
+                })?;
+            let (id, nodes, control_nodes) = (raw.id.clone(), [p, n], [cp, cn]);
+            Ok(if raw.prefix == 'e' {
+                CircuitElement::Vcvs {
+                    id,
+                    nodes,
+                    control_nodes,
+                    gain: v,
+                }
+            } else {
+                CircuitElement::Vccs {
+                    id,
+                    nodes,
+                    control_nodes,
+                    gm: v,
+                }
+            })
+        }
+
+        RawElementBody::CurrentControlled { source, value } => {
+            let v = eval_or_lift(value, &scope)?;
+            let nodes = two_nodes(&raw.nodes, &raw.id)?;
+            let (id, control_source) = (raw.id.clone(), source.clone());
+            Ok(if raw.prefix == 'h' {
+                CircuitElement::Ccvs {
+                    id,
+                    nodes,
+                    control_source,
+                    rm: v,
+                }
+            } else {
+                CircuitElement::Cccs {
+                    id,
+                    nodes,
+                    control_source,
+                    alpha: v,
+                }
+            })
+        }
+
+        RawElementBody::Coupling { .. } => Err(card_error(format!(
+            "internal: `K` line `{}` reached the element pass",
+            raw.id
+        ))),
 
         RawElementBody::Subckt { name, .. } => Err(SpiceParseError::Syntax {
             message: format!(

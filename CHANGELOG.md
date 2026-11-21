@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The SPICE parser reads linear `E`, `G`, `F` and `H` lines into
+  `Vcvs`, `Vccs`, `Cccs` and `Ccvs`, and a `K` line with its two `L`
+  lines into one `Transformer`. Every deck `to_netlist` writes now parses
+  back, and so do vendor decks with linear controlled sources. The
+  `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms are unsupported devices.
+
 ## [0.1.0] - 2026-11-20
 
 The first plain release. Versions are now `0.x` with no prereleases: a

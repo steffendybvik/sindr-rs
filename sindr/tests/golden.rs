@@ -1005,6 +1005,12 @@ fn op_exported_controlled() {
         exported("op_exported_controlled", &circuit),
         (OP_V, OP_I),
     );
+    // The same deck read back by sindr's parser.
+    check_op(
+        "op_exported_controlled",
+        &parse("op_exported_controlled"),
+        (OP_V, OP_I),
+    );
 }
 
 /// A transformer, written by `to_netlist` as two L and a K: its dot
@@ -1030,6 +1036,17 @@ fn ac_exported_transformer() {
     check_ac(
         "ac_exported_transformer",
         exported("ac_exported_transformer", &circuit),
+        "v1",
+        "s",
+        10,
+        (10.0, 1e6),
+        AC_LINEAR,
+    );
+    // The same deck read back by sindr's parser: `L`, `L` and `K` become
+    // one transformer again.
+    check_ac(
+        "ac_exported_transformer",
+        &parse("ac_exported_transformer"),
         "v1",
         "s",
         10,

@@ -49,7 +49,8 @@ fn parser_reads(deck: &str) -> bool {
     deck.lines().skip(1).all(|l| {
         l.starts_with('.')
             || l.starts_with([
-                'R', 'r', 'L', 'l', 'C', 'c', 'V', 'v', 'I', 'i', 'D', 'd', 'Q', 'q',
+                'R', 'r', 'L', 'l', 'C', 'c', 'V', 'v', 'I', 'i', 'D', 'd', 'Q', 'q', 'E', 'e',
+                'G', 'g', 'F', 'f', 'H', 'h', 'K', 'k',
             ])
     })
 }

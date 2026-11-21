@@ -86,6 +86,17 @@ pub(crate) enum RawElementBody {
         model: String,
         substrate: Option<String>,
     },
+    /// E / G — `n+ n- nc+ nc- value`: the four nodes, output pair first.
+    VoltageControlled { value: ParamExpr },
+    /// F / H — `n+ n- vname value`: the two output nodes and the voltage
+    /// source whose current controls it.
+    CurrentControlled { source: String, value: ParamExpr },
+    /// K — `lname1 lname2 k`: couples two `L` lines of the same scope into
+    /// a transformer. Has no nodes of its own.
+    Coupling {
+        inductors: [String; 2],
+        k: ParamExpr,
+    },
     /// X — subcircuit instance with optional parameter overrides.
     Subckt {
         name: String,
