@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measurements, and each measurement's mean, standard deviation, min, max
   and yield. A run that fails is recorded, not fatal. The `parallel`
   feature spreads runs across threads.
+- Worst case over tolerances: `VariationResult::check_specs` judges each
+  spec on every run, and `ratings_over` checks every part's ratings on
+  every run of a Monte Carlo or corner `Sampling`. Each reports its worst
+  run with the tolerance values behind it.
 
 ## [0.1.0] - 2026-11-21
 
