@@ -178,6 +178,7 @@ fn per_call(s: &Settings, dir: &Path, startup: Duration) {
         spacing: FrequencySpacing::Logarithmic,
         source_id: "v1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     let cases: [(&str, &str, &str); 4] = [
         ("op_diode_series", "op", "op"),

@@ -180,6 +180,7 @@ fn ac_impedance_is_r0_plus_r1_parallel_c1() {
             spacing: FrequencySpacing::Logarithmic,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         },
     )
     .expect("solves");

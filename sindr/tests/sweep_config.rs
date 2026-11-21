@@ -37,6 +37,7 @@ fn ac_config(f_start: f64, f_stop: f64, num_points: usize, spacing: FrequencySpa
         spacing,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     }
 }
 
@@ -74,6 +75,7 @@ fn ac_rejects_invalid_configs() {
             "NaN magnitude",
             AcConfig {
                 ac_magnitude: f64::NAN,
+                ac_phase_deg: 0.0,
                 ..ac_config(1.0, 1e3, 10, Logarithmic)
             },
         ),

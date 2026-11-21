@@ -131,6 +131,7 @@ fn closed_loop_bandwidth_is_gbw_over_gain() {
             spacing: FrequencySpacing::Logarithmic,
             source_id: "VIN".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         },
     )
     .unwrap();
@@ -163,6 +164,7 @@ fn without_a_pole_ac_is_flat() {
             spacing: FrequencySpacing::Logarithmic,
             source_id: "VIN".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         },
     )
     .unwrap();

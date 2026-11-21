@@ -63,6 +63,7 @@ fn every_analysis_fails(circuit: &Circuit, check: impl Fn(&str, SimError)) {
         spacing: FrequencySpacing::Logarithmic,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     let runs: [(&str, Result<(), SimError>); 4] = [
         ("dc", solve_circuit(circuit).map(|_| ())),
@@ -230,6 +231,7 @@ fn voltage_source_across_an_inductor_has_no_ac_operating_point() {
         spacing: FrequencySpacing::Logarithmic,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     assert!(matches!(
         solve_ac(&circuit, &ac),

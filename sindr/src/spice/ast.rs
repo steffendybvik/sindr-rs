@@ -73,10 +73,12 @@ pub(crate) struct RawElement {
 pub(crate) enum RawElementBody {
     /// R / L / C — a single value expression.
     Passive { value: ParamExpr },
-    /// V / I — DC value plus optional time-domain waveform.
+    /// V / I — DC value, optional AC small-signal spec and optional
+    /// time-domain waveform, written in any order.
     Source {
         kind: SourceKind,
         dc: Option<ParamExpr>,
+        ac: Option<RawAcSpec>,
         waveform: Option<RawWaveform>,
     },
     /// D — references a `.model` declaration.
@@ -102,6 +104,14 @@ pub(crate) enum RawElementBody {
         name: String,
         params: Vec<(String, ParamExpr)>,
     },
+}
+
+/// `AC [mag [phase]]` on a V/I line. A bare `AC` is magnitude 1 at 0°, as
+/// in ngspice; `phase` is in degrees.
+#[derive(Debug, Clone)]
+pub(crate) struct RawAcSpec {
+    pub magnitude: Option<ParamExpr>,
+    pub phase: Option<ParamExpr>,
 }
 
 /// Whether a `RawElementBody::Source` is a voltage or current source.

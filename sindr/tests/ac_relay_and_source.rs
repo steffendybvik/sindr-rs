@@ -53,6 +53,7 @@ fn ac(source_id: &str) -> AcConfig {
         spacing: FrequencySpacing::Linear,
         source_id: source_id.into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     }
 }
 

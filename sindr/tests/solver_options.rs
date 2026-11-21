@@ -193,6 +193,7 @@ fn nodeset_seeds_the_ac_bias_point() {
         spacing: sindr::FrequencySpacing::Logarithmic,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     let mut seed = HashMap::new();
     seed.insert("a".to_string(), 0.65);

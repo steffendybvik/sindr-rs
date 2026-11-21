@@ -35,7 +35,7 @@ use crate::design::{Block, Instance};
 use crate::{BjtKind, Circuit, CircuitElement, Waveform};
 use miette::NamedSource;
 
-use crate::spice::analysis::{AcSweep, AnalysisRequest, MeasureRequest};
+use crate::spice::analysis::{AcStimulus, AcSweep, AnalysisRequest, MeasureRequest};
 use crate::spice::ast::{
     AcSweepKind, NodeValueKind, ParamExpr, RawAnalysis, RawCrossing, RawElementBody, RawMeasure,
     RawMeasureKind, RawModel, RawWaveform, SourceKind,
@@ -104,6 +104,27 @@ pub(crate) fn build_netlist(
             check_control_source(&scopes, fe, source)?;
         }
     }
+    let mut ac_stimuli = Vec::new();
+    for fe in &flat.elements {
+        if let RawElementBody::Source {
+            kind,
+            ac: Some(spec),
+            ..
+        } = &fe.raw.body
+        {
+            let scope = scope_from_snapshot(&fe.scope_snapshot);
+            let value_or = |expr: &Option<ParamExpr>, default: f64| match expr {
+                Some(e) => eval_or_lift(e, &scope).map_err(|e| e.locate(&fe.raw.span)),
+                None => Ok(default),
+            };
+            ac_stimuli.push(AcStimulus {
+                source: fe.raw.id.clone(),
+                current: *kind == SourceKind::Current,
+                magnitude: value_or(&spec.magnitude, 1.0)?,
+                phase_deg: value_or(&spec.phase, 0.0)?,
+            });
+        }
+    }
     let mut circuit = assemble(scopes, &flat.instances);
     circuit.globals.clone_from(&flat.globals);
     let components = circuit
@@ -152,6 +173,7 @@ pub(crate) fn build_netlist(
         nodesets,
         options,
         measurements,
+        ac_stimuli,
         warnings: warnings.clone(),
         source_map: flat.source_map,
         title,
@@ -284,7 +306,9 @@ fn build_element(
             }
         }
 
-        RawElementBody::Source { kind, dc, waveform } => {
+        RawElementBody::Source {
+            kind, dc, waveform, ..
+        } => {
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
             let dc_value = match dc {
                 Some(expr) => eval_or_lift(expr, &scope)?,
@@ -1293,6 +1317,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: None,
+                ac: None,
                 waveform: Some(RawWaveform::Pwl(vec![
                     (ParamExpr::Number(0.0), ParamExpr::Number(0.0)),
                     (ParamExpr::Number(1e-3), ParamExpr::Number(5.0)),
@@ -1506,6 +1531,7 @@ mod tests {
                 body: RawElementBody::Source {
                     kind: SourceKind::Voltage,
                     dc: Some(ParamExpr::Number(0.0)),
+                    ac: None,
                     waveform: None,
                 },
                 span: span(),
@@ -1554,6 +1580,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: None,
+                ac: None,
                 waveform: Some(RawWaveform::Pwl(vec![
                     (ParamExpr::Number(1e-3), ParamExpr::Number(0.0)),
                     (ParamExpr::Number(0.0), ParamExpr::Number(5.0)),
@@ -1575,6 +1602,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: None,
+                ac: None,
                 waveform: Some(RawWaveform::Pulse(vec![
                     ParamExpr::Number(0.0),
                     ParamExpr::Number(5.0),
@@ -1622,6 +1650,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: None,
+                ac: None,
                 waveform: Some(RawWaveform::Sin(vec![
                     ParamExpr::Number(0.0),
                     ParamExpr::Number(1.0),
@@ -1660,6 +1689,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: Some(ParamExpr::Number(12.0)),
+                ac: None,
                 waveform: None,
             },
             span: span(),

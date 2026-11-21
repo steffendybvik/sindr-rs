@@ -67,9 +67,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let steps = result.transient.map_or(0, |t| t.timesteps.len());
                 println!("transient to {tstop} s in {tstep} s steps: {steps} snapshots");
             }
-            AnalysisRequest::Ac { fstart, fstop, .. } => {
-                println!("ac sweep {fstart}..{fstop} Hz (build an AcConfig for solve_ac)");
-            }
+            AnalysisRequest::Ac { fstart, fstop, .. } => match netlist.ac_config() {
+                Some(Ok(config)) => {
+                    let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config)?;
+                    println!("ac sweep {fstart}..{fstop} Hz: {} points", ac.points.len());
+                }
+                // No `AC` spec on a V line: the stimulus has to be set by hand.
+                _ => println!("ac sweep {fstart}..{fstop} Hz (no AC source in the deck)"),
+            },
             AnalysisRequest::Sens { .. } => {
                 let config = analysis.sens_config().ok_or("not a .sens")?;
                 let sens = sindr::solve_sensitivity(&netlist.circuit, &config)?;

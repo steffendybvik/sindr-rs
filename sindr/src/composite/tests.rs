@@ -129,6 +129,7 @@ fn ac_impedance(element: CircuitElement, f: f64) -> num_complex::Complex64 {
             spacing: FrequencySpacing::Linear,
             source_id: "v1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         },
     )
     .unwrap();

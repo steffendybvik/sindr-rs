@@ -715,6 +715,7 @@ fn comparator_in_ac() {
                 spacing: FrequencySpacing::Logarithmic,
                 source_id: "Vin".into(),
                 ac_magnitude: 1.0,
+                ac_phase_deg: 0.0,
             },
         )
         .expect("ac");

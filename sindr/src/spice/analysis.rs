@@ -106,6 +106,44 @@ pub struct DcSweepSpec {
     pub step: f64,
 }
 
+/// The total point count and spacing of a `.ac` / `.noise` sweep: a `dec`
+/// or `oct` count is per decade or octave, both ends included.
+fn sweep_points(
+    sweep: AcSweep,
+    points: usize,
+    fstart: f64,
+    fstop: f64,
+) -> (usize, crate::ac_analysis::FrequencySpacing) {
+    use crate::ac_analysis::FrequencySpacing;
+    let span = |base: f64| (fstop / fstart).log(base);
+    match sweep {
+        AcSweep::Dec => (
+            (points as f64 * span(10.0)).round() as usize + 1,
+            FrequencySpacing::Logarithmic,
+        ),
+        AcSweep::Oct => (
+            (points as f64 * span(2.0)).round() as usize + 1,
+            FrequencySpacing::Logarithmic,
+        ),
+        AcSweep::Lin => (points, FrequencySpacing::Linear),
+    }
+}
+
+/// An `AC [mag [phase]]` spec on a `V` or `I` line: the small-signal
+/// stimulus a deck's `.ac` drives. A bare `AC` is 1 at 0°, as in ngspice.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcStimulus {
+    /// Id of the source as the flattened circuit names it (`v1`, `x1.v2`).
+    pub source: String,
+    /// `true` for an `I` line (a current source), `false` for a `V` line.
+    pub current: bool,
+    /// Magnitude: volts for a `V` line, amps for an `I` line.
+    pub magnitude: f64,
+    /// Phase in degrees.
+    pub phase_deg: f64,
+}
+
 impl AnalysisRequest {
     /// The sweep axes of a `.dc` request: the inner source, and the outer
     /// one if the card names two. `None` for any other analysis.
@@ -239,6 +277,44 @@ impl AnalysisRequest {
         }
     }
 
+    /// The [`AcConfig`](crate::ac_analysis::AcConfig) for an `.ac` request,
+    /// driving `source_id` at 1 V and 0°; `None` for any other analysis. A
+    /// `dec` or `oct` sweep's per-decade or per-octave count becomes the
+    /// total over the band, both ends included.
+    /// [`ParsedNetlist::ac_config`](crate::spice::ParsedNetlist::ac_config)
+    /// takes the source and its stimulus from the deck's `AC` spec instead.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 0\nR1 in out 1k\nC1 out 0 1u\n.ac dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].ac_config("v1").unwrap();
+    /// assert_eq!(config.num_points, 51);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn ac_config(&self, source_id: &str) -> Option<crate::ac_analysis::AcConfig> {
+        let AnalysisRequest::Ac {
+            sweep,
+            points,
+            fstart,
+            fstop,
+        } = self
+        else {
+            return None;
+        };
+        let (num_points, spacing) = sweep_points(*sweep, *points, *fstart, *fstop);
+        Some(crate::ac_analysis::AcConfig {
+            f_start: *fstart,
+            f_stop: *fstop,
+            num_points,
+            spacing,
+            source_id: source_id.to_string(),
+            ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
+        })
+    }
+
     /// The [`NoiseConfig`](crate::NoiseConfig) for a `.noise` request, to
     /// pass to [`solve_noise`](crate::solve_noise); `None` for any other
     /// analysis. A `dec` or `oct` sweep's per-decade or per-octave count
@@ -269,18 +345,7 @@ impl AnalysisRequest {
         else {
             return None;
         };
-        let span = |base: f64| (fstop / fstart).log(base);
-        let (num_points, spacing) = match sweep {
-            AcSweep::Dec => (
-                (*points as f64 * span(10.0)).round() as usize + 1,
-                crate::ac_analysis::FrequencySpacing::Logarithmic,
-            ),
-            AcSweep::Oct => (
-                (*points as f64 * span(2.0)).round() as usize + 1,
-                crate::ac_analysis::FrequencySpacing::Logarithmic,
-            ),
-            AcSweep::Lin => (*points, crate::ac_analysis::FrequencySpacing::Linear),
-        };
+        let (num_points, spacing) = sweep_points(*sweep, *points, *fstart, *fstop);
         Some(crate::NoiseConfig {
             output: node.clone(),
             reference: reference.clone(),

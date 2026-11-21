@@ -136,6 +136,7 @@ fn huge_sweeps_are_errors_not_panics() {
         spacing: FrequencySpacing::Logarithmic,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     assert_invalid(solve_ac(&divider(), &ac), "num_points");
     assert_invalid(
