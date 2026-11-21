@@ -156,7 +156,7 @@ cargo run --example parse_netlist --features spice
 
 ## Status
 
-`0.1.0`, [published on crates.io](https://crates.io/crates/sindr). Until 1.0, a breaking change bumps the minor version (`0.2.0`) and anything else the patch (`0.1.1`), so `sindr = "0.1"` never breaks on `cargo update`. The road to 1.0 is in [`ROADMAP.md`](./ROADMAP.md).
+`0.1.1`, [published on crates.io](https://crates.io/crates/sindr). Until 1.0, a breaking change bumps the minor version (`0.2.0`) and anything else the patch (`0.1.1`), so `sindr = "0.1"` never breaks on `cargo update`. The road to 1.0 is in [`ROADMAP.md`](./ROADMAP.md).
 
 ## Scope & limitations
 
