@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-21
+
+The first plain release. Versions are now `0.x` with no prereleases: a
+breaking change bumps the minor version, anything else the patch, so
+`sindr = "0.1"` keeps working through `cargo update`. This release was
+staged as `0.1.0-alpha.8`.
+
 ### Added
 
 - `solve_op` and `Solver::op`: the DC operating point as SPICE's `.op`
@@ -28,85 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AcConfig::ac_phase_deg`: the AC source's phase, which shifts every
   node's phase as SPICE's `AC mag phase` does. `AcConfig::new` and serde
   default it to 0; `with_phase_deg` sets it.
-
-### Changed
-
-- **Breaking:** the public API leaves room to grow, so a new variant,
-  result field or config option is no longer a breaking change.
-  - `#[non_exhaustive]` enums (match them with a `_` arm):
-    `CircuitElement`, `Waveform`, `FrequencySpacing`, `SensParameter`,
-    `TfOutput`, `measure::Occurrence`, and in `spice` `SpiceParseError`,
-    `ExportError`, `AnalysisRequest`, `AcSweep` and `MeasureAnalysis`,
-    and in `import` `Analysis`, `Simulation`, `SourceKind`, `LoadKind`,
-    `Attach`, `ComponentKind`, `Model` and `Value`. `CircuitElement`'s
-    variants stay open, so struct-variant literals still compile.
-  - `#[non_exhaustive]` results, read but not built outside sindr:
-    `SimulationResult` and the per-component, transient, AC, noise, `.tf`,
-    `.sens`, sweep, measurement, spec and ratings results, and
-    `ParsedNetlist`, `ParseWarning`, `ImportedCircuit` and `Imported`.
-  - `AcConfig`, `NoiseConfig`, `TfConfig`, `SensConfig` and
-    `DcSweepAxis` are `#[non_exhaustive]` with constructors:
-    `AcConfig::new(source, f_start, f_stop, points)` with
-    `with_spacing`, `with_magnitude` and `with_phase_deg`;
-    `NoiseConfig::new(output, input, f_start, f_stop, points)` with
-    `with_reference` and `with_spacing`; `TfConfig::new(output, input)`;
-    `SensConfig::new(output)`. `TfOutput::voltage`, `voltage_between`
-    and `current` build the outputs. The fields stay readable.
-  - `measure::Measurable` is sealed.
-- **Breaking:** the deprecated `solve_circuit_with_initial_voltages` and
-  the `solve_ac`, `solve_noise`, `solve_tf` and `solve_sensitivity`
-  `_with_initial_voltages` variants are removed. Use
-  `Solver::new(SolverOptions::default().with_nodeset(..))`.
-- **Breaking:** the `examples` feature is off by default and no longer
-  pulls in `serde`; `get_examples` needs `features = ["examples"]`. The
-  example circuits in `sindr::examples` are always there.
-- **Breaking:** `results::extract_results` is private, and the `csv`
-  module is too; the `to_csv` methods are unchanged.
-- `sindr::devices` re-exports `sindr-devices`, so its `*Params` types
-  need no second dependency.
-
-### Fixed
-
-- A modelled regulator with no input stays off. Below the dropout voltage
-  its output could fall under the ground pin (an unpowered LM7805 drove
-  −2 V into 1 kΩ), and its quiescent current, drawn whatever the input,
-  pulled an undriven input negative. The output now floors at the ground
-  pin, and the quiescent current ramps in from 0 V to the dropout voltage.
-  `regulator_dissipation` takes the set voltage, and
-  `regulator_quiescent` gives the current drawn.
-- `solve_noise` names a missing reference node as the reference; before,
-  the error called it the output node.
-- `AnalysisRequest::ac_config` and `noise_config` sweep the frequencies
-  ngspice does. A `.ac dec` over a decade or more is ⌊points·decades⌋
-  equal log steps to `fstop`, and every other `dec` or `oct` sweep steps
-  by 10^(1/points) or 2^(1/points) from `fstart` and stops at the last
-  point not past `fstop`. Before, a band that wasn't a whole number of
-  decades or octaves got `round(points·span) + 1` points spread from
-  `fstart` to `fstop`: 18 for `.ac dec 10 1 50`, where ngspice has 17.
-- The SPICE parser warns about a `.model` or `.subckt` inside a `.subckt`,
-  which it skips; before, it dropped them without a word, so an element
-  using one failed as undefined with no hint why.
-- A `.include` or `.lib` card without a readable path is a syntax error
-  that says what the card takes, not "internal: unresolved include
-  reached parser". The lenient warning about ignored `.model` parameters
-  names the deck's file, where it named none.
-- `dc_sweep` and `dc_sweep_nested` solve each point as an operating point
-  (capacitors open, inductors shorted), as SPICE's `.dc` does. Before, a
-  circuit with a capacitor, inductor or waveform source ran a transient
-  at every point and reported its 5 τ end state. A swept source's own
-  waveform is ignored.
-- AC, `.tf`, `.sens` and `.noise` bias a source with a waveform at its
-  t = 0 value, as SPICE does, where they took its DC offset alone.
-
-## [0.1.0] - 2026-11-20
-
-The first plain release. Versions are now `0.x` with no prereleases: a
-breaking change bumps the minor version, anything else the patch, so
-`sindr = "0.1"` keeps working through `cargo update`. This release was
-staged as `0.1.0-alpha.8`.
-
-### Added
-
 - `SolverOptions` and `Solver`. The tolerances (`reltol`,
   `vntol`, `trtol`), the Newton iteration budget, the gmin-stepping
   ladder, source stepping, the transient step cap and a `nodeset` are
@@ -326,6 +254,39 @@ staged as `0.1.0-alpha.8`.
 
 ### Changed
 
+- **Breaking:** the public API leaves room to grow, so a new variant,
+  result field or config option is no longer a breaking change.
+  - `#[non_exhaustive]` enums (match them with a `_` arm):
+    `CircuitElement`, `Waveform`, `FrequencySpacing`, `SensParameter`,
+    `TfOutput`, `measure::Occurrence`, and in `spice` `SpiceParseError`,
+    `ExportError`, `AnalysisRequest`, `AcSweep` and `MeasureAnalysis`,
+    and in `import` `Analysis`, `Simulation`, `SourceKind`, `LoadKind`,
+    `Attach`, `ComponentKind`, `Model` and `Value`. `CircuitElement`'s
+    variants stay open, so struct-variant literals still compile.
+  - `#[non_exhaustive]` results, read but not built outside sindr:
+    `SimulationResult` and the per-component, transient, AC, noise, `.tf`,
+    `.sens`, sweep, measurement, spec and ratings results, and
+    `ParsedNetlist`, `ParseWarning`, `ImportedCircuit` and `Imported`.
+  - `AcConfig`, `NoiseConfig`, `TfConfig`, `SensConfig` and
+    `DcSweepAxis` are `#[non_exhaustive]` with constructors:
+    `AcConfig::new(source, f_start, f_stop, points)` with
+    `with_spacing`, `with_magnitude` and `with_phase_deg`;
+    `NoiseConfig::new(output, input, f_start, f_stop, points)` with
+    `with_reference` and `with_spacing`; `TfConfig::new(output, input)`;
+    `SensConfig::new(output)`. `TfOutput::voltage`, `voltage_between`
+    and `current` build the outputs. The fields stay readable.
+  - `measure::Measurable` is sealed.
+- **Breaking:** the deprecated `solve_circuit_with_initial_voltages` and
+  the `solve_ac`, `solve_noise`, `solve_tf` and `solve_sensitivity`
+  `_with_initial_voltages` variants are removed. Use
+  `Solver::new(SolverOptions::default().with_nodeset(..))`.
+- **Breaking:** the `examples` feature is off by default and no longer
+  pulls in `serde`; `get_examples` needs `features = ["examples"]`. The
+  example circuits in `sindr::examples` are always there.
+- **Breaking:** `results::extract_results` is private, and the `csv`
+  module is too; the `to_csv` methods are unchanged.
+- `sindr::devices` re-exports `sindr-devices`, so its `*Params` types
+  need no second dependency.
 - **Breaking:** `SimError`, `SolvePoint` and `spice::ParseOptions` are
   `#[non_exhaustive]`, so new error variants and parser options can come
   in a minor release. Match `SimError` with a `_` arm, and build
@@ -415,6 +376,36 @@ staged as `0.1.0-alpha.8`.
 
 ### Fixed
 
+- A modelled regulator with no input stays off. Below the dropout voltage
+  its output could fall under the ground pin (an unpowered LM7805 drove
+  −2 V into 1 kΩ), and its quiescent current, drawn whatever the input,
+  pulled an undriven input negative. The output now floors at the ground
+  pin, and the quiescent current ramps in from 0 V to the dropout voltage.
+  `regulator_dissipation` takes the set voltage, and
+  `regulator_quiescent` gives the current drawn.
+- `solve_noise` names a missing reference node as the reference; before,
+  the error called it the output node.
+- `AnalysisRequest::ac_config` and `noise_config` sweep the frequencies
+  ngspice does. A `.ac dec` over a decade or more is ⌊points·decades⌋
+  equal log steps to `fstop`, and every other `dec` or `oct` sweep steps
+  by 10^(1/points) or 2^(1/points) from `fstart` and stops at the last
+  point not past `fstop`. Before, a band that wasn't a whole number of
+  decades or octaves got `round(points·span) + 1` points spread from
+  `fstart` to `fstop`: 18 for `.ac dec 10 1 50`, where ngspice has 17.
+- The SPICE parser warns about a `.model` or `.subckt` inside a `.subckt`,
+  which it skips; before, it dropped them without a word, so an element
+  using one failed as undefined with no hint why.
+- A `.include` or `.lib` card without a readable path is a syntax error
+  that says what the card takes, not "internal: unresolved include
+  reached parser". The lenient warning about ignored `.model` parameters
+  names the deck's file, where it named none.
+- `dc_sweep` and `dc_sweep_nested` solve each point as an operating point
+  (capacitors open, inductors shorted), as SPICE's `.dc` does. Before, a
+  circuit with a capacitor, inductor or waveform source ran a transient
+  at every point and reported its 5 τ end state. A swept source's own
+  waveform is ignored.
+- AC, `.tf`, `.sens` and `.noise` bias a source with a waveform at its
+  t = 0 value, as SPICE does, where they took its DC offset alone.
 - The DC self-heating balance no longer reports a stable part as
   `ThermalRunaway`. Its plain `T ← ambient + P·Rθ` update swung wider on
   every pass when negative feedback was stronger than −1, as in a heated

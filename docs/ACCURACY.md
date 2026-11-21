@@ -27,6 +27,7 @@ largest deviation over every quantity and point the case checks;
 | `op_mosfet_follower` | Operating point | 4e-8 | 1e-5 |
 | `op_photodiode` | Operating point | 1e-7 | 1e-5 |
 | `op_pmos_highside` | Operating point | 2e-8 | 1e-5 |
+| `op_reactive` | Operating point | 3e-9 | 1e-5 |
 | `op_resistive` | Operating point | 6e-10 | 1e-5 |
 | `op_schottky` | Operating point | 3e-7 | 1e-6 |
 | `op_subckt_param` | Operating point | 4e-10 | 1e-6 |
@@ -34,21 +35,25 @@ largest deviation over every quantity and point the case checks;
 | `dc_diode_breakdown` | DC sweep | 4e-5 | 1e-4 |
 | `dc_diode_iv` | DC sweep | 8e-6 | 1e-5 |
 | `dc_mosfet_body_diode` | DC sweep | 5e-6 | 1e-4 |
+| `dc_reactive` | DC sweep | 3e-9 | 1e-5 |
 | `dc_zener` | DC sweep | 1e-6 | 1e-4 |
 | `temp_diode` | Temperature sweep | 6e-7 | 1e-6 |
 | `ac_bjt_caps` | AC | 4e-7 · 3e-5° | 1e-6 · 1e-4° |
 | `ac_bjt_ce` | AC | 8e-7 | 1e-6 |
+| `ac_deck_stimulus` | AC | 4e-9 · 5e-7° | 1e-6 · 1e-4° |
 | `ac_diode` | AC | 3e-7 · 9e-6° | 1e-6 · 1e-4° |
 | `ac_exported_crystal` | AC | 5e-9 · 6e-8° | 1e-6 · 1e-4° |
 | `ac_exported_ferrite_bead` | AC | 4e-9 · 5e-8° | 1e-8 · 1e-4° |
 | `ac_exported_transformer` | AC | 3e-9 · 5e-8° | 1e-6 · 1e-4° |
 | `ac_jfet` | AC | 3e-6 · 1e-4° | 2e-5 · 1e-3° |
 | `ac_mosfet_cs` | AC | 5e-9 · 6e-7° | 1e-6 · 1e-4° |
+| `ac_partial_decade` | AC | 2e-9 · 4e-8° | 1e-8 · 1e-4° |
 | `ac_rc_lowpass` | AC | 4e-9 · 5e-8° | 1e-6 · 1e-4° |
 | `ac_rlc_bandpass` | AC | 4e-9 · 5e-8° | 1e-6 · 1e-4° |
 | `cv_1n4148` | Diode charge (AC) | 2e-4 | 1e-3 |
 | `cv_1n5819` | Diode charge (AC) | 2e-6 | 1e-3 |
 | `noise_bjt_ce` | Noise | 7e-7 | 1e-5 |
+| `noise_partial_decade` | Noise | 2e-7 | 1e-6 |
 | `noise_rc_lowpass` | Noise | 2e-7 | 1e-6 |
 | `noise_rc_total` | Noise | 2e-7 | 1e-4 |
 | `tran_bjt_switch` | Transient | 2.6 % FS | 3 % FS |
