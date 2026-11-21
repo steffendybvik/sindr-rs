@@ -677,6 +677,8 @@ let yield_ = mc.yield_within("f3db", 1.4e3, 1.8e3);
 let worst = corners(&circuit, &tolerances, &Corners::All, &[bandwidth], |c| solve_ac(c, &ac))?;
 ```
 
+Worst case on top of the runs: `mc.check_specs(&specs)` gives each spec's pass, fail and unmeasured counts, its yield, and the `WorstRun` nearest or furthest past a limit (with its signed margin and the tolerance values behind it). `ratings_over(&circuit, &Sampling::Corners { tolerances, which: Corners::All }, solve_op)` runs `check_ratings` on every run and reports each part and rating at its worst: value, margin, the run, its tolerance values, the time for a transient, and how many runs exceeded it.
+
 A `Tolerance` varies one component's resistance, capacitance, inductance or source value by a relative band, uniformly or Gaussian (`sigmas` standard deviations across the band, 3 by default). `corners` runs every low/high combination (up to 16 tolerances) or a `Corners::List`. Each run draws from its own seeded stream, so a seed repeats exactly, and the `parallel` feature spreads runs across threads without changing them. A run whose analysis fails is kept with its error, and counted in `failed`.
 
 ## Ratings checks
