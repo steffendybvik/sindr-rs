@@ -1,5 +1,5 @@
 use super::*;
-use crate::ac_analysis::{AcConfig, FrequencySpacing};
+use crate::ac_analysis::AcConfig;
 use crate::waveform::Waveform;
 use crate::TransientConfig;
 
@@ -272,15 +272,7 @@ fn ac_and_dc_sweep_name_a_bench_source() {
     let netlist = divider("1k", "1k");
     let ac = Bench::new("gnd")
         .with_source(BenchSource::voltage("sig", "in", 0.0))
-        .with_analysis(Analysis::Ac(AcConfig {
-            f_start: 10.0,
-            f_stop: 1e3,
-            num_points: 3,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "sig".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        }));
+        .with_analysis(Analysis::Ac(AcConfig::new("sig", 10.0, 1e3, 3)));
     let Simulation::Ac(r) = simulate(&netlist, &ac).unwrap().result else {
         panic!()
     };

@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::spice::{parse_file, parse_str};
 use sindr::{solve_circuit, solve_transient, Circuit, CircuitElement};
 
@@ -171,15 +171,7 @@ fn per_call(s: &Settings, dir: &Path, startup: Duration) {
     println!("## Time per call (golden decks)\n");
     println!("| Case | sindr in-process | ngspice -b | ngspice minus startup | vs spawn |");
     println!("|---|---:|---:|---:|---:|");
-    let ac = AcConfig {
-        f_start: 100.0,
-        f_stop: 100e3,
-        num_points: 61,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "v1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let ac = AcConfig::new("v1", 100.0, 100e3, 61);
     let cases: [(&str, &str, &str); 4] = [
         ("op_diode_series", "op", "op"),
         ("op_bjt_ce", "op", "op"),

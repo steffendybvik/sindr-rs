@@ -23,7 +23,7 @@ use std::collections::HashMap;
 impl TransientData {
     /// The waveforms as CSV: `time` (s), then `v(<node>)` (V) and
     /// `i(<id>)` (A, each component's `current_through`), one row per
-    /// timestep. See the [module docs](crate::csv) for the layout.
+    /// timestep. See [CSV export](crate#csv-export) for the layout.
     pub fn to_csv(&self) -> String {
         real_table(
             "time",
@@ -36,7 +36,8 @@ impl TransientData {
 
 impl DcSweepResult {
     /// The sweep as CSV: the swept source's value, in a column named after
-    /// it, then `v(<node>)` (V) and `i(<id>)` (A), one row per point.
+    /// it, then `v(<node>)` (V) and `i(<id>)` (A), one row per point. See
+    /// [CSV export](crate#csv-export) for the layout.
     pub fn to_csv(&self) -> String {
         real_table(
             &self.source_id,
@@ -53,7 +54,8 @@ impl DcSweepResult {
 
 impl TempSweepResult {
     /// The sweep as CSV: `temperature` (K), then `v(<node>)` (V) and
-    /// `i(<id>)` (A), one row per point.
+    /// `i(<id>)` (A), one row per point. See [CSV export](crate#csv-export)
+    /// for the layout.
     pub fn to_csv(&self) -> String {
         real_table(
             "temperature",
@@ -73,6 +75,7 @@ impl AcResult {
     /// `re(v(<node>))` and `im(v(<node>))` (V, for the source's
     /// [`ac_magnitude`](crate::ac_analysis::AcConfig::ac_magnitude)), one
     /// row per frequency. Magnitude and phase follow from the two parts.
+    /// See [CSV export](crate#csv-export) for the layout.
     pub fn to_csv(&self) -> String {
         let nodes: BTreeSet<&str> = self
             .points

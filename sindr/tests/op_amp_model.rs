@@ -1,7 +1,7 @@
 //! Op-amp macromodel (`OpAmpModel`): closed-loop bandwidth from GBW, slew
 //! rate, rail clamp, output resistance, offset and bias current.
 
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::{
     solve_circuit, solve_transient, Circuit, CircuitElement, OpAmpModel, SimError, TransientConfig,
     Waveform,
@@ -122,19 +122,7 @@ fn closed_loop_bandwidth_is_gbw_over_gain() {
         ..OpAmpModel::default()
     };
     let circuit = non_inverting(source(0.0, None), 9e3, 1e3, model);
-    let ac = solve_ac(
-        &circuit,
-        &AcConfig {
-            f_start: 1e3,
-            f_stop: 1e6,
-            num_points: 301,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        },
-    )
-    .unwrap();
+    let ac = solve_ac(&circuit, &AcConfig::new("VIN", 1e3, 1e6, 301)).unwrap();
     let gain = |p: &sindr::ac_analysis::AcPoint| p.node_voltages["out"].norm();
     assert!((gain(&ac.points[0]) - 10.0).abs() < 0.01);
     // −3 dB at gbw · (1 + gain·β) / gain ≈ 100 kHz.
@@ -155,19 +143,7 @@ fn without_a_pole_ac_is_flat() {
         ..OpAmpModel::default()
     };
     let circuit = non_inverting(source(0.0, None), 9e3, 1e3, model);
-    let ac = solve_ac(
-        &circuit,
-        &AcConfig {
-            f_start: 1e3,
-            f_stop: 1e9,
-            num_points: 2,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        },
-    )
-    .unwrap();
+    let ac = solve_ac(&circuit, &AcConfig::new("VIN", 1e3, 1e9, 2)).unwrap();
     for p in &ac.points {
         assert!((p.node_voltages["out"].norm() - 10.0).abs() < 0.01);
     }
@@ -367,17 +343,7 @@ fn transfer_function_sees_the_model() {
         ..OpAmpModel::default()
     };
     let circuit = non_inverting(source(0.1, None), 9e3, 1e3, model);
-    let tf = solve_tf(
-        &circuit,
-        &TfConfig {
-            output: TfOutput::Voltage {
-                node: "out".into(),
-                reference: None,
-            },
-            input_source: "VIN".into(),
-        },
-    )
-    .unwrap();
+    let tf = solve_tf(&circuit, &TfConfig::new(TfOutput::voltage("out"), "VIN")).unwrap();
     assert!((tf.gain - 10.0).abs() < 2e-3, "gain {}", tf.gain);
     // r_out / (1 + loop gain) ≈ 100 Ω / 1e4, in parallel with the load.
     assert!(

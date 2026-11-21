@@ -6,6 +6,9 @@
 //! In AC analysis it is the capacitance at the DC bias point.
 
 /// Varactor diode parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VaractorParams {

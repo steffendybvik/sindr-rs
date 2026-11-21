@@ -45,6 +45,9 @@ use crate::circuit::{Circuit, CircuitElement};
 pub const PATH_SEPARATOR: char = '.';
 
 /// A reusable block definition: what `.subckt` is in SPICE.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Block {
@@ -97,6 +100,9 @@ impl Instance {
 
 /// Part data for a component or instance: what a schematic or BOM needs.
 /// The simulator ignores it.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -138,6 +144,9 @@ pub struct Part {
 ///
 /// Rθ is [`rth_jc`](Self::rth_jc) + [`rth_ca`](Self::rth_ca) when both are
 /// set (a part on a heatsink), otherwise [`rth_ja`](Self::rth_ja).
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -208,6 +217,9 @@ impl Thermal {
 /// a part needs but doesn't have is reported as unverified, never as a
 /// pass. Which ratings a component needs depends on its kind; see
 /// `sindr::ratings`.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

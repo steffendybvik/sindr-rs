@@ -5,6 +5,7 @@
 
 /// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum AnalysisRequest {
     /// `.op` — DC operating-point analysis.
     Op,
@@ -295,10 +296,9 @@ impl AnalysisRequest {
     /// ```
     pub fn tf_config(&self) -> Option<crate::TfConfig> {
         match self {
-            AnalysisRequest::Tf { output, input } => Some(crate::TfConfig {
-                output: output.clone(),
-                input_source: input.clone(),
-            }),
+            AnalysisRequest::Tf { output, input } => {
+                Some(crate::TfConfig::new(output.clone(), input.clone()))
+            }
             _ => None,
         }
     }
@@ -337,15 +337,10 @@ impl AnalysisRequest {
             return None;
         };
         let (f_stop, num_points, spacing) = sweep_grid(true, *sweep, *points, *fstart, *fstop);
-        Some(crate::ac_analysis::AcConfig {
-            f_start: *fstart,
-            f_stop,
-            num_points,
-            spacing,
-            source_id: source_id.to_string(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        })
+        Some(
+            crate::ac_analysis::AcConfig::new(source_id, *fstart, f_stop, num_points)
+                .with_spacing(spacing),
+        )
     }
 
     /// The [`NoiseConfig`](crate::NoiseConfig) for a `.noise` request, to
@@ -411,9 +406,7 @@ impl AnalysisRequest {
     /// ```
     pub fn sens_config(&self) -> Option<crate::SensConfig> {
         match self {
-            AnalysisRequest::Sens { output } => Some(crate::SensConfig {
-                output: output.clone(),
-            }),
+            AnalysisRequest::Sens { output } => Some(crate::SensConfig::new(output.clone())),
             _ => None,
         }
     }
@@ -421,6 +414,7 @@ impl AnalysisRequest {
 
 /// Frequency-axis spacing for an AC sweep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AcSweep {
     /// `dec` — points per decade, log spacing.
     Dec,
@@ -432,6 +426,7 @@ pub enum AcSweep {
 
 /// Which analysis a `.meas` card measures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MeasureAnalysis {
     /// `.meas tran`: on the `.tran` result, x is time (s).
     Tran,

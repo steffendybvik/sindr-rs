@@ -99,6 +99,8 @@
 //!             let tf = sindr::solve_tf(&netlist.circuit, &analysis.tf_config().unwrap())?;
 //!             println!("tf: gain {}, rin {} Ω, rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
 //!         }
+//!         // `AnalysisRequest` is non-exhaustive: later releases add analyses.
+//!         other => println!("not run here: {other:?}"),
 //!     }
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())
@@ -237,6 +239,7 @@ use std::path::Path;
 /// translate flattened node names back to their
 /// original `(instance_path, node)` pair.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ParsedNetlist {
     /// The circuit, with each `.subckt` as a [`Block`](crate::Block) and each
     /// X line as an [`Instance`](crate::Instance). A subckt whose instances

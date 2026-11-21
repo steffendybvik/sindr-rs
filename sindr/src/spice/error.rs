@@ -23,6 +23,7 @@ use thiserror::Error;
 /// values): they point at the offending line, inside the `.include`d file
 /// when that is where it is.
 #[derive(Error, Debug, Diagnostic)]
+#[non_exhaustive]
 pub enum SpiceParseError {
     /// First character of an element line was not a recognised device prefix.
     #[error("unknown device prefix '{prefix}'")]
@@ -316,6 +317,7 @@ impl SpiceParseError {
 /// Plain data — callers decide how (or whether) to render. The parser fills
 /// `span` and `file` whenever the warning is locatable.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ParseWarning {
     /// Human-readable warning message.
     pub message: String,

@@ -693,7 +693,7 @@ fn comparator_switches_between_rails_in_transient() {
 /// with it pinned to one.
 #[test]
 fn comparator_in_ac() {
-    use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+    use sindr::ac_analysis::{solve_ac, AcConfig};
 
     for (bias, gain) in [(0.0, 1e5), (1.0, 0.0)] {
         let circuit = Circuit {
@@ -706,19 +706,7 @@ fn comparator_in_ac() {
             ],
             ..Default::default()
         };
-        let ac = solve_ac(
-            &circuit,
-            &AcConfig {
-                f_start: 1.0,
-                f_stop: 1e6,
-                num_points: 7,
-                spacing: FrequencySpacing::Logarithmic,
-                source_id: "Vin".into(),
-                ac_magnitude: 1.0,
-                ac_phase_deg: 0.0,
-            },
-        )
-        .expect("ac");
+        let ac = solve_ac(&circuit, &AcConfig::new("Vin", 1.0, 1e6, 7)).expect("ac");
         for point in &ac.points {
             assert_relative_eq!(
                 point.node_voltages["out"].norm(),

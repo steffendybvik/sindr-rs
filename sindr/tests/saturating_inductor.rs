@@ -147,15 +147,7 @@ fn ac_uses_the_incremental_inductance_at_the_bias() {
     let corner = r / (2.0 * std::f64::consts::PI * l_inc);
     let result = solve_ac(
         &circuit,
-        &AcConfig {
-            f_start: corner,
-            f_stop: corner,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        },
+        &AcConfig::new("V1", corner, corner, 1).with_spacing(FrequencySpacing::Linear),
     )
     .expect("solves");
     let gain = result.points[0].node_voltages["b"].norm();

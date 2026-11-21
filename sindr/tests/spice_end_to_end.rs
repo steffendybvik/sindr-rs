@@ -531,16 +531,11 @@ fn ac_config_drives_a_source_inside_a_subckt() {
     assert_eq!(config.source_id, "x1.vs");
     let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config).unwrap();
     // At the 159 Hz pole the RC is 3 dB down.
-    let at_pole = sindr::ac_analysis::solve_ac(
-        &netlist.circuit,
-        &sindr::ac_analysis::AcConfig {
-            f_start: 159.154_943,
-            f_stop: 159.154_943,
-            num_points: 1,
-            ..config.clone()
-        },
-    )
-    .unwrap();
+    let mut at_pole_config = config.clone();
+    at_pole_config.f_start = 159.154_943;
+    at_pole_config.f_stop = 159.154_943;
+    at_pole_config.num_points = 1;
+    let at_pole = sindr::ac_analysis::solve_ac(&netlist.circuit, &at_pole_config).unwrap();
     assert_relative_eq!(
         at_pole.points[0].node_voltages["out"].norm(),
         std::f64::consts::FRAC_1_SQRT_2,

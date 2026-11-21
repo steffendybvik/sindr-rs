@@ -486,15 +486,10 @@ Small-signal frequency response around the DC operating point. Nonlinear devices
 # let mut circuit = Circuit::default();
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 
-let config = AcConfig {
-    f_start: 1.0,
-    f_stop: 100_000.0,
-    num_points: 51,
-    spacing: FrequencySpacing::Logarithmic, // or Linear
-    source_id: "V1".into(),                 // voltage source that carries the AC stimulus
-    ac_magnitude: 1.0,
-    ac_phase_deg: 0.0,
-};
+// 51 points from 1 Hz to 100 kHz, driving V1 (the voltage source that
+// carries the AC stimulus) with 1 V at 0°.
+let config = AcConfig::new("V1", 1.0, 100_000.0, 51)
+    .with_spacing(FrequencySpacing::Logarithmic); // the default; or Linear
 let result = solve_ac(&circuit, &config)?;
 
 let gain = result.gain_curve("n_out");   // (Hz, dB)
@@ -513,10 +508,8 @@ SPICE's `.tf`: the small-signal DC gain from an input source to an output, the r
 # let mut circuit = Circuit::default();
 use sindr::{solve_tf, TfConfig, TfOutput};
 
-let config = TfConfig {
-    output: TfOutput::Voltage { node: "out".into(), reference: None }, // or TfOutput::Current { source_id }
-    input_source: "V1".into(),                                         // a voltage or current source
-};
+// Output V(out), or TfOutput::current("Vsense"); input a voltage or current source.
+let config = TfConfig::new(TfOutput::voltage("out"), "V1");
 let tf = solve_tf(&circuit, &config)?;
 println!("{} V/V, Rin {} Ω, Rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -533,9 +526,7 @@ SPICE's `.sens`: the derivative of one DC output with respect to each component 
 # let mut circuit = Circuit::default();
 use sindr::{solve_sensitivity, SensConfig, TfOutput};
 
-let config = SensConfig {
-    output: TfOutput::Voltage { node: "out".into(), reference: None }, // or TfOutput::Current { source_id }
-};
+let config = SensConfig::new(TfOutput::voltage("out")); // or TfOutput::current("Vsense")
 let sens = solve_sensitivity(&circuit, &config)?;
 
 for e in &sens.entries {
@@ -554,17 +545,9 @@ SPICE's `.noise`: thermal noise of resistances and FET channels, shot noise of j
 # use sindr::*;
 # let mut circuit = Circuit::default();
 use sindr::{solve_noise, NoiseConfig};
-use sindr::ac_analysis::FrequencySpacing;
 
-let noise = solve_noise(&circuit, &NoiseConfig {
-    output: "out".into(),
-    reference: None,
-    input_source: "V1".into(),
-    f_start: 10.0,
-    f_stop: 100e3,
-    num_points: 41,
-    spacing: FrequencySpacing::Logarithmic,
-})?;
+// V(out) referred to V1, 41 log-spaced points from 10 Hz to 100 kHz.
+let noise = solve_noise(&circuit, &NoiseConfig::new("out", "V1", 10.0, 100e3, 41))?;
 
 println!("{:.2} µV rms at the output", noise.total_output_noise * 1e6);
 for (source, total) in noise.sources.iter().zip(&noise.source_totals) {
@@ -798,7 +781,7 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
 | `import_netlist` | Importing a schematic netlist with a test bench |
 | `parse_netlist` | SPICE input (`--features spice`) |
-| `list_examples`, `run_example` | The built-in named circuits |
+| `list_examples`, `run_example` | The built-in named circuits (`--features examples`) |
 
 ## Error handling
 

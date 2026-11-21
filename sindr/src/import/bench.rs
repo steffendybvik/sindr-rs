@@ -14,6 +14,7 @@ use crate::SimError;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Attach {
     /// A net, by its id, or by its display name when no net has that id
     /// and only one net has that name.
@@ -44,6 +45,7 @@ impl From<Pin> for Attach {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum SourceKind {
     /// A voltage, `plus` above `minus`.
     Voltage {
@@ -162,6 +164,7 @@ impl BenchSource {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum LoadKind {
     /// A resistance (Ω).
     Resistor(f64),
@@ -233,6 +236,7 @@ impl BenchLoad {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Analysis {
     /// The DC operating point: capacitors open, inductors shorted,
     /// waveforms at their DC value. Self-heating applies.
@@ -354,6 +358,7 @@ pub(super) fn voltage_from_name(name: &str) -> Option<f64> {
 
 /// A netlist built against a bench, and the result of the bench's analysis.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Imported {
     /// The circuit that ran, and the node of each net.
     pub circuit: ImportedCircuit,
@@ -364,6 +369,7 @@ pub struct Imported {
 /// The result of a [`Bench`]'s analysis.
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum Simulation {
     /// [`Analysis::OperatingPoint`].
     OperatingPoint(SimulationResult),

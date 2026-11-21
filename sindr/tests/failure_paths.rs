@@ -3,7 +3,7 @@
 //! runs through every analysis that takes a circuit, since each has its own
 //! path into validation and the solver.
 
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::{
     dc_sweep, solve_circuit, solve_transient, validate_circuit, Circuit, CircuitElement, SimError,
     TransientConfig,
@@ -56,15 +56,7 @@ fn l(id: &str, a: &str, b: &str, inductance: f64) -> CircuitElement {
 /// hands each error to `check`. A panic fails the test with the analysis
 /// named; an `Ok` fails it too.
 fn every_analysis_fails(circuit: &Circuit, check: impl Fn(&str, SimError)) {
-    let ac = AcConfig {
-        f_start: 1.0,
-        f_stop: 1e3,
-        num_points: 3,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let ac = AcConfig::new("V1", 1.0, 1e3, 3);
     let runs: [(&str, Result<(), SimError>); 4] = [
         ("dc", solve_circuit(circuit).map(|_| ())),
         (
@@ -224,15 +216,7 @@ fn current_sources_in_series() {
 #[test]
 fn voltage_source_across_an_inductor_has_no_ac_operating_point() {
     let circuit = Circuit::new("0", vec![v("V1", "a", "0", 5.0), l("L1", "a", "0", 1e-3)]);
-    let ac = AcConfig {
-        f_start: 1.0,
-        f_stop: 1e3,
-        num_points: 3,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let ac = AcConfig::new("V1", 1.0, 1e3, 3);
     assert!(matches!(
         solve_ac(&circuit, &ac),
         Err(SimError::SingularMatrix)

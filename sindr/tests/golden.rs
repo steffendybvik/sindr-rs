@@ -623,15 +623,7 @@ fn check_ac(
     mag_tol: Tol,
 ) {
     let decades = (f.1 / f.0).log10().round() as usize;
-    let config = AcConfig {
-        f_start: f.0,
-        f_stop: f.1,
-        num_points: decades * per_decade + 1,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: source.into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let config = AcConfig::new(source, f.0, f.1, decades * per_decade + 1);
     check_ac_with(case, circuit, &config, node, mag_tol);
 }
 
@@ -883,15 +875,7 @@ fn noise(
     let decades = (f.1 / f.0).log10().round() as usize;
     solve_noise(
         circuit,
-        &NoiseConfig {
-            output: node.into(),
-            reference: None,
-            input_source: source.into(),
-            f_start: f.0,
-            f_stop: f.1,
-            num_points: decades * per_decade + 1,
-            spacing: FrequencySpacing::Logarithmic,
-        },
+        &NoiseConfig::new(node, source, f.0, f.1, decades * per_decade + 1),
     )
     .unwrap_or_else(|e| panic!("noise: {e}"))
 }
@@ -1541,15 +1525,7 @@ fn check_cv(case: &'static str) {
             }
             let ac = solve_ac(
                 &circuit,
-                &AcConfig {
-                    f_start: f,
-                    f_stop: f,
-                    num_points: 1,
-                    spacing: FrequencySpacing::Linear,
-                    source_id: "v1".into(),
-                    ac_magnitude: 1.0,
-                    ac_phase_deg: 0.0,
-                },
+                &AcConfig::new("v1", f, f, 1).with_spacing(FrequencySpacing::Linear),
             )
             .unwrap();
             let vb = ac.points[0].node_voltages["b"];

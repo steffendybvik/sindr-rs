@@ -58,14 +58,7 @@ fn v_out(node: &str) -> TfOutput {
 }
 
 fn tf(circuit: &Circuit, output: TfOutput, input: &str) -> sindr::TfResult {
-    solve_tf(
-        circuit,
-        &TfConfig {
-            output,
-            input_source: input.into(),
-        },
-    )
-    .unwrap()
+    solve_tf(circuit, &TfConfig::new(output, input)).unwrap()
 }
 
 /// 1 kΩ over 3 kΩ: gain 3/4, Rin 4 kΩ, Rout 1k ‖ 3k = 750 Ω.
@@ -282,15 +275,7 @@ fn common_emitter_stage_matches_finite_differences() {
 #[test]
 fn bad_input_or_output_is_an_error() {
     let c = divider();
-    let run = |output: TfOutput, input: &str| {
-        solve_tf(
-            &c,
-            &TfConfig {
-                output,
-                input_source: input.into(),
-            },
-        )
-    };
+    let run = |output: TfOutput, input: &str| solve_tf(&c, &TfConfig::new(output, input));
     for err in [
         run(v_out("out"), "R1"),
         run(v_out("out"), "nope"),
@@ -322,13 +307,7 @@ fn bad_input_or_output_is_an_error() {
             "V1",
         ),
     ] {
-        let err = solve_tf(
-            &with_l,
-            &TfConfig {
-                output,
-                input_source: input.into(),
-            },
-        );
+        let err = solve_tf(&with_l, &TfConfig::new(output, input));
         assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
     }
 
@@ -383,13 +362,7 @@ fn bad_port_is_reported_before_the_dc_solve() {
             "V1",
         ),
     ] {
-        let err = solve_tf(
-            &c,
-            &TfConfig {
-                output,
-                input_source: input.into(),
-            },
-        );
+        let err = solve_tf(&c, &TfConfig::new(output, input));
         assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
     }
 }
@@ -412,4 +385,30 @@ fn node_between_varactors_is_not_singular() {
     let r = tf(&c, v_out("mid"), "V1");
     // Two equal 1 TΩ leaks in series below 1 kΩ: half the input reaches mid.
     assert_relative_eq!(r.gain, 0.5, max_relative = 1e-6);
+}
+
+#[test]
+fn config_and_output_constructors() {
+    let config = TfConfig::new(TfOutput::voltage("out"), "V1");
+    assert_eq!(
+        config.output,
+        TfOutput::Voltage {
+            node: "out".into(),
+            reference: None
+        }
+    );
+    assert_eq!(config.input_source, "V1");
+    assert_eq!(
+        TfOutput::voltage_between("a", "b"),
+        TfOutput::Voltage {
+            node: "a".into(),
+            reference: Some("b".into())
+        }
+    );
+    assert_eq!(
+        TfOutput::current("Vsense"),
+        TfOutput::Current {
+            source_id: "Vsense".into()
+        }
+    );
 }

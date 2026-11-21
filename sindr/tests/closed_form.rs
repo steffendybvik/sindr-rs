@@ -145,15 +145,7 @@ fn dc_sweep_diode_matches_shockley_root() {
 /// Log sweep of `circuit` from source `V1`, 10 points per decade.
 fn ac_sweep(circuit: &Circuit, f_start: f64, f_stop: f64) -> sindr::ac_analysis::AcResult {
     let decades = (f_stop / f_start).log10().round() as usize;
-    let config = AcConfig {
-        f_start,
-        f_stop,
-        num_points: decades * 10 + 1,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let config = AcConfig::new("V1", f_start, f_stop, decades * 10 + 1);
     solve_ac(circuit, &config).unwrap()
 }
 
@@ -193,15 +185,7 @@ fn ac_rc_lowpass_matches_transfer_function() {
     // The corner: f_c = 1/(2πRC) = 159.155 Hz, −3.0103 dB, −45°.
     let f_c = 1.0 / (2.0 * PI * r * c);
     assert!((f_c - 159.155).abs() < 1e-3);
-    let config = AcConfig {
-        f_start: f_c,
-        f_stop: f_c,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let config = AcConfig::new("V1", f_c, f_c, 1).with_spacing(FrequencySpacing::Linear);
     let at_corner = &solve_ac(&lowpass, &config).unwrap().points[0];
     assert!((at_corner.gain_db("out", 1.0).unwrap() + 3.010_299_957).abs() < 1e-8);
     assert!((at_corner.phase_deg("out").unwrap() + 45.0).abs() < 1e-8);
@@ -262,15 +246,7 @@ fn ac_series_rlc_resonance() {
     assert_transfer(&series, "out", (100.0, 1e6), h);
 
     let f0 = 1.0 / (2.0 * PI * (l * c).sqrt());
-    let config = AcConfig {
-        f_start: f0,
-        f_stop: f0,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let config = AcConfig::new("V1", f0, f0, 1).with_spacing(FrequencySpacing::Linear);
     let at_f0 = solve_ac(&series, &config).unwrap().points[0].node_voltages["out"];
     assert!((at_f0 - Complex64::new(1.0, 0.0)).norm() < 1e-9, "{at_f0}");
 }

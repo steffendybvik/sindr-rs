@@ -326,15 +326,7 @@ fn heated_bias() -> (f64, f64, f64) {
 }
 
 fn ac_gain(circuit: &Circuit) -> f64 {
-    let config = AcConfig {
-        f_start: 1e3,
-        f_stop: 1e3,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: "VIN".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let config = AcConfig::new("VIN", 1e3, 1e3, 1).with_spacing(FrequencySpacing::Linear);
     let gain = solve_ac(circuit, &config).unwrap().points[0].node_voltages["c"];
     assert!(gain.im.abs() < 1e-9 * gain.re.abs(), "{gain}");
     gain.re
@@ -357,13 +349,7 @@ fn ac_linearises_at_the_heated_bias_point() {
 #[test]
 fn tf_linearises_at_the_heated_bias_point() {
     let (tj, ic, expected) = heated_bias();
-    let config = TfConfig {
-        output: TfOutput::Voltage {
-            node: "c".into(),
-            reference: None,
-        },
-        input_source: "VIN".into(),
-    };
+    let config = TfConfig::new(TfOutput::voltage("c"), "VIN");
     let tf = solve_tf(&heated_ce_stage(), &config).unwrap();
     assert!(
         (tf.gain - expected).abs() < 1e-3 * expected.abs(),
@@ -381,15 +367,7 @@ fn tf_linearises_at_the_heated_bias_point() {
 
 #[test]
 fn noise_uses_the_heated_bias_point() {
-    let config = NoiseConfig {
-        output: "c".into(),
-        reference: None,
-        input_source: "VIN".into(),
-        f_start: 1e3,
-        f_stop: 1e5,
-        num_points: 5,
-        spacing: FrequencySpacing::Logarithmic,
-    };
+    let config = NoiseConfig::new("c", "VIN", 1e3, 1e5, 5);
     let (tj, _, _) = heated_bias();
     let total = |c: &Circuit| solve_noise(c, &config).unwrap().total_output_noise;
     let heated = total(&heated_ce_stage());

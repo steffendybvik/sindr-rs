@@ -30,15 +30,7 @@ fn rc_lowpass() -> Circuit {
 }
 
 fn ac_config(f_start: f64, f_stop: f64, num_points: usize, spacing: FrequencySpacing) -> AcConfig {
-    AcConfig {
-        f_start,
-        f_stop,
-        num_points,
-        spacing,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    }
+    AcConfig::new("V1", f_start, f_stop, num_points).with_spacing(spacing)
 }
 
 fn assert_invalid<T: std::fmt::Debug>(result: Result<T, SimError>, case: &str) {
@@ -73,11 +65,7 @@ fn ac_rejects_invalid_configs() {
         ),
         (
             "NaN magnitude",
-            AcConfig {
-                ac_magnitude: f64::NAN,
-                ac_phase_deg: 0.0,
-                ..ac_config(1.0, 1e3, 10, Logarithmic)
-            },
+            ac_config(1.0, 1e3, 10, Logarithmic).with_magnitude(f64::NAN),
         ),
     ];
     for (case, config) in cases {

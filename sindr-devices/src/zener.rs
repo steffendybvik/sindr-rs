@@ -6,6 +6,9 @@
 use crate::diode::{thermal_voltage, T_NOM};
 
 /// Zener diode parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[derive(Debug, Clone)]
 pub struct ZenerParams {
     /// Breakdown voltage (V), positive: 5.1 for a BZX55C5V1.

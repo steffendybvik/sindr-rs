@@ -10,6 +10,9 @@
 use crate::diode::{diode_companion, thermal_voltage, DiodeParams, T_NOM};
 
 /// Photodiode parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct PhotodiodeParams {

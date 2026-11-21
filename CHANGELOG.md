@@ -26,8 +26,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Node names may use any Unicode letters and digits (`å`, `µ`), as in
   ngspice.
 - `AcConfig::ac_phase_deg`: the AC source's phase, which shifts every
-  node's phase as SPICE's `AC mag phase` does. It's a new field, so a
-  struct literal needs `ac_phase_deg: 0.0` (serde defaults it to 0).
+  node's phase as SPICE's `AC mag phase` does. `AcConfig::new` and serde
+  default it to 0; `with_phase_deg` sets it.
+
+### Changed
+
+- **Breaking:** the public API leaves room to grow, so a new variant,
+  result field or config option is no longer a breaking change.
+  - `#[non_exhaustive]` enums (match them with a `_` arm):
+    `CircuitElement`, `Waveform`, `FrequencySpacing`, `SensParameter`,
+    `TfOutput`, `measure::Occurrence`, and in `spice` `SpiceParseError`,
+    `ExportError`, `AnalysisRequest`, `AcSweep` and `MeasureAnalysis`,
+    and in `import` `Analysis`, `Simulation`, `SourceKind`, `LoadKind`,
+    `Attach`, `ComponentKind`, `Model` and `Value`. `CircuitElement`'s
+    variants stay open, so struct-variant literals still compile.
+  - `#[non_exhaustive]` results, read but not built outside sindr:
+    `SimulationResult` and the per-component, transient, AC, noise, `.tf`,
+    `.sens`, sweep, measurement, spec and ratings results, and
+    `ParsedNetlist`, `ParseWarning`, `ImportedCircuit` and `Imported`.
+  - `AcConfig`, `NoiseConfig`, `TfConfig`, `SensConfig` and
+    `DcSweepAxis` are `#[non_exhaustive]` with constructors:
+    `AcConfig::new(source, f_start, f_stop, points)` with
+    `with_spacing`, `with_magnitude` and `with_phase_deg`;
+    `NoiseConfig::new(output, input, f_start, f_stop, points)` with
+    `with_reference` and `with_spacing`; `TfConfig::new(output, input)`;
+    `SensConfig::new(output)`. `TfOutput::voltage`, `voltage_between`
+    and `current` build the outputs. The fields stay readable.
+  - `measure::Measurable` is sealed.
+- **Breaking:** the deprecated `solve_circuit_with_initial_voltages` and
+  the `solve_ac`, `solve_noise`, `solve_tf` and `solve_sensitivity`
+  `_with_initial_voltages` variants are removed. Use
+  `Solver::new(SolverOptions::default().with_nodeset(..))`.
+- **Breaking:** the `examples` feature is off by default and no longer
+  pulls in `serde`; `get_examples` needs `features = ["examples"]`. The
+  example circuits in `sindr::examples` are always there.
+- **Breaking:** `results::extract_results` is private, and the `csv`
+  module is too; the `to_csv` methods are unchanged.
+- `sindr::devices` re-exports `sindr-devices`, so its `*Params` types
+  need no second dependency.
 
 ### Fixed
 

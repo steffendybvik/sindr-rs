@@ -28,9 +28,11 @@
 //!
 //! Device physics (diode, BJT, MOSFET, IGBT, JFET, varactor companion models)
 //! live in the companion crate
-//! [`sindr-devices`](https://crates.io/crates/sindr-devices). `sindr`
-//! re-exports the few enums you'll typically need ([`BjtKind`],
-//! [`MosfetKind`], [`JfetKind`], etc.).
+//! [`sindr-devices`](https://crates.io/crates/sindr-devices), re-exported
+//! whole as [`devices`], so `sindr::devices::mosfet::MosfetParams` and
+//! `sindr::devices::inductor::InductorSaturation` need no second
+//! dependency. The few enums you'll typically need ([`BjtKind`],
+//! [`MosfetKind`], [`JfetKind`], etc.) are also at the root.
 //!
 //! # Quick start
 //!
@@ -157,16 +159,16 @@
 //!
 //! - `serde` *(default)* — `Serialize`/`Deserialize` impls on the public
 //!   types.
-//! - `examples` *(default, implies `serde`)* — exposes [`get_examples`] and
-//!   the built-in named circuits (voltage divider, BJT amp, RC transient,
-//!   etc.).
+//! - `examples` — exposes [`get_examples`]: the built-in named circuits
+//!   (voltage divider, BJT amp, RC transient, etc.) with ids and
+//!   descriptions. The circuits themselves are always in [`examples`].
 //! - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
 //!
 //! ```toml
 //! [dependencies]
 //! sindr = "0.1"
 //!
-//! # No serde, no built-in examples:
+//! # No serde:
 //! sindr = { version = "0.1", default-features = false }
 //! ```
 //!
@@ -214,6 +216,20 @@
 //! assert!(first.node_voltages["out"] < 1.0);
 //! assert!((last.node_voltages["out"] - 5.0).abs() < 0.1);
 //! ```
+//!
+//! # CSV export
+//!
+//! [`TransientData::to_csv`], [`AcResult::to_csv`],
+//! [`DcSweepResult::to_csv`] and [`TempSweepResult::to_csv`] write one row
+//! per point: the scale (time, frequency, swept value or temperature)
+//! first, then a column per node voltage, `v(<node>)` with nodes in name
+//! order, then for real-valued results a column per component current,
+//! `i(<id>)`, in circuit order. AC writes each node voltage as two columns,
+//! `re(v(<node>))` and `im(v(<node>))`.
+//!
+//! Numbers are written so they read back as the same `f64`. A value missing
+//! from a row is an empty field. Names that need it are quoted as RFC 4180
+//! has it. Lines end in `\n`.
 //!
 //! # SPICE netlist input
 //!
@@ -265,7 +281,7 @@ pub mod ac_analysis;
 mod battery_state;
 pub mod circuit;
 mod composite;
-pub mod csv;
+mod csv;
 pub mod dc_sweep;
 pub mod design;
 mod device_params;
@@ -324,6 +340,9 @@ pub use transient::{solve_transient, IntegrationMethod, TransientConfig, Transie
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
 
+/// The device-physics crate, `sindr-devices`, at the version this `sindr`
+/// is built with: every `*Params` struct a [`CircuitElement`] takes.
+pub use sindr_devices as devices;
 // Device physics re-exports from sindr-devices — convenience for callers
 // constructing CircuitElement variants without an extra crate import.
 /// Battery equivalent circuits and presets, for [`CircuitElement::Battery`].
@@ -762,27 +781,6 @@ fn dc_reactances(circuit: &Circuit) -> Circuit {
         globals: circuit.globals.clone(),
         ..Default::default()
     }
-}
-
-/// Like [`solve_circuit`] but seeds the Newton–Raphson initial guess with
-/// the supplied per-node voltages (V), keyed by node name, as SPICE's
-/// `.NODESET`. Use a [`Solver`] whose [`SolverOptions::nodeset`] holds them.
-///
-/// # Errors
-///
-/// As [`solve_circuit`].
-#[deprecated(
-    since = "0.1.0",
-    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).circuit(..)`"
-)]
-pub fn solve_circuit_with_initial_voltages(
-    circuit: &Circuit,
-    initial_voltages: &std::collections::HashMap<String, f64>,
-) -> Result<SimulationResult, SimError> {
-    solve_circuit_with(
-        circuit,
-        &SolverOptions::default().with_nodeset(initial_voltages.clone()),
-    )
 }
 
 // Compiles and runs the README's code blocks as doctests so they stay current.

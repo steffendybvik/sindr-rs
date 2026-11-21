@@ -46,25 +46,11 @@ fn relay_divider(v_coil: f64) -> Circuit {
 }
 
 fn ac(source_id: &str) -> AcConfig {
-    AcConfig {
-        f_start: 1e3,
-        f_stop: 1e3,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: source_id.into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    }
+    AcConfig::new(source_id, 1e3, 1e3, 1).with_spacing(FrequencySpacing::Linear)
 }
 
 fn tf() -> TfConfig {
-    TfConfig {
-        output: TfOutput::Voltage {
-            node: "out".into(),
-            reference: None,
-        },
-        input_source: "V1".into(),
-    }
+    TfConfig::new(TfOutput::voltage("out"), "V1")
 }
 
 #[test]

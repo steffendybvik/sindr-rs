@@ -15,6 +15,7 @@ use std::f64::consts::PI;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
+#[non_exhaustive]
 pub enum Waveform {
     /// Sinusoidal: amplitude * sin(2*pi*frequency*t + phase) + offset
     #[cfg_attr(feature = "serde", serde(rename = "sine"))]

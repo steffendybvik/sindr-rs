@@ -6,8 +6,6 @@
 //! as `dy/dp = λᵀ(∂b/∂p − (∂A/∂p)·x)`, so the cost doesn't grow with the
 //! number of parameters.
 
-use std::collections::HashMap;
-
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -18,17 +16,34 @@ use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
 use crate::transfer_function::{independent_vsource_branch, Port, TfOutput};
 
-/// Sensitivity-analysis configuration.
+/// Sensitivity-analysis configuration. Build one with [`SensConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SensConfig {
     /// The output whose sensitivities are wanted.
     pub output: TfOutput,
 }
 
+impl SensConfig {
+    /// The sensitivities of `output`, as SPICE's `.sens output`.
+    ///
+    /// ```
+    /// use sindr::{SensConfig, TfOutput};
+    ///
+    /// // SPICE `.sens i(Vsense)`.
+    /// let config = SensConfig::new(TfOutput::current("Vsense"));
+    /// assert_eq!(config.output, TfOutput::Current { source_id: "Vsense".into() });
+    /// ```
+    pub fn new(output: TfOutput) -> Self {
+        Self { output }
+    }
+}
+
 /// Which parameter of a component a [`SensEntry`] is for.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SensParameter {
     /// A resistor's resistance (Ω).
     Resistance,
@@ -45,6 +60,7 @@ pub enum SensParameter {
 /// The sensitivity of the output to one component parameter.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SensEntry {
     /// Id of the component.
     pub component_id: String,
@@ -63,6 +79,7 @@ pub struct SensEntry {
 /// Result of a sensitivity analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SensResult {
     /// One entry per supported parameter, in circuit order. Components with
     /// no entry: see [`solve_sensitivity`].
@@ -122,9 +139,7 @@ impl SensResult {
 ///     ..Default::default()
 /// };
 ///
-/// let config = SensConfig {
-///     output: TfOutput::Voltage { node: "out".into(), reference: None },
-/// };
+/// let config = SensConfig::new(TfOutput::voltage("out"));
 /// let sens = solve_sensitivity(&circuit, &config)?;
 ///
 /// assert!((sens.get("V1").unwrap().sensitivity - 0.75).abs() < 1e-12);
@@ -136,29 +151,6 @@ pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensR
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     solve_sensitivity_with(circuit, config, &crate::SolverOptions::default())
-}
-
-/// Like [`solve_sensitivity`], seeding the Newton–Raphson solve for the DC
-/// bias point with node voltages (V) keyed by node name, as SPICE's
-/// `.nodeset`. Unknown node names are ignored.
-///
-/// # Errors
-///
-/// As [`solve_sensitivity`].
-#[deprecated(
-    since = "0.1.0",
-    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).sensitivity(..)`"
-)]
-pub fn solve_sensitivity_with_initial_voltages(
-    circuit: &Circuit,
-    config: &SensConfig,
-    initial_voltages: &HashMap<String, f64>,
-) -> Result<SensResult, SimError> {
-    solve_sensitivity_with(
-        circuit,
-        config,
-        &crate::SolverOptions::default().with_nodeset(initial_voltages.clone()),
-    )
 }
 
 /// [`solve_sensitivity`] with `opts`.

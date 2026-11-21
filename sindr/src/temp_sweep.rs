@@ -14,6 +14,7 @@ use crate::results::SimulationResult;
 /// One temperature sweep data point.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TempSweepPoint {
     /// Temperature for this point (Kelvin).
     pub temperature_kelvin: f64,
@@ -27,6 +28,7 @@ pub struct TempSweepPoint {
 /// vector to iterate `(temperature, result)` pairs.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TempSweepResult {
     /// Start of the swept temperature range (K).
     pub temp_start: f64,

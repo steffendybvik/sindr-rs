@@ -383,16 +383,16 @@ pub fn npn_switch() -> Circuit {
 
 // ============================================================================
 // Metadata aggregator — for HTTP/UI listing.
-// Gated behind `examples` (which implies `serde`).
+// Gated behind `examples`; serialisable with `serde`.
 // ============================================================================
 
 #[cfg(feature = "examples")]
 mod meta {
     use super::*;
-    use serde::{Deserialize, Serialize};
 
     /// A named, simulatable example circuit with display metadata.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[derive(Debug, Clone)]
     pub struct ExampleCircuit {
         /// Stable identifier used for lookup and routing.
         pub id: String,

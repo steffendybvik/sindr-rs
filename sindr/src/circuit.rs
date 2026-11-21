@@ -21,6 +21,9 @@ use crate::design::{Block, Instance, Part};
 use crate::waveform::Waveform;
 
 /// BJT parasitic capacitances. All values in Farads. Default 0.0 disables each cap.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BjtParasiticCaps {
@@ -39,6 +42,9 @@ pub struct BjtParasiticCaps {
 ///
 /// The default is sindr's built-in silicon diode. With serde, a missing field
 /// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -107,6 +113,9 @@ impl DiodeModel {
 ///
 /// The default is sindr's built-in transistor. With serde, a missing field
 /// takes its default.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,6 +171,9 @@ impl Default for BjtModel {
 /// (0 V) at t = 0.
 ///
 /// [`solve_circuit`]: https://docs.rs/sindr/latest/sindr/fn.solve_circuit.html
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -197,6 +209,9 @@ impl Default for OpAmpModel {
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Optional gate capacitances of a MOSFET, for transient and AC.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MosfetParasiticCaps {
     /// Gate-Source capacitance (F). Typical: 100–500 pF for power MOSFETs.
@@ -322,6 +337,7 @@ impl FerriteBeadParams {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
+#[non_exhaustive]
 pub enum CircuitElement {
     /// Resistor between two nodes.
     #[cfg_attr(feature = "serde", serde(rename = "resistor"))]
@@ -1262,6 +1278,9 @@ impl CircuitElement {
 /// );
 /// assert!(circuit.is_flat());
 /// ```
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Circuit {

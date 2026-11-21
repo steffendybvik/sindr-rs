@@ -32,6 +32,7 @@ use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 /// (`Vin − Vout`, the output current, and its dissipation).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ComponentResult {
     /// Component id (matches the id on the source [`CircuitElement`]).
     pub id: String,
@@ -47,6 +48,7 @@ pub struct ComponentResult {
 /// power, and which region of operation the device is in.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct BjtResult {
     /// Component id.
     pub id: String,
@@ -73,6 +75,7 @@ pub struct BjtResult {
 /// Per-MOSFET operating-point results.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct MosfetResult {
     /// Component id.
     pub id: String,
@@ -92,6 +95,7 @@ pub struct MosfetResult {
 /// Per-op-amp / comparator results: input/output voltages.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OpAmpResult {
     /// Component id.
     pub id: String,
@@ -108,6 +112,7 @@ pub struct OpAmpResult {
 /// Per-relay results: coil voltage and contact state.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RelayResult {
     /// Component id.
     pub id: String,
@@ -121,6 +126,7 @@ pub struct RelayResult {
 /// state at that instant.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TimestepSnapshot {
     /// Simulation time at this snapshot (s).
     pub time: f64,
@@ -152,6 +158,7 @@ pub struct TimestepSnapshot {
 /// reactive elements (capacitors, inductors) or time-varying sources.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TransientData {
     /// Snapshots at each accepted integration step, in time order. They
     /// include every multiple of `time_step`, every waveform breakpoint and
@@ -194,6 +201,7 @@ pub struct TransientStats {
 ///   sources (DC analysis returns `None`)
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SimulationResult {
     /// Voltage at every node (V), keyed by node name. Includes the ground
     /// node (always 0.0).
@@ -321,7 +329,7 @@ pub(crate) fn regulator_result(
 ///
 /// Builds node voltages, branch currents (for voltage sources), and
 /// per-component V/I/P using passive sign convention.
-pub fn extract_results(
+pub(crate) fn extract_results(
     circuit: &Circuit,
     node_map: &NodeMap,
     solution: &DVector<f64>,

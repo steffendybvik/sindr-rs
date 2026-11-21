@@ -2,7 +2,7 @@
 //! than 10⁷ transient steps or sweep points returns an error instead of
 //! hanging or failing to allocate.
 
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::{
     dc_sweep, solve_circuit, solve_transient, temperature_sweep, Circuit, CircuitElement, SimError,
     TransientConfig, Waveform,
@@ -129,15 +129,7 @@ fn divider() -> Circuit {
 
 #[test]
 fn huge_sweeps_are_errors_not_panics() {
-    let ac = AcConfig {
-        f_start: 1.0,
-        f_stop: 1e6,
-        num_points: usize::MAX,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let ac = AcConfig::new("V1", 1.0, 1e6, usize::MAX);
     assert_invalid(solve_ac(&divider(), &ac), "num_points");
     assert_invalid(
         dc_sweep(&divider(), "V1", 0.0, 1.0, usize::MAX),

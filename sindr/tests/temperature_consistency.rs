@@ -173,15 +173,7 @@ fn transient_reported_device_current_obeys_kcl_off_nominal_temperature() {
 }
 
 fn ac_gain_at_n2(circuit: &Circuit) -> f64 {
-    let config = AcConfig {
-        f_start: 10.0,
-        f_stop: 10.0,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let config = AcConfig::new("V1", 10.0, 10.0, 1).with_spacing(FrequencySpacing::Linear);
     let ac = solve_ac(circuit, &config).expect("AC solve");
     ac.points[0].node_voltages["n2"].norm()
 }
@@ -278,15 +270,7 @@ fn ac_bjt_transconductance_matches_dc_model_off_nominal_temperature() {
             / (2.0 * h);
         let expected = gm * rc;
 
-        let config = AcConfig {
-            f_start: 10.0,
-            f_stop: 10.0,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("V1", 10.0, 10.0, 1).with_spacing(FrequencySpacing::Linear);
         let gain = solve_ac(&circuit, &config).unwrap().points[0].node_voltages["c"].norm();
         assert!(
             (gain - expected).abs() <= 1e-3 * expected,

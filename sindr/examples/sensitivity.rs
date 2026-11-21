@@ -4,12 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit = examples::npn_common_emitter();
 
     // Which part moves the collector voltage most?
-    let config = SensConfig {
-        output: TfOutput::Voltage {
-            node: "collector".into(),
-            reference: None,
-        },
-    };
+    let config = SensConfig::new(TfOutput::voltage("collector"));
     let sens = solve_sensitivity(&circuit, &config)?;
 
     println!("=== NPN Common Emitter — .sens V(collector) ===");

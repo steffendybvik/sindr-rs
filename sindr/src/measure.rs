@@ -195,8 +195,19 @@ impl std::fmt::Display for Signal {
 // Measurable results
 // ---------------------------------------------------------------------------
 
-/// A result a [`Measurement`] can be taken on.
-pub trait Measurable {
+mod sealed {
+    /// Keeps [`Measurable`](super::Measurable) to sindr's own results, so
+    /// a method can be added to it without breaking an outside impl.
+    pub trait Sealed {}
+    impl Sealed for crate::results::SimulationResult {}
+    impl Sealed for crate::dc_sweep::DcSweepResult {}
+    impl Sealed for crate::temp_sweep::TempSweepResult {}
+    impl Sealed for crate::ac_analysis::AcResult {}
+}
+
+/// A result a [`Measurement`] can be taken on: one of the results in the
+/// [module docs](self). Sealed: it can't be implemented outside sindr.
+pub trait Measurable: sealed::Sealed {
     /// The signal's samples as `(x, y)` pairs, in ascending x.
     ///
     /// # Errors
@@ -400,6 +411,7 @@ pub enum Edge {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Occurrence {
     /// The nth one, from 1, in ascending x.
     Nth(usize),
@@ -575,6 +587,7 @@ impl Measure {
 /// A named measurement, optionally limited to a window of x.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Measurement {
     /// Name, reported back with the value.
     pub name: String,
@@ -1011,6 +1024,7 @@ pub enum SpecStatus {
 /// One spec checked against one result.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SpecCheck {
     /// The measurement's name.
     pub name: String,
@@ -1032,6 +1046,7 @@ pub struct SpecCheck {
 /// Every spec's verdict, with the ratings checks alongside when attached.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct SpecReport {
     /// One entry per spec, in the order given.
     pub checks: Vec<SpecCheck>,
@@ -1102,13 +1117,14 @@ pub fn check_specs(result: &impl Measurable, specs: &[Spec]) -> SpecReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+    use crate::ac_analysis::{solve_ac, AcConfig};
     use crate::circuit::{Circuit, CircuitElement};
     use crate::waveform::Waveform;
     use crate::{dc_sweep, solve_circuit, solve_transient, TransientConfig};
 
     struct Points(Vec<(f64, f64)>);
 
+    impl sealed::Sealed for Points {}
     impl Measurable for Points {
         fn trace(&self, _: &Signal) -> Result<Vec<(f64, f64)>, String> {
             Ok(self.0.clone())
@@ -1307,15 +1323,7 @@ mod tests {
 
     #[test]
     fn rc_bandwidth_and_phase() {
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 1e6,
-            num_points: 601,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("V1", 1.0, 1e6, 601);
         let ac = solve_ac(&rc(None), &config).unwrap();
         let fc = 1.0 / (2.0 * std::f64::consts::PI * 1e-3);
         let bw = Measurement::new("bw", Measure::bandwidth(Signal::v("out")))
@@ -1579,15 +1587,7 @@ mod tests {
 
     #[test]
     fn ac_result_names_a_missing_node() {
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 10.0,
-            num_points: 2,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("V1", 1.0, 10.0, 2);
         let ac = solve_ac(&rc(None), &config).unwrap();
         let err = Measurement::new("m", Measure::find(Signal::v_diff("out", "nope"), 1.0)).on(&ac);
         assert_eq!(reason(err), "no node `nope` in the result");

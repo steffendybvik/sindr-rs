@@ -93,6 +93,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tf.gain, tf.input_resistance, tf.output_resistance
                 );
             }
+            // Analyses added in later releases.
+            other => println!("not run here: {other:?}"),
         }
     }
 
