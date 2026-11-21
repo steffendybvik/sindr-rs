@@ -1,0 +1,32 @@
+{
+  "components": [
+    {
+      "id": "V1",
+      "nodes": [
+        "n1",
+        "0"
+      ],
+      "type": "voltage_source",
+      "voltage": 9.0
+    },
+    {
+      "id": "R1",
+      "nodes": [
+        "n1",
+        "n2"
+      ],
+      "resistance": 330.0,
+      "type": "resistor"
+    },
+    {
+      "id": "V_LED",
+      "nodes": [
+        "n2",
+        "0"
+      ],
+      "type": "voltage_source",
+      "voltage": 2.0
+    }
+  ],
+  "ground_node": "0"
+}

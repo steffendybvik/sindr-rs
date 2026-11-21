@@ -21,6 +21,7 @@ fn circuit(components: Vec<CircuitElement>) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components,
+        ..Default::default()
     }
 }
 
@@ -54,6 +55,7 @@ fn inductor(id: &str, a: &str, b: &str, inductance: f64) -> CircuitElement {
         id: id.into(),
         nodes: [a.into(), b.into()],
         inductance,
+        saturation: None,
     }
 }
 
@@ -100,6 +102,7 @@ fn dc_sweep_diode_matches_shockley_root() {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
+            model: None,
         },
     ]);
     let sweep = dc_sweep(&network, "V1", -2.0, 10.0, 25).unwrap();
@@ -111,8 +114,12 @@ fn dc_sweep_diode_matches_shockley_root() {
             // sindr's 1e-12 S GMIN shunt at `out` conducts, and nothing else.
             let i = (vs - got) / r;
             let want = IS * ((got / V_T).exp() - 1.0) + 1e-12 * got;
+            // 1e-18 A: at Vs = 0 the sweep, seeded from the point before,
+            // stops a few 1e-19 V from exactly 0, far inside Newton's
+            // tolerance, where the relative check alone would ask for 0.1 %
+            // of 1e-30 A.
             assert!(
-                (i - want).abs() <= 1e-3 * want.abs(),
+                (i - want).abs() <= 1e-3 * want.abs() + 1e-18,
                 "Vs = {vs}: I = {i}, want {want}"
             );
             continue;
@@ -138,14 +145,7 @@ fn dc_sweep_diode_matches_shockley_root() {
 /// Log sweep of `circuit` from source `V1`, 10 points per decade.
 fn ac_sweep(circuit: &Circuit, f_start: f64, f_stop: f64) -> sindr::ac_analysis::AcResult {
     let decades = (f_stop / f_start).log10().round() as usize;
-    let config = AcConfig {
-        f_start,
-        f_stop,
-        num_points: decades * 10 + 1,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-    };
+    let config = AcConfig::new("V1", f_start, f_stop, decades * 10 + 1);
     solve_ac(circuit, &config).unwrap()
 }
 
@@ -185,14 +185,7 @@ fn ac_rc_lowpass_matches_transfer_function() {
     // The corner: f_c = 1/(2πRC) = 159.155 Hz, −3.0103 dB, −45°.
     let f_c = 1.0 / (2.0 * PI * r * c);
     assert!((f_c - 159.155).abs() < 1e-3);
-    let config = AcConfig {
-        f_start: f_c,
-        f_stop: f_c,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-    };
+    let config = AcConfig::new("V1", f_c, f_c, 1).with_spacing(FrequencySpacing::Linear);
     let at_corner = &solve_ac(&lowpass, &config).unwrap().points[0];
     assert!((at_corner.gain_db("out", 1.0).unwrap() + 3.010_299_957).abs() < 1e-8);
     assert!((at_corner.phase_deg("out").unwrap() + 45.0).abs() < 1e-8);
@@ -253,14 +246,7 @@ fn ac_series_rlc_resonance() {
     assert_transfer(&series, "out", (100.0, 1e6), h);
 
     let f0 = 1.0 / (2.0 * PI * (l * c).sqrt());
-    let config = AcConfig {
-        f_start: f0,
-        f_stop: f0,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-    };
+    let config = AcConfig::new("V1", f0, f0, 1).with_spacing(FrequencySpacing::Linear);
     let at_f0 = solve_ac(&series, &config).unwrap().points[0].node_voltages["out"];
     assert!((at_f0 - Complex64::new(1.0, 0.0)).norm() < 1e-9, "{at_f0}");
 }

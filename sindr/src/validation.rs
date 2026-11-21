@@ -34,8 +34,11 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 /// 1. Ground node exists (at least one component touches it)
 /// 2. All nodes reachable from ground (BFS connectivity)
 /// 3. No floating nodes (every non-ground node has degree >= 2)
-/// 4. Device values the models can use: every `temperature` field positive
-///    and finite (K), and a BJT's `bf` positive and finite
+/// 4. Unique component ids
+/// 5. Values the models can use: resistances, inductances and every
+///    `temperature` (K) positive and finite, capacitances zero or more,
+///    source values and controlled-source gains finite, a BJT's `bf`
+///    positive and finite, and the device-model fields each check names
 ///
 /// # Errors
 ///
@@ -48,10 +51,14 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 /// Returns [`SimError::FloatingNode`] naming the first node with fewer than
 /// 2 connections.
 ///
-/// Returns [`SimError::InvalidComponent`] naming the component, field and
-/// value for a `temperature` that is zero, negative or not finite, or a BJT
-/// `bf` that isn't positive and finite.
+/// Returns [`SimError::InvalidResistance`] for a resistor whose resistance
+/// is zero, negative or not finite.
+///
+/// Returns [`SimError::InvalidComponent`] for a repeated id, or naming the
+/// component, field and value for any other value out of range.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
+    let flat = circuit.flattened()?;
+    let circuit: &Circuit = &flat;
     // ------------------------------------------------------------------
     // Check 1: Ground node exists
     // ------------------------------------------------------------------
@@ -121,7 +128,21 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     }
 
     // ------------------------------------------------------------------
-    // Check 4: Device values the models can't take
+    // Check 4: Unique ids. Results, controlled sources and sweeps find a
+    // component by id, so a repeated one would silently pick the first.
+    // ------------------------------------------------------------------
+    let mut ids = HashSet::new();
+    for comp in &circuit.components {
+        if !ids.insert(comp.id()) {
+            return Err(SimError::InvalidComponent(format!(
+                "`{}`: more than one component has this id",
+                comp.id()
+            )));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Check 5: Device values the models can't take
     // ------------------------------------------------------------------
     for comp in &circuit.components {
         check_values(comp)?;
@@ -130,7 +151,7 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     Ok(())
 }
 
-/// Rejects a device temperature or BJT gain the models can't use, naming the
+/// Rejects a device temperature, BJT gain or model parameter the models can't use, naming the
 /// component, field and value. Left alone, a 0 K junction divides by zero and
 /// fails much later as a bare [`SimError::InvalidSolution`], and β ≤ 0 as
 /// that or a convergence failure.
@@ -145,7 +166,61 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             )))
         }
     };
+    let non_negative = |field: &str, value: f64, unit: &str| {
+        if value.is_finite() && value >= 0.0 {
+            Ok(())
+        } else {
+            Err(SimError::InvalidComponent(format!(
+                "`{}`: {field} {value}{unit} must be zero or a positive, finite number",
+                comp.id()
+            )))
+        }
+    };
+    let finite = |field: &str, value: f64, unit: &str| {
+        if value.is_finite() {
+            Ok(())
+        } else {
+            Err(SimError::InvalidComponent(format!(
+                "`{}`: {field} {value}{unit} must be a finite number",
+                comp.id()
+            )))
+        }
+    };
+    // A dimensionless coefficient in `[0, max]`, as SPICE bounds M and FC:
+    // at 1 the junction charge divides by zero.
+    let within = |field: &str, value: f64, max: f64| {
+        if (0.0..=max).contains(&value) {
+            Ok(())
+        } else {
+            Err(SimError::InvalidComponent(format!(
+                "`{}`: {field} {value} must be between 0 and {max}",
+                comp.id()
+            )))
+        }
+    };
     match comp {
+        CircuitElement::Diode {
+            temperature,
+            model: Some(model),
+            ..
+        } => {
+            positive("temperature", *temperature, " K")?;
+            positive("model.is", model.is, " A")?;
+            positive("model.n", model.n, "")?;
+            non_negative("model.rs", model.rs, " Ω")?;
+            non_negative("model.cjo", model.cjo, " F")?;
+            positive("model.vj", model.vj, " V")?;
+            within("model.m", model.m, 0.9)?;
+            within("model.fc", model.fc, 0.95)?;
+            non_negative("model.tt", model.tt, " s")?;
+            if let Some(bv) = model.bv {
+                positive("model.bv", bv, " V")?;
+                positive("model.ibv", model.ibv, " A")?;
+            }
+            non_negative("model.kf", model.kf, "")?;
+            positive("model.af", model.af, "")?;
+            Ok(())
+        }
         CircuitElement::Diode { temperature, .. }
         | CircuitElement::Led { temperature, .. }
         | CircuitElement::ZenerDiode { temperature, .. }
@@ -155,10 +230,187 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             positive("temperature", *temperature, " K")
         }
         CircuitElement::Bjt {
-            bf, temperature, ..
+            bf,
+            temperature,
+            model,
+            ..
         } => {
             positive("temperature", *temperature, " K")?;
-            positive("bf", *bf, "")
+            positive("bf", *bf, "")?;
+            if let Some(model) = model {
+                positive("model.is", model.is, " A")?;
+                positive("model.br", model.br, "")?;
+                positive("model.nf", model.nf, "")?;
+                positive("model.nr", model.nr, "")?;
+                non_negative("model.vaf", model.vaf, " V")?;
+                non_negative("model.kf", model.kf, "")?;
+                positive("model.af", model.af, "")?;
+            }
+            Ok(())
+        }
+        CircuitElement::OpAmp {
+            v_pos,
+            v_neg,
+            model: Some(model),
+            ..
+        } => {
+            finite("v_pos", *v_pos, " V")?;
+            finite("v_neg", *v_neg, " V")?;
+            if v_pos <= v_neg {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: v_pos {v_pos} V must be above v_neg {v_neg} V",
+                    comp.id()
+                )));
+            }
+            positive("model.gain", model.gain, "")?;
+            if let Some(gbw) = model.gbw {
+                positive("model.gbw", gbw, " Hz")?;
+            }
+            if let Some(sr) = model.slew_rate {
+                positive("model.slew_rate", sr, " V/s")?;
+                if model.gbw.is_none() {
+                    return Err(SimError::InvalidComponent(format!(
+                        "`{}`: model.slew_rate needs model.gbw: the slew limit acts on the gain stage's pole",
+                        comp.id()
+                    )));
+                }
+            }
+            non_negative("model.r_out", model.r_out, " Ω")?;
+            finite("model.offset_voltage", model.offset_voltage, " V")?;
+            finite("model.bias_current", model.bias_current, " A")
+        }
+        CircuitElement::VoltageRegulator { voltage, model, .. } => {
+            // Negative for a 79xx-style regulator; zero regulates nothing.
+            if !voltage.is_finite() || *voltage == 0.0 {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: voltage {voltage} V must be a non-zero, finite number",
+                    comp.id()
+                )));
+            }
+            if let Some(m) = model {
+                non_negative("model.dropout", m.dropout, " V")?;
+                non_negative("model.dropout_resistance", m.dropout_resistance, " Ω")?;
+                non_negative("model.quiescent_current", m.quiescent_current, " A")?;
+                non_negative("model.line_regulation", m.line_regulation, " V/V")?;
+                non_negative("model.output_resistance", m.output_resistance, " Ω")?;
+                if let Some(limit) = m.current_limit {
+                    positive("model.current_limit", limit, " A")?;
+                }
+            }
+            Ok(())
+        }
+        CircuitElement::Battery {
+            params,
+            state_of_charge,
+            ..
+        } => {
+            positive("params.capacity", params.capacity, " Ah")?;
+            positive("params.r_series", params.r_series, " Ω")?;
+            if let Some(pair) = params.rc {
+                positive("params.rc.r", pair.r, " Ω")?;
+                positive("params.rc.c", pair.c, " F")?;
+            }
+            let bad_curve = params.ocv.is_empty()
+                || params
+                    .ocv
+                    .iter()
+                    .any(|&(soc, v)| !soc.is_finite() || !v.is_finite())
+                || params.ocv.windows(2).any(|w| w[1].0 <= w[0].0);
+            if bad_curve {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: params.ocv must be finite (state of charge, volts) points \
+                     with the state of charge rising",
+                    comp.id()
+                )));
+            }
+            within("state_of_charge", *state_of_charge, 1.0)
+        }
+        CircuitElement::Inductor {
+            inductance,
+            saturation: Some(sat),
+            ..
+        } => {
+            positive("inductance", *inductance, " H")?;
+            positive("saturation.i_sat", sat.i_sat, " A")?;
+            positive("saturation.l_sat", sat.l_sat, " H")?;
+            if sat.l_sat > *inductance {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: saturation.l_sat {} H must not exceed the inductance {} H",
+                    comp.id(),
+                    sat.l_sat,
+                    inductance
+                )));
+            }
+            Ok(())
+        }
+        // Only the noise fields: the rest of a MOSFET's parameters have
+        // never been checked here.
+        CircuitElement::Mosfet { params, .. } => {
+            non_negative("params.kf", params.kf, "")?;
+            positive("params.af", params.af, "")
+        }
+        CircuitElement::Resistor { id, resistance, .. } => {
+            if resistance.is_finite() && *resistance > 0.0 {
+                Ok(())
+            } else {
+                Err(SimError::InvalidResistance(id.clone()))
+            }
+        }
+        CircuitElement::VoltageSource { voltage, .. } => finite("voltage", *voltage, " V"),
+        CircuitElement::CurrentSource { current, .. } => finite("current", *current, " A"),
+        // A zero capacitor is an open circuit, as in SPICE; a zero inductor
+        // would divide by zero in its companion model.
+        CircuitElement::Capacitor { capacitance, .. } => {
+            non_negative("capacitance", *capacitance, " F")
+        }
+        CircuitElement::Inductor { inductance, .. } => positive("inductance", *inductance, " H"),
+        CircuitElement::Vcvs { gain, .. } => finite("gain", *gain, ""),
+        CircuitElement::Vccs { gm, .. } => finite("gm", *gm, " S"),
+        CircuitElement::Ccvs { rm, .. } => finite("rm", *rm, " Ω"),
+        CircuitElement::Cccs { alpha, .. } => finite("alpha", *alpha, ""),
+        CircuitElement::Relay {
+            coil_resistance,
+            pickup_voltage,
+            inductance,
+            ..
+        } => {
+            positive("coil_resistance", *coil_resistance, " Ω")?;
+            positive("pickup_voltage", *pickup_voltage, " V")?;
+            non_negative("inductance", *inductance, " H")
+        }
+        // Light level, wiper position and coupling are clamped into range
+        // by the models, so only a non-finite value is refused.
+        CircuitElement::Photoresistor { light_level, .. } => {
+            finite("light_level", *light_level, "")
+        }
+        CircuitElement::Potentiometer {
+            resistance,
+            position,
+            ..
+        } => {
+            positive("resistance", *resistance, " Ω")?;
+            finite("position", *position, "")
+        }
+        CircuitElement::Transformer { l1, l2, k, .. } => {
+            positive("l1", *l1, " H")?;
+            positive("l2", *l2, " H")?;
+            finite("k", *k, "")
+        }
+        CircuitElement::Fuse { rating, .. } => positive("rating", *rating, " A"),
+        CircuitElement::Comparator { v_pos, v_neg, .. } => {
+            finite("v_pos", *v_pos, " V")?;
+            finite("v_neg", *v_neg, " V")?;
+            if v_pos <= v_neg {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{}`: v_pos {v_pos} V must be above v_neg {v_neg} V",
+                    comp.id()
+                )));
+            }
+            Ok(())
+        }
+        CircuitElement::OpAmp { v_pos, v_neg, .. } => {
+            finite("v_pos", *v_pos, " V")?;
+            finite("v_neg", *v_neg, " V")
         }
         _ => Ok(()),
     }
@@ -170,6 +422,81 @@ mod tests {
     use crate::circuit::{Circuit, CircuitElement};
     use crate::error::SimError;
     use crate::solve_circuit;
+
+    #[test]
+    fn bad_model_parameters_name_the_field() {
+        let with = |component: CircuitElement| Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["a".into(), "0".into()],
+                    voltage: 5.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["a".into(), "b".into()],
+                    resistance: 1e3,
+                },
+                component,
+            ],
+            ..Default::default()
+        };
+        let diode = |model: crate::DiodeModel| {
+            with(CircuitElement::Diode {
+                id: "D1".into(),
+                nodes: ["b".into(), "0".into()],
+                temperature: 300.15,
+                model: Some(model),
+            })
+        };
+        let bjt = |model: crate::BjtModel| {
+            with(CircuitElement::Bjt {
+                id: "Q1".into(),
+                nodes: ["b".into(), "a".into(), "0".into()],
+                kind: crate::BjtKind::Npn,
+                bf: 100.0,
+                temperature: 300.15,
+                parasitic_caps: None,
+                model: Some(model),
+            })
+        };
+        let d = crate::DiodeModel::default();
+        let q = crate::BjtModel::default();
+        let bad = [
+            (diode(crate::DiodeModel { n: 0.0, ..d }), "model.n"),
+            (diode(crate::DiodeModel { is: -1.0, ..d }), "model.is"),
+            (diode(crate::DiodeModel { rs: -10.0, ..d }), "model.rs"),
+            (diode(crate::DiodeModel { rs: f64::NAN, ..d }), "model.rs"),
+            (diode(crate::DiodeModel { cjo: -1e-12, ..d }), "model.cjo"),
+            (diode(crate::DiodeModel { vj: 0.0, ..d }), "model.vj"),
+            (diode(crate::DiodeModel { m: 1.0, ..d }), "model.m"),
+            (diode(crate::DiodeModel { fc: 0.99, ..d }), "model.fc"),
+            (diode(crate::DiodeModel { tt: -1e-9, ..d }), "model.tt"),
+            (diode(crate::DiodeModel { bv: Some(0.0), ..d }), "model.bv"),
+            (
+                diode(crate::DiodeModel {
+                    bv: Some(100.0),
+                    ibv: 0.0,
+                    ..d
+                }),
+                "model.ibv",
+            ),
+            (bjt(crate::BjtModel { br: 0.0, ..q }), "model.br"),
+            (bjt(crate::BjtModel { nf: -1.0, ..q }), "model.nf"),
+            (bjt(crate::BjtModel { nr: 0.0, ..q }), "model.nr"),
+            (bjt(crate::BjtModel { vaf: -5.0, ..q }), "model.vaf"),
+        ];
+        for (circuit, field) in bad {
+            match validate_circuit(&circuit) {
+                Err(SimError::InvalidComponent(msg)) => assert!(msg.contains(field), "{msg}"),
+                other => panic!("{field}: {other:?}"),
+            }
+        }
+        assert!(validate_circuit(&diode(crate::DiodeModel { rs: 1e9, ..d })).is_ok());
+        assert!(validate_circuit(&bjt(crate::BjtModel { vaf: 0.0, ..q })).is_ok());
+    }
 
     #[test]
     fn bad_device_temperature_or_gain_names_the_field() {
@@ -191,8 +518,10 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["b".into(), "0".into()],
                     temperature,
+                    model: None,
                 },
             ],
+            ..Default::default()
         };
         for t in [0.0, -10.0, f64::NAN, f64::INFINITY] {
             match validate_circuit(&diode(t)) {
@@ -212,6 +541,7 @@ mod tests {
             bf: 0.0,
             temperature: 300.15,
             parasitic_caps: None,
+            model: None,
         };
         match validate_circuit(&bjt) {
             Err(SimError::InvalidComponent(msg)) => {
@@ -238,6 +568,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         match validate_circuit(&circuit) {
             Err(SimError::NoGround) => {} // expected
@@ -267,6 +598,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         match validate_circuit(&circuit) {
             Err(SimError::DisconnectedNodes(nodes)) => {
@@ -294,6 +626,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         match validate_circuit(&circuit) {
             Err(SimError::FloatingNode(node)) => assert_eq!(node, "n2"),
@@ -318,6 +651,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         assert!(validate_circuit(&circuit).is_ok());
     }
@@ -343,6 +677,7 @@ mod tests {
                     waveform: None,
                 },
             ],
+            ..Default::default()
         };
         // Validation itself should pass
         assert!(validate_circuit(&circuit).is_ok());

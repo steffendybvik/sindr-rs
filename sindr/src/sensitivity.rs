@@ -6,25 +6,44 @@
 //! as `dy/dp = λᵀ(∂b/∂p − (∂A/∂p)·x)`, so the cost doesn't grow with the
 //! number of parameters.
 
-use std::collections::HashMap;
-
 use nalgebra::DVector;
 use num_complex::Complex64;
 
-use crate::ac_analysis::{bias_point, linearize_at_dc, small_signal_system};
+use crate::ac_analysis::{
+    at_junction_temperatures, bias_point_with_result, linearize_at_dc, small_signal_system,
+};
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
 use crate::transfer_function::{independent_vsource_branch, Port, TfOutput};
 
-/// Sensitivity-analysis configuration.
+/// Sensitivity-analysis configuration. Build one with [`SensConfig::new`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SensConfig {
     /// The output whose sensitivities are wanted.
     pub output: TfOutput,
 }
 
+impl SensConfig {
+    /// The sensitivities of `output`, as SPICE's `.sens output`.
+    ///
+    /// ```
+    /// use sindr::{SensConfig, TfOutput};
+    ///
+    /// // SPICE `.sens i(Vsense)`.
+    /// let config = SensConfig::new(TfOutput::current("Vsense"));
+    /// assert_eq!(config.output, TfOutput::Current { source_id: "Vsense".into() });
+    /// ```
+    pub fn new(output: TfOutput) -> Self {
+        Self { output }
+    }
+}
+
 /// Which parameter of a component a [`SensEntry`] is for.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SensParameter {
     /// A resistor's resistance (Ω).
     Resistance,
@@ -39,7 +58,9 @@ pub enum SensParameter {
 }
 
 /// The sensitivity of the output to one component parameter.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SensEntry {
     /// Id of the component.
     pub component_id: String,
@@ -56,7 +77,9 @@ pub struct SensEntry {
 }
 
 /// Result of a sensitivity analysis.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SensResult {
     /// One entry per supported parameter, in circuit order. Components with
     /// no entry: see [`solve_sensitivity`].
@@ -113,11 +136,10 @@ impl SensResult {
 ///             resistance: 3_000.0,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
-/// let config = SensConfig {
-///     output: TfOutput::Voltage { node: "out".into(), reference: None },
-/// };
+/// let config = SensConfig::new(TfOutput::voltage("out"));
 /// let sens = solve_sensitivity(&circuit, &config)?;
 ///
 /// assert!((sens.get("V1").unwrap().sensitivity - 0.75).abs() < 1e-12);
@@ -126,23 +148,21 @@ impl SensResult {
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensResult, SimError> {
-    solve_sensitivity_with_initial_voltages(circuit, config, &HashMap::new())
+    let flat = crate::solver_circuit(circuit)?;
+    let circuit: &Circuit = &flat;
+    solve_sensitivity_with(circuit, config, &crate::SolverOptions::default())
 }
 
-/// Like [`solve_sensitivity`], seeding the Newton–Raphson solve for the DC
-/// bias point with node voltages (V) keyed by node name, as SPICE's
-/// `.nodeset`. Unknown node names are ignored.
-///
-/// # Errors
-///
-/// As [`solve_sensitivity`].
-pub fn solve_sensitivity_with_initial_voltages(
+/// [`solve_sensitivity`] with `opts`.
+pub(crate) fn solve_sensitivity_with(
     circuit: &Circuit,
     config: &SensConfig,
-    initial_voltages: &HashMap<String, f64>,
+    opts: &crate::SolverOptions,
 ) -> Result<SensResult, SimError> {
-    let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;
-    let dc = crate::dc_equivalent(circuit);
+    let flat = crate::solver_circuit(circuit)?;
+    let circuit: &Circuit = &flat;
+    let (node_map, dc_solution, op) = bias_point_with_result(circuit, opts)?;
+    let dc = crate::dc_equivalent(&at_junction_temperatures(circuit, &op));
     let ss_models = linearize_at_dc(&dc, &node_map, &dc_solution);
     let system = small_signal_system(&dc, &node_map, &dc_solution, &ss_models, 0.0);
 
@@ -200,7 +220,7 @@ pub fn solve_sensitivity_with_initial_voltages(
                 gm,
             } => {
                 let control = v(node(&control_nodes[0])) - v(node(&control_nodes[1]));
-                let s = (lambda(node(&nodes[0])) - lambda(node(&nodes[1]))) * control;
+                let s = (lambda(node(&nodes[1])) - lambda(node(&nodes[0]))) * control;
                 (id, SensParameter::Transconductance, *gm, s)
             }
             _ => continue,

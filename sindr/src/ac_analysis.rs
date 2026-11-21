@@ -6,6 +6,7 @@
 //! 3. Building a complex-valued MNA system at each frequency
 //! 4. Solving for node voltages as complex phasors
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use nalgebra::DVector;
@@ -14,7 +15,6 @@ use num_complex::Complex64;
 use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::diode;
 use sindr_devices::jfet;
-use sindr_devices::mosfet;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
@@ -23,16 +23,23 @@ use crate::mna::MnaMatrix;
 use crate::node_map::NodeMap;
 
 /// Frequency sweep spacing.
-#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FrequencySpacing {
-    /// Logarithmic spacing (decade-based).
+    /// Logarithmic spacing: `num_points` in total, evenly spaced in
+    /// log10(f) from `f_start` to `f_stop`. Not points per decade.
     Logarithmic,
     /// Linear spacing.
     Linear,
 }
 
-/// AC analysis configuration.
-#[derive(Debug, Clone)]
+/// AC analysis configuration. Build one with [`AcConfig::new`] and its
+/// `with_*` setters.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct AcConfig {
     /// Start frequency (Hz).
     pub f_start: f64,
@@ -45,21 +52,83 @@ pub struct AcConfig {
     pub spacing: FrequencySpacing,
     /// ID of the AC source (voltage source with AC stimulus).
     pub source_id: String,
-    /// AC magnitude of the source.
+    /// AC amplitude of the source: volts, linear (not dB). Results scale
+    /// with it; 1 V makes node voltages read as gain.
     pub ac_magnitude: f64,
+    /// AC phase of the source in degrees, as SPICE's `AC mag phase`. Every
+    /// node's phase shifts by it; 0 makes [`AcPoint::phase_deg`] read as the
+    /// phase relative to the source.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub ac_phase_deg: f64,
+}
+
+impl AcConfig {
+    /// Sweep `num_points` frequencies from `f_start` to `f_stop` (Hz), both
+    /// included, driving the voltage source `source_id`. Spacing defaults
+    /// to [`FrequencySpacing::Logarithmic`], the source's AC magnitude to
+    /// 1 V and its phase to 0°, so node voltages read as gain relative to
+    /// the source.
+    ///
+    /// ```
+    /// use sindr::ac_analysis::{AcConfig, FrequencySpacing};
+    ///
+    /// // SPICE `.ac lin 101 1k 2k` on `V1 in 0 AC 2 90`.
+    /// let config = AcConfig::new("V1", 1e3, 2e3, 101)
+    ///     .with_spacing(FrequencySpacing::Linear)
+    ///     .with_magnitude(2.0)
+    ///     .with_phase_deg(90.0);
+    /// assert_eq!(config.num_points, 101);
+    /// ```
+    pub fn new(source_id: impl Into<String>, f_start: f64, f_stop: f64, num_points: usize) -> Self {
+        Self {
+            f_start,
+            f_stop,
+            num_points,
+            spacing: FrequencySpacing::Logarithmic,
+            source_id: source_id.into(),
+            ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
+        }
+    }
+
+    /// Space the frequencies by `spacing` instead of logarithmically.
+    pub fn with_spacing(mut self, spacing: FrequencySpacing) -> Self {
+        self.spacing = spacing;
+        self
+    }
+
+    /// Drive the source with an AC amplitude of `magnitude` volts (linear,
+    /// not dB) instead of 1 V.
+    pub fn with_magnitude(mut self, magnitude: f64) -> Self {
+        self.ac_magnitude = magnitude;
+        self
+    }
+
+    /// Give the source an AC phase of `phase_deg` degrees instead of 0°, as
+    /// SPICE's `AC mag phase`.
+    pub fn with_phase_deg(mut self, phase_deg: f64) -> Self {
+        self.ac_phase_deg = phase_deg;
+        self
+    }
 }
 
 /// Result at a single frequency point.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AcPoint {
     /// Frequency of this point (Hz).
     pub frequency: f64,
-    /// Complex node voltages (V) keyed by node name.
+    /// Complex node voltages (V) keyed by node name. Includes the ground
+    /// node (always 0).
     pub node_voltages: HashMap<String, Complex64>,
 }
 
 impl AcPoint {
-    /// Get gain in dB for a node relative to AC source magnitude.
+    /// Gain in dB for a node: `20·log10(|V(node)| / source_magnitude)`, a
+    /// voltage ratio. `source_magnitude` is in volts, normally
+    /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
+    /// circuit.
     pub fn gain_db(&self, node: &str, source_magnitude: f64) -> Option<f64> {
         self.node_voltages.get(node).map(|v| {
             let gain = v.norm() / source_magnitude;
@@ -67,14 +136,19 @@ impl AcPoint {
         })
     }
 
-    /// Get phase in degrees for a node.
+    /// Phase of a node's voltage in degrees, in (−180°, 180°]: relative to
+    /// the source when [`AcConfig::ac_phase_deg`] is 0, absolute otherwise,
+    /// as ngspice reports it. `None` when the node isn't in the
+    /// circuit.
     pub fn phase_deg(&self, node: &str) -> Option<f64> {
         self.node_voltages.get(node).map(|v| v.arg().to_degrees())
     }
 }
 
 /// Complete AC analysis result.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AcResult {
     /// Result points, one per swept frequency.
     pub points: Vec<AcPoint>,
@@ -83,7 +157,8 @@ pub struct AcResult {
 }
 
 impl AcResult {
-    /// Extract gain (dB) curve for a node.
+    /// The gain curve for a node as `(frequency in Hz, gain in dB)` pairs,
+    /// one per point, using [`AcConfig::ac_magnitude`].
     pub fn gain_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()
@@ -94,7 +169,8 @@ impl AcResult {
             .collect()
     }
 
-    /// Extract phase (degrees) curve for a node.
+    /// The phase curve for a node as `(frequency in Hz, phase in degrees)`
+    /// pairs, one per point; see [`AcPoint::phase_deg`].
     pub fn phase_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()
@@ -121,7 +197,10 @@ pub(crate) fn linearize_at_dc(
     for component in &circuit.components {
         match component {
             CircuitElement::Diode {
-                nodes, temperature, ..
+                model,
+                nodes,
+                temperature,
+                ..
             } => {
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
@@ -129,7 +208,7 @@ pub(crate) fn linearize_at_dc(
                 let vq = q.map_or(0.0, |i| dc_solution[i]);
                 let v_d = vp - vq;
 
-                let params = device_params::diode(*temperature);
+                let params = device_params::diode(model.as_ref(), *temperature);
                 let (g_d, _) = diode::diode_companion(v_d, &params);
 
                 models.push(SmallSignalModel {
@@ -156,6 +235,7 @@ pub(crate) fn linearize_at_dc(
                 });
             }
             CircuitElement::Bjt {
+                model,
                 nodes,
                 kind,
                 bf,
@@ -179,7 +259,7 @@ pub(crate) fn linearize_at_dc(
 
                 // Same params as the DC solve (stamp.rs), so the linearisation
                 // is taken of the model the operating point was solved with.
-                let params = device_params::bjt(*bf, *temperature);
+                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
 
                 // Full terminal Jacobian ∂(Ib, Ic, Ie)/∂(Vb, Vc, Ve): carries
                 // gπ, gm, gμ and g_o in every region. The entries are the
@@ -205,9 +285,9 @@ pub(crate) fn linearize_at_dc(
                 ..
             } => {
                 // Same parameters as the DC stamp, including the IS scaling.
-                let params = device_params::zener(*vz, *temperature);
+                let params = device_params::zener_diode(*vz, *temperature);
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
-                let (g_d, _) = sindr_devices::zener::zener_companion(v_d, &params);
+                let (g_d, _) = diode::diode_companion(v_d, &params);
                 models.push(two_terminal(nodes, node_map, g_d));
             }
             CircuitElement::SchottkyDiode {
@@ -292,8 +372,7 @@ pub(crate) fn linearize_at_dc(
                 let vd = d.map_or(0.0, |i| dc_solution[i]);
                 let vs = s.map_or(0.0, |i| dc_solution[i]);
 
-                let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
-                let comp = mosfet::mosfet_companion(vgs, vds, 0.0, &params.in_nmos_frame(*kind));
+                let comp = crate::device_params::mosfet_op(*kind, params, vg, vd, vs);
 
                 // The body is tied to the source, so there is no gmb term.
                 let conds = vec![
@@ -338,7 +417,7 @@ fn two_terminal(nodes: &[String; 2], node_map: &NodeMap, g: f64) -> SmallSignalM
 
 /// Reject sweep configs that would underflow, divide by zero, or feed
 /// `log10` a non-positive value.
-fn validate_config(config: &AcConfig) -> Result<(), SimError> {
+pub(crate) fn validate_config(config: &AcConfig) -> Result<(), SimError> {
     let invalid = |msg: String| Err(SimError::InvalidComponent(format!("AC sweep: {msg}")));
 
     if config.num_points == 0 {
@@ -349,6 +428,7 @@ fn validate_config(config: &AcConfig) -> Result<(), SimError> {
         ("f_start", config.f_start),
         ("f_stop", config.f_stop),
         ("ac_magnitude", config.ac_magnitude),
+        ("ac_phase_deg", config.ac_phase_deg),
     ] {
         if !value.is_finite() {
             return invalid(format!("{name} must be finite (got {value})"));
@@ -379,7 +459,7 @@ fn validate_config(config: &AcConfig) -> Result<(), SimError> {
 ///
 /// Expects a config that passed [`validate_config`]. A single point sweeps
 /// only `f_start`, as SPICE does for `.ac lin 1`.
-fn generate_frequencies(config: &AcConfig) -> Vec<f64> {
+pub(crate) fn generate_frequencies(config: &AcConfig) -> Vec<f64> {
     if config.num_points == 1 {
         return vec![config.f_start];
     }
@@ -415,13 +495,59 @@ fn stamp_complex_conductance(
     }
 }
 
-/// The DC bias point of `circuit` as a solution vector over its node map
-/// (node rows only; branch rows are left zero), for linearising around.
-pub(crate) fn bias_point(
+/// `circuit` with each self-heated device at the junction temperature its
+/// operating point `dc` balanced at, so it linearises where it is biased
+/// rather than at ambient. Borrowed unchanged when nothing is heated.
+pub(crate) fn at_junction_temperatures<'a>(
+    circuit: &'a Circuit,
+    dc: &crate::SimulationResult,
+) -> Cow<'a, Circuit> {
+    if dc.junction_temperatures.is_empty() {
+        return Cow::Borrowed(circuit);
+    }
+    let mut heated = circuit.clone();
+    for element in &mut heated.components {
+        let Some(&t) = dc.junction_temperatures.get(element.id()) else {
+            continue;
+        };
+        if let Some(temperature) = crate::thermal::temperature_mut(element) {
+            *temperature = t;
+        }
+    }
+    Cow::Owned(heated)
+}
+
+/// `circuit` with each saturating inductor replaced by a linear one at its
+/// incremental inductance `dλ/di` at the DC current `dc` carries through it
+/// (the DC equivalent shorts it with a 0 V source of the same id).
+pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationResult) -> Circuit {
+    let mut out = circuit.clone();
+    for element in &mut out.components {
+        if let CircuitElement::Inductor {
+            id,
+            inductance,
+            saturation,
+            ..
+        } = element
+        {
+            if let Some(sat) = saturation.take() {
+                let i = dc.branch_currents.get(id.as_str()).copied().unwrap_or(0.0);
+                *inductance = sindr_devices::inductor::incremental_inductance(i, *inductance, &sat);
+            }
+        }
+    }
+    out
+}
+
+/// The DC bias point of flat `circuit` as a solution vector over its node
+/// map (node rows, and a regulator's branch row), for linearising around,
+/// with the operating-point result it came from (device currents for noise
+/// analysis, junction temperatures for [`at_junction_temperatures`]).
+pub(crate) fn bias_point_with_result(
     circuit: &Circuit,
-    initial_voltages: &HashMap<String, f64>,
-) -> Result<(NodeMap, DVector<f64>), SimError> {
-    let dc_result = crate::solve_dc_operating_point(circuit, initial_voltages)?;
+    opts: &crate::SolverOptions,
+) -> Result<(NodeMap, DVector<f64>, crate::SimulationResult), SimError> {
+    let dc_result = crate::solve_dc_operating_point(circuit, opts)?;
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
     let mut dc_solution = DVector::zeros(num_nodes + circuit.count_voltage_sources());
@@ -433,7 +559,18 @@ pub(crate) fn bias_point(
             dc_solution[i] = v;
         }
     }
-    Ok((node_map, dc_solution))
+    // A regulator's piece depends on its output current, its branch row.
+    for element in &circuit.components {
+        if let CircuitElement::VoltageRegulator { id, .. } = element {
+            if let (Some(k), Some(&i)) = (
+                circuit.vsource_branch_index(id),
+                dc_result.branch_currents.get(id),
+            ) {
+                dc_solution[num_nodes + k] = i;
+            }
+        }
+    }
+    Ok((node_map, dc_solution, dc_result))
 }
 
 /// The linearised (small-signal) MNA system of `circuit` at angular
@@ -489,6 +626,10 @@ pub(crate) fn small_signal_system(
     // Stamp linear components
     for component in &circuit.components {
         match component {
+            // Split into their parts by `solver_circuit` first.
+            CircuitElement::SwitchSpdt { .. }
+            | CircuitElement::Crystal { .. }
+            | CircuitElement::FerriteBead { .. } => {}
             CircuitElement::Resistor {
                 nodes, resistance, ..
             } => {
@@ -511,11 +652,55 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, p, q, -y);
                 stamp_complex_conductance(&mut a, q, p, -y);
             }
+            CircuitElement::Bjt {
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (_, c, p, q) in crate::transient::bjt_parasitics(nodes, pc) {
+                    let y = j_omega * c;
+                    let (p, q) = (node_map.index(&p), node_map.index(&q));
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
+            }
+            CircuitElement::Mosfet {
+                nodes,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (_, c, p, q) in crate::transient::mosfet_parasitics(nodes, pc) {
+                    let y = j_omega * c;
+                    let (p, q) = (node_map.index(&p), node_map.index(&q));
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
+            }
             CircuitElement::Varactor { nodes, params, .. } => {
                 // Small-signal capacitance at the DC bias.
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
                 let c = sindr_devices::varactor::junction_capacitance(v_d, params);
                 let y = j_omega * c;
+                let p = node_map.index(&nodes[0]);
+                let q = node_map.index(&nodes[1]);
+                stamp_complex_conductance(&mut a, p, p, y);
+                stamp_complex_conductance(&mut a, q, q, y);
+                stamp_complex_conductance(&mut a, p, q, -y);
+                stamp_complex_conductance(&mut a, q, p, -y);
+            }
+            CircuitElement::Battery { nodes, params, .. } => {
+                // Its open-circuit voltage is a DC source, zero in AC; what
+                // is left is Z = R0 + R1‖C1.
+                let mut z = Complex64::new(params.r_series, 0.0);
+                if let Some(pair) = params.rc {
+                    z += Complex64::new(pair.r, 0.0)
+                        / (Complex64::new(1.0, 0.0) + j_omega * pair.r * pair.c);
+                }
+                let y = Complex64::new(1.0, 0.0) / z;
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
                 stamp_complex_conductance(&mut a, p, p, y);
@@ -651,8 +836,7 @@ pub(crate) fn small_signal_system(
             CircuitElement::Thermistor {
                 nodes, temperature, ..
             } => {
-                let params = sindr_devices::thermistor::ThermistorParams::default();
-                let r = sindr_devices::thermistor::thermistor_resistance(*temperature, &params);
+                let r = crate::device_params::thermistor_resistance(*temperature);
                 let g = Complex64::new(1.0 / r, 0.0);
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
@@ -661,9 +845,42 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
             }
+            // A diode's stored charge. The junction, g_j + jωC_j, sits
+            // behind RS; the small-signal model below already stamps its
+            // ω = 0 conductance g_d, so this adds the rest of
+            // 1/(RS + 1/(g_j + jωC_j)).
+            CircuitElement::Diode {
+                model,
+                nodes,
+                temperature,
+                ..
+            } => {
+                if let Some(charge) = device_params::diode_charge(model.as_ref()) {
+                    let params = device_params::diode(model.as_ref(), *temperature);
+                    let v_d = junction_voltage(nodes, node_map, dc_solution);
+                    let (g_j, c_j) = diode::junction_small_signal(v_d, &params, &charge);
+                    let (g_d, _) = diode::diode_companion(v_d, &params);
+                    let junction = Complex64::new(g_j, 0.0) + j_omega * c_j;
+                    let y = if params.rs > 0.0 {
+                        Complex64::new(1.0, 0.0) / (params.rs + 1.0 / junction)
+                    } else {
+                        junction
+                    } - g_d;
+                    let y = if y.is_finite() {
+                        y
+                    } else {
+                        Complex64::new(0.0, 0.0)
+                    };
+                    let p = node_map.index(&nodes[0]);
+                    let q = node_map.index(&nodes[1]);
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
+            }
             // Nonlinear elements: handled via small-signal models below
-            CircuitElement::Diode { .. }
-            | CircuitElement::Led { .. }
+            CircuitElement::Led { .. }
             | CircuitElement::Bjt { .. }
             | CircuitElement::Mosfet { .. }
             | CircuitElement::ZenerDiode { .. }
@@ -697,11 +914,40 @@ pub(crate) fn small_signal_system(
                 }
                 vsource_index += 2;
             }
-            // OpAmp/Comparator: high-gain VCVS (gain=1e5) — linear, stamp properly in AC
-            CircuitElement::OpAmp { nodes, .. } | CircuitElement::Comparator { nodes, .. } => {
+            // Modelled op-amp or comparator, linearised at the bias point:
+            // see `op_amp`.
+            CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. } => {
                 let branch = num_nodes + vsource_index;
-                let p = node_map.index(&nodes[2]); // out
-                let gnd = node_map.index(&circuit.ground_node);
+                vsource_index += 2;
+                let Some(op) =
+                    crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, branch)
+                else {
+                    continue;
+                };
+                let (model, nodes) = (op.model, op.nodes);
+                let br = op.branch;
+                let x = br + 1;
+                let one = Complex64::new(1.0, 0.0);
+                // The output is referred to ground, which has no row.
+                if let Some(o) = node_map.index(&nodes[2]) {
+                    a[(o, br)] += one;
+                    a[(br, o)] += one;
+                }
+                let (tau, c_x, c_u, slope) = op.small_signal(node_map, dc_solution);
+                a[(br, x)] -= Complex64::new(slope, 0.0);
+                a[(br, br)] -= Complex64::new(model.r_out, 0.0);
+                a[(x, x)] += Complex64::new(c_x, 0.0) + j_omega * tau;
+                if let Some(p) = node_map.index(&nodes[0]) {
+                    a[(x, p)] -= Complex64::new(c_u, 0.0);
+                }
+                if let Some(m) = node_map.index(&nodes[1]) {
+                    a[(x, m)] += Complex64::new(c_u, 0.0);
+                }
+            }
+            // Unmodelled op-amp: high-gain VCVS (gain=1e5), linear.
+            CircuitElement::OpAmp { nodes, .. } => {
+                let branch = num_nodes + vsource_index;
+                let p = node_map.index(&nodes[2]); // out, referred to ground
                 let cp = node_map.index(&nodes[0]); // in+
                 let cq = node_map.index(&nodes[1]); // in-
                 let one = Complex64::new(1.0, 0.0);
@@ -709,15 +955,7 @@ pub(crate) fn small_signal_system(
 
                 if let Some(pi) = p {
                     a[(pi, branch)] += one;
-                }
-                if let Some(qi) = gnd {
-                    a[(qi, branch)] -= one;
-                }
-                if let Some(pi) = p {
                     a[(branch, pi)] += one;
-                }
-                if let Some(qi) = gnd {
-                    a[(branch, qi)] -= one;
                 }
                 if let Some(cpi) = cp {
                     a[(branch, cpi)] -= gain;
@@ -775,17 +1013,18 @@ pub(crate) fn small_signal_system(
                 let cq = node_map.index(&control_nodes[1]);
                 let g = Complex64::new(*gm, 0.0);
 
-                if let (Some(ti), Some(cpi)) = (to, cp) {
-                    a[(ti, cpi)] += g;
-                }
-                if let (Some(ti), Some(cqi)) = (to, cq) {
-                    a[(ti, cqi)] -= g;
-                }
+                // Same direction as the DC stamp: out of `from`, into `to`.
                 if let (Some(fi), Some(cpi)) = (from, cp) {
-                    a[(fi, cpi)] -= g;
+                    a[(fi, cpi)] += g;
                 }
                 if let (Some(fi), Some(cqi)) = (from, cq) {
-                    a[(fi, cqi)] += g;
+                    a[(fi, cqi)] -= g;
+                }
+                if let (Some(ti), Some(cpi)) = (to, cp) {
+                    a[(ti, cpi)] -= g;
+                }
+                if let (Some(ti), Some(cqi)) = (to, cq) {
+                    a[(ti, cqi)] += g;
                 }
             }
             CircuitElement::Ccvs {
@@ -828,11 +1067,11 @@ pub(crate) fn small_signal_system(
                 let gain = Complex64::new(*alpha, 0.0);
 
                 if let Some(cb) = circuit.vsource_branch_index(control_source) {
-                    if let Some(ti) = to {
-                        a[(ti, num_nodes + cb)] += gain;
-                    }
                     if let Some(fi) = from {
-                        a[(fi, num_nodes + cb)] -= gain;
+                        a[(fi, num_nodes + cb)] += gain;
+                    }
+                    if let Some(ti) = to {
+                        a[(ti, num_nodes + cb)] -= gain;
                     }
                 }
             }
@@ -847,22 +1086,61 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
             }
-            // VoltageRegulator: ideal DC reference — AC small-signal = voltage source (zero AC)
-            // Stamped as ideal voltage source between nodes[1] (output) and nodes[2] (gnd).
-            CircuitElement::VoltageRegulator { nodes, .. } => {
+            // The piece of its characteristic the bias point is on: input
+            // ripple reaches the output through line regulation (or all of
+            // it in dropout), and load current through the output
+            // resistance. The quiescent current only matters below dropout, where it
+            // ramps with the input.
+            CircuitElement::VoltageRegulator {
+                nodes,
+                voltage,
+                model,
+                ..
+            } => {
                 let branch = num_nodes + vsource_index;
-                let p = node_map.index(&nodes[1]); // output
-                let q = node_map.index(&nodes[2]); // gnd
-                let one = Complex64::new(1.0, 0.0);
-                if let Some(pi) = p {
-                    a[(pi, branch)] += one;
-                    a[(branch, pi)] += one;
+                let piece = crate::stamp::regulator_piece_at(
+                    node_map,
+                    nodes,
+                    *voltage,
+                    model,
+                    branch,
+                    Some(dc_solution),
+                );
+                let c = |x: f64| Complex64::new(x, 0.0);
+                let input = node_map.index(&nodes[0]);
+                let out = node_map.index(&nodes[1]);
+                let gnd = node_map.index(&nodes[2]);
+                if let Some(o) = out {
+                    a[(o, branch)] += c(1.0);
+                    a[(branch, o)] += c(1.0);
                 }
-                if let Some(qi) = q {
-                    a[(qi, branch)] -= one;
-                    a[(branch, qi)] -= one;
+                if let Some(i) = input {
+                    a[(i, branch)] -= c(1.0);
+                    a[(branch, i)] -= c(piece.d_vin);
                 }
-                // Zero AC voltage (DC reference, not a signal source)
+                if let Some(g) = gnd {
+                    a[(branch, g)] += c(piece.d_vin - 1.0);
+                }
+                a[(branch, branch)] += c(piece.d_iout);
+                // The quiescent current is fixed above dropout; below it, it
+                // ramps with the input, a conductance from input to ground.
+                if let Some(params) = model {
+                    let vin =
+                        crate::stamp::regulator_state(node_map, nodes, branch, Some(dc_solution))
+                            .map_or(0.0, |(vin, _, _)| vin);
+                    let (_, g_q) =
+                        sindr_devices::regulator::regulator_quiescent(params, *voltage, vin);
+                    for (r, col, sign) in [
+                        (input, input, 1.0),
+                        (input, gnd, -1.0),
+                        (gnd, input, -1.0),
+                        (gnd, gnd, 1.0),
+                    ] {
+                        if let (Some(r), Some(col)) = (r, col) {
+                            a[(r, col)] += c(sign * g_q);
+                        }
+                    }
+                }
                 vsource_index += 1;
             }
         }
@@ -914,7 +1192,7 @@ pub(crate) fn small_signal_system(
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement};
-/// use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+/// use sindr::ac_analysis::{solve_ac, AcConfig};
 ///
 /// // Simple RC low-pass: V1 -> R1 -> n_out -> C1 -> gnd
 /// let circuit = Circuit {
@@ -937,16 +1215,11 @@ pub(crate) fn small_signal_system(
 ///             capacitance: 1e-6,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
-/// let config = AcConfig {
-///     f_start: 1.0,
-///     f_stop: 100_000.0,
-///     num_points: 11,
-///     spacing: FrequencySpacing::Logarithmic,
-///     source_id: "V1".into(),
-///     ac_magnitude: 1.0,
-/// };
+/// // 11 points from 1 Hz to 100 kHz, log-spaced, 1 V on V1.
+/// let config = AcConfig::new("V1", 1.0, 100_000.0, 11);
 ///
 /// let result = solve_ac(&circuit, &config).unwrap();
 /// assert_eq!(result.points.len(), 11);
@@ -956,22 +1229,18 @@ pub(crate) fn small_signal_system(
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
-    solve_ac_with_initial_voltages(circuit, config, &HashMap::new())
+    solve_ac_with(circuit, config, &crate::SolverOptions::default())
 }
 
-/// Like [`solve_ac`], seeding the Newton–Raphson solve for the DC bias
-/// point with node voltages (V) keyed by node name, as SPICE's `.nodeset`.
-/// Useful when the bias point is hard to find or not unique. Unknown node
-/// names are ignored.
-///
-/// # Errors
-///
-/// As [`solve_ac`].
-pub fn solve_ac_with_initial_voltages(
+/// [`solve_ac`] with `opts`.
+pub(crate) fn solve_ac_with(
     circuit: &Circuit,
     config: &AcConfig,
-    initial_voltages: &HashMap<String, f64>,
+    opts: &crate::SolverOptions,
 ) -> Result<AcResult, SimError> {
+    let original = circuit;
+    let flat = crate::solver_circuit(circuit)?;
+    let circuit: &Circuit = &flat;
     validate_config(config)?;
     let drives_a_voltage_source = circuit
         .components
@@ -984,7 +1253,8 @@ pub fn solve_ac_with_initial_voltages(
         )));
     }
 
-    let (node_map, dc_solution) = bias_point(circuit, initial_voltages)?;
+    let (node_map, dc_solution, dc) = bias_point_with_result(circuit, opts)?;
+    let circuit = &incremental_inductors(&at_junction_temperatures(circuit, &dc), &dc);
     let num_nodes = node_map.num_nodes();
     let ss_models = linearize_at_dc(circuit, &node_map, &dc_solution);
 
@@ -1000,17 +1270,20 @@ pub fn solve_ac_with_initial_voltages(
         // sources open.
         let mut b = DVector::from_element(system.size(), Complex64::new(0.0, 0.0));
         if let Some(branch) = system.vsource_branch(&config.source_id) {
-            b[branch] = Complex64::new(config.ac_magnitude, 0.0);
+            b[branch] =
+                Complex64::from_polar(config.ac_magnitude, config.ac_phase_deg.to_radians());
         }
         let solution = system.solve(&b)?;
 
         // Extract node voltages
         let mut node_voltages = HashMap::new();
+        node_voltages.insert(circuit.ground_node.clone(), Complex64::new(0.0, 0.0));
         for i in 0..num_nodes {
             if let Some(name) = node_map.node_name(i) {
                 node_voltages.insert(name.to_string(), solution[i]);
             }
         }
+        crate::composite::strip_nodes(original, &mut node_voltages);
 
         points.push(AcPoint {
             frequency: freq,
@@ -1028,6 +1301,27 @@ pub fn solve_ac_with_initial_voltages(
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+
+    #[test]
+    fn config_defaults_and_setters() {
+        let config = AcConfig::new("V1", 1.0, 1e6, 61);
+        assert_eq!(config.source_id, "V1");
+        assert_eq!(
+            (config.f_start, config.f_stop, config.num_points),
+            (1.0, 1e6, 61)
+        );
+        assert_eq!(config.spacing, FrequencySpacing::Logarithmic);
+        assert_eq!(config.ac_magnitude, 1.0);
+        assert_eq!(config.ac_phase_deg, 0.0);
+
+        let config = config
+            .with_spacing(FrequencySpacing::Linear)
+            .with_magnitude(2.5)
+            .with_phase_deg(-90.0);
+        assert_eq!(config.spacing, FrequencySpacing::Linear);
+        assert_eq!(config.ac_magnitude, 2.5);
+        assert_eq!(config.ac_phase_deg, -90.0);
+    }
 
     /// RC lowpass: R=1k, C=1uF. Corner freq = 1/(2*pi*R*C) ~ 159.15 Hz.
     /// At corner: gain = -3dB, phase = -45 degrees.
@@ -1053,16 +1347,10 @@ mod tests {
                     capacitance: 1e-6,
                 },
             ],
+            ..Default::default()
         };
 
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 100_000.0,
-            num_points: 100,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("V1", 1.0, 100_000.0, 100);
 
         let result = solve_ac(&circuit, &config).unwrap();
         let gain_curve = result.gain_curve("n2");
@@ -1122,16 +1410,10 @@ mod tests {
                     capacitance: 1e-6,
                 },
             ],
+            ..Default::default()
         };
 
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 10.0,
-            num_points: 5,
-            spacing: FrequencySpacing::Linear,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("V1", 1.0, 10.0, 5).with_spacing(FrequencySpacing::Linear);
 
         let result = solve_ac(&circuit, &config).unwrap();
         let gain_curve = result.gain_curve("n2");
@@ -1163,16 +1445,10 @@ mod tests {
                     capacitance: 1e-6,
                 },
             ],
+            ..Default::default()
         };
 
-        let config = AcConfig {
-            f_start: 10_000.0,
-            f_stop: 100_000.0,
-            num_points: 3,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("V1", 10_000.0, 100_000.0, 3);
 
         let result = solve_ac(&circuit, &config).unwrap();
         let gain_curve = result.gain_curve("n2");
@@ -1186,14 +1462,7 @@ mod tests {
 
     #[test]
     fn frequency_generation_logarithmic() {
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 1000.0,
-            num_points: 4,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("V1", 1.0, 1000.0, 4);
         let freqs = generate_frequencies(&config);
         assert_eq!(freqs.len(), 4);
         assert_abs_diff_eq!(freqs[0], 1.0, epsilon = 1e-10);
@@ -1204,14 +1473,7 @@ mod tests {
 
     #[test]
     fn frequency_generation_linear() {
-        let config = AcConfig {
-            f_start: 100.0,
-            f_stop: 400.0,
-            num_points: 4,
-            spacing: FrequencySpacing::Linear,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("V1", 100.0, 400.0, 4).with_spacing(FrequencySpacing::Linear);
         let freqs = generate_frequencies(&config);
         assert_eq!(freqs.len(), 4);
         assert_abs_diff_eq!(freqs[0], 100.0, epsilon = 1e-10);
@@ -1265,8 +1527,10 @@ mod tests {
                     bf: 100.0,
                     temperature,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -1281,14 +1545,7 @@ mod tests {
         let h = 1e-3;
         let slope = (vc_dc(vin + h) - vc_dc(vin - h)) / (2.0 * h);
 
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 1.0,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("VIN", 1.0, 1.0, 1).with_spacing(FrequencySpacing::Linear);
         let result = solve_ac(&bjt_stage(kind, vin, temperature), &config).unwrap();
         let gain = result.points[0].node_voltages["c"];
 
@@ -1343,14 +1600,7 @@ mod tests {
         let v_dc = |v: f64| crate::solve_circuit(&build(v)).unwrap().node_voltages[node];
         let h = 1e-3;
         let slope = (v_dc(vin + h) - v_dc(vin - h)) / (2.0 * h);
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 1.0,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("VIN", 1.0, 1.0, 1).with_spacing(FrequencySpacing::Linear);
         let gain = solve_ac(&build(vin), &config).unwrap().points[0].node_voltages[node];
         let tol = 1e-3 * slope.abs() + 1e-5;
         assert!(
@@ -1380,6 +1630,7 @@ mod tests {
         Circuit {
             ground_node: "0".into(),
             components,
+            ..Default::default()
         }
     }
 
@@ -1453,6 +1704,106 @@ mod tests {
         assert_ac_matches_dc_slope("photodiode, forward", behind(forward, 1_000.0), 2.0, "out");
     }
 
+    /// The AC response at one frequency of `VIN` into `circuit`.
+    fn ac_at(circuit: &Circuit, f: f64) -> HashMap<String, Complex64> {
+        let config = AcConfig::new("VIN", f, f, 1).with_spacing(FrequencySpacing::Linear);
+        solve_ac(circuit, &config)
+            .unwrap()
+            .points
+            .remove(0)
+            .node_voltages
+    }
+
+    /// A reverse-biased diode card with CJO and no RS is an RC low-pass
+    /// with C = CJO/(1 + V_R/VJ)^M. At 3 V reverse with VJ = 1 and M = 0.5
+    /// that is CJO/2, so at ω = 1/(R·CJO/2) the gain is 1/√2 at −45°. The
+    /// leakage (IS·R ≈ 1e-10 V) is far below the tolerance.
+    #[test]
+    fn diode_card_without_rs_is_its_junction_capacitance_in_ac() {
+        let r = 10_000.0;
+        let cjo = 20e-12;
+        let f_c = 1.0 / (2.0 * std::f64::consts::PI * r * cjo / 2.0);
+        let circuit = with(vec![
+            vsrc("VIN", "in", 3.0),
+            res("R1", "in", "out", r),
+            CircuitElement::Diode {
+                id: "D1".into(),
+                nodes: ["0".into(), "out".into()],
+                temperature: 300.15,
+                model: Some(crate::circuit::DiodeModel {
+                    cjo,
+                    ..Default::default()
+                }),
+            },
+        ]);
+        let v = ac_at(&circuit, f_c)["out"];
+        assert!(
+            (v.norm() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-8,
+            "|H| = {}",
+            v.norm()
+        );
+        assert!((v.arg().to_degrees() + 45.0).abs() < 1e-6, "{v}");
+    }
+
+    /// An inductor is a short at 0 Hz (linear spacing may start there) and
+    /// `jωL` above it: behind R, `H = jωL/(R + jωL)`, `j/(1 + j)` at
+    /// ω = R/L.
+    #[test]
+    fn inductor_shorts_at_dc_and_is_jwl_above_it() {
+        let (r, l) = (1e3, 1e-3);
+        let f_c = r / (2.0 * std::f64::consts::PI * l);
+        let circuit = with(vec![
+            vsrc("VIN", "in", 0.0),
+            res("R1", "in", "out", r),
+            CircuitElement::Inductor {
+                id: "L1".into(),
+                nodes: ["out".into(), "0".into()],
+                inductance: l,
+                saturation: None,
+            },
+        ]);
+        let config = AcConfig::new("VIN", 0.0, f_c, 2).with_spacing(FrequencySpacing::Linear);
+        let points = solve_ac(&circuit, &config).unwrap().points;
+        assert_eq!(points[0].frequency, 0.0);
+        // 1 kΩ against the 1e12 S short.
+        assert!(points[0].node_voltages["out"].norm() < 1e-12);
+        let h = points[1].node_voltages["out"];
+        let expected = Complex64::new(0.0, 1.0) / Complex64::new(1.0, 1.0);
+        assert!((h - expected).norm() < 1e-12, "{h}");
+    }
+
+    /// An inverting amplifier on the modelled op-amp (in+ grounded) is the
+    /// single-pole closed loop `−(RF/R1) / (1 + (1 + RF/R1)/A(jω))` with
+    /// `A = A0/(1 + jf/fp)`, `fp = GBW/A0`: 10 Hz for the default model.
+    #[test]
+    fn modelled_inverting_amplifier_follows_the_single_pole_loop() {
+        let model = crate::circuit::OpAmpModel::default();
+        let (r1, rf) = (1e3, 10e3);
+        let circuit = with(vec![
+            vsrc("VIN", "in", 0.0),
+            res("R1", "in", "fb", r1),
+            res("RF", "fb", "out", rf),
+            res("RL", "out", "0", 10e3),
+            CircuitElement::OpAmp {
+                id: "U1".into(),
+                nodes: ["0".into(), "fb".into(), "out".into()],
+                v_pos: 15.0,
+                v_neg: -15.0,
+                model: Some(model),
+            },
+        ]);
+        let fp = model.gbw.unwrap() / model.gain;
+        for f in [1.0, 1e3] {
+            let a = Complex64::new(model.gain, 0.0) / Complex64::new(1.0, f / fp);
+            let expected = -(rf / r1) / (1.0 + (1.0 + rf / r1) / a);
+            let h = ac_at(&circuit, f)["out"];
+            assert!(
+                (h - expected).norm() < 1e-6 * expected.norm(),
+                "{f} Hz: {h} vs {expected}"
+            );
+        }
+    }
+
     /// A reverse-biased varactor behind R is an RC low-pass with
     /// C = C_j(V_bias): at ω = 1/(R·C_j) the gain is 1/√2 at −45°. (The
     /// varactor's 1 TΩ DC leak moves the bias by ~30 nV, hence 1e-8.)
@@ -1471,14 +1822,7 @@ mod tests {
                 params,
             },
         ]);
-        let config = AcConfig {
-            f_start: f_c,
-            f_stop: f_c,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("VIN", f_c, f_c, 1).with_spacing(FrequencySpacing::Linear);
         let v = solve_ac(&circuit, &config).unwrap().points[0].node_voltages["out"];
         assert!(
             (v.norm() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-8,
@@ -1510,6 +1854,7 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15,
                     parasitic_caps: None,
+                    model: None,
                 },
             ];
             if reactive {
@@ -1522,6 +1867,7 @@ mod tests {
                     id: "L1".into(),
                     nodes: ["vcc".into(), "x".into()],
                     inductance: 1e-3,
+                    saturation: None,
                 });
             } else {
                 // Keep `in` connected so both circuits have the same nodes.
@@ -1529,9 +1875,10 @@ mod tests {
             }
             with(c)
         };
-        let op = crate::solve_dc_operating_point(&stage(true), &HashMap::new()).unwrap();
+        let op = crate::solve_dc_operating_point(&stage(true), &crate::SolverOptions::default())
+            .unwrap();
         let plain = crate::solve_circuit(&stage(false)).unwrap();
-        // Both are Newton solves stopped at RELTOL = 1e-3 (see SIN-14), so
+        // Both are Newton solves stopped at RELTOL = 1e-3, so
         // they agree to that precision, not to round-off.
         for node in ["b", "c"] {
             assert!(
@@ -1545,14 +1892,7 @@ mod tests {
         // AC biases there too: the mid-band gain is −gm·RC at that Ic.
         let ic = (10.0 - plain.node_voltages["c"]) / 1_000.0;
         let gm = ic / sindr_devices::diode::V_T;
-        let config = AcConfig {
-            f_start: 10e3,
-            f_stop: 10e3,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("VIN", 10e3, 10e3, 1).with_spacing(FrequencySpacing::Linear);
         let gain = solve_ac(&stage(true), &config).unwrap().points[0].node_voltages["c"];
         assert!(
             (gain.norm() - gm * 1_000.0).abs() < 2e-2 * gm * 1_000.0,

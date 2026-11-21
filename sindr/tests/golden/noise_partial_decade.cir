@@ -1,0 +1,6 @@
+noise: RC low-pass over a band that is not a whole number of decades
+V1 in 0 dc 0 ac 1
+R1 in out 1k
+C1 out 0 1u
+.noise v(out) v1 dec 10 1 50
+.end

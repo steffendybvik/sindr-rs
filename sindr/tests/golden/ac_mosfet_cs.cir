@@ -1,0 +1,9 @@
+ac: NMOS common-source from a 10k source, Miller pole (built in Rust on the sindr side)
+VDD vdd 0 10
+VG in 0 3
+RG in g 10k
+RD vdd d 10k
+M1 d g 0 0 nmos1 W=1 L=1
+* sindr default_nmos, with Cgs = 10 pF and Cgd = 2 pF (W = 1 m, so CGSO/CGDO in F/m are farads)
+.model nmos1 NMOS(LEVEL=1 KP=2e-4 VTO=0.7 LAMBDA=0.02 GAMMA=0.4 PHI=0.6 CGSO=10p CGDO=2p)
+.end

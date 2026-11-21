@@ -10,6 +10,9 @@
 use crate::diode::{diode_companion, thermal_voltage, DiodeParams, T_NOM};
 
 /// Photodiode parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct PhotodiodeParams {
@@ -50,8 +53,10 @@ impl Default for PhotodiodeParams {
 
 /// Linearized companion model for a photodiode at operating point v_d.
 ///
-/// Returns (g_d, i_eq) where i_eq includes the photocurrent offset.
-/// Photocurrent flows in reverse direction (opposite to diode forward current).
+/// Returns `(g_d, i_eq)`: conductance (S) and Norton current (A) for current
+/// flowing anode → cathode, at `v_d` = anode − cathode (V). `irradiance` is
+/// incident optical power in W (not W/m²). `i_eq` includes the
+/// photocurrent, which flows cathode → anode, opposite to forward current.
 pub fn photodiode_companion(v_d: f64, irradiance: f64, params: &PhotodiodeParams) -> (f64, f64) {
     let (g_d, i_eq_dark) = diode_companion(
         v_d,
@@ -60,6 +65,7 @@ pub fn photodiode_companion(v_d: f64, irradiance: f64, params: &PhotodiodeParams
             n: params.n,
             rs: 0.0,
             temperature: params.temperature,
+            breakdown: None,
         },
     );
     let i_photo = params.responsivity * irradiance.max(0.0);
@@ -83,6 +89,7 @@ mod tests {
                 n: params.n,
                 rs: 0.0,
                 temperature: 300.15,
+                breakdown: None,
             },
         );
         assert_relative_eq!(g_photo, g_diode, max_relative = 1e-10);

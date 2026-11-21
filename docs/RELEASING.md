@@ -15,6 +15,7 @@ This page is the documentation side.
 | docs.rs | Every public item | A doc comment with units (V, A, Ω, F, H, s, K) and sign conventions; `# Errors` on fallible functions |
 | GitHub, crates.io | `README.md`, `sindr/README.md`, `sindr-devices/README.md` | Install snippet, element reference, examples |
 | Everyone | `LIMITATIONS.md` | What sindr does **not** do. This is what stops readers, and LLMs, assuming features that don't exist |
+| Users and contributors | `ROADMAP.md` | The 1.0 gate and what comes next, in themes. No dates, no internal tracker ids, no names of users |
 | LLMs | `llms.txt` | Short index: summary, key facts for generating code, links |
 | LLMs | `llms-full.txt` | Generated: READMEs, LIMITATIONS, public API with docs, examples |
 | Agents working on the repo | `AGENTS.md` | Orientation, "Common pitfalls when generating circuits via this API", "Things NOT to do" |
@@ -46,10 +47,12 @@ In the same PR:
 
 On the staging branch, before its PR into `main`:
 
-1. **Versions.** Do the bump as described in CONTRIBUTING. Check every install
-   snippet and status line pins the full pre-release version (`^0.1` doesn't
-   match an alpha):
-   `grep -rn "0\.1\.0-alpha" --include=*.md --include=*.rs .`
+1. **Versions.** Plain `0.x`, never a prerelease: a minor bump if the
+   release has any breaking change, a patch bump otherwise. Do the bump as
+   described in CONTRIBUTING, then check no snippet or status line still
+   names the old version. For a release that replaces `0.1.x`:
+   `grep -rn '0\.1\.[0-9]\|"0\.1"' --include=*.md --include=*.rs --include=*.toml --include=*.txt .`
+   Matches in the CHANGELOG's older sections are expected.
 2. **CHANGELOG.** The release section is complete, and breaking changes say
    what to change in calling code.
 3. **Capabilities.** The crate-docs tables, `llms.txt` "Key facts" and
@@ -58,9 +61,11 @@ On the staging branch, before its PR into `main`:
 4. **AGENTS.md.** Update "Common pitfalls when generating circuits via this
    API" and "Things NOT to do" for anything this release changed. `CLAUDE.md`
    only points to `AGENTS.md`; keep it that way.
-5. **llms-full.txt.** `python3 scripts/gen_llms_full.py`, commit the result.
+5. **Accuracy.** `python3 scripts/accuracy_table.py` and commit
+   `docs/ACCURACY.md` and the README table if they moved.
+6. **llms-full.txt.** `python3 scripts/gen_llms_full.py`, commit the result.
    CI's `llms-full.txt` job fails if it's stale.
-6. **Docs build.** These must pass (CI runs them too):
+7. **Docs build.** These must pass (CI runs them too):
 
    ```bash
    cargo test --workspace --all-features      # includes doctests
@@ -69,8 +74,8 @@ On the staging branch, before its PR into `main`:
    RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --workspace --no-deps --all-features
    ```
 
-7. **Read it.** Open `target/doc/sindr/index.html` and skim the front page,
+8. **Read it.** Open `target/doc/sindr/index.html` and skim the front page,
    the `spice` badge and a few element docs as a docs.rs reader would. Skim
    `llms.txt` as an LLM would: could you write a working circuit from it?
-8. **Publish** `sindr-devices` first, then `sindr`. After docs.rs has built,
+9. **Publish** `sindr-devices` first, then `sindr`. After docs.rs has built,
    check the published pages render and show the feature badges.

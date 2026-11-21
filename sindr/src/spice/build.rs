@@ -11,29 +11,37 @@
 //!   is dropped with a warning in lenient mode and an error in strict mode
 //!   when non-zero.
 //! * **D** — look up `.model`; kind must be `D`. Other kinds raise
-//!   `UnsupportedModelType`. `IS`/`N` parameters are silently dropped
-//!   today — `crate::CircuitElement::Diode` does not yet expose them.
-//! * **Q** — look up `.model`; kind must be `NPN` or `PNP`. **SPICE node
+//!   `UnsupportedModelType`. `IS`, `N`, `RS`, `CJO` (alias `CJ0`, `CJ`),
+//!   `VJ` (alias `PB`), `M` (alias `MJ`), `FC`, `TT`, `BV` and `IBV` fill a
+//!   `DiodeModel`.
+//! * **Q** — look up `.model`; kind must be `NPN` or `PNP`. `BF` sets `bf`;
+//!   `IS`, `BR`, `NF`, `NR` and `VAF` (alias `VA`) fill a `BjtModel`.
+//!   Any other D or Q card parameter is a warning in lenient mode and an
+//!   error in strict mode, naming it. **SPICE node
 //!   order on the Q line is `[c, b, e]`; sindr's `Bjt::nodes` is
 //!   `[b, c, e]`** — transpose at this layer.
+//! * **E / G / F / H** — evaluate the gain and emit `Vcvs` / `Vccs` /
+//!   `Cccs` / `Ccvs` with the nodes as written (sindr uses SPICE's
+//!   directions). An `F`/`H` control must be a `V` line in the same scope.
+//! * **K** — after its scope's elements are built, replace the two `L`
+//!   lines it names with one `Transformer` named after the `K` line.
 //! * **X** — should not appear in `flat.elements` (the flattener already
 //!   expanded them). Hitting one here is an internal bug.
 
-#![allow(dead_code)] // some helpers are exercised only via tests
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use std::collections::HashMap;
-
-use crate::circuit::BjtParasiticCaps;
+use crate::circuit::{BjtModel, BjtParasiticCaps, DiodeModel};
+use crate::design::{Block, Instance};
 use crate::{BjtKind, Circuit, CircuitElement, Waveform};
 use miette::NamedSource;
 
-use crate::spice::analysis::{AcSweep, AnalysisRequest};
+use crate::spice::analysis::{AcStimulus, AcSweep, AnalysisRequest, MeasureRequest};
 use crate::spice::ast::{
-    AcSweepKind, NodeValueKind, ParamExpr, RawAnalysis, RawElementBody, RawModel, RawWaveform,
-    SourceKind,
+    AcSweepKind, NodeValueKind, ParamExpr, RawAnalysis, RawCrossing, RawElementBody, RawMeasure,
+    RawMeasureKind, RawModel, RawWaveform, SourceKind,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
-use crate::spice::flatten::{FlatElement, Flattened};
+use crate::spice::flatten::{FlatElement, Flattened, InstanceRecord};
 use crate::spice::param_eval::{eval, eval_error_to_parse_error, ParamScope};
 use crate::spice::ParsedNetlist;
 
@@ -50,13 +58,80 @@ pub(crate) fn build_netlist(
     strict: bool,
     warnings: &mut Vec<ParseWarning>,
 ) -> Result<ParsedNetlist, SpiceParseError> {
-    let mut components: Vec<CircuitElement> = Vec::with_capacity(flat.elements.len());
-
+    // Each element is built with its nodes as its own subckt body writes
+    // them, then filed under its instance; `assemble` turns that into
+    // blocks. Building from the renamed id keeps diagnostics naming the
+    // full path (`x1.r3`).
+    let mut scopes: HashMap<&[String], Vec<CircuitElement>> = HashMap::new();
+    // `K` lines, applied per scope once all its `L` lines are built.
+    let mut couplings: Vec<Coupling<'_>> = Vec::new();
     for fe in &flat.elements {
-        let element = build_element(fe, &flat.models, strict, warnings)
+        if let RawElementBody::Coupling { inductors, k } = &fe.raw.body {
+            let scope = scope_from_snapshot(&fe.scope_snapshot);
+            let k = eval_or_lift(k, &scope).map_err(|e| e.locate(&fe.raw.span))?;
+            couplings.push(Coupling {
+                id: local_id(&fe.raw.id, &fe.instance_path),
+                inductors,
+                k,
+                fe,
+            });
+            continue;
+        }
+        let mut raw = fe.raw.clone();
+        raw.nodes.clone_from(&fe.local_nodes);
+        let local = FlatElement {
+            raw,
+            local_nodes: Vec::new(),
+            instance_path: Vec::new(),
+            scope_snapshot: fe.scope_snapshot.clone(),
+        };
+        let mut element = build_element(&local, &flat.models, strict, warnings)
             .map_err(|e| e.locate(&fe.raw.span))?;
-        components.push(element);
+        *element.id_mut() = local_id(&fe.raw.id, &fe.instance_path);
+        scopes
+            .entry(fe.instance_path.as_slice())
+            .or_default()
+            .push(element);
     }
+    for coupling in couplings {
+        let elements = scopes
+            .entry(coupling.fe.instance_path.as_slice())
+            .or_default();
+        couple(elements, coupling)?;
+    }
+    for fe in &flat.elements {
+        if let RawElementBody::CurrentControlled { source, .. } = &fe.raw.body {
+            check_control_source(&scopes, fe, source)?;
+        }
+    }
+    let mut ac_stimuli = Vec::new();
+    for fe in &flat.elements {
+        if let RawElementBody::Source {
+            kind,
+            ac: Some(spec),
+            ..
+        } = &fe.raw.body
+        {
+            let scope = scope_from_snapshot(&fe.scope_snapshot);
+            let value_or = |expr: &Option<ParamExpr>, default: f64| match expr {
+                Some(e) => eval_or_lift(e, &scope).map_err(|e| e.locate(&fe.raw.span)),
+                None => Ok(default),
+            };
+            ac_stimuli.push(AcStimulus {
+                source: fe.raw.id.clone(),
+                current: *kind == SourceKind::Current,
+                magnitude: value_or(&spec.magnitude, 1.0)?,
+                phase_deg: value_or(&spec.phase, 0.0)?,
+            });
+        }
+    }
+    let mut circuit = assemble(scopes, &flat.instances);
+    circuit.globals.clone_from(&flat.globals);
+    let components = circuit
+        .flattened()
+        .map_err(|e| card_error(format!("internal: {e}")))?
+        .into_owned()
+        .components;
 
     let mut analyses: Vec<AnalysisRequest> = Vec::with_capacity(flat.analyses.len());
     let top_scope = scope_from_snapshot(&flat.top_params);
@@ -72,28 +147,127 @@ pub(crate) fn build_netlist(
     let mut initial_conditions = HashMap::new();
     let mut nodesets = HashMap::new();
     for (kind, values, span) in &flat.node_values {
-        let (card, map) = match kind {
-            NodeValueKind::Ic => (".ic", &mut initial_conditions),
-            NodeValueKind::Nodeset => (".nodeset", &mut nodesets),
+        let map = match kind {
+            NodeValueKind::Ic => &mut initial_conditions,
+            NodeValueKind::Nodeset => &mut nodesets,
         };
         for (node, expr) in values {
-            let v = eval_finite(expr, &top_scope, card, node).map_err(|e| e.locate(span))?;
+            let v = eval_or_lift(expr, &top_scope).map_err(|e| e.locate(span))?;
             map.insert(node.clone(), v);
         }
     }
 
+    let mut options = build_options(&flat.options, &top_scope, strict, warnings)?;
+    options.nodeset.clone_from(&nodesets);
+
+    let measurements = flat
+        .measures
+        .iter()
+        .map(|(raw, span)| build_measure(raw, &top_scope).map_err(|e| e.locate(span)))
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(ParsedNetlist {
-        circuit: Circuit {
-            ground_node: "0".to_string(),
-            components,
-        },
+        circuit,
         analyses,
         initial_conditions,
         nodesets,
+        options,
+        measurements,
+        ac_stimuli,
         warnings: warnings.clone(),
         source_map: flat.source_map,
         title,
     })
+}
+
+/// An element's id inside its subckt body: `x1.x2.r3` → `r3`.
+fn local_id(id: &str, instance_path: &[String]) -> String {
+    let prefix_len = instance_path.iter().map(|p| p.len() + 1).sum::<usize>();
+    id.get(prefix_len..).unwrap_or(id).to_string()
+}
+
+/// A `K` line waiting for its scope's `L` lines.
+struct Coupling<'a> {
+    id: String,
+    inductors: &'a [String; 2],
+    k: f64,
+    fe: &'a FlatElement,
+}
+
+/// Replace the two inductors a `K` line names with one
+/// [`CircuitElement::Transformer`], where the first of them stood. Each
+/// inductor's first node is its dot, as in SPICE.
+fn couple(
+    elements: &mut Vec<CircuitElement>,
+    coupling: Coupling<'_>,
+) -> Result<(), SpiceParseError> {
+    let Coupling {
+        id,
+        inductors: [l1, l2],
+        k,
+        fe,
+    } = coupling;
+    let fail = |message: String| card_error(message).locate(&fe.raw.span);
+    if l1 == l2 {
+        return Err(fail(format!("`{id}` couples `{l1}` to itself")));
+    }
+    let find = |name: &str| {
+        elements
+            .iter()
+            .enumerate()
+            .find_map(|(i, e)| match e {
+                CircuitElement::Inductor {
+                    id,
+                    nodes,
+                    inductance,
+                    ..
+                } if id == name => Some((i, nodes.clone(), *inductance)),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                fail(format!(
+                    "`{id}` couples `{name}`, which isn't an `L` line in the same scope \
+                     (or another `K` line already couples it)"
+                ))
+            })
+    };
+    let (i1, [p1, q1], l1) = find(l1)?;
+    let (i2, [p2, q2], l2) = find(l2)?;
+    let transformer = CircuitElement::Transformer {
+        id,
+        nodes: [p1, q1, p2, q2],
+        l1,
+        l2,
+        k,
+    };
+    let (first, last) = (i1.min(i2), i1.max(i2));
+    elements.remove(last);
+    elements[first] = transformer;
+    Ok(())
+}
+
+/// An `F` or `H` line's controlling source must be a `V` line in the same
+/// scope: the solver would otherwise leave the output at zero.
+fn check_control_source(
+    scopes: &HashMap<&[String], Vec<CircuitElement>>,
+    fe: &FlatElement,
+    source: &str,
+) -> Result<(), SpiceParseError> {
+    let found = scopes
+        .get(fe.instance_path.as_slice())
+        .is_some_and(|elements| {
+            elements
+                .iter()
+                .any(|e| matches!(e, CircuitElement::VoltageSource { id, .. } if id == source))
+        });
+    if found {
+        return Ok(());
+    }
+    Err(card_error(format!(
+        "`{}` is controlled by `{source}`, which isn't a `V` line in the same scope",
+        local_id(&fe.raw.id, &fe.instance_path)
+    ))
+    .locate(&fe.raw.span))
 }
 
 fn build_element(
@@ -118,6 +292,7 @@ fn build_element(
                     id: raw.id.clone(),
                     nodes,
                     inductance: v,
+                    saturation: None,
                 }),
                 'c' => Ok(CircuitElement::Capacitor {
                     id: raw.id.clone(),
@@ -132,7 +307,9 @@ fn build_element(
             }
         }
 
-        RawElementBody::Source { kind, dc, waveform } => {
+        RawElementBody::Source {
+            kind, dc, waveform, ..
+        } => {
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
             let dc_value = match dc {
                 Some(expr) => eval_or_lift(expr, &scope)?,
@@ -172,15 +349,33 @@ fn build_element(
                     bad_span: span_of(raw),
                 });
             }
-            // IS / N parameters in the .model are silently dropped today —
-            // crate::CircuitElement::Diode exposes only `temperature`.
-            // A future warning could surface here once the public API
-            // grows the relevant fields.
+            let params = model_params(m, DIODE_KEYS, &scope, strict, warnings)?;
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
+            let model = (!params.is_empty()).then(|| {
+                let mut model = DiodeModel::default();
+                for (key, value) in params {
+                    match key {
+                        "is" => model.is = value,
+                        "n" => model.n = value,
+                        "rs" => model.rs = value,
+                        "cjo" => model.cjo = value,
+                        "vj" => model.vj = value,
+                        "m" => model.m = value,
+                        "fc" => model.fc = value,
+                        "tt" => model.tt = value,
+                        "bv" => model.bv = Some(value),
+                        "kf" => model.kf = value,
+                        "af" => model.af = value,
+                        _ => model.ibv = value,
+                    }
+                }
+                model
+            });
             Ok(CircuitElement::Diode {
                 id: raw.id.clone(),
                 nodes,
                 temperature: 300.15,
+                model,
             })
         }
 
@@ -225,13 +420,25 @@ fn build_element(
                 /* collector */ raw.nodes[0].clone(),
                 /* emitter */ raw.nodes[2].clone(),
             ];
-            let bf = m
-                .params
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("bf"))
-                .map(|(_, e)| eval_or_lift(e, &scope))
-                .transpose()?
-                .unwrap_or(100.0);
+            let params = model_params(m, BJT_KEYS, &scope, strict, warnings)?;
+            let mut bf = 100.0;
+            let mut model = None::<BjtModel>;
+            for (key, value) in params {
+                if key == "bf" {
+                    bf = value;
+                    continue;
+                }
+                let model = model.get_or_insert_with(BjtModel::default);
+                match key {
+                    "is" => model.is = value,
+                    "br" => model.br = value,
+                    "nf" => model.nf = value,
+                    "nr" => model.nr = value,
+                    "kf" => model.kf = value,
+                    "af" => model.af = value,
+                    _ => model.vaf = value,
+                }
+            }
             Ok(CircuitElement::Bjt {
                 id: raw.id.clone(),
                 nodes,
@@ -239,8 +446,61 @@ fn build_element(
                 bf,
                 temperature: 300.15,
                 parasitic_caps: None::<BjtParasiticCaps>,
+                model,
             })
         }
+
+        // sindr's controlled sources take SPICE's node order and current
+        // direction, so the nodes go across as written.
+        RawElementBody::VoltageControlled { value } => {
+            let v = eval_or_lift(value, &scope)?;
+            let [p, n, cp, cn]: [String; 4] =
+                raw.nodes.clone().try_into().map_err(|_| {
+                    card_error(format!("`{}` needs four nodes: n+ n- nc+ nc-", raw.id))
+                })?;
+            let (id, nodes, control_nodes) = (raw.id.clone(), [p, n], [cp, cn]);
+            Ok(if raw.prefix == 'e' {
+                CircuitElement::Vcvs {
+                    id,
+                    nodes,
+                    control_nodes,
+                    gain: v,
+                }
+            } else {
+                CircuitElement::Vccs {
+                    id,
+                    nodes,
+                    control_nodes,
+                    gm: v,
+                }
+            })
+        }
+
+        RawElementBody::CurrentControlled { source, value } => {
+            let v = eval_or_lift(value, &scope)?;
+            let nodes = two_nodes(&raw.nodes, &raw.id)?;
+            let (id, control_source) = (raw.id.clone(), source.clone());
+            Ok(if raw.prefix == 'h' {
+                CircuitElement::Ccvs {
+                    id,
+                    nodes,
+                    control_source,
+                    rm: v,
+                }
+            } else {
+                CircuitElement::Cccs {
+                    id,
+                    nodes,
+                    control_source,
+                    alpha: v,
+                }
+            })
+        }
+
+        RawElementBody::Coupling { .. } => Err(card_error(format!(
+            "internal: `K` line `{}` reached the element pass",
+            raw.id
+        ))),
 
         RawElementBody::Subckt { name, .. } => Err(SpiceParseError::Syntax {
             message: format!(
@@ -354,6 +614,236 @@ fn translate_waveform(
 }
 
 /// A syntax error with no span of its own: the caller locates it on the card.
+/// `.model D` parameters sindr's diode uses.
+const DIODE_KEYS: &[&str] = &[
+    "is", "n", "rs", "cjo", "vj", "m", "fc", "tt", "bv", "ibv", "kf", "af",
+];
+
+/// SPICE's alternative names for `.model` parameters, and the name sindr
+/// reads them as.
+const KEY_ALIASES: &[(&str, &str)] = &[
+    ("va", "vaf"),
+    ("cj0", "cjo"),
+    ("cj", "cjo"),
+    ("pb", "vj"),
+    ("mj", "m"),
+];
+
+/// `.model NPN`/`PNP` parameters sindr's Ebers–Moll transistor uses.
+const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf", "kf", "af"];
+
+/// `.model` parameters that describe the part rather than its behaviour
+/// (vendor model libraries add them). They are dropped without a word,
+/// even in strict mode, as SPICE simulators drop them.
+const ANNOTATION_KEYS: &[&str] = &["mfg", "type", "vceo", "icrating", "iave", "vpk"];
+
+/// The parameters of card `m` that `known` lists, as `(key, value)` in card
+/// order, so a repeated key's last value wins when applied in turn. Keys are
+/// lowercased and [`KEY_ALIASES`] read as the name they stand for.
+///
+/// Any other parameter can't be honoured: an error naming it in strict mode,
+/// otherwise one warning per card listing them all.
+fn model_params(
+    m: &RawModel,
+    known: &[&'static str],
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<Vec<(&'static str, f64)>, SpiceParseError> {
+    let mut params = Vec::new();
+    let mut ignored = Vec::new();
+    for (key, expr) in &m.params {
+        let lower = key.to_ascii_lowercase();
+        let lower = KEY_ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == lower)
+            .map_or(lower, |(_, name)| name.to_string());
+        match known.iter().find(|k| **k == lower) {
+            Some(k) => params.push((*k, eval_or_lift(expr, scope)?)),
+            None if ANNOTATION_KEYS.contains(&lower.as_str()) => {}
+            None => ignored.push(key.to_ascii_uppercase()),
+        }
+    }
+    if ignored.is_empty() {
+        return Ok(params);
+    }
+    let what = format!(
+        "`.model {}` parameter{} {}",
+        m.name,
+        if ignored.len() == 1 { "" } else { "s" },
+        ignored.join(", ")
+    );
+    if strict {
+        return Err(card_error(format!(
+            "{what} not supported by sindr's {} model",
+            m.kind.to_ascii_uppercase()
+        )));
+    }
+    let message = format!("{what} ignored (sindr's model doesn't use them)");
+    if !warnings.iter().any(|w| w.message == message) {
+        warnings.push(ParseWarning {
+            message,
+            span: None,
+            file: Some(m.span.file.to_string()),
+        });
+    }
+    Ok(params)
+}
+
+/// Turn per-instance element lists into a [`Circuit`] with one [`Block`]
+/// per distinct subckt body. Instances that bind different `.param`
+/// values can give one subckt different bodies; each gets its own block,
+/// named `name`, `name_2`, `name_3`, ….
+fn assemble(
+    mut scopes: HashMap<&[String], Vec<CircuitElement>>,
+    records: &[InstanceRecord],
+) -> Circuit {
+    // Pass 1, bottom-up: group instances whose bodies are identical into
+    // classes. Children come after their parent in pre-order, so walking
+    // backwards classifies every child before its parent's body is built.
+    // Instances refer to their block by class index until pass 2.
+    let mut class_of: Vec<usize> = vec![0; records.len()];
+    let mut classes: Vec<(&str, Block)> = Vec::new();
+    let children = |path: &[String], class_of: &[usize]| -> Vec<Instance> {
+        records
+            .iter()
+            .zip(class_of)
+            .filter(|(r, _)| r.path.len() == path.len() + 1 && r.path.starts_with(path))
+            .map(|(r, class)| Instance {
+                id: r.path.last().cloned().unwrap_or_default(),
+                block: class.to_string(),
+                nodes: r.local_nodes.clone(),
+            })
+            .collect()
+    };
+    for (i, record) in records.iter().enumerate().rev() {
+        let block = Block {
+            ports: record.ports.clone(),
+            components: scopes.remove(record.path.as_slice()).unwrap_or_default(),
+            instances: children(&record.path, &class_of),
+            ..Block::default()
+        };
+        class_of[i] = match classes
+            .iter()
+            .position(|(name, b)| *name == record.subckt && *b == block)
+        {
+            Some(class) => class,
+            None => {
+                classes.push((&record.subckt, block));
+                classes.len() - 1
+            }
+        };
+    }
+
+    // Pass 2: name classes in order of first use: `name`, `name_2`, ….
+    let subckt_names: HashSet<&str> = records.iter().map(|r| r.subckt.as_str()).collect();
+    let mut names: Vec<Option<String>> = vec![None; classes.len()];
+    let mut taken: HashSet<String> = HashSet::new();
+    for &class in &class_of {
+        if names[class].is_some() {
+            continue;
+        }
+        let subckt = classes[class].0;
+        let mut name = subckt.to_string();
+        let mut k = 1;
+        while taken.contains(&name) || (k > 1 && subckt_names.contains(name.as_str())) {
+            k += 1;
+            name = format!("{subckt}_{k}");
+        }
+        taken.insert(name.clone());
+        names[class] = Some(name);
+    }
+    let name_of = |class: &str| -> String {
+        class
+            .parse::<usize>()
+            .ok()
+            .and_then(|c| names.get(c).cloned().flatten())
+            .unwrap_or_default()
+    };
+    let rename = |instances: &mut Vec<Instance>| {
+        for instance in instances {
+            instance.block = name_of(&instance.block);
+        }
+    };
+
+    let mut blocks = BTreeMap::new();
+    for (class, (_, mut block)) in classes.into_iter().enumerate() {
+        rename(&mut block.instances);
+        if let Some(name) = names[class].clone() {
+            blocks.insert(name, block);
+        }
+    }
+    let mut instances = children(&[], &class_of);
+    rename(&mut instances);
+
+    Circuit {
+        components: scopes.remove([].as_slice()).unwrap_or_default(),
+        ground_node: "0".to_string(),
+        instances,
+        blocks,
+        ..Circuit::default()
+    }
+}
+
+/// The [`SolverOptions`](crate::SolverOptions) the deck's `.options`
+/// cards set; a later card overrides an earlier one. `reltol`, `vntol`,
+/// `trtol` and `itl1` are read. Any other option isn't modelled: an error in
+/// strict mode, a warning (and ignored) otherwise.
+fn build_options(
+    cards: &[crate::spice::flatten::OptionsCard],
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<crate::SolverOptions, SpiceParseError> {
+    let mut options = crate::SolverOptions::default();
+    for (pairs, span) in cards {
+        for (name, expr) in pairs {
+            let key = name.to_ascii_lowercase();
+            let value = |what: &str| -> Result<f64, SpiceParseError> {
+                let expr = expr.as_ref().ok_or_else(|| {
+                    card_error(format!("`.options` {what} needs a value: `{what}=<value>`"))
+                })?;
+                let v = eval_or_lift(expr, scope)?;
+                if v <= 0.0 {
+                    return Err(card_error(format!(
+                        "`.options` {what} must be positive (got {v})"
+                    )));
+                }
+                Ok(v)
+            };
+            match key.as_str() {
+                "reltol" => options.reltol = value("reltol").map_err(|e| e.locate(span))?,
+                "vntol" => options.vntol = value("vntol").map_err(|e| e.locate(span))?,
+                "trtol" => options.trtol = value("trtol").map_err(|e| e.locate(span))?,
+                "itl1" => {
+                    let v = value("itl1").map_err(|e| e.locate(span))?;
+                    if v.fract() != 0.0 {
+                        return Err(card_error(format!(
+                            "`.options` itl1 must be a whole number of iterations (got {v})"
+                        ))
+                        .locate(span));
+                    }
+                    options.max_iterations = v as usize;
+                }
+                _ => {
+                    let message = format!(
+                        "`.options` {name} isn't supported; sindr reads reltol, vntol, trtol and itl1"
+                    );
+                    if strict {
+                        return Err(card_error(message).locate(span));
+                    }
+                    warnings.push(ParseWarning {
+                        message,
+                        span: Some((span.start, span.end - span.start).into()),
+                        file: Some(span.file.to_string()),
+                    });
+                }
+            }
+        }
+    }
+    Ok(options)
+}
+
 fn card_error(message: String) -> SpiceParseError {
     SpiceParseError::Syntax {
         message,
@@ -369,20 +859,86 @@ fn check_sweep_source(
     analysis: AnalysisRequest,
     components: &[CircuitElement],
 ) -> Result<AnalysisRequest, SpiceParseError> {
-    if let AnalysisRequest::Dc { source, .. } = &analysis {
-        let found = components.iter().any(|c| {
-            matches!(
-                c,
-                CircuitElement::VoltageSource { .. } | CircuitElement::CurrentSource { .. }
-            ) && c.id().eq_ignore_ascii_case(source)
-        });
-        if !found {
-            return Err(card_error(format!(
-                "`.dc` sweeps `{source}`, which is not a voltage or current source in the deck"
-            )));
+    if let AnalysisRequest::Dc { source, outer, .. } = &analysis {
+        let sources = std::iter::once(source).chain(outer.as_ref().map(|o| &o.source));
+        for source in sources {
+            let found = components.iter().any(|c| {
+                matches!(
+                    c,
+                    CircuitElement::VoltageSource { .. } | CircuitElement::CurrentSource { .. }
+                ) && c.id().eq_ignore_ascii_case(source)
+            });
+            if !found {
+                return Err(card_error(format!(
+                    "`.dc` sweeps `{source}`, which is not a voltage or current source in the deck"
+                )));
+            }
+        }
+        if let Some(o) = outer {
+            if o.source.eq_ignore_ascii_case(source) {
+                return Err(card_error(format!(
+                    "`.dc` sweeps `{source}` twice; the two sources must differ"
+                )));
+            }
         }
     }
     Ok(analysis)
+}
+
+/// `start stop step` of one `.dc` source, evaluated and checked.
+fn build_dc_axis(
+    args: &[ParamExpr],
+    scope: &ParamScope,
+) -> Result<(f64, f64, f64), SpiceParseError> {
+    if args.len() != 3 {
+        return Err(SpiceParseError::ArityMismatch {
+            card: ".dc".to_string(),
+            expected: "3 args after source name (start stop step)".to_string(),
+            got: args.len(),
+            src: NamedSource::new("<build>", String::new()),
+            bad_span: (0, 0).into(),
+        });
+    }
+    let start = eval_or_lift(&args[0], scope)?;
+    let stop = eval_or_lift(&args[1], scope)?;
+    let step = eval_or_lift(&args[2], scope)?;
+    // A zero step never reaches stop, and one pointing away from it
+    // never gets there either.
+    if start != stop && (step == 0.0 || (stop - start).signum() != step.signum()) {
+        return Err(card_error(format!(
+            "`.dc` step {step} doesn't move from {start} towards {stop}"
+        )));
+    }
+    Ok((start, stop, step))
+}
+
+fn build_measure(raw: &RawMeasure, scope: &ParamScope) -> Result<MeasureRequest, SpiceParseError> {
+    use crate::measure::{Crossing, Measure, Measurement};
+    let value = |expr: &ParamExpr| eval_or_lift(expr, scope);
+    let crossing = |c: &RawCrossing| -> Result<Crossing, SpiceParseError> {
+        Ok(Crossing {
+            signal: c.signal.clone(),
+            level: value(&c.level)?,
+            edge: c.edge,
+            occurrence: c.occurrence,
+        })
+    };
+    let measure = match &raw.kind {
+        RawMeasureKind::Stat(signal, stat) => Measure::stat(signal.clone(), *stat),
+        RawMeasureKind::Find(signal, at) => Measure::find(signal.clone(), value(at)?),
+        RawMeasureKind::When(c) => Measure::When(crossing(c)?),
+        RawMeasureKind::Delay(trig, targ) => Measure::Delay {
+            trig: crossing(trig)?,
+            targ: crossing(targ)?,
+        },
+    };
+    let mut measurement = Measurement::new(raw.name.clone(), measure);
+    measurement.from = raw.from.as_ref().map(value).transpose()?;
+    measurement.to = raw.to.as_ref().map(value).transpose()?;
+    Ok(MeasureRequest {
+        analysis: raw.analysis,
+        measurement,
+    })
 }
 
 fn build_analysis(
@@ -391,54 +947,58 @@ fn build_analysis(
 ) -> Result<AnalysisRequest, SpiceParseError> {
     match raw {
         RawAnalysis::Op => Ok(AnalysisRequest::Op),
-        RawAnalysis::Tran { args } => {
-            if args.len() != 2 && args.len() != 3 {
+        RawAnalysis::Tran { args, uic } => {
+            if !(2..=4).contains(&args.len()) {
                 return Err(SpiceParseError::ArityMismatch {
                     card: ".tran".to_string(),
-                    expected: "2 or 3 args (tstep tstop [tstart])".to_string(),
+                    expected: "2 to 4 args (tstep tstop [tstart [tmax]])".to_string(),
                     got: args.len(),
                     src: NamedSource::new("<build>", String::new()),
                     bad_span: (0, 0).into(),
                 });
             }
-            let tstep = eval_finite(&args[0], scope, ".tran", "tstep")?;
-            let tstop = eval_finite(&args[1], scope, ".tran", "tstop")?;
-            let tstart = if args.len() == 3 {
-                Some(eval_finite(&args[2], scope, ".tran", "tstart")?)
-            } else {
-                None
+            let tstep = eval_or_lift(&args[0], scope)?;
+            let tstop = eval_or_lift(&args[1], scope)?;
+            let tstart = match args.get(2) {
+                Some(arg) => Some(eval_or_lift(arg, scope)?),
+                None => None,
+            };
+            let tmax = match args.get(3) {
+                Some(arg) => Some(eval_or_lift(arg, scope)?),
+                None => None,
             };
             Ok(AnalysisRequest::Tran {
                 tstep,
                 tstop,
                 tstart,
+                tmax,
+                uic: *uic,
             })
         }
-        RawAnalysis::Dc { source, args } => {
-            if args.len() != 3 {
-                return Err(SpiceParseError::ArityMismatch {
-                    card: ".dc".to_string(),
-                    expected: "3 args after source name (start stop step)".to_string(),
-                    got: args.len(),
-                    src: NamedSource::new("<build>", String::new()),
-                    bad_span: (0, 0).into(),
-                });
-            }
-            let start = eval_finite(&args[0], scope, ".dc", "start")?;
-            let stop = eval_finite(&args[1], scope, ".dc", "stop")?;
-            let step = eval_finite(&args[2], scope, ".dc", "step")?;
-            // A zero step never reaches stop, and one pointing away from it
-            // never gets there either.
-            if start != stop && (step == 0.0 || (stop - start).signum() != step.signum()) {
-                return Err(card_error(format!(
-                    "`.dc` step {step} doesn't move from {start} towards {stop}"
-                )));
-            }
+        RawAnalysis::Dc {
+            source,
+            args,
+            outer,
+        } => {
+            let (start, stop, step) = build_dc_axis(args, scope)?;
+            let outer = match outer {
+                Some((source, args)) => {
+                    let (start, stop, step) = build_dc_axis(args, scope)?;
+                    Some(super::analysis::DcSweepSpec {
+                        source: source.clone(),
+                        start,
+                        stop,
+                        step,
+                    })
+                }
+                None => None,
+            };
             Ok(AnalysisRequest::Dc {
                 source: source.clone(),
                 start,
                 stop,
                 step,
+                outer,
             })
         }
         RawAnalysis::Sens { output } => Ok(AnalysisRequest::Sens {
@@ -448,13 +1008,54 @@ fn build_analysis(
             output: output.clone(),
             input: input.clone(),
         }),
+        RawAnalysis::Noise {
+            node,
+            reference,
+            input,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        } => {
+            let pts = eval_or_lift(points, scope)?;
+            if pts < 1.0 || pts > MAX_AC_POINTS as f64 {
+                return Err(card_error(format!(
+                    "`.noise` points must be a positive integer in 1..={MAX_AC_POINTS} (got {pts})"
+                )));
+            }
+            let fstart = eval_or_lift(fstart, scope)?;
+            let fstop = eval_or_lift(fstop, scope)?;
+            if fstart <= 0.0 {
+                return Err(card_error(format!(
+                    "`.noise` fstart must be above 0, where flicker noise is finite (got {fstart})"
+                )));
+            }
+            if fstart > fstop {
+                return Err(card_error(format!(
+                    "`.noise` fstart {fstart} is above fstop {fstop}"
+                )));
+            }
+            Ok(AnalysisRequest::Noise {
+                node: node.clone(),
+                reference: reference.clone(),
+                input: input.clone(),
+                sweep: match sweep {
+                    AcSweepKind::Dec => AcSweep::Dec,
+                    AcSweepKind::Oct => AcSweep::Oct,
+                    AcSweepKind::Lin => AcSweep::Lin,
+                },
+                points: pts as usize,
+                fstart,
+                fstop,
+            })
+        }
         RawAnalysis::Ac {
             sweep,
             points,
             fstart,
             fstop,
         } => {
-            let pts = eval_finite(points, scope, ".ac", "points")?;
+            let pts = eval_or_lift(points, scope)?;
             // Bound the count before the `as usize` cast: a float→int cast
             // saturates (e.g. `1e18 as usize == usize::MAX`), which would make
             // the downstream `Vec::with_capacity` abort the process.
@@ -467,8 +1068,8 @@ fn build_analysis(
                     bad_span: (0, 0).into(),
                 });
             }
-            let fstart = eval_finite(fstart, scope, ".ac", "fstart")?;
-            let fstop = eval_finite(fstop, scope, ".ac", "fstop")?;
+            let fstart = eval_or_lift(fstart, scope)?;
+            let fstop = eval_or_lift(fstop, scope)?;
             let log = !matches!(sweep, AcSweepKind::Lin);
             if (log && fstart <= 0.0) || fstart < 0.0 {
                 return Err(card_error(format!(
@@ -539,32 +1140,12 @@ fn scope_from_snapshot(snapshot: &HashMap<String, f64>) -> ParamScope {
 }
 
 /// Evaluates `expr`, rejecting NaN and ±∞: `1e400` or `{1/0}` would
-/// otherwise reach the solver as an infinite component value.
+/// otherwise reach the solver as an infinite component value, and an
+/// analysis directive as a degenerate sweep.
 fn eval_or_lift(expr: &ParamExpr, scope: &ParamScope) -> Result<f64, SpiceParseError> {
     let v = eval(expr, scope).map_err(|e| eval_error_to_parse_error(e, "<build>"))?;
     if !v.is_finite() {
         return Err(card_error(format!("value is {v}, not a finite number")));
-    }
-    Ok(v)
-}
-
-/// Like [`eval_or_lift`], but additionally rejects non-finite (NaN / ±∞)
-/// results. Analysis-directive arguments flow straight into the solver, so a
-/// non-finite timestep / frequency would otherwise silently produce a
-/// degenerate sweep. `card`/`what` name the directive and field for the error.
-fn eval_finite(
-    expr: &ParamExpr,
-    scope: &ParamScope,
-    card: &str,
-    what: &str,
-) -> Result<f64, SpiceParseError> {
-    let v = eval_or_lift(expr, scope)?;
-    if !v.is_finite() {
-        return Err(SpiceParseError::Syntax {
-            message: format!("`{card}` {what} must be a finite number (got {v})"),
-            src: NamedSource::new("<build>", String::new()),
-            bad_span: (0, 0).into(),
-        });
     }
     Ok(v)
 }
@@ -717,6 +1298,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: None,
+                ac: None,
                 waveform: Some(RawWaveform::Pwl(vec![
                     (ParamExpr::Number(0.0), ParamExpr::Number(0.0)),
                     (ParamExpr::Number(1e-3), ParamExpr::Number(5.0)),
@@ -743,6 +1325,7 @@ mod tests {
         let cards = vec![RawCard::Analysis(
             RawAnalysis::Tran {
                 args: vec![ParamExpr::Number(1e-6), ParamExpr::Number(1e-3)],
+                uic: false,
             },
             Span::detached(),
         )];
@@ -753,6 +1336,7 @@ mod tests {
                 tstep,
                 tstop,
                 tstart,
+                ..
             } => {
                 assert_eq!(*tstep, 1e-6);
                 assert_eq!(*tstop, 1e-3);
@@ -829,6 +1413,7 @@ mod tests {
         let cards = vec![RawCard::Analysis(
             RawAnalysis::Tran {
                 args: vec![ParamExpr::Number(f64::INFINITY), ParamExpr::Number(1e-3)],
+                uic: false,
             },
             Span::detached(),
         )];
@@ -849,6 +1434,7 @@ mod tests {
                     ParamExpr::Number(f64::NAN),
                     ParamExpr::Number(1.0),
                 ],
+                outer: None,
             },
             Span::detached(),
         )];
@@ -926,6 +1512,7 @@ mod tests {
                 body: RawElementBody::Source {
                     kind: SourceKind::Voltage,
                     dc: Some(ParamExpr::Number(0.0)),
+                    ac: None,
                     waveform: None,
                 },
                 span: span(),
@@ -942,6 +1529,7 @@ mod tests {
                         ParamExpr::Ref("vcc".to_string()),
                         ParamExpr::Number(1.0),
                     ],
+                    outer: None,
                 },
                 Span::detached(),
             ),
@@ -953,6 +1541,7 @@ mod tests {
                 start,
                 stop,
                 step,
+                ..
             } => {
                 assert_eq!(source, "V1");
                 assert_eq!(*start, 0.0);
@@ -972,6 +1561,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: None,
+                ac: None,
                 waveform: Some(RawWaveform::Pwl(vec![
                     (ParamExpr::Number(1e-3), ParamExpr::Number(0.0)),
                     (ParamExpr::Number(0.0), ParamExpr::Number(5.0)),
@@ -993,6 +1583,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: None,
+                ac: None,
                 waveform: Some(RawWaveform::Pulse(vec![
                     ParamExpr::Number(0.0),
                     ParamExpr::Number(5.0),
@@ -1040,6 +1631,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: None,
+                ac: None,
                 waveform: Some(RawWaveform::Sin(vec![
                     ParamExpr::Number(0.0),
                     ParamExpr::Number(1.0),
@@ -1078,6 +1670,7 @@ mod tests {
             body: RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: Some(ParamExpr::Number(12.0)),
+                ac: None,
                 waveform: None,
             },
             span: span(),
@@ -1115,5 +1708,220 @@ mod tests {
             CircuitElement::Resistor { resistance, .. } => assert_eq!(*resistance, 1500.0),
             other => panic!("expected Resistor, got {other:?}"),
         }
+    }
+
+    fn build_lenient(cards: Vec<RawCard>) -> (ParsedNetlist, Vec<ParseWarning>) {
+        let mut warnings = Vec::new();
+        let flat = flatten(cards, false, &mut warnings).unwrap();
+        let netlist = build_netlist(flat, "test".to_string(), false, &mut warnings).unwrap();
+        (netlist, warnings)
+    }
+
+    fn model_card(name: &str, kind: &str, params: &[(&str, f64)]) -> RawCard {
+        RawCard::Model(RawModel {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), ParamExpr::Number(*v)))
+                .collect(),
+            span: span(),
+        })
+    }
+
+    fn diode_card(id: &str, model: &str) -> RawCard {
+        RawCard::Element(RawElement {
+            id: id.to_string(),
+            prefix: 'd',
+            nodes: vec!["a".to_string(), "0".to_string()],
+            body: RawElementBody::Diode {
+                model: model.to_string(),
+            },
+            span: span(),
+        })
+    }
+
+    fn bjt_card(model: &str) -> RawCard {
+        RawCard::Element(RawElement {
+            id: "Q1".to_string(),
+            prefix: 'q',
+            nodes: vec!["c".to_string(), "b".to_string(), "e".to_string()],
+            body: RawElementBody::Bjt {
+                model: model.to_string(),
+                substrate: None,
+            },
+            span: span(),
+        })
+    }
+
+    #[test]
+    fn diode_card_fills_the_model() {
+        let cards = vec![
+            model_card(
+                "d1n4148",
+                "D",
+                &[("IS", 2.52e-9), ("n", 1.752), ("Rs", 0.568)],
+            ),
+            diode_card("D1", "d1n4148"),
+        ];
+        let netlist = build_from_cards(cards).unwrap();
+        match &netlist.circuit.components[0] {
+            CircuitElement::Diode { model, .. } => assert_eq!(
+                *model,
+                Some(DiodeModel {
+                    is: 2.52e-9,
+                    n: 1.752,
+                    rs: 0.568,
+                    ..DiodeModel::default()
+                })
+            ),
+            other => panic!("expected Diode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diode_card_fills_charge_and_breakdown_under_any_alias() {
+        let cards = vec![
+            model_card(
+                "d",
+                "D",
+                &[
+                    ("CJ0", 4e-12),
+                    ("PB", 0.6),
+                    ("MJ", 0.33),
+                    ("FC", 0.4),
+                    ("TT", 5.76e-9),
+                    ("BV", 100.0),
+                    ("IBV", 1e-4),
+                ],
+            ),
+            diode_card("D1", "d"),
+        ];
+        let netlist = build_from_cards(cards).unwrap();
+        match &netlist.circuit.components[0] {
+            CircuitElement::Diode { model, .. } => assert_eq!(
+                *model,
+                Some(DiodeModel {
+                    cjo: 4e-12,
+                    vj: 0.6,
+                    m: 0.33,
+                    fc: 0.4,
+                    tt: 5.76e-9,
+                    bv: Some(100.0),
+                    ibv: 1e-4,
+                    ..DiodeModel::default()
+                })
+            ),
+            other => panic!("expected Diode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn card_without_parameters_keeps_the_built_in_model() {
+        let cards = vec![model_card("dsi", "D", &[]), diode_card("D1", "dsi")];
+        let netlist = build_from_cards(cards).unwrap();
+        assert!(matches!(
+            &netlist.circuit.components[0],
+            CircuitElement::Diode { model: None, .. }
+        ));
+    }
+
+    #[test]
+    fn bjt_card_fills_bf_and_the_model() {
+        let cards = vec![
+            model_card(
+                "q",
+                "PNP",
+                &[
+                    ("IS", 1e-15),
+                    ("BF", 250.0),
+                    ("BR", 3.0),
+                    ("NF", 1.1),
+                    ("NR", 1.2),
+                    ("VA", 80.0),
+                ],
+            ),
+            bjt_card("q"),
+        ];
+        let netlist = build_from_cards(cards).unwrap();
+        match &netlist.circuit.components[0] {
+            CircuitElement::Bjt {
+                bf, kind, model, ..
+            } => {
+                assert_eq!(*bf, 250.0);
+                assert!(matches!(kind, BjtKind::Pnp));
+                assert_eq!(
+                    *model,
+                    Some(BjtModel {
+                        is: 1e-15,
+                        br: 3.0,
+                        nf: 1.1,
+                        nr: 1.2,
+                        vaf: 80.0,
+                        ..BjtModel::default()
+                    })
+                );
+            }
+            other => panic!("expected Bjt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bf_alone_leaves_the_bjt_model_unset() {
+        let cards = vec![model_card("q", "NPN", &[("BF", 50.0)]), bjt_card("q")];
+        let netlist = build_from_cards(cards).unwrap();
+        assert!(matches!(
+            &netlist.circuit.components[0],
+            CircuitElement::Bjt { bf, model: None, .. } if *bf == 50.0
+        ));
+    }
+
+    #[test]
+    fn unused_parameters_are_an_error_in_strict_mode() {
+        for (kind, element) in [("D", diode_card("D1", "m")), ("NPN", bjt_card("m"))] {
+            let cards = vec![
+                model_card("m", kind, &[("IS", 1e-14), ("XTI", 3.0), ("VAR", 10.0)]),
+                element,
+            ];
+            let err = build_from_cards(cards).unwrap_err().to_string();
+            assert!(
+                err.contains("XTI, VAR") && err.contains("m"),
+                "{kind}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn unused_parameters_warn_once_per_card_in_lenient_mode() {
+        let cards = vec![
+            model_card("m", "D", &[("IS", 1e-12), ("EG", 0.69), ("XTI", 2.0)]),
+            diode_card("D1", "m"),
+            diode_card("D2", "m"),
+        ];
+        let (netlist, warnings) = build_lenient(cards);
+        let about_card: Vec<_> = warnings
+            .iter()
+            .filter(|w| w.message.contains(".model m"))
+            .collect();
+        assert_eq!(about_card.len(), 1, "{warnings:?}");
+        assert!(about_card[0].message.contains("EG, XTI"), "{warnings:?}");
+        // What is used still applies.
+        assert!(matches!(
+            &netlist.circuit.components[1],
+            CircuitElement::Diode { model: Some(m), .. } if m.is == 1e-12
+        ));
+    }
+
+    #[test]
+    fn part_annotations_are_dropped_silently() {
+        let cards = vec![
+            model_card(
+                "q",
+                "NPN",
+                &[("BF", 300.0), ("Vceo", 40.0), ("Icrating", 0.2)],
+            ),
+            bjt_card("q"),
+        ];
+        assert!(build_from_cards(cards).is_ok());
     }
 }

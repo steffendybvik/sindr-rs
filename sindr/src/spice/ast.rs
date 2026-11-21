@@ -6,9 +6,6 @@
 //! good error messages on unsupported constructs rather than failing the
 //! grammar.
 
-#![allow(dead_code)] // some AST fields are not yet read by the lowering pass
-
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Byte-offset span attached to AST nodes. Converted to [`miette::SourceSpan`]
@@ -46,15 +43,17 @@ pub(crate) enum RawCard {
     Subckt(RawSubckt),
     /// `.param` bindings and the card's source line.
     Param(Vec<(String, ParamExpr)>, Span),
-    Include(PathBuf),
-    Lib {
-        file: PathBuf,
-        section: Option<String>,
-    },
     /// An analysis directive and its source line.
     Analysis(RawAnalysis, Span),
     /// `.ic` / `.nodeset`: `V(node)=value` pairs and the card's source line.
     NodeValues(NodeValueKind, Vec<(String, ParamExpr)>, Span),
+    /// `.meas` / `.measure` and the card's source line.
+    Measure(RawMeasure, Span),
+    /// `.options`: `name=value` pairs and bare flags (`None`), and the
+    /// card's source line.
+    Options(Vec<(String, Option<ParamExpr>)>, Span),
+    /// `.global`: nets shared by every subckt body under the same name.
+    Global(Vec<String>),
     /// `.ends [name]` marker; only meaningful inside a subckt body.
     Ends(Option<String>),
 }
@@ -74,10 +73,12 @@ pub(crate) struct RawElement {
 pub(crate) enum RawElementBody {
     /// R / L / C — a single value expression.
     Passive { value: ParamExpr },
-    /// V / I — DC value plus optional time-domain waveform.
+    /// V / I — DC value, optional AC small-signal spec and optional
+    /// time-domain waveform, written in any order.
     Source {
         kind: SourceKind,
         dc: Option<ParamExpr>,
+        ac: Option<RawAcSpec>,
         waveform: Option<RawWaveform>,
     },
     /// D — references a `.model` declaration.
@@ -87,11 +88,30 @@ pub(crate) enum RawElementBody {
         model: String,
         substrate: Option<String>,
     },
+    /// E / G — `n+ n- nc+ nc- value`: the four nodes, output pair first.
+    VoltageControlled { value: ParamExpr },
+    /// F / H — `n+ n- vname value`: the two output nodes and the voltage
+    /// source whose current controls it.
+    CurrentControlled { source: String, value: ParamExpr },
+    /// K — `lname1 lname2 k`: couples two `L` lines of the same scope into
+    /// a transformer. Has no nodes of its own.
+    Coupling {
+        inductors: [String; 2],
+        k: ParamExpr,
+    },
     /// X — subcircuit instance with optional parameter overrides.
     Subckt {
         name: String,
         params: Vec<(String, ParamExpr)>,
     },
+}
+
+/// `AC [mag [phase]]` on a V/I line. A bare `AC` is magnitude 1 at 0°, as
+/// in ngspice; `phase` is in degrees.
+#[derive(Debug, Clone)]
+pub(crate) struct RawAcSpec {
+    pub magnitude: Option<ParamExpr>,
+    pub phase: Option<ParamExpr>,
 }
 
 /// Whether a `RawElementBody::Source` is a voltage or current source.
@@ -126,7 +146,6 @@ pub(crate) struct RawSubckt {
     pub ports: Vec<String>,
     pub defaults: Vec<(String, ParamExpr)>,
     pub body: Vec<RawCard>,
-    pub span: Span,
 }
 
 /// Which card a [`RawCard::NodeValues`] came from.
@@ -144,10 +163,14 @@ pub(crate) enum RawAnalysis {
     Op,
     Tran {
         args: Vec<ParamExpr>,
+        /// The card ends in `uic`.
+        uic: bool,
     },
     Dc {
         source: String,
         args: Vec<ParamExpr>,
+        /// A second, outer source: `.dc SRC1 … SRC2 start stop step`.
+        outer: Option<(String, Vec<ParamExpr>)>,
     },
     Ac {
         sweep: AcSweepKind,
@@ -162,6 +185,47 @@ pub(crate) enum RawAnalysis {
     Sens {
         output: crate::TfOutput,
     },
+    Noise {
+        node: String,
+        reference: Option<String>,
+        input: String,
+        sweep: AcSweepKind,
+        points: ParamExpr,
+        fstart: ParamExpr,
+        fstop: ParamExpr,
+    },
+}
+
+/// `.meas <analysis> <name> …` in raw (unevaluated) form.
+#[derive(Debug, Clone)]
+pub(crate) struct RawMeasure {
+    pub analysis: crate::spice::MeasureAnalysis,
+    pub name: String,
+    pub kind: RawMeasureKind,
+    pub from: Option<ParamExpr>,
+    pub to: Option<ParamExpr>,
+}
+
+/// What a `.meas` card measures.
+#[derive(Debug, Clone)]
+pub(crate) enum RawMeasureKind {
+    /// `AVG|RMS|MIN|MAX|PP|INTEG <signal>`.
+    Stat(crate::measure::Signal, crate::measure::Stat),
+    /// `FIND <signal> AT=<x>`.
+    Find(crate::measure::Signal, ParamExpr),
+    /// `WHEN <signal>=<level> [RISE|FALL|CROSS=n|LAST]`.
+    When(RawCrossing),
+    /// `TRIG … TARG …`.
+    Delay(RawCrossing, RawCrossing),
+}
+
+/// A crossing in a `.meas` card, its level not yet evaluated.
+#[derive(Debug, Clone)]
+pub(crate) struct RawCrossing {
+    pub signal: crate::measure::Signal,
+    pub level: ParamExpr,
+    pub edge: crate::measure::Edge,
+    pub occurrence: crate::measure::Occurrence,
 }
 
 /// AC sweep style keyword.

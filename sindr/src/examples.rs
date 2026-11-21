@@ -35,6 +35,7 @@ pub fn voltage_divider() -> Circuit {
                 resistance: 2000.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -60,6 +61,7 @@ pub fn current_divider() -> Circuit {
                 resistance: 6000.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -90,6 +92,7 @@ pub fn series_resistors() -> Circuit {
                 resistance: 3000.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -116,6 +119,7 @@ pub fn led_circuit() -> Circuit {
                 waveform: None,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -142,6 +146,7 @@ pub fn fuse_protection() -> Circuit {
                 resistance: 100.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -177,6 +182,7 @@ pub fn mixed_sources() -> Circuit {
                 resistance: 2000.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -217,6 +223,7 @@ pub fn wheatstone_bridge() -> Circuit {
                 resistance: 5000.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -242,6 +249,7 @@ pub fn sine_wave_source() -> Circuit {
                 resistance: 1000.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -267,6 +275,7 @@ pub fn rc_lowpass_filter() -> Circuit {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -294,6 +303,7 @@ pub fn transformer_stepdown() -> Circuit {
                 resistance: 100.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -329,8 +339,10 @@ pub fn npn_common_emitter() -> Circuit {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -362,23 +374,25 @@ pub fn npn_switch() -> Circuit {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             },
         ],
+        ..Default::default()
     }
 }
 
 // ============================================================================
 // Metadata aggregator — for HTTP/UI listing.
-// Gated behind `examples` (which implies `serde`).
+// Gated behind `examples`; serialisable with `serde`.
 // ============================================================================
 
 #[cfg(feature = "examples")]
 mod meta {
     use super::*;
-    use serde::{Deserialize, Serialize};
 
     /// A named, simulatable example circuit with display metadata.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[derive(Debug, Clone)]
     pub struct ExampleCircuit {
         /// Stable identifier used for lookup and routing.
         pub id: String,

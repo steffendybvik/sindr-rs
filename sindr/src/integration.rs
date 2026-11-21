@@ -107,6 +107,21 @@ impl Integrator {
         )
     }
 
+    /// Companion of a nonlinear charge at the Newton iterate: charge `q` (C)
+    /// and capacitance `c = dq/dv` (F) at voltage `v` (V). Returns
+    /// `(g, i_hist)` with the current from the first terminal to the second
+    /// `i = g·v + i_hist`, exact at `v`. The history's states are charges.
+    pub(crate) fn charge(&self, q: f64, c: f64, v: f64, h: &History) -> (f64, f64) {
+        let g = c * self.a0;
+        (g, self.charge_current(q, h) - g * v)
+    }
+
+    /// Current (A) into a charge that ends the step at `q` (C), from the
+    /// history `h` of earlier charges.
+    pub(crate) fn charge_current(&self, q: f64, h: &History) -> f64 {
+        self.a0 * q + self.a1 * h.x1 + self.a2 * h.x2 - self.b1 * h.y1
+    }
+
     /// Companion of an inductance `l` (H): `(g, i_hist)` with the current
     /// from the first terminal to the second `i = g·v + i_hist`.
     pub(crate) fn inductor(&self, l: f64, h: &History) -> (f64, f64) {
@@ -115,6 +130,19 @@ impl Integrator {
             1.0 / z,
             -(l * (self.a1 * h.x1 + self.a2 * h.x2) - self.b1 * h.y1) / z,
         )
+    }
+
+    /// Flux linkage (Wb) an inductor ends the step with when the voltage
+    /// across it ends at `v` (V), from the history `h` of earlier fluxes:
+    /// the integration formula `v = a0·λ + a1·λ₁ + a2·λ₂ − b1·v₁` solved
+    /// for λ. It is affine in `v`, with slope `1/a0`.
+    pub(crate) fn flux(&self, v: f64, h: &History) -> f64 {
+        (v - self.a1 * h.x1 - self.a2 * h.x2 + self.b1 * h.y1) / self.a0
+    }
+
+    /// `1/a0` (s): how much the step's ending flux moves per volt.
+    pub(crate) fn flux_per_volt(&self) -> f64 {
+        1.0 / self.a0
     }
 
     /// Coupled windings with inductance matrix `l` (H) and histories `h`, in
@@ -173,6 +201,34 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A linear charge `q = C·v` gives the capacitor companion exactly.
+    #[test]
+    fn linear_charge_is_the_capacitor_companion() {
+        let h = History {
+            x1: 2e-9,
+            x2: 1.5e-9,
+            y1: 3e-3,
+        };
+        let c = 1e-9;
+        for method in [
+            IntegrationMethod::BackwardEuler,
+            IntegrationMethod::Trapezoidal,
+            IntegrationMethod::Gear2,
+        ] {
+            let integ = Integrator::for_step(method, 1e-6, Some(2e-6));
+            let cap_history = History {
+                x1: h.x1 / c,
+                x2: h.x2 / c,
+                y1: h.y1,
+            };
+            let (g_cap, i_cap) = integ.capacitor(c, &cap_history);
+            let v = 1.7;
+            let (g, i) = integ.charge(c * v, c, v, &h);
+            assert!((g - g_cap).abs() <= 1e-12 * g_cap);
+            assert!((i - i_cap).abs() <= 1e-12 * i_cap.abs().max(1e-12));
+        }
+    }
 
     /// Each formula is exact on the polynomials of its order: q = t for all,
     /// q = t² for the second-order ones (f = 2t).

@@ -8,7 +8,10 @@
 //!   the DC device model, built here independently from `sindr_devices`.
 
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
-use sindr::{solve_circuit, BjtKind, Circuit, CircuitElement, SimulationResult};
+use sindr::{
+    solve_circuit, temperature_sweep, BjtKind, Block, Circuit, CircuitElement, Instance, Part,
+    SimulationResult, Thermal,
+};
 use sindr_devices::bjt::{bjt_companion, BjtParams};
 use sindr_devices::diode::{diode_current, temperature_scale_is, DiodeParams};
 
@@ -41,6 +44,7 @@ fn devices(t: f64) -> Vec<CircuitElement> {
             id: "D1".into(),
             nodes: fwd(),
             temperature: t,
+            model: None,
         },
         CircuitElement::Led {
             id: "D1".into(),
@@ -113,7 +117,7 @@ fn dc_reported_device_current_obeys_kcl_off_nominal_temperature() {
     for t in TEMPERATURES {
         for device in devices(t) {
             // The Schottky and photodiode don't converge in DC behind 5 V / 1 kΩ
-            // at any temperature yet (SIN-16); the transient test still covers them.
+            // at any temperature yet; the transient test still covers them.
             if matches!(
                 device,
                 CircuitElement::SchottkyDiode { .. } | CircuitElement::Photodiode { .. }
@@ -123,6 +127,7 @@ fn dc_reported_device_current_obeys_kcl_off_nominal_temperature() {
             let circuit = Circuit {
                 ground_node: "0".into(),
                 components: vec![source(5.0), resistor(), device.clone()],
+                ..Default::default()
             };
             let result =
                 solve_circuit(&circuit).unwrap_or_else(|e| panic!("DC solve {device:?}: {e:?}"));
@@ -153,6 +158,7 @@ fn transient_reported_device_current_obeys_kcl_off_nominal_temperature() {
                     resistor(),
                     device.clone(),
                 ],
+                ..Default::default()
             };
             let result: SimulationResult = solve_circuit(&circuit).expect("transient solve");
             let transient = result.transient.as_ref().expect("transient result");
@@ -167,14 +173,7 @@ fn transient_reported_device_current_obeys_kcl_off_nominal_temperature() {
 }
 
 fn ac_gain_at_n2(circuit: &Circuit) -> f64 {
-    let config = AcConfig {
-        f_start: 10.0,
-        f_stop: 10.0,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-    };
+    let config = AcConfig::new("V1", 10.0, 10.0, 1).with_spacing(FrequencySpacing::Linear);
     let ac = solve_ac(circuit, &config).expect("AC solve");
     ac.points[0].node_voltages["n2"].norm()
 }
@@ -193,8 +192,10 @@ fn ac_diode_conductance_matches_dc_model_off_nominal_temperature() {
                     id: "D1".into(),
                     nodes: ["n2".into(), "0".into()],
                     temperature: t,
+                    model: None,
                 },
             ],
+            ..Default::default()
         };
         let v_d = solve_circuit(&circuit).unwrap().node_voltages["n2"];
 
@@ -255,8 +256,10 @@ fn ac_bjt_transconductance_matches_dc_model_off_nominal_temperature() {
                     bf,
                     temperature: t,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
+            ..Default::default()
         };
         let vc = solve_circuit(&circuit).unwrap().node_voltages["c"];
         let vbc = vbe - vc;
@@ -267,18 +270,101 @@ fn ac_bjt_transconductance_matches_dc_model_off_nominal_temperature() {
             / (2.0 * h);
         let expected = gm * rc;
 
-        let config = AcConfig {
-            f_start: 10.0,
-            f_stop: 10.0,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-        };
+        let config = AcConfig::new("V1", 10.0, 10.0, 1).with_spacing(FrequencySpacing::Linear);
         let gain = solve_ac(&circuit, &config).unwrap().points[0].node_voltages["c"].norm();
         assert!(
             (gain - expected).abs() <= 1e-3 * expected,
             "T={t}: AC gain {gain} vs DC-model gm·Rc {expected}"
         );
+    }
+}
+
+/// A temperature sweep sets every junction's temperature: each point is the
+/// circuit solved with the device at that temperature, and the junction
+/// voltage moves with it.
+#[test]
+fn temperature_sweep_sets_every_junction_temperature() {
+    let circuit = |device: CircuitElement| Circuit {
+        ground_node: "0".into(),
+        components: vec![source(5.0), resistor(), device],
+        ..Default::default()
+    };
+    let nominal = devices(300.15);
+    for (k, device) in nominal.into_iter().enumerate() {
+        let name = format!("{device:?}");
+        let sweep = temperature_sweep(&circuit(device), 250.0, 400.0, 4).unwrap();
+        let mut seen = Vec::new();
+        for point in &sweep.points {
+            let t = point.temperature_kelvin;
+            let direct = solve_circuit(&circuit(devices(t).swap_remove(k))).unwrap();
+            let v = point.result.node_voltages["n2"];
+            assert_eq!(v, direct.node_voltages["n2"], "{name} at {t} K");
+            seen.push(v);
+        }
+        assert!(seen.windows(2).all(|w| w[0] != w[1]), "{name}: {seen:?}");
+    }
+}
+
+/// A self-heated part, at the top level or inside a block, sits in an
+/// ambient at the swept temperature: its junction is that ambient plus its
+/// own dissipation times its thermal resistance.
+#[test]
+fn temperature_sweep_moves_the_ambient_of_self_heated_parts() {
+    const RTH: f64 = 400.0;
+    let led = |id: &str, a: &str| CircuitElement::Led {
+        id: id.into(),
+        nodes: [a.into(), "0".into()],
+        color: "red".into(),
+        temperature: 300.15,
+    };
+    let heated = || Part {
+        thermal: Some(Thermal::junction_to_ambient(RTH)),
+        ..Part::default()
+    };
+    let mut c = Circuit::new(
+        "0",
+        vec![
+            source(5.0),
+            CircuitElement::Resistor {
+                id: "R1".into(),
+                nodes: ["n1".into(), "a".into()],
+                resistance: 150.0,
+            },
+            led("D1", "a"),
+            CircuitElement::Resistor {
+                id: "R2".into(),
+                nodes: ["n1".into(), "b".into()],
+                resistance: 150.0,
+            },
+        ],
+    );
+    c.parts.insert("D1".into(), heated());
+    let mut block = Block {
+        ports: vec!["k".into()],
+        components: vec![led("D2", "k")],
+        ..Block::default()
+    };
+    block.parts.insert("D2".into(), heated());
+    c.blocks.insert("lamp".into(), block);
+    c.instances.push(Instance::new("X1", "lamp", ["b"]));
+
+    let sweep = temperature_sweep(&c, 280.0, 340.0, 3).unwrap();
+    for point in &sweep.points {
+        let t = point.temperature_kelvin;
+        for id in ["D1", "X1.D2"] {
+            let tj = point.result.junction_temperatures[id];
+            let p = point
+                .result
+                .component_results
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .power;
+            assert!(p > 0.01, "{id} dissipates {p} W");
+            assert!(
+                (tj - (t + p * RTH)).abs() < 1e-2,
+                "{id} at {t} K: Tj {tj}, P {p}"
+            );
+        }
     }
 }

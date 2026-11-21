@@ -1,15 +1,14 @@
 [package]
 name = "sindr"
-version = "0.1.0-alpha.7"
-edition = "2021"
+version = "0.1.0"
+edition.workspace = true
 rust-version = "1.89"
-description = "Rust circuit simulator: SPICE-style MNA solver with built-in semiconductor device models. Transient, AC, DC sweep, temperature sweep."
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/steffendybvik/sindr-rs"
-homepage = "https://github.com/steffendybvik/sindr-rs"
+description = "Embeddable circuit simulator checked against ngspice: operating point, transient, AC, noise, DC and temperature sweeps, .tf, .sens, ratings and spec checks, SPICE import and export. Native and wasm32."
+license.workspace = true
+repository.workspace = true
 documentation = "https://docs.rs/sindr"
 readme = "README.md"
-keywords = ["electronics", "simulation", "spice", "circuit", "mna"]
+keywords = ["electronics", "simulation", "spice", "circuit", "eda"]
 categories = ["science", "simulation"]
 
 [package.metadata.docs.rs]
@@ -22,26 +21,38 @@ nalgebra = "0.35"
 # Sparse LU for large MNA systems.
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
 num-complex = "0.4"
-serde = { version = "1", features = ["derive"], optional = true }
+serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 # SPICE netlist parser deps — only pulled in by the `spice` feature.
 winnow = { version = "1.0", optional = true }
 miette = { version = "7", optional = true }
 
 [features]
-default = ["serde", "examples"]
-examples = ["serde"]
+default = ["serde"]
+serde = ["dep:serde", "sindr-devices/serde", "num-complex/serde"]
+# The named example circuits with ids and descriptions (`get_examples`).
+examples = []
 # SPICE3 netlist parsing (`sindr::spice`). Off by default to keep the
 # baseline dependency tree lean.
 spice = ["dep:winnow", "dep:miette"]
+# Unstable, not covered by semver: exposes the MNA matrix for sindr's own
+# `mna_solve` bench.
+internals = []
 
 [dev-dependencies]
 approx = "0.5"
-criterion = { version = "0.5", default-features = false }
-proptest = { version = "1", default-features = false, features = ["std"] }
 serde_json = { workspace = true }
+
+# Native-only test tooling: `tests/wasm.rs` is the one test built for
+# wasm32, and proptest's RNG doesn't build there.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { version = "0.8", default-features = false }
+proptest = { version = "1", default-features = false, features = ["std"] }
 # Fancy diagnostic rendering used by the SPICE end-to-end tests.
 miette = { version = "7", features = ["fancy"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [[example]]
 name = "list_examples"
@@ -55,6 +66,28 @@ required-features = ["examples"]
 name = "parse_netlist"
 required-features = ["spice"]
 
+[[example]]
+name = "vs_ngspice"
+required-features = ["spice"]
+
 [[bench]]
 name = "mna_solve"
 harness = false
+required-features = ["internals"]
+
+[[bench]]
+name = "transient"
+harness = false
+
+[[bench]]
+name = "newton"
+harness = false
+
+[[bench]]
+name = "analyses"
+harness = false
+
+[[bench]]
+name = "spice"
+harness = false
+required-features = ["spice"]

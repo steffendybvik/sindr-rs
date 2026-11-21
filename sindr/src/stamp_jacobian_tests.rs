@@ -10,11 +10,11 @@
 //! The checks don't use any device formula, so a wrong derivative, a missing
 //! term or a clamp that changes the slope but not the current all show up.
 
+use crate::circuit::{Circuit, CircuitElement};
+use crate::mna::MnaSystem;
+use crate::node_map::NodeMap;
+use crate::stamp::stamp_circuit;
 use nalgebra::{DMatrix, DVector};
-use sindr::circuit::{Circuit, CircuitElement};
-use sindr::mna::MnaSystem;
-use sindr::node_map::NodeMap;
-use sindr::stamp::stamp_circuit;
 use sindr_devices::bjt::BjtKind;
 use sindr_devices::igbt::IgbtParams;
 use sindr_devices::jfet::JfetKind;
@@ -27,6 +27,7 @@ fn circuit_of(element: CircuitElement) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![element],
+        ..Default::default()
     }
 }
 
@@ -129,6 +130,7 @@ fn diode_stamp_is_newton_consistent() {
             id: "D1".into(),
             nodes: ["a".into(), "k".into()],
             temperature,
+            model: None,
         });
         assert_consistent(circuit, &as_slices(&two_terminal(DIODE_BIASES)));
     }
@@ -199,6 +201,7 @@ fn bjt(kind: BjtKind, temperature: f64) -> Circuit {
         bf: 100.0,
         temperature,
         parasitic_caps: None,
+        model: None,
     })
 }
 
@@ -248,6 +251,7 @@ fn mosfet(kind: MosfetKind, params: MosfetParams) -> Circuit {
         kind,
         params,
         parasitic_caps: None,
+        body_diode: None,
     })
 }
 

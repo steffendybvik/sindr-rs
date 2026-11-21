@@ -8,7 +8,8 @@ Pure electronics device physics companion models for MNA circuit simulation.
 
 | Module | Device | Model |
 |--------|--------|-------|
-| `diode` | Silicon diode | Shockley companion with series resistance and temperature IS scaling |
+| `battery` | Battery | Open-circuit voltage by state of charge, series resistance, optional RC pair; Li-ion and CR2032 presets |
+| `diode` | Silicon diode | Shockley companion with series resistance, temperature IS scaling, SPICE `BV`/`IBV` breakdown and junction charge (`CJO`, `VJ`, `M`, `FC`, `TT`) |
 | `bjt` | BJT (NPN/PNP) | Ebers-Moll companion with Early voltage |
 | `mosfet` | MOSFET (NMOS/PMOS) | Level-1 companion; body effect when called with a `vbs` (in a sindr circuit the body is tied to the source) |
 | `jfet` | JFET (N/P-channel) | Shichman-Hodges |
@@ -17,7 +18,9 @@ Pure electronics device physics companion models for MNA circuit simulation.
 | `zener` | Zener diode | Shockley plus reverse-breakdown branch |
 | `schottky` | Schottky diode | Shockley with Schottky IS/N (~0.3 V forward) |
 | `varactor` | Varactor diode | Voltage-dependent junction capacitance C_j(V) |
+| `inductor` | Saturating inductor core | `λ(i) = L_sat·i + (L₀ − L_sat)·I_sat·tanh(i/I_sat)` |
 | `thermistor` | NTC thermistor | Beta model R(T) = R₀·exp(β·(1/T − 1/T₀)) |
+| `regulator` | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation; LM7805 and AMS1117 presets |
 | `photodiode` | Photodiode | Diode + photocurrent offset |
 | `photoresistor` | Photoresistor (LDR) | Light-level-dependent resistance |
 
@@ -27,7 +30,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sindr-devices = "0.1.0-alpha.7"
+sindr-devices = "0.1"
 ```
 
 Two-terminal companions return `(g_eq, i_eq)`: the linearised conductance (S)
@@ -134,8 +137,9 @@ assert!(r_85c < 10_000.0 && r_dim > 1_000.0);
 
 | Feature | Enables |
 |---------|---------|
-| `serde` | `Serialize`/`Deserialize` on all param structs |
+| `serde` *(default)* | `Serialize`/`Deserialize` on all param structs |
 
 ```toml
-sindr-devices = { version = "0.1.0-alpha.7", features = ["serde"] }
+# Without serde:
+sindr-devices = { version = "0.1", default-features = false }
 ```

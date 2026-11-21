@@ -24,7 +24,7 @@ pub struct HierarchyPath {
 impl HierarchyPath {
     /// Separator used when flattening hierarchical node names.
     ///
-    /// `.` matches the convention used by ngspice / xyce.
+    /// `.` matches the convention SPICE simulators use, ngspice among them.
     pub fn flatten_separator() -> char {
         '.'
     }
@@ -79,7 +79,9 @@ R3 n q 1k
     fn every_flattened_node_in_the_circuit_has_an_entry() {
         let netlist = parse_str(NESTED).unwrap();
         let sep = HierarchyPath::flatten_separator();
-        for element in &netlist.circuit.components {
+        let flat = netlist.circuit.flatten().unwrap();
+        assert!(!flat.components.is_empty());
+        for element in &flat.components {
             for node in element.nodes() {
                 if !node.contains(sep) {
                     continue;

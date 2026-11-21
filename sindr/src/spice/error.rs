@@ -23,12 +23,13 @@ use thiserror::Error;
 /// values): they point at the offending line, inside the `.include`d file
 /// when that is where it is.
 #[derive(Error, Debug, Diagnostic)]
+#[non_exhaustive]
 pub enum SpiceParseError {
     /// First character of an element line was not a recognised device prefix.
     #[error("unknown device prefix '{prefix}'")]
     #[diagnostic(
         code(sindr::spice::unknown_device),
-        help("supported device prefixes: R, L, C, V, I, D, Q, X")
+        help("supported device prefixes: R, L, C, V, I, D, Q, E, G, F, H, K, X")
     )]
     UnknownDevice {
         /// The unrecognised prefix character.
@@ -45,7 +46,7 @@ pub enum SpiceParseError {
     #[error("unknown control card '.{card}'")]
     #[diagnostic(
         code(sindr::spice::unknown_card),
-        help("supported cards: .subckt/.ends, .model, .param, .include, .lib, .tran, .dc, .ac, .op, .end")
+        help("supported cards: .subckt/.ends, .model, .param, .include, .lib, .tran, .dc, .ac, .op, .tf, .sens, .noise, .ic, .nodeset, .end")
     )]
     UnknownCard {
         /// The card name without its leading `.`.
@@ -62,7 +63,7 @@ pub enum SpiceParseError {
     #[error("unsupported device '{device}'")]
     #[diagnostic(
         code(sindr::spice::unsupported_device),
-        help("the parser currently supports: R, L, C, V, I, D, Q, X. M (MOSFET), J (JFET), and B (behavioural) are not implemented yet.")
+        help("the parser currently supports: R, L, C, V, I, D, Q, E, G, F, H, K, X. M (MOSFET), J (JFET), B (behavioural) and the POLY/VALUE/TABLE/LAPLACE forms of E/G/F/H are not implemented yet.")
     )]
     UnsupportedDevice {
         /// Element id that triggered the error.
@@ -316,6 +317,7 @@ impl SpiceParseError {
 /// Plain data — callers decide how (or whether) to render. The parser fills
 /// `span` and `file` whenever the warning is locatable.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ParseWarning {
     /// Human-readable warning message.
     pub message: String,

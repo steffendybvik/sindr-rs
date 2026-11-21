@@ -1,0 +1,11 @@
+op: RL, RC and a pulse source at DC: inductor shorted, capacitor open, pulse at t = 0
+V1 in 0 1
+La in mid 1m
+Rm mid 0 1k
+R2 mid b 1k
+C1 b 0 1u
+R3 b 0 2k
+I1 0 c PULSE(1m 2m 1u 1n 1n 1u 2u)
+Rc c 0 1k
+Cc c 0 10n
+.end

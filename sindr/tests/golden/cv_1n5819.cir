@@ -1,0 +1,6 @@
+dc: 1N5819 junction capacitance across its bias, from its .model card
+V1 a 0 0
+R1 a b 1
+D1 b 0 d1n5819
+.model d1n5819 D(IS=31.7u N=1.373 RS=0.051 CJO=110p M=0.35 VJ=0.3 BV=40 IBV=1m)
+.end

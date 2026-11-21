@@ -13,8 +13,9 @@ use std::f64::consts::PI;
 
 /// A time-varying waveform.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
+#[non_exhaustive]
 pub enum Waveform {
     /// Sinusoidal: amplitude * sin(2*pi*frequency*t + phase) + offset
     #[cfg_attr(feature = "serde", serde(rename = "sine"))]
@@ -100,7 +101,8 @@ pub enum Waveform {
     /// evaluates to `0.0` everywhere.
     #[cfg_attr(feature = "serde", serde(rename = "pwl"))]
     Pwl {
-        /// Breakpoints as `(time_s, value)` pairs sorted by time.
+        /// Breakpoints as `(time in s, value)` pairs sorted by time. The
+        /// value is V or A, matching the source it drives.
         points: Vec<(f64, f64)>,
     },
 }
@@ -108,12 +110,14 @@ pub enum Waveform {
 /// Most breakpoints [`Waveform::breakpoints`] returns.
 pub const MAX_BREAKPOINTS: usize = 10_000_000;
 
+#[cfg(feature = "serde")]
 fn default_duty() -> f64 {
     0.5
 }
 
 impl Waveform {
-    /// Evaluate the waveform at time `t` (seconds).
+    /// The waveform's value at time `t` (s): volts on a voltage source,
+    /// amperes on a current source.
     pub fn evaluate(&self, t: f64) -> f64 {
         match self {
             Waveform::Sine {
@@ -262,7 +266,8 @@ impl Waveform {
 
     /// [`Self::breakpoints`], and whether some were dropped to keep to
     /// [`MAX_BREAKPOINTS`].
-    pub(crate) fn capped_breakpoints(&self, t_end: f64) -> (Vec<f64>, bool) {
+    #[doc(hidden)]
+    pub fn capped_breakpoints(&self, t_end: f64) -> (Vec<f64>, bool) {
         let mut out = Vec::new();
         let mut capped = false;
         // Corners at `start + k·period + offset` for each offset, k ≥ 0.
@@ -607,5 +612,68 @@ mod tests {
             period: 2e-3,
         };
         assert_relative_eq!(pulse.period().unwrap(), 2e-3, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn pwl_returns_an_interior_breakpoint_exactly() {
+        let w = Waveform::Pwl {
+            points: vec![(0.0, 0.0), (1.0, 1.0), (2.0, -1.0), (3.0, 0.0)],
+        };
+        assert_eq!(w.evaluate(1.0), 1.0);
+        assert_eq!(w.evaluate(2.0), -1.0);
+    }
+
+    #[test]
+    fn periodic_waveforms_have_a_period_only_above_0_hz() {
+        let kinds = |frequency: f64| {
+            [
+                Waveform::Square {
+                    amplitude: 1.0,
+                    frequency,
+                    offset: 0.0,
+                    duty: 0.5,
+                },
+                Waveform::Triangle {
+                    amplitude: 1.0,
+                    frequency,
+                    offset: 0.0,
+                },
+                Waveform::Pwm {
+                    amplitude: 1.0,
+                    frequency,
+                    duty: 0.25,
+                    offset: 0.0,
+                },
+                Waveform::Sine {
+                    amplitude: 1.0,
+                    frequency,
+                    offset: 0.0,
+                    phase: 0.0,
+                },
+            ]
+        };
+        for w in kinds(250.0) {
+            assert_relative_eq!(w.period().unwrap(), 4e-3, epsilon = 1e-15);
+        }
+        for w in kinds(0.0) {
+            assert_eq!(w.period(), None, "{w:?}");
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn square_duty_defaults_to_half_in_json() {
+        let w: Waveform =
+            serde_json::from_str(r#"{"type":"square","amplitude":1.0,"frequency":1000.0}"#)
+                .unwrap();
+        assert_eq!(
+            w,
+            Waveform::Square {
+                amplitude: 1.0,
+                frequency: 1000.0,
+                offset: 0.0,
+                duty: 0.5,
+            }
+        );
     }
 }

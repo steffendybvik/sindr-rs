@@ -59,8 +59,11 @@ impl MosfetRegion {
 }
 
 /// MOSFET device parameters (Level 1 Shichman-Hodges).
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MosfetParams {
     /// Transconductance parameter (A/V^2). SPICE KP parameter.
     pub kp: f64,
@@ -74,6 +77,19 @@ pub struct MosfetParams {
     pub gamma: f64,
     /// Surface potential (V). SPICE PHI parameter.
     pub phi: f64,
+    /// Flicker-noise coefficient. Noise analysis puts `KF·|Id|^AF / f`
+    /// (A²/Hz) across drain–source. sindr has no channel geometry, so this
+    /// is SPICE's `KF/(Cox·L²)`. Default 0: no flicker noise.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub kf: f64,
+    /// Flicker-noise current exponent AF. Default 1.
+    #[cfg_attr(feature = "serde", serde(default = "default_af"))]
+    pub af: f64,
+}
+
+#[cfg(feature = "serde")]
+fn default_af() -> f64 {
+    1.0
 }
 
 impl MosfetParams {
@@ -85,6 +101,8 @@ impl MosfetParams {
             lambda: 0.02, // 0.02 /V
             gamma: 0.4,   // 0.4 V^0.5
             phi: 0.6,     // 0.6V
+            kf: 0.0,
+            af: 1.0,
         }
     }
 
@@ -96,6 +114,8 @@ impl MosfetParams {
             lambda: 0.02,
             gamma: 0.4,
             phi: 0.6,
+            kf: 0.0,
+            af: 1.0,
         }
     }
 }
@@ -125,18 +145,19 @@ impl Default for MosfetParams {
 
 /// Companion model output for MNA stamping.
 pub struct MosfetCompanion {
-    /// Drain current at operating point.
+    /// Drain current at the operating point (A), drain → source, in the
+    /// NMOS frame: callers mirror a PMOS (negate) to get its physical current.
     pub id: f64,
-    /// Transconductance: dId/dVgs.
+    /// Transconductance ∂Id/∂Vgs (S).
     pub gm: f64,
-    /// Output conductance: dId/dVds.
+    /// Output conductance ∂Id/∂Vds (S).
     pub gds: f64,
-    /// Body transconductance: dId/dVbs (from body effect). Zero when
+    /// Body transconductance ∂Id/∂Vbs (S), from the body effect. Zero when
     /// Vbs >= PHI, where the threshold stops depending on Vbs.
     pub gmb: f64,
     /// Operating region.
     pub region: MosfetRegion,
-    /// Effective threshold voltage (after body effect).
+    /// Effective threshold voltage after the body effect (V), NMOS frame.
     pub vth: f64,
 }
 
@@ -336,6 +357,7 @@ mod tests {
             lambda: 0.02,
             gamma: 0.4,
             phi: 0.6,
+            ..MosfetParams::default()
         };
         let comp = mosfet_companion(3.0, 5.0, 0.0, &params);
         assert_eq!(comp.region, MosfetRegion::Saturation);

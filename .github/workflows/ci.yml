@@ -30,6 +30,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
   test:
     name: test (${{ matrix.toolchain }})
@@ -46,6 +47,55 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features
       - run: cargo test --workspace --no-default-features
+
+  wasm:
+    # Browser apps build sindr for wasm32-unknown-unknown, where
+    # std::time, threads and the file system fail at run time, not build time.
+    name: wasm32
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --lib --target wasm32-unknown-unknown
+      - run: cargo build --workspace --lib --target wasm32-unknown-unknown --all-features
+      - name: Pin the test runner to Cargo.lock's wasm-bindgen
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/{getline; split($0,a,"\""); print a[2]}' Cargo.lock)
+          echo "WASM_BINDGEN=$version" >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@${{ env.WASM_BINDGEN }}
+      - name: Solve in Node
+        # No -q: cargo passes it on, and the runner rejects it.
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: |
+          cargo test -p sindr --target wasm32-unknown-unknown --test wasm
+          cargo test -p sindr --all-features --target wasm32-unknown-unknown --test wasm
+
+  deny:
+    # Licences compatible with MIT OR Apache-2.0, no advisories (deny.toml).
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  semver:
+    # Plain 0.x: a patch release must not break callers. Compares each
+    # crate's public API with its last version on crates.io, and fails on a
+    # break the version bump doesn't allow (pre-1.0, only a minor bump may).
+    name: semver checks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          feature-group: all-features
 
   docs:
     name: rustdoc
@@ -91,6 +141,8 @@ jobs:
           set -euo pipefail
           for path in sindr/examples/*.rs; do
             name=$(basename "$path" .rs)
+            # Needs ngspice, which the runners don't have.
+            [ "$name" = vs_ngspice ] && continue
             arg=""
             [ "$name" = run_example ] && arg=voltage-divider
             echo "::group::$name"
@@ -99,7 +151,8 @@ jobs:
           done
 
   coverage:
-    # Report only, no threshold: the per-file table lands in the job summary.
+    # The per-file table lands in the job summary. Every source file has a
+    # floor (scripts/coverage_floor.py).
     name: coverage
     runs-on: ubuntu-latest
     steps:
@@ -117,9 +170,46 @@ jobs:
             cat coverage.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Coverage floor
+        run: |
+          set -o pipefail
+          python3 scripts/coverage_floor.py coverage.txt | tee -a "$GITHUB_STEP_SUMMARY"
+
+  bench:
+    # Runs the transient and Newton benchmarks on the PR's base, then on the
+    # PR, on the same runner, and fails if any case is over 25% slower.
+    # Same-runner comparison keeps the noise to a few percent.
+    name: benchmarks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Base
+        run: |
+          set -euo pipefail
+          git checkout -q ${{ github.event.pull_request.base.sha }}
+          benches=""
+          for b in transient newton analyses spice; do
+            [ -f "sindr/benches/$b.rs" ] && benches="$benches --bench $b"
+          done
+          if [ -n "$benches" ]; then
+            cargo bench -q -p sindr --features spice $benches -- --quick --save-baseline base
+          fi
+          git checkout -q ${{ github.event.pull_request.head.sha }}
+      - name: PR
+        run: cargo bench -q -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline head
+      - name: Compare
+        run: |
+          set -o pipefail
+          python3 scripts/bench_compare.py base head --threshold 25 | tee -a "$GITHUB_STEP_SUMMARY"
 
   version-bumped:
-    # Fails if a PR to main leaves any crate version unchanged from main.
+    # Fails if a PR to main leaves any crate version unchanged from main, or
+    # sets a prerelease version.
     # Forces a Cargo.toml bump + matching CHANGELOG section before merge.
     # PRs into a release staging branch (v*) skip it: the branch is already bumped.
     name: version bumped
@@ -136,6 +226,15 @@ jobs:
           fail=0
           for manifest in sindr/Cargo.toml sindr-devices/Cargo.toml; do
             pr_ver=$(grep -m1 '^version' "$manifest" | cut -d'"' -f2)
+            # Plain 0.x until 1.0: no prereleases (SemVer's -alpha, -rc …).
+            if [[ "$pr_ver" == *-* ]]; then
+              echo "::error file=$manifest::version $pr_ver is a prerelease — release as a plain x.y.z"
+              fail=1
+            fi
+            if ! git cat-file -e "$base:$manifest" 2>/dev/null; then
+              echo "$manifest: new crate at $pr_ver"
+              continue
+            fi
             base_ver=$(git show "$base:$manifest" | grep -m1 '^version' | cut -d'"' -f2)
             if [ "$pr_ver" = "$base_ver" ]; then
               echo "::error file=$manifest::version $pr_ver matches $base — bump it before merging"

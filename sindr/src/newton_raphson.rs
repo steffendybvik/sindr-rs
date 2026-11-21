@@ -12,24 +12,12 @@ use sindr_devices::diode::{self, GMIN};
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
-use crate::error::SimError;
+use crate::error::{SimError, SolvePoint};
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
 use crate::results::{self, ConvergenceAid, SimulationResult};
+use crate::solver::SolverOptions;
 use crate::stamp;
-
-/// Maximum Newton-Raphson iterations before declaring non-convergence.
-pub const MAX_NR_ITERATIONS: usize = 100;
-
-/// Absolute voltage tolerance (V).
-pub const V_ABSTOL: f64 = 1e-6;
-
-/// Absolute current tolerance (A).
-#[allow(dead_code)]
-pub const I_ABSTOL: f64 = 1e-12;
-
-/// Relative tolerance (dimensionless).
-pub const RELTOL: f64 = 1e-3;
 
 /// Solve a circuit containing nonlinear elements via Newton-Raphson iteration.
 ///
@@ -44,12 +32,13 @@ pub const RELTOL: f64 = 1e-3;
 ///    its own limit (diodes in series), take a damped step that keeps every
 ///    junction within its limit instead.
 /// 3. Converged when every node voltage has settled within
-///    `V_ABSTOL + RELTOL·|V|` and every diode, LED and BJT junction voltage
-///    within `V_ABSTOL + RELTOL·n·V_T`; error after [`MAX_NR_ITERATIONS`].
+///    `vntol + reltol·|V|` and every diode, LED and BJT junction voltage
+///    within `vntol + reltol·n·V_T`; error after `max_iterations`.
 ///
 /// When plain Newton–Raphson fails, retries with gmin stepping and then
-/// source stepping; [`SimulationResult::convergence_aid`] says which one
-/// succeeded.
+/// source stepping, as `opts` allows; [`SimulationResult::convergence_aid`]
+/// says which one succeeded. `opts.nodeset` seeds the initial guess, as
+/// SPICE's `.NODESET`.
 ///
 /// # Errors
 ///
@@ -60,17 +49,9 @@ pub fn solve_nonlinear(
     node_map: &NodeMap,
     num_nodes: usize,
     num_vsources: usize,
+    opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
-    solve_nonlinear_with_seeds(circuit, node_map, num_nodes, num_vsources, None)
-}
-
-fn solve_nonlinear_with_seeds(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    num_nodes: usize,
-    num_vsources: usize,
-    initial_voltages: Option<&std::collections::HashMap<String, f64>>,
-) -> Result<SimulationResult, SimError> {
+    let initial_voltages = (!opts.nodeset.is_empty()).then_some(&opts.nodeset);
     // First attempt: plain Newton–Raphson with the default GMIN floor.
     match nr_inner(
         circuit,
@@ -80,21 +61,35 @@ fn solve_nonlinear_with_seeds(
         None,
         initial_voltages,
         0.0,
+        opts,
     ) {
         Ok((result, _)) => Ok(result),
-        Err(SimError::ConvergenceFailed { .. }) => {
+        Err(e @ SimError::ConvergenceFailed { .. }) => {
             // Fall back to gmin stepping: progressively softens the Jacobian
             // by adding extra conductance to ground on every node, then ramps
             // it down while warm-starting from the previous step's solution.
-            let gmin = gmin_stepping(circuit, node_map, num_nodes, num_vsources, initial_voltages);
+            let gmin = if opts.gmin_steps.is_empty() {
+                Err(e)
+            } else {
+                gmin_stepping(
+                    circuit,
+                    node_map,
+                    num_nodes,
+                    num_vsources,
+                    initial_voltages,
+                    opts,
+                )
+            };
             match gmin {
                 Ok(mut result) => {
                     result.convergence_aid = Some(ConvergenceAid::GminStepping);
                     Ok(result)
                 }
+                Err(e @ SimError::ConvergenceFailed { .. }) if !opts.source_stepping => Err(e),
                 Err(SimError::ConvergenceFailed { .. }) => {
                     // Then source stepping: ramp every source up from zero.
-                    let mut result = source_stepping(circuit, node_map, num_nodes, num_vsources)?;
+                    let mut result =
+                        source_stepping(circuit, node_map, num_nodes, num_vsources, opts)?;
                     result.convergence_aid = Some(ConvergenceAid::SourceStepping);
                     Ok(result)
                 }
@@ -114,12 +109,13 @@ fn solve_nonlinear_with_seeds(
 /// value up to 1, warm-starting each solve from the last. With the sources
 /// near zero every junction is near zero bias, where Newton–Raphson always
 /// converges; each later step starts close to its answer. A step that fails
-/// is retried with half the increment, down to [`MIN_SOURCE_STEP`].
+/// is retried with half the increment, down to `opts.min_source_step`.
 fn source_stepping(
     circuit: &Circuit,
     node_map: &NodeMap,
     num_nodes: usize,
     num_vsources: usize,
+    opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
     let mut scale: f64 = 0.0;
     let mut increment: f64 = 0.1;
@@ -135,6 +131,7 @@ fn source_stepping(
             warm.as_ref(),
             None,
             0.0,
+            opts,
         ) {
             Ok((result, v)) => {
                 if next >= 1.0 {
@@ -146,7 +143,7 @@ fn source_stepping(
             }
             Err(e @ SimError::ConvergenceFailed { .. }) => {
                 increment /= 2.0;
-                if increment < MIN_SOURCE_STEP {
+                if increment < opts.min_source_step {
                     return Err(e);
                 }
             }
@@ -154,9 +151,6 @@ fn source_stepping(
         }
     }
 }
-
-/// Smallest source-stepping increment before giving up.
-const MIN_SOURCE_STEP: f64 = 1e-4;
 
 /// `circuit` with every independent source scaled by `factor`.
 fn scale_sources(circuit: &Circuit, factor: f64) -> Circuit {
@@ -185,17 +179,21 @@ fn gmin_stepping(
     num_nodes: usize,
     num_vsources: usize,
     initial_voltages: Option<&std::collections::HashMap<String, f64>>,
+    opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
-    // Geometric ladder, ending at 0.0 (default GMIN floor).
-    const LADDER: &[f64] = &[1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-8, 1e-10, 0.0];
+    // `opts.gmin_steps`, then a last step at 0.0 (the default GMIN floor).
+    let ladder = opts.gmin_steps.iter().copied().chain(std::iter::once(0.0));
 
     let mut warm_start: Option<DVector<f64>> = None;
     let mut last_err = SimError::ConvergenceFailed {
         iterations: 0,
         max_step_volts: f64::INFINITY,
+        node: None,
+        components: Vec::new(),
+        at: SolvePoint::OperatingPoint,
     };
 
-    for &gmin_extra in LADDER {
+    for gmin_extra in ladder {
         let seeds = if warm_start.is_some() {
             None
         } else {
@@ -209,6 +207,7 @@ fn gmin_stepping(
             warm_start.as_ref(),
             seeds,
             gmin_extra,
+            opts,
         ) {
             Ok((result, v)) => {
                 if gmin_extra == 0.0 {
@@ -229,33 +228,8 @@ fn gmin_stepping(
     Err(last_err)
 }
 
-/// Like [`solve_nonlinear`] but seeds the Newton initial guess with the
-/// supplied per-node voltages (V), keyed by node name. Equivalent to SPICE's
-/// `.NODESET` directive — useful when a circuit has multiple operating
-/// points or when default heuristics fail to converge. Unknown node names
-/// are silently ignored; nodes not in the map fall back to the default
-/// initialisation.
-///
-/// # Errors
-///
-/// As [`solve_nonlinear`].
-pub fn solve_nonlinear_with_initial_voltages(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    num_nodes: usize,
-    num_vsources: usize,
-    initial_voltages: &std::collections::HashMap<String, f64>,
-) -> Result<SimulationResult, SimError> {
-    solve_nonlinear_with_seeds(
-        circuit,
-        node_map,
-        num_nodes,
-        num_vsources,
-        Some(initial_voltages),
-    )
-}
-
 /// Inner NR iteration loop. Returns simulation result and final voltage vector.
+#[allow(clippy::too_many_arguments)]
 fn nr_inner(
     circuit: &Circuit,
     node_map: &NodeMap,
@@ -264,7 +238,39 @@ fn nr_inner(
     v_init: Option<&DVector<f64>>,
     initial_voltages: Option<&std::collections::HashMap<String, f64>>,
     gmin_extra: f64,
+    opts: &SolverOptions,
 ) -> Result<(SimulationResult, DVector<f64>), SimError> {
+    // A high-gain op-amp or comparator clamped to its rails gives Newton no
+    // slope once an iterate saturates, so a feedback loop can bounce rail to rail. Solve
+    // with the clamps lifted first: that is the answer whenever the op-amps
+    // end up in their linear range, and a close start when they don't.
+    if v_init.is_none() {
+        if let Some(open) = without_op_amp_rails(circuit) {
+            if let Ok((_, v)) = nr_inner(
+                &open,
+                node_map,
+                num_nodes,
+                num_vsources,
+                None,
+                initial_voltages,
+                gmin_extra,
+                opts,
+            ) {
+                if let Ok(solved) = nr_inner(
+                    circuit,
+                    node_map,
+                    num_nodes,
+                    num_vsources,
+                    Some(&v),
+                    None,
+                    gmin_extra,
+                    opts,
+                ) {
+                    return Ok(solved);
+                }
+            }
+        }
+    }
     let size = num_nodes + num_vsources;
     let mut v_prev = match v_init {
         Some(v) => v.clone(),
@@ -287,8 +293,8 @@ fn nr_inner(
     let diode_info = collect_diode_info(circuit, node_map);
     let igbt_info = collect_igbt_info(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
-    let mut last_step = f64::INFINITY;
-    for _iteration in 0..MAX_NR_ITERATIONS {
+    let mut last_step = (f64::INFINITY, None);
+    for _iteration in 0..opts.max_iterations {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
         stamp::stamp_circuit(circuit, &mut system, node_map, Some(&v_prev))?;
 
@@ -315,7 +321,7 @@ fn nr_inner(
             );
         }
 
-        if !igbt_limited && converged(&v_prev, &v_limited, num_nodes, &diode_info) {
+        if !igbt_limited && converged(&v_prev, &v_limited, num_nodes, &diode_info, opts) {
             let result = results::extract_results(circuit, node_map, &v_limited, num_nodes);
             return Ok((result, v_limited));
         }
@@ -324,10 +330,47 @@ fn nr_inner(
         v_prev = v_limited;
     }
 
-    Err(SimError::ConvergenceFailed {
-        iterations: MAX_NR_ITERATIONS,
-        max_step_volts: last_step,
-    })
+    Err(convergence_failed(
+        circuit,
+        node_map,
+        last_step,
+        SolvePoint::OperatingPoint,
+        opts.max_iterations,
+    ))
+}
+
+/// Rails far enough out that the op-amp clamp never engages.
+const UNCLAMPED_RAIL: f64 = 1e12;
+
+/// `circuit` with every modelled op-amp's and comparator's rails moved out
+/// of reach, or `None` when it has nothing clamped.
+fn without_op_amp_rails(circuit: &Circuit) -> Option<Circuit> {
+    let clamped = |c: &CircuitElement| {
+        matches!(
+            c,
+            CircuitElement::OpAmp { model: Some(_), v_pos, .. }
+                | CircuitElement::Comparator { v_pos, .. }
+                if *v_pos < UNCLAMPED_RAIL
+        )
+    };
+    if !circuit.components.iter().any(clamped) {
+        return None;
+    }
+    let mut open = circuit.clone();
+    for c in &mut open.components {
+        if let CircuitElement::OpAmp {
+            v_pos,
+            v_neg,
+            model: Some(_),
+            ..
+        }
+        | CircuitElement::Comparator { v_pos, v_neg, .. } = c
+        {
+            *v_pos = UNCLAMPED_RAIL;
+            *v_neg = -UNCLAMPED_RAIL;
+        }
+    }
+    Some(open)
 }
 
 /// Information about a diode/junction needed for voltage limiting.
@@ -347,6 +390,9 @@ pub(crate) struct DiodeLimitInfo {
     is_bjt: bool,
     /// Breakdown voltage for a Zener, which is also driven in reverse.
     zener_vz: Option<f64>,
+    /// BV of a diode whose breakdown is exponential: its reverse steps are
+    /// limited past breakdown as forward ones are, mirrored about `−BV`.
+    breakdown: Option<f64>,
 }
 
 /// Which node to apply voltage limiting corrections to.
@@ -364,9 +410,13 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
     for component in &circuit.components {
         match component {
             CircuitElement::Diode {
-                nodes, temperature, ..
+                model,
+                nodes,
+                temperature,
+                ..
             } => {
-                let params = device_params::diode(*temperature);
+                let params = device_params::diode(model.as_ref(), *temperature);
+                let bv = params.breakdown.map(|b| b.bv);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
@@ -375,7 +425,8 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     vt: params.vt(),
                     correction_node: None,
                     is_bjt: false,
-                    zener_vz: None,
+                    zener_vz: bv,
+                    breakdown: bv,
                 });
             }
             CircuitElement::Led {
@@ -394,6 +445,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
+                    breakdown: None,
                 });
             }
             CircuitElement::ZenerDiode {
@@ -402,17 +454,17 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                 temperature,
                 ..
             } => {
-                // Forward region is a Shockley diode with N = 1
-                let params = device_params::zener(*vz, *temperature);
+                let params = device_params::zener_diode(*vz, *temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
                     cathode_idx: node_map.index(&nodes[1]),
-                    v_crit: diode::critical_voltage(params.is, 1.0, params.vt()),
-                    n: 1.0,
+                    v_crit: diode::critical_voltage(params.is, params.n, params.vt()),
+                    n: params.n,
                     vt: params.vt(),
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: Some(*vz),
+                    breakdown: Some(*vz),
                 });
             }
             CircuitElement::SchottkyDiode {
@@ -428,6 +480,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
+                    breakdown: None,
                 });
             }
             CircuitElement::Photodiode {
@@ -447,16 +500,18 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: None,
                     is_bjt: false,
                     zener_vz: None,
+                    breakdown: None,
                 });
             }
             CircuitElement::Bjt {
+                model,
                 nodes,
                 kind,
                 bf,
                 temperature,
                 ..
             } => {
-                let params = device_params::bjt(*bf, *temperature);
+                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
 
                 // B-E junction: standard diode limiting (splits between anode/cathode
                 // or full delta to non-ground node). This allows the B-E limiter
@@ -474,6 +529,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: None,
                     is_bjt: true,
                     zener_vz: None,
+                    breakdown: None,
                 });
 
                 // B-C junction: correction goes ONLY to the collector node.
@@ -496,6 +552,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     correction_node: Some(bc_correction),
                     is_bjt: true,
                     zener_vz: None,
+                    breakdown: None,
                 });
             }
             _ => {}
@@ -532,6 +589,21 @@ pub(crate) fn apply_voltage_limiting(
         let v_d_old = v_anode_old - v_cathode_old;
 
         let mut v_d_limited = diode::limit_voltage(v_d_new, v_d_old, info.v_crit, info.n, info.vt);
+
+        // Past breakdown the reverse current is exponential too: limit the
+        // step in −(v + BV) the way the forward one is, as SPICE does.
+        if let Some(bv) = info.breakdown {
+            if v_d_limited < (-bv + 10.0 * info.n * info.vt).min(0.0) {
+                let past = diode::limit_voltage(
+                    -(v_d_limited + bv),
+                    -(v_d_old + bv),
+                    info.v_crit,
+                    info.n,
+                    info.vt,
+                );
+                v_d_limited = -(past + bv);
+            }
+        }
 
         // For BJT junctions, also apply bilateral step limiting.
         // The standard SPICE limiter only clamps forward-bias overshoots.
@@ -696,11 +768,11 @@ pub(crate) fn add_gmin_shunts(system: &mut MnaSystem, num_nodes: usize) {
 /// Check if Newton-Raphson has converged.
 ///
 /// Two criteria, both required:
-/// - SPICE-style node voltages: |v_new - v_prev| <= V_ABSTOL + RELTOL * max(|v_new|, |v_prev|)
-/// - Junction voltages: |Δv_j| <= V_ABSTOL + RELTOL * n * V_T for every
+/// - SPICE-style node voltages: |v_new - v_prev| <= vntol + reltol * max(|v_new|, |v_prev|)
+/// - Junction voltages: |Δv_j| <= vntol + reltol * n * V_T for every
 ///   diode/LED/BJT junction. A junction's current changes by about
 ///   Δv_j / (n·V_T) relative, so this bounds the device current error at
-///   RELTOL, as SPICE's device current check does. The node criterion alone
+///   reltol, as SPICE's device current check does. The node criterion alone
 ///   lets a junction between nodes near a 5 V rail move by ~5 mV, a ~20%
 ///   current error.
 pub(crate) fn converged(
@@ -708,10 +780,11 @@ pub(crate) fn converged(
     v_new: &DVector<f64>,
     num_nodes: usize,
     diode_info: &[DiodeLimitInfo],
+    opts: &SolverOptions,
 ) -> bool {
     for i in 0..num_nodes {
         let diff = (v_new[i] - v_prev[i]).abs();
-        let tol = V_ABSTOL + RELTOL * v_new[i].abs().max(v_prev[i].abs());
+        let tol = opts.vntol + opts.reltol * v_new[i].abs().max(v_prev[i].abs());
         if diff > tol {
             return false;
         }
@@ -720,23 +793,57 @@ pub(crate) fn converged(
     diode_info.iter().all(|info| {
         let vj_prev = node(v_prev, info.anode_idx) - node(v_prev, info.cathode_idx);
         let vj_new = node(v_new, info.anode_idx) - node(v_new, info.cathode_idx);
-        (vj_new - vj_prev).abs() <= V_ABSTOL + RELTOL * info.n * info.vt
+        (vj_new - vj_prev).abs() <= opts.vntol + opts.reltol * info.n * info.vt
     })
 }
 
-/// Largest per-node voltage step `max_i |v_new[i] − v_prev[i]|` (V).
-///
-/// Used to populate [`SimError::ConvergenceFailed`] diagnostics when NR
-/// runs out of iterations.
-pub(crate) fn max_node_step(v_prev: &DVector<f64>, v_new: &DVector<f64>, num_nodes: usize) -> f64 {
-    let mut max = 0.0f64;
+/// Largest per-node voltage step `max_i |v_new[i] − v_prev[i]|` (V), and
+/// the node index that took it (`None` when there are no nodes).
+pub(crate) fn max_node_step(
+    v_prev: &DVector<f64>,
+    v_new: &DVector<f64>,
+    num_nodes: usize,
+) -> (f64, Option<usize>) {
+    let mut max = (0.0f64, None);
     for i in 0..num_nodes {
         let diff = (v_new[i] - v_prev[i]).abs();
-        if diff > max {
-            max = diff;
+        if max.1.is_none() || diff > max.0 {
+            max = (diff, Some(i));
         }
     }
     max
+}
+
+/// [`SimError::ConvergenceFailed`] for a solve of `circuit` whose last
+/// Newton step was `step`: names the node that took it and the components
+/// on that node.
+pub(crate) fn convergence_failed(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    step: (f64, Option<usize>),
+    at: SolvePoint,
+    iterations: usize,
+) -> SimError {
+    let node = step
+        .1
+        .and_then(|i| node_map.node_name(i))
+        .map(str::to_string);
+    let components = match &node {
+        Some(name) => circuit
+            .components
+            .iter()
+            .filter(|c| c.nodes().iter().any(|n| n == name))
+            .map(|c| c.id().to_string())
+            .collect(),
+        None => Vec::new(),
+    };
+    SimError::ConvergenceFailed {
+        iterations,
+        max_step_volts: step.0,
+        node,
+        components,
+        at,
+    }
 }
 
 /// Set initial voltage guesses for BJT circuits.
@@ -887,8 +994,10 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["n2".into(), "0".into()],
                     temperature: 300.15,
+                    model: None,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -897,8 +1006,75 @@ mod tests {
         let prev = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
         let new = DVector::from_vec(vec![1.05, 1.9, 3.5, 4.0]);
         // Diffs: 0.05, 0.1, 0.5, 0.0  → max = 0.5 over the first 4 nodes.
-        let r = max_node_step(&prev, &new, 4);
+        let (r, at) = max_node_step(&prev, &new, 4);
         assert!((r - 0.5).abs() < 1e-12, "got {r}");
+        assert_eq!(at, Some(2));
+    }
+
+    #[test]
+    fn convergence_failed_names_the_node_and_its_components() {
+        let diode = |id: &str| CircuitElement::Diode {
+            id: id.into(),
+            nodes: ["a".into(), "0".into()],
+            temperature: 300.15,
+            model: None,
+        };
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["in".into(), "0".into()],
+                    voltage: 5.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["in".into(), "a".into()],
+                    resistance: 1e3,
+                },
+                diode("D1"),
+                diode("D2"),
+            ],
+        );
+        let node_map = NodeMap::from_circuit(&circuit);
+        let a = node_map.index("a").unwrap();
+        let err = convergence_failed(
+            &circuit,
+            &node_map,
+            (0.25, Some(a)),
+            SolvePoint::Transient { time: 2e-3 },
+            100,
+        );
+        match &err {
+            SimError::ConvergenceFailed {
+                node,
+                components,
+                max_step_volts,
+                at,
+                ..
+            } => {
+                assert_eq!(node.as_deref(), Some("a"));
+                assert_eq!(components, &["R1", "D1", "D2"]);
+                assert_eq!(*max_step_volts, 0.25);
+                assert_eq!(at, &SolvePoint::Transient { time: 2e-3 });
+            }
+            other => panic!("{other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("node `a` (on R1, D1, D2)"), "{msg}");
+
+        // No iteration ran: no node to name.
+        let none = convergence_failed(
+            &circuit,
+            &node_map,
+            (f64::INFINITY, None),
+            SolvePoint::OperatingPoint,
+            100,
+        );
+        assert!(
+            matches!(none, SimError::ConvergenceFailed { node: None, ref components, .. } if components.is_empty())
+        );
     }
 
     #[test]
@@ -906,8 +1082,9 @@ mod tests {
         // num_nodes = 2 means branch unknowns at index 2,3 are ignored.
         let prev = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
         let new = DVector::from_vec(vec![1.01, 2.01, 99.0, 99.0]);
-        let r = max_node_step(&prev, &new, 2);
+        let (r, at) = max_node_step(&prev, &new, 2);
         assert!((r - 0.01).abs() < 1e-12, "got {r}");
+        assert!(matches!(at, Some(0 | 1)), "got {at:?}");
     }
 
     /// Direct exercise of the gmin-stepping homotopy. Bypasses the
@@ -920,8 +1097,15 @@ mod tests {
         let num_nodes = node_map.num_nodes();
         let num_vsources = circuit.count_voltage_sources();
 
-        let result = gmin_stepping(&circuit, &node_map, num_nodes, num_vsources, None)
-            .expect("gmin stepping should converge on a diode-R circuit");
+        let result = gmin_stepping(
+            &circuit,
+            &node_map,
+            num_nodes,
+            num_vsources,
+            None,
+            &SolverOptions::default(),
+        )
+        .expect("gmin stepping should converge on a diode-R circuit");
 
         // Forward-biased silicon diode: V(n2) ≈ 0.65 V, current ≈ 43 mA.
         let v_n2 = result.node_voltages["n2"];
@@ -958,6 +1142,7 @@ mod tests {
             num_nodes,
             num_vsources,
             Some(&bad_seed),
+            &SolverOptions::default(),
         )
         .expect("gmin stepping should rescue absurd initial seed");
 
@@ -987,8 +1172,15 @@ mod tests {
         let num_nodes = node_map.num_nodes();
         let num_vsources = circuit.count_voltage_sources();
 
-        let result = gmin_stepping(&circuit, &node_map, num_nodes, num_vsources, None)
-            .expect("low-bias diode should still converge via homotopy");
+        let result = gmin_stepping(
+            &circuit,
+            &node_map,
+            num_nodes,
+            num_vsources,
+            None,
+            &SolverOptions::default(),
+        )
+        .expect("low-bias diode should still converge via homotopy");
         let v_n2 = result.node_voltages["n2"];
         // 0.3 V applied across 100 Ω + diode → diode is below knee, V(n2) ≈ V(n1) ≈ 0.3 V
         assert!(
@@ -1025,6 +1217,7 @@ mod tests {
                 },
                 element,
             ],
+            ..Default::default()
         }
     }
 
@@ -1061,6 +1254,7 @@ mod tests {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
+            model: None,
         });
         circuit.components.extend([
             CircuitElement::Resistor {
@@ -1080,6 +1274,7 @@ mod tests {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             },
         ]);
         let result = crate::solve_circuit(&circuit).unwrap();
@@ -1125,9 +1320,11 @@ mod tests {
                     id: "D1".into(),
                     nodes: ["a".into(), "k".into()],
                     temperature: 300.15,
+                    model: None,
                 },
                 resistor("R2", "k", "0", 1_000.0),
             ],
+            ..Default::default()
         };
         let r = crate::solve_circuit(&circuit).unwrap();
         let (va, vk) = (r.node_voltages["a"], r.node_voltages["k"]);
@@ -1159,8 +1356,10 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15,
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -1232,6 +1431,7 @@ mod tests {
         Circuit {
             ground_node: "0".into(),
             components,
+            ..Default::default()
         }
     }
 
@@ -1240,6 +1440,7 @@ mod tests {
             id: id.into(),
             nodes: [a.into(), k.into()],
             temperature: 300.15,
+            model: None,
         }
     }
 
@@ -1261,6 +1462,7 @@ mod tests {
                 correction_node: None,
                 is_bjt: true,
                 zener_vz: None,
+                breakdown: None,
             },
             DiodeLimitInfo {
                 anode_idx: Some(0),
@@ -1271,6 +1473,7 @@ mod tests {
                 correction_node: Some(CorrectionTarget::Cathode),
                 is_bjt: true,
                 zener_vz: None,
+                breakdown: None,
             },
         ];
         let v_prev = DVector::from_vec(vec![0.65, 5.0]);
@@ -1354,6 +1557,7 @@ mod tests {
                     params: params.clone(),
                 },
             ],
+            ..Default::default()
         };
         let vov = vge - params.vth;
         let b = params.k * vov + 1.0 / r;
@@ -1364,5 +1568,57 @@ mod tests {
             (vce - expected).abs() <= 1e-3 * expected,
             "VCE {vce} vs closed form {expected}"
         );
+    }
+
+    /// A raw `ZenerDiode` reaching the solver (the analyses lower it to a
+    /// `Diode` with `bv` first) is stamped, limited and reported as that
+    /// diode: both solve to the same clamp.
+    #[test]
+    fn raw_zener_solves_like_its_lowered_diode() {
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["in".into(), "0".into()],
+                    voltage: 12.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["in".into(), "k".into()],
+                    resistance: 1e3,
+                },
+                CircuitElement::ZenerDiode {
+                    id: "DZ1".into(),
+                    nodes: ["0".into(), "k".into()],
+                    vz: 5.1,
+                    temperature: 300.15,
+                },
+            ],
+        );
+        let node_map = NodeMap::from_circuit(&circuit);
+        let raw = solve_nonlinear(
+            &circuit,
+            &node_map,
+            node_map.num_nodes(),
+            circuit.count_voltage_sources(),
+            &SolverOptions::default(),
+        )
+        .unwrap();
+        let lowered = crate::solve_circuit(&circuit).unwrap();
+        let (v_raw, v_lowered) = (raw.node_voltages["k"], lowered.node_voltages["k"]);
+        // Both converge to within vntol + reltol·|V| of the same root.
+        assert!((v_raw - v_lowered).abs() < 1e-5, "{v_raw} vs {v_lowered}");
+        assert!(v_raw > 5.0 && v_raw < 5.5, "clamped near vz: {v_raw}");
+        // KCL at k: R1's current is the Zener's reverse current.
+        let i_r = (12.0 - v_raw) / 1e3;
+        let i_z = raw
+            .component_results
+            .iter()
+            .find(|r| r.id == "DZ1")
+            .unwrap()
+            .current_through;
+        assert!((i_r + i_z).abs() < 1e-6 * i_r, "{i_r} vs {i_z}");
     }
 }

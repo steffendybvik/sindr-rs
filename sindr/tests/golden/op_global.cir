@@ -1,0 +1,16 @@
+op: supply rails reached inside subcircuits through .global
+.global vcc
+Vcc vcc 0 10
+Vee vee 0 -10
+X1 out amp
+RL out 0 1k
+.subckt amp o
+* Declared here, vee still holds for the whole deck, half included.
+.global vee
+R1 vcc o 1k
+X2 o half
+.ends amp
+.subckt half p
+R2 p vee 2k
+.ends half
+.end

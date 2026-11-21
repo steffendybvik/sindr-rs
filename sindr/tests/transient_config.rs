@@ -39,6 +39,7 @@ fn rc() -> Circuit {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -81,6 +82,18 @@ fn invalid_configs_are_rejected() {
         ("tmax = 0", TransientConfig::new(1e-3, 1e-6).with_tmax(0.0)),
         ("tmax NaN", TransientConfig::new(1e-3, 1e-6).with_tmax(nan)),
         ("too many steps", TransientConfig::new(1.0, 1e-9)),
+        (
+            "tstart < 0",
+            TransientConfig::new(1e-3, 1e-6).with_tstart(-1e-6),
+        ),
+        (
+            "tstart = tstop",
+            TransientConfig::new(1e-3, 1e-6).with_tstart(1e-3),
+        ),
+        (
+            "tstart NaN",
+            TransientConfig::new(1e-3, 1e-6).with_tstart(nan),
+        ),
     ];
     for (case, config) in cases {
         match solve_transient(&rc(), &config) {
@@ -142,6 +155,31 @@ fn tmax_caps_the_step() {
     assert!((tran.timesteps[0].time - 25e-6).abs() < 1e-18);
 }
 
+/// `tstart` drops the steps before it but not the history: the fixed-step
+/// run from 0.35 ms keeps the same snapshots as the full run from there on,
+/// plus one landing on 0.35 ms itself, which is off the 0.1 ms grid.
+#[test]
+fn tstart_keeps_the_steps_from_it_on() {
+    let full = TransientConfig::new(1e-3, 0.1e-3).with_fixed_step();
+    let full = solve_transient(&rc(), &full).unwrap().transient.unwrap();
+    let late = TransientConfig::new(1e-3, 0.1e-3)
+        .with_fixed_step()
+        .with_tstart(0.35e-3);
+    let late = solve_transient(&rc(), &late).unwrap().transient.unwrap();
+
+    assert!((late.timesteps[0].time - 0.35e-3).abs() < 1e-15);
+    let kept: Vec<_> = full.timesteps.iter().filter(|s| s.time > 0.35e-3).collect();
+    assert_eq!(late.timesteps.len(), kept.len() + 1);
+    // Landing on 0.35 ms splits one step in two, so the integration differs
+    // by a backward-Euler truncation error, not by a restart from 0 V.
+    for (a, b) in late.timesteps[1..].iter().zip(kept) {
+        assert!((a.time - b.time).abs() < 1e-15);
+        assert!((a.node_voltages["out"] - b.node_voltages["out"]).abs() < 1e-2);
+    }
+    let v = 1.0 - (-0.35_f64).exp();
+    assert!((late.timesteps[0].node_voltages["out"] - v).abs() < 1e-2);
+}
+
 /// Backward Euler solves at the end of each step, so a resistive divider
 /// fed by a sine reads the source's value at the snapshot's own time, with
 /// no lag of one step.
@@ -155,6 +193,7 @@ fn sources_are_sampled_at_the_end_of_each_step() {
             resistor("R1", "in", "out", 1e3),
             resistor("R2", "out", "0", 3e3),
         ],
+        ..Default::default()
     };
     if let CircuitElement::VoltageSource { waveform, .. } = &mut divider.components[0] {
         *waveform = Some(Waveform::Sine {
@@ -207,6 +246,7 @@ fn nonlinear_transient_honours_the_config() {
                 id: "D1".into(),
                 nodes: ["in".into(), "out".into()],
                 temperature: 300.15,
+                model: None,
             },
             resistor("RL", "out", "0", 10e3),
             CircuitElement::Capacitor {
@@ -215,6 +255,7 @@ fn nonlinear_transient_honours_the_config() {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     };
     if let CircuitElement::VoltageSource { waveform, .. } = &mut circuit.components[0] {
         *waveform = Some(Waveform::Sine {
@@ -249,6 +290,7 @@ fn transient_ignores_component_order() {
             id: "U1".into(),
             nodes: ["in".into(), "reg".into(), "0".into()],
             voltage: 5.0,
+            model: None,
         },
         resistor("RREG", "reg", "0", 1e3),
         vsource("VAC", "p", "0", 0.0),
@@ -263,12 +305,14 @@ fn transient_ignores_component_order() {
             id: "D1".into(),
             nodes: ["s".into(), "out".into()],
             temperature: 300.15,
+            model: None,
         },
         resistor("RL", "out", "0", 100.0),
     ];
     let mut forward = Circuit {
         ground_node: "0".into(),
         components,
+        ..Default::default()
     };
     if let CircuitElement::VoltageSource { waveform, .. } = &mut forward.components[3] {
         *waveform = Some(Waveform::Sine {

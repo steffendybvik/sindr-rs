@@ -30,8 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "D1".into(),
                 nodes: ["out".into(), "0".into()],
                 temperature: 300.15, // overridden at each sweep point
+                model: None,
             },
         ],
+        ..Default::default()
     };
 
     // 250 K to 400 K (−23 °C to 127 °C) in 7 points

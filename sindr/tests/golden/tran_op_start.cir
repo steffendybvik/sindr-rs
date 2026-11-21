@@ -1,0 +1,7 @@
+tran: starts from the DC operating point (no UIC), then a pulse at 1 ms
+V1 in 0 PULSE(1 5 1m 1u 1u 10m 20m)
+R1 in a 1k
+C1 a 0 1u
+R2 a b 100
+L1 b 0 10m
+.end

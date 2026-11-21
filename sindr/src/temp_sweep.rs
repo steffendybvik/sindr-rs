@@ -14,6 +14,7 @@ use crate::results::SimulationResult;
 /// One temperature sweep data point.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TempSweepPoint {
     /// Temperature for this point (Kelvin).
     pub temperature_kelvin: f64,
@@ -27,6 +28,7 @@ pub struct TempSweepPoint {
 /// vector to iterate `(temperature, result)` pairs.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TempSweepResult {
     /// Start of the swept temperature range (K).
     pub temp_start: f64,
@@ -78,8 +80,10 @@ pub struct TempSweepResult {
 ///             id: "D1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             temperature: 300.15,
+///             model: None,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// // Sweep from 250 K (-23 °C) to 400 K (127 °C) in 4 steps.
@@ -92,6 +96,26 @@ pub fn temperature_sweep(
     temp_end: f64,
     num_steps: usize,
 ) -> Result<TempSweepResult, SimError> {
+    temperature_sweep_with(
+        circuit,
+        temp_start,
+        temp_end,
+        num_steps,
+        &crate::SolverOptions::default(),
+    )
+}
+
+/// [`temperature_sweep`] with `opts`.
+pub(crate) fn temperature_sweep_with(
+    circuit: &Circuit,
+    temp_start: f64,
+    temp_end: f64,
+    num_steps: usize,
+    opts: &crate::SolverOptions,
+) -> Result<TempSweepResult, SimError> {
+    let original = circuit;
+    let flat = crate::solver_circuit(circuit)?;
+    let circuit: &Circuit = &flat;
     if num_steps < 2 {
         return Err(SimError::InvalidComponent(
             "temperature_sweep: num_steps must be >= 2".into(),
@@ -138,13 +162,32 @@ pub fn temperature_sweep(
             }
         }
 
-        let result = crate::solve_circuit(&sweep_circuit)?;
+        // A self-heated part sits in an ambient at the swept temperature.
+        let thermals = sweep_circuit
+            .parts
+            .values_mut()
+            .chain(
+                sweep_circuit
+                    .blocks
+                    .values_mut()
+                    .flat_map(|b| b.parts.values_mut()),
+            )
+            .filter_map(|p| p.thermal.as_mut());
+        for thermal in thermals {
+            thermal.ambient = t;
+        }
+
+        let result = crate::solve_circuit_with(&sweep_circuit, opts)
+            .map_err(|e| e.at(crate::SolvePoint::Temperature { kelvin: t }))?;
         points.push(TempSweepPoint {
             temperature_kelvin: t,
             result,
         });
     }
 
+    for point in &mut points {
+        crate::composite::fold(original, &mut point.result);
+    }
     Ok(TempSweepResult {
         temp_start,
         temp_end,
@@ -177,6 +220,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
 
         let result = temperature_sweep(&circuit, 250.0, 350.0, 11);
@@ -229,8 +273,10 @@ mod tests {
                     bf: 100.0,
                     temperature: 300.15, // will be overridden in sweep
                     parasitic_caps: None,
+                    model: None,
                 },
             ],
+            ..Default::default()
         };
 
         let result = temperature_sweep(&circuit, 250.0, 350.0, 3);
@@ -282,6 +328,7 @@ mod tests {
                     resistance: 1000.0,
                 },
             ],
+            ..Default::default()
         };
         let result = temperature_sweep(&circuit, 300.0, 400.0, 1);
         assert!(result.is_err(), "Should error with num_steps < 2");

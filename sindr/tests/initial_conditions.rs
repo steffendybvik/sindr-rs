@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use sindr::ac_analysis::{solve_ac, solve_ac_with_initial_voltages, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 use sindr::{
     solve_transient, BjtKind, Circuit, CircuitElement, IntegrationMethod, TransientConfig,
 };
@@ -42,6 +42,7 @@ fn capacitor_starts_at_its_initial_voltage() {
             },
             resistor("R2", "b", "0", 1e-3),
         ],
+        ..Default::default()
     };
     // τ ≈ 1 ms; V(a) − V(b) starts at 5 − 2 = 3 V.
     let ics = HashMap::from([("a".to_string(), 5.0), ("b".to_string(), 2.0)]);
@@ -68,9 +69,11 @@ fn inductor_starts_at_its_initial_current() {
                 id: "L1".into(),
                 nodes: ["a".into(), "0".into()],
                 inductance: 10e-3,
+                saturation: None,
             },
             resistor("R1", "a", "0", 100.0),
         ],
+        ..Default::default()
     };
     let tau = 10e-3 / 100.0;
     let config = TransientConfig::new(tau, tau / 200.0).with_initial_current("L1", 10e-3);
@@ -98,6 +101,7 @@ fn lc_tank_rings_from_its_initial_charge() {
                 id: "L1".into(),
                 nodes: ["a".into(), "0".into()],
                 inductance: l,
+                saturation: None,
             },
             CircuitElement::Capacitor {
                 id: "C1".into(),
@@ -105,6 +109,7 @@ fn lc_tank_rings_from_its_initial_charge() {
                 capacitance: c,
             },
         ],
+        ..Default::default()
     };
     let config = TransientConfig::new(3.0 * period, period / 100.0)
         .with_method(IntegrationMethod::Trapezoidal)
@@ -191,20 +196,16 @@ fn ac_bias_point_takes_a_nodeset() {
                 bf: 100.0,
                 temperature: 300.15,
                 parasitic_caps: None,
+                model: None,
             },
         ],
+        ..Default::default()
     };
-    let config = AcConfig {
-        f_start: 1e3,
-        f_stop: 1e3,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: "VIN".into(),
-        ac_magnitude: 1.0,
-    };
+    let config = AcConfig::new("VIN", 1e3, 1e3, 1).with_spacing(FrequencySpacing::Linear);
     let plain = solve_ac(&stage, &config).unwrap().points[0].node_voltages["c"];
     let seed = HashMap::from([("c".to_string(), 5.0)]);
-    let seeded = solve_ac_with_initial_voltages(&stage, &config, &seed)
+    let seeded = sindr::Solver::new(sindr::SolverOptions::default().with_nodeset(seed.clone()))
+        .ac(&stage, &config)
         .unwrap()
         .points[0]
         .node_voltages["c"];
@@ -212,4 +213,86 @@ fn ac_bias_point_takes_a_nodeset() {
         (plain - seeded).norm() < 1e-6 * plain.norm(),
         "{plain} vs {seeded}"
     );
+}
+
+/// Initial conditions the circuit can't take are rejected with the reason,
+/// not ignored: a ground node off 0 V, a node it doesn't have, a current
+/// on a relay without coil inductance. Ground held at 0 V is fine.
+#[test]
+fn impossible_initial_conditions_are_rejected() {
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            CircuitElement::VoltageSource {
+                id: "V1".into(),
+                nodes: ["in".into(), "0".into()],
+                voltage: 5.0,
+                waveform: None,
+            },
+            resistor("R1", "in", "a", 1e3),
+            CircuitElement::Capacitor {
+                id: "C1".into(),
+                nodes: ["a".into(), "0".into()],
+                capacitance: 1e-6,
+            },
+            CircuitElement::Relay {
+                id: "K1".into(),
+                nodes: ["in".into(), "0".into(), "in".into(), "x".into()],
+                coil_resistance: 500.0,
+                pickup_voltage: 3.0,
+                inductance: 0.0,
+            },
+            resistor("RX", "x", "0", 1e3),
+        ],
+        ..Default::default()
+    };
+    let base = TransientConfig::new(1e-3, 1e-5);
+    let rejected = |config: TransientConfig| match solve_transient(&circuit, &config) {
+        Err(sindr::SimError::InvalidComponent(msg)) => msg,
+        other => panic!("expected InvalidComponent, got {other:?}"),
+    };
+    let ics = |pairs: &[(&str, f64)]| {
+        pairs
+            .iter()
+            .map(|&(n, v)| (n.to_string(), v))
+            .collect::<HashMap<_, _>>()
+    };
+    assert_eq!(
+        rejected(base.clone().with_initial_voltages(ics(&[("0", 1.0)]))),
+        "transient: ground node '0' can't start at 1 V"
+    );
+    assert_eq!(
+        rejected(base.clone().with_initial_voltages(ics(&[("b", 1.0)]))),
+        "transient: initial voltage 1 V for node 'b', which the circuit doesn't have"
+    );
+    let relay = rejected(base.clone().with_initial_current("K1", 1e-3));
+    assert!(
+        relay.contains("'K1'") && relay.contains("is a relay with no coil inductance"),
+        "{relay}"
+    );
+
+    // Ground at 0 V says nothing new, so it's accepted, and held at the
+    // operating point it's left out of the `.ic` clamps.
+    for start in [
+        sindr::TransientStart::InitialConditions,
+        sindr::TransientStart::OperatingPoint,
+    ] {
+        let config = base
+            .clone()
+            .with_start(start)
+            .with_initial_voltages(ics(&[("0", 0.0), ("a", 2.0)]));
+        let tran = solve_transient(&circuit, &config)
+            .unwrap()
+            .transient
+            .unwrap();
+        // From 2 V toward 5 V through τ = 1 ms: 5 − 3·e^(−t/τ).
+        let first = &tran.timesteps[0];
+        let want = 5.0 - 3.0 * (-first.time / 1e-3).exp();
+        let got = first.node_voltages["a"];
+        assert!(
+            (got - want).abs() < 1e-6,
+            "{start:?}: V(a) = {got} at t = {}, want {want}",
+            first.time
+        );
+    }
 }

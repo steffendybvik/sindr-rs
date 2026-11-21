@@ -42,16 +42,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for analysis in &netlist.analyses {
         match analysis {
             AnalysisRequest::Op => {
-                sindr::solve_circuit(&netlist.circuit)?;
+                sindr::solve_op(&netlist.circuit)?;
             }
-            AnalysisRequest::Dc {
-                source,
-                start,
-                stop,
-                step,
-            } => {
-                let points = ((stop - start) / step).abs() as usize + 1;
-                let sweep = sindr::dc_sweep(&netlist.circuit, source, *start, *stop, points)?;
+            AnalysisRequest::Dc { source, .. } => {
+                let (axis, _outer) = analysis.dc_axes().ok_or("not a .dc")??;
+                let sweep = sindr::dc_sweep(
+                    &netlist.circuit,
+                    &axis.source_id,
+                    axis.start,
+                    axis.stop,
+                    axis.num_points,
+                )?;
                 let curve = sweep.node_voltage_curve("n2");
                 println!(
                     "dc sweep of {source}: {} points, V(n2) {:.3}..{:.3} V",
@@ -66,13 +67,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let steps = result.transient.map_or(0, |t| t.timesteps.len());
                 println!("transient to {tstop} s in {tstep} s steps: {steps} snapshots");
             }
-            AnalysisRequest::Ac { fstart, fstop, .. } => {
-                println!("ac sweep {fstart}..{fstop} Hz (build an AcConfig for solve_ac)");
-            }
+            AnalysisRequest::Ac { fstart, fstop, .. } => match netlist.ac_config() {
+                Some(Ok(config)) => {
+                    let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config)?;
+                    println!("ac sweep {fstart}..{fstop} Hz: {} points", ac.points.len());
+                }
+                // No `AC` spec on a V line: the stimulus has to be set by hand.
+                _ => println!("ac sweep {fstart}..{fstop} Hz (no AC source in the deck)"),
+            },
             AnalysisRequest::Sens { .. } => {
                 let config = analysis.sens_config().ok_or("not a .sens")?;
                 let sens = sindr::solve_sensitivity(&netlist.circuit, &config)?;
                 println!("sens: {} parameters", sens.entries.len());
+            }
+            AnalysisRequest::Noise { .. } => {
+                let config = analysis.noise_config().ok_or("not a .noise")?;
+                let noise = sindr::solve_noise(&netlist.circuit, &config)?;
+                println!("noise: {} points", noise.points.len());
             }
             AnalysisRequest::Tf { .. } => {
                 let config = analysis.tf_config().ok_or("not a .tf")?;
@@ -82,16 +93,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tf.gain, tf.input_resistance, tf.output_resistance
                 );
             }
+            // Analyses added in later releases.
+            other => println!("not run here: {other:?}"),
         }
     }
 
     // 4. Lenient mode: an unsupported element (M = MOSFET) becomes a
     //    collected warning instead of a hard error.
     let with_mosfet = format!("{DECK}M1 n2 n1 0 nmod\n");
-    let opts = ParseOptions {
-        strict: false,
-        include_search_path: None,
-    };
+    let opts = ParseOptions::default().with_strict(false);
     let lenient = parse_str_with_options(&with_mosfet, opts)?;
     for warning in &lenient.warnings {
         println!("warning: {warning:?}");

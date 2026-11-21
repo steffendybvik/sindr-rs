@@ -13,9 +13,16 @@
 
 use std::collections::HashMap;
 
-use sindr::{
-    solve_circuit, solve_circuit_with_initial_voltages, Circuit, CircuitElement, SimulationResult,
-};
+use sindr::{solve_circuit, Circuit, CircuitElement, SimulationResult};
+
+/// The operating point of `circuit`, Newton seeded with `nodeset`.
+fn solve_seeded(
+    circuit: &Circuit,
+    nodeset: &HashMap<String, f64>,
+) -> Result<sindr::SimulationResult, sindr::SimError> {
+    sindr::Solver::new(sindr::SolverOptions::default().with_nodeset(nodeset.clone()))
+        .circuit(circuit)
+}
 
 // ---------- helpers ----------
 
@@ -84,8 +91,10 @@ fn diode_resistor(vsource: f64, r_ohms: f64) -> Circuit {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -119,6 +128,7 @@ fn three_resistor_divider() -> Circuit {
                 resistance: 3_000.0,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -220,7 +230,7 @@ fn gmin_path_agrees_with_plain_nr_to_microvolts() {
     let mut bad_seed = HashMap::new();
     bad_seed.insert("n1".to_string(), 1.0e6);
     bad_seed.insert("n2".to_string(), -1.0e6);
-    let via_gmin = solve_circuit_with_initial_voltages(&circuit, &bad_seed).unwrap();
+    let via_gmin = solve_seeded(&circuit, &bad_seed).unwrap();
 
     for node in plain.node_voltages.keys() {
         let p = plain.node_voltages[node];
@@ -273,7 +283,7 @@ fn seed_invariance_for_unique_operating_point() {
     for v in seeds {
         let mut s = HashMap::new();
         s.insert("n2".to_string(), v);
-        let r = match solve_circuit_with_initial_voltages(&circuit, &s) {
+        let r = match solve_seeded(&circuit, &s) {
             Ok(r) => r,
             Err(e) => panic!("seed V(n2)={v} failed to converge: {e}"),
         };
@@ -408,6 +418,7 @@ fn two_voltage_sources_in_series_satisfy_kcl_and_power() {
                 waveform: None,
             },
         ],
+        ..Default::default()
     };
     let result = solve_circuit(&circuit).unwrap();
     let v_mid = result.node_voltages["mid"];
@@ -459,6 +470,7 @@ fn wheatstone_bridge_balances() {
                 resistance: 2_000.0,
             },
         ],
+        ..Default::default()
     };
     let result = solve_circuit(&circuit).unwrap();
     let v_a = result.node_voltages["a"];
@@ -500,8 +512,10 @@ fn reverse_biased_diode_carries_negligible_current() {
                 id: "D1".into(),
                 nodes: ["0".into(), "n2".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
+        ..Default::default()
     };
     let result = solve_circuit(&circuit).unwrap();
     let diode = result
@@ -553,13 +567,16 @@ fn two_diodes_in_parallel_split_current_and_obey_shockley() {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
             CircuitElement::Diode {
                 id: "D2".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
+        ..Default::default()
     };
     let result = solve_circuit(&circuit).unwrap();
     // Two diodes in parallel double the small-signal conductance at the
@@ -649,6 +666,7 @@ fn capacitor_is_open_circuit_in_dc() {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     };
     // Note: Capacitor presence triggers transient mode. We can't directly
     // compare against a pure-DC solve, but at the *initial* timepoint of a
@@ -683,7 +701,7 @@ fn seeding_at_supply_rail_is_rescued_by_source_stepping() {
     let circuit = diode_resistor(5.0, 100.0);
     let mut s = HashMap::new();
     s.insert("n2".to_string(), 5.0);
-    let seeded = solve_circuit_with_initial_voltages(&circuit, &s).unwrap();
+    let seeded = solve_seeded(&circuit, &s).unwrap();
     assert_eq!(
         seeded.convergence_aid,
         Some(sindr::ConvergenceAid::SourceStepping)

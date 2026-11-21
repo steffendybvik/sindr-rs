@@ -6,7 +6,10 @@
 //! In AC analysis it is the capacitance at the DC bias point.
 
 /// Varactor diode parameters.
-#[derive(Debug, Clone)]
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VaractorParams {
     /// Zero-bias junction capacitance (F). Typical: 10e-12 (10 pF).
@@ -27,7 +30,8 @@ impl Default for VaractorParams {
     }
 }
 
-/// Compute junction capacitance at voltage `v`.
+/// Junction capacitance (F) at `v` = anode − cathode (V); reverse bias is
+/// negative.
 ///
 /// C_j(V) = C_j0 / (1 - V/phi)^m
 ///
@@ -40,9 +44,10 @@ pub fn junction_capacitance(v: f64, params: &VaractorParams) -> f64 {
     params.cj0 / denom.max(1e-6) // prevent division by near-zero
 }
 
-/// Compute the transient companion model for the varactor at `v_prev`.
+/// Compute the transient companion model for the varactor at `v_prev`
+/// (V, anode − cathode) over a step of `dt` seconds.
 ///
-/// Returns `(g_eq, i_eq)` where:
+/// Returns `(g_eq, i_eq)`, in S and A, where:
 /// - g_eq = C_j(v_prev) / dt  (backward Euler capacitor conductance)
 /// - i_eq = -g_eq * v_prev    (capacitor history current)
 ///

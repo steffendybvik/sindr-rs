@@ -11,7 +11,10 @@
 //! Full IGBT models (IGBTv3) have 20+ parameters — out of scope.
 
 /// IGBT parameters (simplified model).
-#[derive(Debug, Clone)]
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IgbtParams {
     /// Gate threshold voltage (V). Typical: 4.0–6.0 V.
@@ -41,10 +44,10 @@ pub struct IgbtCompanion {
     pub gm: f64,
     /// Output conductance ∂Ids/∂Vce (S): zero in saturation and cutoff.
     pub g_ce: f64,
-    /// Drain/collector current at operating point.
+    /// Collector current at the operating point (A), collector → emitter.
     pub ids: f64,
-    /// Companion current source value for MNA stamping:
-    /// `ids − gm·vge − g_ce·vce`.
+    /// Companion current source value for MNA stamping (A), collector →
+    /// emitter: `ids − gm·vge − g_ce·vce`.
     pub i_eq: f64,
 }
 

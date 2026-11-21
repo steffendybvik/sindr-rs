@@ -1,5 +1,10 @@
-//! Rust circuit simulator. SPICE-style MNA solver with built-in
-//! semiconductor device models.
+//! A circuit simulator you embed in Rust: build a circuit as a typed value,
+//! solve it natively or in WebAssembly, and get back numbers checked against
+//! ngspice. Pure Rust, no C libraries, no global state. Besides voltages and
+//! currents it answers design questions: whether each part stays inside its
+//! ratings ([`check_ratings`]) and whether a spec passes ([`check_specs`]).
+//! Accuracy against ngspice is tabled in the
+//! [repository](https://github.com/steffendybvik/sindr-rs/blob/main/docs/ACCURACY.md).
 //!
 //! `sindr` solves a [`Circuit`] — a list of components and a ground node —
 //! and returns voltages, currents, and power for every component. The solver
@@ -10,56 +15,55 @@
 //! - **Transient** — Gear-2 (or trapezoidal or backward-Euler) timestepping
 //!   when capacitors, inductors, or time-varying sources are present.
 //! - **AC small-signal** — sinusoidal-steady-state via [`ac_analysis::solve_ac`].
+//! - **Noise** — thermal, shot and flicker noise at an output (SPICE's
+//!   `.noise`) via [`solve_noise`].
 //! - **Transfer function** — DC small-signal gain, input and output
 //!   resistance (SPICE's `.tf`) via [`solve_tf`].
 //! - **DC sensitivity** — derivative of an output with respect to each
 //!   component parameter (SPICE's `.sens`) via [`solve_sensitivity`].
-//! - **DC sweep** — operating point at each value of a swept voltage source,
+//! - **DC sweep** — operating point at each value of a swept voltage or current source,
 //!   via [`fn@dc_sweep`].
 //! - **Temperature sweep** — operating-point sweep over junction temperature
 //!   via [`temperature_sweep`].
 //!
 //! Device physics (diode, BJT, MOSFET, IGBT, JFET, varactor companion models)
 //! live in the companion crate
-//! [`sindr-devices`](https://crates.io/crates/sindr-devices). `sindr`
-//! re-exports the few enums you'll typically need ([`BjtKind`],
-//! [`MosfetKind`], [`JfetKind`], etc.).
+//! [`sindr-devices`](https://crates.io/crates/sindr-devices), re-exported
+//! whole as [`devices`], so `sindr::devices::mosfet::MosfetParams` and
+//! `sindr::devices::inductor::InductorSaturation` need no second
+//! dependency. The few enums you'll typically need ([`BjtKind`],
+//! [`MosfetKind`], [`JfetKind`], etc.) are also at the root.
 //!
 //! # Quick start
 //!
-//! Build a voltage divider, solve it, read the divided voltage:
+//! How much current does a red LED draw from 5 V through 220 Ω?
 //!
 //! ```
-//! use sindr::{Circuit, CircuitElement, solve_circuit};
+//! use sindr::{solve_circuit, Circuit, CircuitElement};
 //!
-//! let circuit = Circuit {
-//!     ground_node: "0".into(),
-//!     components: vec![
-//!         CircuitElement::VoltageSource {
-//!             id: "V1".into(),
-//!             nodes: ["n1".into(), "0".into()],
-//!             voltage: 10.0,
-//!             waveform: None,
-//!         },
-//!         CircuitElement::Resistor {
-//!             id: "R1".into(),
-//!             nodes: ["n1".into(), "n2".into()],
-//!             resistance: 1_000.0,
-//!         },
-//!         CircuitElement::Resistor {
-//!             id: "R2".into(),
-//!             nodes: ["n2".into(), "0".into()],
-//!             resistance: 2_000.0,
-//!         },
-//!     ],
-//! };
+//! let circuit = Circuit::new("gnd", vec![
+//!     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "gnd".into()], voltage: 5.0, waveform: None },
+//!     CircuitElement::Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 220.0 },
+//!     CircuitElement::Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 },
+//! ]);
+//! let result = solve_circuit(&circuit)?;
+//! let led = result.component_results.iter().find(|c| c.id == "D1").unwrap();
+//! println!("{:.1} mA, {:.1} mW", led.current_through * 1e3, led.power * 1e3);
 //!
-//! let result = solve_circuit(&circuit).unwrap();
-//!
-//! // V_n2 = 10 V * R2/(R1+R2) = 10 * 2/3 ≈ 6.667 V
-//! let v_n2 = result.node_voltages["n2"];
-//! assert!((v_n2 - 6.6667).abs() < 1e-3);
+//! // About 1.8 V across the LED leaves about 3.2 V across R1.
+//! assert!((led.current_through - 3.2 / 220.0).abs() < 1.5e-3);
+//! # Ok::<(), sindr::SimError>(())
 //! ```
+//!
+//! # Data model and hierarchy
+//!
+//! [`Circuit`] and everything in it lives in [`circuit`], [`design`] and
+//! [`waveform`]. Besides its flat `components`, a
+//! circuit can place [`Block`]s through [`Instance`]s, name `globals`, and
+//! carry [`Part`] data (reference, symbol, footprint) the solver ignores.
+//! Every analysis flattens the hierarchy first ([`Circuit::flatten`]: `X1.R1`,
+//! `X1.mid`) and reports results under the flattened names. A broken
+//! hierarchy is [`SimError::Design`].
 //!
 //! # Capabilities
 //!
@@ -67,17 +71,21 @@
 //!
 //! | Analysis | Entry point | Notes |
 //! |---|---|---|
-//! | Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
+//! | Operating point (linear or nonlinear DC) | [`solve_op`], [`solve_circuit`] | Newton–Raphson for nonlinear devices. [`solve_op`] is SPICE's `.op` (C open, L shorted, sources at t = 0); [`solve_circuit`] runs a transient when the circuit has C, L or waveforms |
 //! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 //! | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
-//! | DC sweep | [`fn@dc_sweep`] | One voltage source at a time |
+//! | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
+//! | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`); each point an operating point as [`solve_op`] solves it |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
-//! | Seeded operating point (`.nodeset`) | [`solve_circuit_with_initial_voltages`], [`ac_analysis::solve_ac_with_initial_voltages`], [`transfer_function::solve_tf_with_initial_voltages`], [`sensitivity::solve_sensitivity_with_initial_voltages`] | Seeds Newton for the DC, AC, `.tf` or `.sens` bias point |
-//! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`] | The state a transient starts from |
+//! | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
+//! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
+//! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
+//! | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
+//! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 //!
-//! Not available: noise, distortion, pole-zero, AC sensitivity, Monte Carlo,
+//! Not available: distortion, pole-zero, AC sensitivity, Monte Carlo,
 //! periodic steady state, S-parameters, variable-order integration.
 //!
 //! ## Device models
@@ -85,14 +93,19 @@
 //! | Device | Model |
 //! |---|---|
 //! | Diode, LED, Schottky, photodiode | Shockley; IS and V_T = kT/q follow each device's `temperature` (SPICE IS(T), XTI = 3) |
-//! | Zener | Shockley forward, linear breakdown at `vz` |
+//! | Zener | A SPICE diode with breakdown `BV = vz` at 5 mA and RS = 1 Ω |
 //! | BJT (NPN/PNP) | Ebers–Moll with Early voltage; not Gummel–Poon |
 //! | MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges), body tied to source, SPICE-signed VTO (negative for an enhancement PMOS); no BSIM |
 //! | JFET (N/P) | Shichman–Hodges square law |
 //! | IGBT | MOSFET-like gate control, square-law collector current |
 //! | Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
-//! | Op-amp, comparator | Saturating VCVS, gain 1e5; no GBW or slew rate |
+//! | Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
+//! | Comparator | Gain 1e5, output clamped to its rails; no GBW, slew rate or hysteresis |
 //! | Transformer | Linear coupled inductors |
+//! | Battery | Open-circuit voltage by state of charge behind R0 and an optional R1‖C1; state of charge falls with charge drawn ([`battery::BatteryParams`]; Li-ion and CR2032 presets) |
+//! | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
+//! | Crystal | Butterworth–Van Dyke: `Rm`–`Lm`–`Cm` beside `C0` ([`CrystalParams`]) |
+//! | Ferrite bead | `R_dc` into `L ∥ R_ac` (∥ `C`) ([`FerriteBeadParams`]) |
 //!
 //! Parameters are Rust structs, not SPICE `.model` cards.
 //!
@@ -107,15 +120,31 @@
 //! needed. A transient step whose Newton solve fails is retried at half the
 //! step.
 //!
+//! ## Netlist import for editors
+//!
+//! [`import`] takes a schematic tool's netlist in the caller's own ids:
+//! components with a kind, a value (`"4k7"`, `"100nF"`) and named
+//! terminals, and nets of `(component, terminal)` pins. A [`import::Bench`]
+//! adds what a schematic leaves out (ground, supplies, signal sources,
+//! loads, the analysis), and [`import::simulate`] runs it. Results are
+//! keyed by the caller's component and net ids, and every
+//! [`import::ImportError`] names the part, net or bench item at fault.
+//!
 //! ## SPICE input (feature `spice`)
 //!
-//! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q
-//! and X elements; `.subckt`, `.model`, `.param`, `.include`, `.lib`,
-//! `.ic` and `.nodeset`; and the analysis cards `.op`, `.dc`, `.ac`, `.tf`,
-//! `.sens` and `.tran`. Not supported: MOSFET (M)
-//! and JFET (J) elements, controlled sources (E, F, G, H), coupled inductors
-//! (K), `B` sources, most `.model` parameters (diodes always use IS = 1e-14,
-//! N = 1; BJTs honour only BF), and netlist export.
+//! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q,
+//! linear E/G/F/H, K (two coupled `L` lines) and X elements, with `[DC] v`,
+//! `AC mag [phase]` and a waveform on V and I lines in any order;
+//! `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
+//! `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
+//! `.ac`, `.tf`, `.sens`, `.noise` and `.tran`. `.model` cards fill in what
+//! sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
+//! `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
+//! `NR`, `VAF`, `KF`, `AF`). Not read: MOSFET (M) and JFET (J) elements,
+//! `B` sources, the `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms of E/G/F/H, and
+//! couplings of more than two inductors.
+//! [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
+//! sources and `.subckt`s included.
 //!
 //! The full list of what sindr doesn't do is in
 //! [LIMITATIONS.md](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
@@ -133,17 +162,17 @@
 //!
 //! - `serde` *(default)* — `Serialize`/`Deserialize` impls on the public
 //!   types.
-//! - `examples` *(default, implies `serde`)* — exposes [`get_examples`] and
-//!   the built-in named circuits (voltage divider, BJT amp, RC transient,
-//!   etc.).
+//! - `examples` — exposes [`get_examples`]: the built-in named circuits
+//!   (voltage divider, BJT amp, RC transient, etc.) with ids and
+//!   descriptions. The circuits themselves are always in [`examples`].
 //! - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = "0.1.0-alpha.7"
+//! sindr = "0.1"
 //!
-//! # No serde, no built-in examples:
-//! sindr = { version = "0.1.0-alpha.7", default-features = false }
+//! # No serde:
+//! sindr = { version = "0.1", default-features = false }
 //! ```
 //!
 //! # Transient results
@@ -178,6 +207,7 @@
 //!             capacitance: 1e-6,
 //!         },
 //!     ],
+//!     ..Default::default()
 //! };
 //!
 //! let result = solve_circuit(&circuit).unwrap();
@@ -190,6 +220,20 @@
 //! assert!((last.node_voltages["out"] - 5.0).abs() < 0.1);
 //! ```
 //!
+//! # CSV export
+//!
+//! [`TransientData::to_csv`], [`AcResult::to_csv`],
+//! [`DcSweepResult::to_csv`] and [`TempSweepResult::to_csv`] write one row
+//! per point: the scale (time, frequency, swept value or temperature)
+//! first, then a column per node voltage, `v(<node>)` with nodes in name
+//! order, then for real-valued results a column per component current,
+//! `i(<id>)`, in circuit order. AC writes each node voltage as two columns,
+//! `re(v(<node>))` and `im(v(<node>))`.
+//!
+//! Numbers are written so they read back as the same `f64`. A value missing
+//! from a row is an empty field. Names that need it are quoted as RFC 4180
+//! has it. Lines end in `\n`.
+//!
 //! # SPICE netlist input
 //!
 //! Parsing SPICE3 `.cir` decks into a [`Circuit`] lives behind the optional
@@ -198,7 +242,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = { version = "0.1.0-alpha.7", features = ["spice"] }
+//! sindr = { version = "0.1", features = ["spice"] }
 //! ```
 //!
 //! (`no_run`: it reads `amp.cir`, which doesn't exist where doctests run.)
@@ -225,6 +269,7 @@
 //! - [`Waveform`] — time-varying source shapes
 //! - [`SimError`] — what can go wrong
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
 #![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]
@@ -236,64 +281,202 @@ pub mod examples;
 pub use examples::{get_examples, ExampleCircuit};
 
 pub mod ac_analysis;
+mod battery_state;
 pub mod circuit;
+mod composite;
+mod csv;
 pub mod dc_sweep;
+pub mod design;
 mod device_params;
 pub mod error;
+pub mod import;
 mod integration;
+pub mod measure;
+// The matrix type is public only for sindr's own `mna_solve` bench, behind
+// the unstable `internals` feature.
+#[cfg(feature = "internals")]
+#[doc(hidden)]
 pub mod mna;
-pub mod newton_raphson;
-pub mod node_map;
+#[cfg(not(feature = "internals"))]
+mod mna;
+mod newton_raphson;
+mod node_map;
+pub mod noise;
+mod op_amp;
+pub mod ratings;
 pub mod results;
 pub mod sensitivity;
+pub mod solver;
 #[cfg(feature = "spice")]
 #[cfg_attr(docsrs, doc(cfg(feature = "spice")))]
 pub mod spice;
-pub mod stamp;
+mod stamp;
+#[cfg(test)]
+mod stamp_jacobian_tests;
 pub mod temp_sweep;
+mod thermal;
 pub mod transfer_function;
-pub mod transient;
+mod transient;
 pub mod validation;
 pub mod waveform;
 
-pub use circuit::{Circuit, CircuitElement};
-pub use dc_sweep::{dc_sweep, DcSweepResult};
-pub use error::SimError;
-pub use mna::MnaSystem;
-pub use node_map::NodeMap;
+pub use ac_analysis::{solve_ac, AcConfig, AcPoint, AcResult, FrequencySpacing};
+pub use circuit::{
+    BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel, FerriteBeadParams, OpAmpModel,
+    SpdtPosition,
+};
+pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
+pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
+pub use error::{SimError, SolvePoint};
+pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
+pub use noise::{solve_noise, NoiseConfig, NoiseResult};
+pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 pub use results::{
-    BjtResult, ComponentResult, ConvergenceAid, McuResult, MosfetResult, OpAmpResult, RelayResult,
+    BjtResult, ComponentResult, ConvergenceAid, MosfetResult, OpAmpResult, RelayResult,
     SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
 pub use sensitivity::{solve_sensitivity, SensConfig, SensEntry, SensParameter, SensResult};
+pub use solver::{Solver, SolverOptions};
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
 pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
-pub use transient::{solve_transient, IntegrationMethod, TransientConfig};
+pub use transient::{solve_transient, IntegrationMethod, TransientConfig, TransientStart};
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
 
+/// The device-physics crate, `sindr-devices`, at the version this `sindr`
+/// is built with: every `*Params` struct a [`CircuitElement`] takes.
+pub use sindr_devices as devices;
 // Device physics re-exports from sindr-devices — convenience for callers
 // constructing CircuitElement variants without an extra crate import.
+/// Battery equivalent circuits and presets, for [`CircuitElement::Battery`].
+pub use sindr_devices::battery;
 pub use sindr_devices::bjt::BjtKind;
 pub use sindr_devices::igbt::IgbtParams;
 pub use sindr_devices::jfet::JfetKind;
 pub use sindr_devices::mosfet::MosfetKind;
+/// Linear regulator parameters and presets, for [`CircuitElement::VoltageRegulator`]'s `model`.
+pub use sindr_devices::regulator;
+pub use sindr_devices::regulator::RegulatorParams;
 pub use sindr_devices::varactor::VaractorParams;
 
+pub(crate) use mna::MnaSystem;
 use node_map::NodeMap as NM;
+
+/// The circuit the solver runs: `circuit` flattened, with each
+/// [`CircuitElement::ZenerDiode`] as the SPICE diode it stands for
+/// ([`device_params::zener_model`]) and each MOSFET body diode as a
+/// [`CircuitElement::Diode`] `<id>.body`. Every analysis starts here, so they
+/// all see one zener model; ratings and export keep the zener as it is.
+pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, Circuit>, SimError> {
+    let flat = circuit.flattened()?;
+    let lowers = |c: &CircuitElement| {
+        composite::is_composite(c)
+            || matches!(
+                c,
+                CircuitElement::ZenerDiode { .. }
+                    | CircuitElement::Mosfet {
+                        body_diode: Some(_),
+                        ..
+                    }
+            )
+    };
+    if !flat.components.iter().any(lowers) {
+        return Ok(flat);
+    }
+    let mut owned = flat.into_owned();
+    let mut lowered = Vec::with_capacity(owned.components.len());
+    for element in std::mem::take(&mut owned.components) {
+        match composite::lower(&element)? {
+            Some(parts) => lowered.extend(parts),
+            None => lowered.push(element),
+        }
+    }
+    owned.components = lowered;
+    let mut seen = std::collections::HashSet::new();
+    for element in &owned.components {
+        if !seen.insert(element.id()) {
+            return Err(SimError::InvalidComponent(format!(
+                "`{}`: two components share this id once switches, crystals and beads \
+                 are split into their parts",
+                element.id()
+            )));
+        }
+    }
+    let mut body_diodes = Vec::new();
+    for element in &mut owned.components {
+        if let CircuitElement::Mosfet {
+            id,
+            nodes,
+            kind,
+            body_diode,
+            ..
+        } = element
+        {
+            if let Some(model) = body_diode.take() {
+                let (anode, cathode) = match kind {
+                    MosfetKind::Nmos => (&nodes[2], &nodes[1]),
+                    MosfetKind::Pmos => (&nodes[1], &nodes[2]),
+                };
+                body_diodes.push(CircuitElement::Diode {
+                    id: format!("{id}.body"),
+                    nodes: [anode.clone(), cathode.clone()],
+                    temperature: sindr_devices::diode::T_NOM,
+                    model: Some(model),
+                });
+            }
+        }
+    }
+    for diode in &body_diodes {
+        if owned.components.iter().any(|c| c.id() == diode.id()) {
+            return Err(SimError::InvalidComponent(format!(
+                "`{}`: a component already has the id a body diode is solved under",
+                diode.id()
+            )));
+        }
+    }
+    owned.components.extend(body_diodes);
+    for element in &mut owned.components {
+        if let CircuitElement::ZenerDiode {
+            id,
+            nodes,
+            vz,
+            temperature,
+        } = element
+        {
+            if !(vz.is_finite() && *vz > 0.0) {
+                return Err(SimError::InvalidComponent(format!(
+                    "`{id}`: vz {vz} V must be a positive, finite number"
+                )));
+            }
+            *element = CircuitElement::Diode {
+                id: id.clone(),
+                nodes: nodes.clone(),
+                temperature: *temperature,
+                model: Some(device_params::zener_model(*vz)),
+            };
+        }
+    }
+    Ok(std::borrow::Cow::Owned(owned))
+}
 
 /// The automatic transient config [`solve_circuit`] runs, checked like a
 /// user's: a circuit whose time constants and waveforms ask for more than
-/// 10⁷ steps gets an error naming them, not a run that never ends.
-fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError> {
+/// `opts.max_transient_steps` gets an error naming them, not a run that
+/// never ends.
+fn auto_transient_config(
+    circuit: &Circuit,
+    opts: &SolverOptions,
+) -> Result<TransientConfig, SimError> {
     let config = TransientConfig::auto(circuit);
-    config.validate().map_err(|e| match e {
-        SimError::InvalidComponent(msg) => SimError::InvalidComponent(format!(
-            "{msg} (automatic span {} s and step {} s; set them with solve_transient)",
-            config.tstop, config.tstep
-        )),
-        other => other,
-    })?;
+    config
+        .validate(opts.max_transient_steps)
+        .map_err(|e| match e {
+            SimError::InvalidComponent(msg) => SimError::InvalidComponent(format!(
+                "{msg} (automatic span {} s and step {} s; set them with solve_transient)",
+                config.tstop, config.tstep
+            )),
+            other => other,
+        })?;
     Ok(config)
 }
 
@@ -342,6 +525,7 @@ fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError>
 ///             resistance: 1_000.0,
 ///         },
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// let result = solve_circuit(&circuit).unwrap();
@@ -350,6 +534,26 @@ fn auto_transient_config(circuit: &Circuit) -> Result<TransientConfig, SimError>
 /// assert!((r1.current_through.abs() - 0.005).abs() < 1e-9);
 /// ```
 pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
+    solve_circuit_with(circuit, &SolverOptions::default())
+}
+
+/// [`solve_circuit`] with `opts`.
+pub(crate) fn solve_circuit_with(
+    circuit: &Circuit,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
+    let mut result = solve_circuit_parts(circuit, opts)?;
+    composite::fold(circuit, &mut result);
+    Ok(result)
+}
+
+/// [`solve_circuit_with`], with composite elements still in their parts.
+fn solve_circuit_parts(
+    circuit: &Circuit,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
+    let flat = crate::solver_circuit(circuit)?;
+    let circuit: &Circuit = &flat;
     validation::validate_circuit(circuit)?;
 
     let node_map = NM::from_circuit(circuit);
@@ -357,59 +561,176 @@ pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     let num_vsources = circuit.count_voltage_sources();
 
     if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
-        let config = auto_transient_config(circuit)?;
-        return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
-    }
-
-    if circuit.has_nonlinear_elements() {
-        newton_raphson::solve_nonlinear(circuit, &node_map, num_nodes, num_vsources)
-    } else {
-        let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
-        let solution = system.solve()?;
-        Ok(results::extract_results(
-            circuit, &node_map, &solution, num_nodes,
-        ))
-    }
-}
-
-/// DC operating point of `circuit` with capacitors open and inductors
-/// shorted, whatever else it contains. [`solve_circuit`] sends any reactive
-/// circuit down the transient path, whose end state (5 τ) is only close to
-/// the bias point; small-signal analysis needs the bias point itself.
-/// `initial_voltages` seeds Newton–Raphson, as `.nodeset`.
-pub(crate) fn solve_dc_operating_point(
-    circuit: &Circuit,
-    initial_voltages: &std::collections::HashMap<String, f64>,
-) -> Result<SimulationResult, SimError> {
-    validation::validate_circuit(circuit)?;
-    let dc = dc_equivalent(circuit);
-
-    let node_map = NM::from_circuit(&dc);
-    let num_nodes = node_map.num_nodes();
-    let num_vsources = dc.count_voltage_sources();
-    if dc.has_nonlinear_elements() {
-        newton_raphson::solve_nonlinear_with_initial_voltages(
-            &dc,
+        // The transient path doesn't consume the nodeset.
+        let config = auto_transient_config(circuit, opts)?;
+        return transient::run_transient(
+            circuit,
             &node_map,
             num_nodes,
             num_vsources,
-            initial_voltages,
-        )
+            &config,
+            opts,
+        );
+    }
+
+    solve_dc_heated(circuit, |circuit| {
+        if circuit.has_nonlinear_elements() {
+            newton_raphson::solve_nonlinear(circuit, &node_map, num_nodes, num_vsources, opts)
+        } else {
+            let mut system = MnaSystem::new(num_nodes, num_vsources);
+            stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
+            let solution = system.solve()?;
+            Ok(results::extract_results(
+                circuit, &node_map, &solution, num_nodes,
+            ))
+        }
+    })
+}
+
+/// The DC operating point, as SPICE's `.op`: capacitors open, inductors
+/// and transformer windings shorted, and each source with a waveform at its
+/// t = 0 value, at the self-heating balance when any part has [`Thermal`]
+/// data.
+///
+/// [`solve_circuit`] differs for a circuit with a capacitor, inductor or
+/// waveform: it runs a transient and reports its end state (5 τ), which is
+/// only close to the bias point. Here an inductor reads 0 V across and
+/// carries its DC current, which [`SimulationResult::branch_currents`] has
+/// under its id; a capacitor reads the voltage across it and (near) no
+/// current.
+///
+/// ```
+/// use sindr::{solve_op, Circuit, CircuitElement};
+///
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 1.0, waveform: None,
+///         },
+///         CircuitElement::Inductor {
+///             id: "L1".into(), nodes: ["in".into(), "mid".into()], inductance: 1e-3, saturation: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(), nodes: ["mid".into(), "0".into()], resistance: 1e3,
+///         },
+///     ],
+///     ..Default::default()
+/// };
+/// let op = solve_op(&circuit)?;
+/// assert_eq!(op.node_voltages["mid"], 1.0);
+/// assert!((op.branch_currents["L1"] - 1e-3).abs() < 1e-12);
+/// # Ok::<(), sindr::SimError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`solve_circuit`]'s DC path: an invalid circuit, a singular matrix
+/// (for instance an inductor straight across a voltage source, a short at
+/// DC), or no convergence.
+pub fn solve_op(circuit: &Circuit) -> Result<SimulationResult, SimError> {
+    solve_op_with(circuit, &SolverOptions::default())
+}
+
+/// [`solve_op`] with `opts`.
+pub(crate) fn solve_op_with(
+    circuit: &Circuit,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
+    let flat = crate::solver_circuit(circuit)?;
+    let mut result = solve_dc_operating_point(&flat, opts)?;
+    strip_secondary_windings(&mut result);
+    composite::fold(circuit, &mut result);
+    Ok(result)
+}
+
+/// Drops the `id#2` branch a transformer's shorted secondary leaves in a
+/// result solved on [`dc_equivalent`]: its id isn't one the caller gave.
+pub(crate) fn strip_secondary_windings(result: &mut SimulationResult) {
+    result.branch_currents.retain(|id, _| !id.ends_with("#2"));
+    result.component_results.retain(|c| !c.id.ends_with("#2"));
+}
+
+/// `solve` on flat `circuit`, iterated to a self-heating balance when any
+/// part has [`Thermal`] data.
+pub(crate) fn solve_dc_heated(
+    circuit: &Circuit,
+    mut solve: impl FnMut(&Circuit) -> Result<SimulationResult, SimError>,
+) -> Result<SimulationResult, SimError> {
+    match thermal::Heated::from_circuit(circuit)? {
+        Some(heated) => thermal::solve_dc(circuit, &heated, solve),
+        None => solve(circuit),
+    }
+}
+
+/// DC operating point of flat `circuit` with capacitors open and inductors
+/// shorted, whatever else it contains, at its self-heating balance (the
+/// junction temperatures [`solve_circuit`] reports). [`solve_circuit`]
+/// sends any reactive circuit down the transient path, whose end state
+/// (5 τ) is only close to the bias point; small-signal analysis needs the
+/// bias point itself. `opts.nodeset` seeds Newton–Raphson.
+pub(crate) fn solve_dc_operating_point(
+    circuit: &Circuit,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
+    validation::validate_circuit(circuit)?;
+    solve_dc_heated(&dc_equivalent(circuit), |dc| solve_dc_circuit(dc, opts))
+}
+
+/// The DC solution of `dc`, a circuit with no reactive elements left (as
+/// [`dc_equivalent`] gives), without self-heating. `opts.nodeset` seeds
+/// Newton–Raphson.
+pub(crate) fn solve_dc_circuit(
+    dc: &Circuit,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
+    let node_map = NM::from_circuit(dc);
+    let num_nodes = node_map.num_nodes();
+    let num_vsources = dc.count_voltage_sources();
+    if dc.has_nonlinear_elements() {
+        newton_raphson::solve_nonlinear(dc, &node_map, num_nodes, num_vsources, opts)
     } else {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(&dc, &mut system, &node_map, None)?;
+        stamp::stamp_circuit(dc, &mut system, &node_map, None)?;
         let solution = system.solve()?;
         Ok(results::extract_results(
-            &dc, &node_map, &solution, num_nodes,
+            dc, &node_map, &solution, num_nodes,
         ))
     }
 }
 
 /// `circuit` as it stands at DC: capacitors and varactors open (a 1 TΩ leak), inductors and
-/// transformer windings shorted (0 V sources). The bias point and the `.tf`
-/// small-signal system are both solved on it.
+/// transformer windings shorted (0 V sources), and each source with a
+/// waveform at its t = 0 value, as SPICE's operating point takes it. The
+/// bias point and the `.tf` small-signal system are both solved on it. It
+/// keeps `circuit`'s part data, which carries the thermal data the heated
+/// bias point needs.
 pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
+    let mut dc = dc_reactances(circuit);
+    for component in &mut dc.components {
+        match component {
+            CircuitElement::VoltageSource {
+                voltage, waveform, ..
+            } => {
+                if let Some(w) = waveform.take() {
+                    *voltage += w.evaluate(0.0);
+                }
+            }
+            CircuitElement::CurrentSource {
+                current, waveform, ..
+            } => {
+                if let Some(w) = waveform.take() {
+                    *current += w.evaluate(0.0);
+                }
+            }
+            _ => {}
+        }
+    }
+    dc
+}
+
+/// [`dc_equivalent`]'s reactive elements replaced, sources left as they are.
+fn dc_reactances(circuit: &Circuit) -> Circuit {
     Circuit {
         ground_node: circuit.ground_node.clone(),
         components: circuit
@@ -459,87 +780,13 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
                 }]
             })
             .collect(),
+        parts: circuit.parts.clone(),
+        globals: circuit.globals.clone(),
+        ..Default::default()
     }
 }
 
-/// Like [`solve_circuit`] but seeds the Newton–Raphson initial guess with
-/// the supplied per-node voltages (V), keyed by node name. Equivalent to
-/// SPICE's `.NODESET` directive — useful when a circuit has multiple
-/// operating points (e.g. Schmitt triggers, latches) or when the default
-/// heuristic fails to converge.
-///
-/// Only consulted when the circuit contains nonlinear elements; for purely
-/// linear DC and for transient analysis the seed is ignored. Unknown node
-/// names in `initial_voltages` are silently skipped.
-///
-/// # Errors
-///
-/// As [`solve_circuit`].
-///
-/// # Example
-///
-/// ```
-/// use std::collections::HashMap;
-/// use sindr::{Circuit, CircuitElement, solve_circuit_with_initial_voltages};
-///
-/// let circuit = Circuit {
-///     ground_node: "0".into(),
-///     components: vec![
-///         CircuitElement::VoltageSource {
-///             id: "V1".into(),
-///             nodes: ["vcc".into(), "0".into()],
-///             voltage: 5.0,
-///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
-///             id: "R1".into(),
-///             nodes: ["vcc".into(), "n1".into()],
-///             resistance: 1_000.0,
-///         },
-///         CircuitElement::Diode {
-///             id: "D1".into(),
-///             nodes: ["n1".into(), "0".into()],
-///             temperature: 300.15,
-///         },
-///     ],
-/// };
-///
-/// let mut nodeset = HashMap::new();
-/// nodeset.insert("n1".to_string(), 0.7); // hint forward-bias diode drop
-/// let result = solve_circuit_with_initial_voltages(&circuit, &nodeset).unwrap();
-/// assert!(result.node_voltages["n1"] > 0.5);
-/// ```
-pub fn solve_circuit_with_initial_voltages(
-    circuit: &Circuit,
-    initial_voltages: &std::collections::HashMap<String, f64>,
-) -> Result<SimulationResult, SimError> {
-    validation::validate_circuit(circuit)?;
-
-    let node_map = NM::from_circuit(circuit);
-    let num_nodes = node_map.num_nodes();
-    let num_vsources = circuit.count_voltage_sources();
-
-    if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
-        // The transient path doesn't consume the seed.
-        let config = auto_transient_config(circuit)?;
-        return transient::run_transient(circuit, &node_map, num_nodes, num_vsources, &config);
-    }
-
-    if circuit.has_nonlinear_elements() {
-        newton_raphson::solve_nonlinear_with_initial_voltages(
-            circuit,
-            &node_map,
-            num_nodes,
-            num_vsources,
-            initial_voltages,
-        )
-    } else {
-        // Linear DC: initial guess has no effect on the result.
-        let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(circuit, &mut system, &node_map, None)?;
-        let solution = system.solve()?;
-        Ok(results::extract_results(
-            circuit, &node_map, &solution, num_nodes,
-        ))
-    }
-}
+// Compiles and runs the README's code blocks as doctests so they stay current.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

@@ -28,6 +28,7 @@ fn circuit(components: Vec<CircuitElement>) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components,
+        ..Default::default()
     }
 }
 
@@ -39,7 +40,7 @@ fn v_out(node: &str) -> TfOutput {
 }
 
 fn sens(circuit: &Circuit, output: TfOutput) -> SensResult {
-    solve_sensitivity(circuit, &SensConfig { output }).unwrap()
+    solve_sensitivity(circuit, &SensConfig::new(output)).unwrap()
 }
 
 fn of(result: &SensResult, id: &str) -> f64 {
@@ -196,6 +197,7 @@ fn diode_matches_finite_differences() {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
+            model: None,
         },
     ]);
     assert_matches_finite_differences("diode", &c, "out", 1e-4);
@@ -216,6 +218,7 @@ fn common_emitter_stage_matches_finite_differences() {
             bf: 100.0,
             temperature: 300.15,
             parasitic_caps: None,
+            model: None,
         },
     ]);
     assert_matches_finite_differences("CE stage", &c, "c", 1e-4);
@@ -348,6 +351,7 @@ fn reactive_parts_get_no_entry_and_leave_the_rest_right() {
         id: "L1".into(),
         nodes: ["mid".into(), "out".into()],
         inductance: 1e-3,
+        saturation: None,
     });
     c.components.push(CircuitElement::Capacitor {
         id: "C1".into(),
@@ -374,7 +378,18 @@ fn bad_output_is_an_error() {
             source_id: "R1".into(),
         },
     ] {
-        let err = solve_sensitivity(&c, &SensConfig { output });
+        let err = solve_sensitivity(&c, &SensConfig::new(output));
         assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
     }
+}
+
+#[test]
+fn config_constructor() {
+    let config = sindr::SensConfig::new(TfOutput::current("V1"));
+    assert_eq!(
+        config.output,
+        TfOutput::Current {
+            source_id: "V1".into()
+        }
+    );
 }

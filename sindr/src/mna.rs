@@ -5,7 +5,7 @@
 //! nodes and `m` is the number of branch-current unknowns (independent
 //! voltage sources, controlled sources that introduce a branch, etc.).
 //!
-//! Components write themselves into this system via [`stamp`](crate::stamp);
+//! Components write themselves into this system via `stamp`;
 //! the linear DC, Newton–Raphson, and transient pipelines all build an
 //! [`MnaSystem`], stamp into it, and call [`MnaSystem::solve`].
 //!
@@ -110,12 +110,8 @@ impl<T: MnaScalar> MnaMatrix<T> {
         self.size
     }
 
-    /// Whether the matrix is stored sparsely.
-    pub fn is_sparse(&self) -> bool {
-        matches!(self.storage, Storage::Sparse { .. })
-    }
-
     /// The matrix as a dense nalgebra matrix.
+    #[cfg(any(test, feature = "internals"))]
     pub fn to_dense(&self) -> DMatrix<T> {
         match &self.storage {
             Storage::Dense(m) => m.clone(),
@@ -253,10 +249,6 @@ pub struct MnaSystem {
     pub a: MnaMatrix<f64>,
     /// (n+m) right-hand-side vector (amperes A in the node block, volts V in the source block).
     pub b: DVector<f64>,
-    /// Number of non-ground nodes (n).
-    pub num_nodes: usize,
-    /// Number of independent voltage sources contributing branch-current unknowns (m).
-    pub num_vsources: usize,
 }
 
 impl MnaSystem {
@@ -267,14 +259,13 @@ impl MnaSystem {
         Self {
             a: MnaMatrix::zeros(size),
             b: DVector::zeros(size),
-            num_nodes,
-            num_vsources,
         }
     }
 
     /// Total dimension of the system (n + m).
+    #[cfg(test)]
     pub fn size(&self) -> usize {
-        self.num_nodes + self.num_vsources
+        self.b.len()
     }
 
     /// Solve Ax = b: LU with partial pivoting, dense or sparse.
@@ -452,5 +443,31 @@ mod tests {
     fn sparse_singular_matrix_returns_an_error() {
         let a = MnaMatrix::<f64>::sparse(3);
         assert!(a.solve(&DVector::zeros(3)).is_err());
+    }
+
+    /// Reading an entry a sparse matrix never stored is zero, as dense.
+    #[test]
+    fn sparse_reads_unstored_entries_as_zero() {
+        let mut a = MnaMatrix::<f64>::sparse(3);
+        a[(0, 0)] = 2.0;
+        assert_eq!(a[(0, 0)], 2.0);
+        assert_eq!(a[(2, 1)], 0.0);
+        assert_eq!(a.to_dense(), {
+            let mut d = DMatrix::zeros(3, 3);
+            d[(0, 0)] = 2.0;
+            d
+        });
+    }
+
+    /// A solve that produces a NaN or an infinity is an error, not an
+    /// answer, in either storage.
+    #[test]
+    fn non_finite_solution_is_invalid() {
+        for mut a in [MnaMatrix::<f64>::dense(2), MnaMatrix::<f64>::sparse(2)] {
+            a[(0, 0)] = 1.0;
+            a[(1, 1)] = 1.0;
+            let b = DVector::from_vec(vec![1.0, f64::INFINITY]);
+            assert!(matches!(a.solve(&b), Err(SimError::InvalidSolution)));
+        }
     }
 }

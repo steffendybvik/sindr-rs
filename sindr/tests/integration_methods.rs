@@ -50,6 +50,7 @@ fn circuit(components: Vec<CircuitElement>) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components,
+        ..Default::default()
     }
 }
 
@@ -76,6 +77,7 @@ fn rectifier_converges_under_every_method() {
             id: "D1".into(),
             nodes: ["in".into(), "out".into()],
             temperature: 300.15,
+            model: None,
         },
         resistor("RL", "out", "0", 1e3),
         capacitor("C1", "out", "0", 100e-6),
@@ -118,6 +120,7 @@ fn bjt_switch_converges_under_every_method() {
                 cbe: 20e-12,
                 cbc: 5e-12,
             }),
+            model: None,
         },
     ]);
     for m in METHODS {

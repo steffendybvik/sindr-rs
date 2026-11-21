@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use sindr::{solve_circuit, solve_circuit_with_initial_voltages, Circuit, CircuitElement};
+use sindr::{solve_circuit, Circuit, CircuitElement, Solver, SolverOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit = Circuit {
@@ -32,20 +32,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "D1".into(),
                 nodes: ["top".into(), "mid".into()],
                 temperature: 300.15,
+                model: None,
             },
             CircuitElement::Diode {
                 id: "D2".into(),
                 nodes: ["mid".into(), "0".into()],
                 temperature: 300.15,
+                model: None,
             },
         ],
+        ..Default::default()
     };
 
     let plain = solve_circuit(&circuit)?;
 
     // Start Newton near the expected answer: ~0.65 V per diode.
     let seed = HashMap::from([("top".to_string(), 1.3), ("mid".to_string(), 0.65)]);
-    let seeded = solve_circuit_with_initial_voltages(&circuit, &seed)?;
+    let seeded =
+        Solver::new(SolverOptions::default().with_nodeset(seed.clone())).circuit(&circuit)?;
 
     for node in ["top", "mid"] {
         println!(

@@ -23,7 +23,7 @@
 //! (overrides win), establishes a `port -> caller_node` mapping, and
 //! emits each body card with renamed nodes / ids:
 //!
-//! * Ground node `"0"` is **never** prefixed.
+//! * Ground node `"0"` and `.global` nets are **never** prefixed.
 //! * A node matching a subckt port maps to the caller's node.
 //! * Any other node is prefixed with `instance_path.join(".")`.
 //! * Component ids are prefixed similarly.
@@ -31,15 +31,13 @@
 //! Recursion into the same subckt name on the active expansion stack
 //! raises [`SpiceParseError::Syntax`].
 
-#![allow(dead_code)] // some helpers are exercised only via tests
-
 use std::collections::{HashMap, HashSet};
 
 use miette::NamedSource;
 
 use crate::spice::ast::{
-    NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawModel,
-    RawSubckt, Span,
+    NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody, RawMeasure,
+    RawModel, RawSubckt, Span,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::param_eval::{eval_error_to_parse_error, eval_param_list, ParamScope};
@@ -53,13 +51,26 @@ pub(crate) struct Flattened {
     pub elements: Vec<FlatElement>,
     pub models: HashMap<String, RawModel>,
     pub source_map: SourceMap,
+    /// Every subckt instance, in expansion (pre-)order: parents before
+    /// their children.
+    pub instances: Vec<InstanceRecord>,
     pub analyses: Vec<(RawAnalysis, Span)>,
     /// Top-level `.ic` / `.nodeset` cards, in source order.
     pub node_values: Vec<NodeValueCard>,
+    /// Top-level `.meas` cards, in source order.
+    pub measures: Vec<(RawMeasure, Span)>,
+    /// Top-level `.options` cards, in source order.
+    pub options: Vec<OptionsCard>,
+    /// `.global` nets from anywhere in the deck, deduplicated, in source
+    /// order.
+    pub globals: Vec<String>,
     /// Snapshot of the outer-most parameter scope after top-level `.param`
     /// evaluation. Analysis directive arguments are evaluated against this.
     pub top_params: HashMap<String, f64>,
 }
+
+/// A `.options` card: its `name=value` pairs and flags, and its span.
+pub(crate) type OptionsCard = (Vec<(String, Option<ParamExpr>)>, Span);
 
 /// A `.ic` / `.nodeset` card: its kind, `V(node)=value` pairs and span.
 pub(crate) type NodeValueCard = (NodeValueKind, Vec<(String, ParamExpr)>, Span);
@@ -70,9 +81,32 @@ pub(crate) type NodeValueCard = (NodeValueKind, Vec<(String, ParamExpr)>, Span);
 /// re-walking the hierarchy.
 #[derive(Debug)]
 pub(crate) struct FlatElement {
+    /// The element with its id and nodes renamed into the flat namespace.
     pub raw: RawElement,
+    /// Its nodes as written in its own subckt body, before renaming.
+    pub local_nodes: Vec<String>,
     pub instance_path: Vec<String>,
     pub scope_snapshot: HashMap<String, f64>,
+}
+
+/// One `X` instance, as written in its parent's scope.
+#[derive(Debug)]
+pub(crate) struct InstanceRecord {
+    /// Instance ids from the top down to this one.
+    pub path: Vec<String>,
+    pub subckt: String,
+    pub ports: Vec<String>,
+    /// The caller's nodes, as written in the parent's scope.
+    pub local_nodes: Vec<String>,
+}
+
+/// Where expansion writes its output.
+struct Sink {
+    /// `.global` nets, kept as written in every subckt body.
+    globals: Vec<String>,
+    elements: Vec<FlatElement>,
+    source_map: SourceMap,
+    instances: Vec<InstanceRecord>,
 }
 
 /// Flatten `cards` into a [`Flattened`] form.
@@ -90,11 +124,15 @@ pub(crate) fn flatten(
     let mut top_param_lists: Vec<(Vec<(String, ParamExpr)>, Span)> = Vec::new();
     let mut top_analyses: Vec<(RawAnalysis, Span)> = Vec::new();
     let mut top_node_values = Vec::new();
+    let mut top_measures: Vec<(RawMeasure, Span)> = Vec::new();
+    let mut top_options: Vec<OptionsCard> = Vec::new();
     let mut top_elements: Vec<RawElement> = Vec::new();
+    let mut globals: Vec<String> = Vec::new();
 
     for card in cards {
         match card {
             RawCard::Subckt(s) => {
+                warn_nested_definitions(&s, warnings);
                 subckts.insert(s.name.clone(), s);
             }
             RawCard::Model(m) => {
@@ -103,15 +141,15 @@ pub(crate) fn flatten(
             RawCard::Param(list, span) => top_param_lists.push((list, span)),
             RawCard::Analysis(a, span) => top_analyses.push((a, span)),
             RawCard::NodeValues(kind, values, span) => top_node_values.push((kind, values, span)),
+            RawCard::Measure(m, span) => top_measures.push((m, span)),
+            RawCard::Options(o, span) => top_options.push((o, span)),
             RawCard::Element(e) => top_elements.push(e),
-            RawCard::Include(_) | RawCard::Lib { .. } => {
-                // The preprocessor resolves these; if one survives this far
-                // it is a parser/preprocessor bug. Skip with a warning.
-                warnings.push(ParseWarning {
-                    message: "stray .include/.lib in flattener input".to_string(),
-                    span: None,
-                    file: None,
-                });
+            RawCard::Global(nets) => {
+                for net in nets {
+                    if net != "0" && !globals.contains(&net) {
+                        globals.push(net);
+                    }
+                }
             }
             RawCard::Ends(_) => {
                 // The parser collects `.ends` into its parent subckt; an
@@ -138,25 +176,33 @@ pub(crate) fn flatten(
     let top_params_snapshot = snapshot_scope(&scope);
 
     // ---- Pass 2 cont: expand top-level elements ----
-    let mut out_elements: Vec<FlatElement> = Vec::new();
-    let mut source_map: SourceMap = HashMap::new();
+    let mut sink = Sink {
+        globals,
+        elements: Vec::new(),
+        source_map: HashMap::new(),
+        instances: Vec::new(),
+    };
     let mut active_stack: HashSet<String> = HashSet::new();
 
     for el in top_elements {
-        if matches!(el.body, RawElementBody::Subckt { .. }) {
+        if let RawElementBody::Subckt { name, params } = &el.body {
+            let call = (name.clone(), params.clone());
+            let local_nodes = el.nodes.clone();
             expand_instance(
                 el,
+                call,
+                local_nodes,
                 &[],
                 &subckts,
                 &mut scope,
                 &mut active_stack,
-                &mut out_elements,
-                &mut source_map,
+                &mut sink,
             )?;
         } else {
             // Top-level non-X element: emit directly.
             let snapshot = snapshot_scope(&scope);
-            out_elements.push(FlatElement {
+            sink.elements.push(FlatElement {
+                local_nodes: el.nodes.clone(),
                 raw: el,
                 instance_path: Vec::new(),
                 scope_snapshot: snapshot,
@@ -165,29 +211,55 @@ pub(crate) fn flatten(
     }
 
     Ok(Flattened {
-        elements: out_elements,
+        elements: sink.elements,
         models,
-        source_map,
+        source_map: sink.source_map,
+        instances: sink.instances,
         analyses: top_analyses,
         node_values: top_node_values,
+        measures: top_measures,
+        options: top_options,
+        globals: sink.globals,
         top_params: top_params_snapshot,
     })
 }
 
+/// Warn about each `.model` and `.subckt` inside `subckt`'s body: they are
+/// skipped, so an element using one fails as if it were undefined.
+fn warn_nested_definitions(subckt: &RawSubckt, warnings: &mut Vec<ParseWarning>) {
+    for card in &subckt.body {
+        let (what, span) = match card {
+            RawCard::Model(m) => (format!("`.model {}`", m.name), Some(&m.span)),
+            RawCard::Subckt(inner) => (format!("`.subckt {}`", inner.name), None),
+            _ => continue,
+        };
+        warnings.push(ParseWarning {
+            message: format!(
+                "{what} inside `.subckt {}` is ignored; sindr reads `.model` and `.subckt` \
+                 definitions only at the top level",
+                subckt.name
+            ),
+            span: span.map(|s| (s.start, s.end.saturating_sub(s.start)).into()),
+            file: span.map(|s| s.file.to_string()),
+        });
+    }
+}
+
 /// Recursive expansion of one `X<inst>` subckt instance.
+///
+/// `call` is the instance's subckt name and its `name=value` overrides.
+#[allow(clippy::too_many_arguments)]
 fn expand_instance(
     inst: RawElement,
+    call: (String, Vec<(String, ParamExpr)>),
+    local_nodes: Vec<String>,
     parent_path: &[String],
     subckts: &HashMap<String, RawSubckt>,
     scope: &mut ParamScope,
     active_stack: &mut HashSet<String>,
-    out: &mut Vec<FlatElement>,
-    source_map: &mut SourceMap,
+    sink: &mut Sink,
 ) -> Result<(), SpiceParseError> {
-    let (subckt_name, instance_overrides) = match &inst.body {
-        RawElementBody::Subckt { name, params } => (name.clone(), params.clone()),
-        _ => unreachable!("expand_instance called on non-subckt element"),
-    };
+    let (subckt_name, instance_overrides) = call;
 
     let def = match subckts.get(&subckt_name) {
         Some(d) => d,
@@ -226,6 +298,11 @@ fn expand_instance(
     for (port, caller_node) in def.ports.iter().zip(inst.nodes.iter()) {
         port_map.insert(port.clone(), caller_node.clone());
     }
+    // A global net keeps its name inside the body, even over a port of the
+    // same name, as `Circuit::flatten` treats it.
+    for global in &sink.globals {
+        port_map.insert(global.clone(), global.clone());
+    }
 
     // New scope frame for the body. Defaults evaluated in *parent* scope
     // first, then instance overrides win.
@@ -244,12 +321,18 @@ fn expand_instance(
     // Build the instance path for renaming.
     let mut instance_path = parent_path.to_vec();
     instance_path.push(inst.id.clone());
+    sink.instances.push(InstanceRecord {
+        path: instance_path.clone(),
+        subckt: subckt_name.clone(),
+        ports: def.ports.clone(),
+        local_nodes,
+    });
 
     // Walk the body.
     for body_card in &def.body {
         match body_card {
             RawCard::Element(child) => {
-                if matches!(child.body, RawElementBody::Subckt { .. }) {
+                if let RawElementBody::Subckt { name, params } = &child.body {
                     // For nested X-instances, do NOT pre-prefix the id —
                     // recurse with the parent's instance_path and let the
                     // recursive call append the raw child id once. We
@@ -264,12 +347,13 @@ fn expand_instance(
                         .collect();
                     expand_instance(
                         nested,
+                        (name.clone(), params.clone()),
+                        child.nodes.clone(),
                         &instance_path,
                         subckts,
                         scope,
                         active_stack,
-                        out,
-                        source_map,
+                        sink,
                     )?;
                 } else {
                     let renamed = rename_element(child, &instance_path, &port_map);
@@ -284,7 +368,7 @@ fn expand_instance(
                         if port_map.contains_key(original_node) {
                             continue; // mapped through to caller — already in caller's namespace
                         }
-                        source_map
+                        sink.source_map
                             .entry(renamed_node.clone())
                             .or_insert_with(|| HierarchyPath {
                                 instance_path: instance_path.clone(),
@@ -292,8 +376,9 @@ fn expand_instance(
                             });
                     }
                     let snapshot = snapshot_scope(scope);
-                    out.push(FlatElement {
+                    sink.elements.push(FlatElement {
                         raw: renamed,
+                        local_nodes: child.nodes.clone(),
                         instance_path: instance_path.clone(),
                         scope_snapshot: snapshot,
                     });
@@ -308,16 +393,15 @@ fn expand_instance(
             }
             RawCard::Subckt(_) | RawCard::Model(_) => {
                 // Nested .subckt / .model definitions are not supported
-                // (they would change visibility rules); skip with a
-                // warning. The grammar already accepts them, so this
-                // keeps lowering robust to vendor decks with nested
-                // definitions even if we cannot use them.
-                // No-op for now.
+                // (they would change visibility rules). Pass 1 warned
+                // about each one; the grammar accepts them, so a vendor
+                // deck with nested definitions still lowers.
             }
             RawCard::Analysis(..)
+            | RawCard::Global(_)
             | RawCard::NodeValues(..)
-            | RawCard::Include(_)
-            | RawCard::Lib { .. }
+            | RawCard::Measure(..)
+            | RawCard::Options(..)
             | RawCard::Ends(_) => {
                 // Ignore inside subckt bodies.
             }
@@ -329,18 +413,15 @@ fn expand_instance(
     Ok(())
 }
 
-/// Apply hierarchical renaming to a body element.
+/// Apply hierarchical renaming to a body element. `instance_path` always
+/// holds at least the instance being expanded.
 fn rename_element(
     src: &RawElement,
     instance_path: &[String],
     port_map: &HashMap<String, String>,
 ) -> RawElement {
     let prefix = instance_path.join(".");
-    let new_id = if prefix.is_empty() {
-        src.id.clone()
-    } else {
-        format!("{prefix}.{}", src.id)
-    };
+    let new_id = format!("{prefix}.{}", src.id);
     let new_nodes = src
         .nodes
         .iter()
@@ -363,13 +444,9 @@ fn rename_node(nd: &str, prefix: &str, port_map: &HashMap<String, String>) -> St
     if nd == "0" {
         return "0".to_string();
     }
-    if let Some(caller) = port_map.get(nd) {
-        return caller.clone();
-    }
-    if prefix.is_empty() {
-        nd.to_string()
-    } else {
-        format!("{prefix}.{nd}")
+    match port_map.get(nd) {
+        Some(caller) => caller.clone(),
+        None => format!("{prefix}.{nd}"),
     }
 }
 
@@ -460,7 +537,6 @@ mod tests {
             ports: ports.iter().map(|s| s.to_string()).collect(),
             defaults: vec![],
             body,
-            span: span(),
         }
     }
 
@@ -475,7 +551,6 @@ mod tests {
             ports: ports.iter().map(|s| s.to_string()).collect(),
             defaults,
             body,
-            span: span(),
         }
     }
 

@@ -2,7 +2,7 @@
 //! than 10⁷ transient steps or sweep points returns an error instead of
 //! hanging or failing to allocate.
 
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::{
     dc_sweep, solve_circuit, solve_transient, temperature_sweep, Circuit, CircuitElement, SimError,
     TransientConfig, Waveform,
@@ -73,6 +73,7 @@ fn solve_circuit_rejects_an_automatic_config_over_the_step_cap() {
                 capacitance: 1e-6,
             },
         ],
+        ..Default::default()
     };
     assert_invalid(solve_circuit(&circuit), "automatic span");
 }
@@ -87,6 +88,7 @@ fn breakpoints_count_against_the_step_cap() {
             vsource("V1", "in", "0", Some(pulse(0.0, 1e-9))),
             resistor("R1", "in", "0", 1e3),
         ],
+        ..Default::default()
     };
     let config = TransientConfig::new(1e-3, 1.1e-10);
     assert_invalid(solve_transient(&circuit, &config), "waveform breakpoints");
@@ -102,6 +104,7 @@ fn a_source_with_too_many_breakpoints_is_named() {
             vsource("VFAST", "in", "0", Some(pulse(0.0, 1e-9))),
             resistor("R1", "in", "0", 1e3),
         ],
+        ..Default::default()
     };
     let config = TransientConfig::new(3e-3, 1e-5);
     assert_invalid(solve_transient(&circuit, &config), "'VFAST'");
@@ -120,19 +123,13 @@ fn divider() -> Circuit {
             resistor("R1", "in", "out", 1e3),
             resistor("R2", "out", "0", 1e3),
         ],
+        ..Default::default()
     }
 }
 
 #[test]
 fn huge_sweeps_are_errors_not_panics() {
-    let ac = AcConfig {
-        f_start: 1.0,
-        f_stop: 1e6,
-        num_points: usize::MAX,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-    };
+    let ac = AcConfig::new("V1", 1.0, 1e6, usize::MAX);
     assert_invalid(solve_ac(&divider(), &ac), "num_points");
     assert_invalid(
         dc_sweep(&divider(), "V1", 0.0, 1.0, usize::MAX),

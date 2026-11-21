@@ -20,8 +20,6 @@
 //! ([`parse`]) translates them to absolute spans inside the original source
 //! file via `LogicalLine::byte_range.start`.
 
-#![allow(dead_code)] // many helpers are exercised via tests only
-
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -34,8 +32,9 @@ use winnow::token::{one_of, take_while};
 use winnow::{ModalResult, Parser};
 
 use crate::spice::ast::{
-    AcSweepKind, BinOp, NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawElement, RawElementBody,
-    RawModel, RawSubckt, RawWaveform, SourceKind, Span,
+    AcSweepKind, BinOp, NodeValueKind, ParamExpr, RawAcSpec, RawAnalysis, RawCard, RawCrossing,
+    RawElement, RawElementBody, RawMeasure, RawMeasureKind, RawModel, RawSubckt, RawWaveform,
+    SourceKind, Span,
 };
 use crate::spice::error::SpiceParseError;
 use crate::spice::preprocess::{LogicalLine, Preprocessed};
@@ -72,20 +71,16 @@ fn anchor_to_line(card: RawCard, line: &LogicalLine) -> RawCard {
             e.span = line_span(line);
             RawCard::Element(e)
         }
+        RawCard::Model(mut m) => {
+            m.span = line_span(line);
+            RawCard::Model(m)
+        }
         RawCard::Param(bindings, _) => RawCard::Param(bindings, line_span(line)),
         RawCard::Analysis(analysis, _) => RawCard::Analysis(analysis, line_span(line)),
         RawCard::NodeValues(kind, values, _) => RawCard::NodeValues(kind, values, line_span(line)),
+        RawCard::Measure(measure, _) => RawCard::Measure(measure, line_span(line)),
+        RawCard::Options(options, _) => RawCard::Options(options, line_span(line)),
         other => other,
-    }
-}
-
-/// Convert a `Range<usize>` produced by `with_span` into a [`Span`] tied to `file`.
-fn span_from(range: Range<usize>, file: &Arc<str>) -> Span {
-    Span {
-        start: range.start,
-        end: range.end,
-        file: file.clone(),
-        src: Arc::default(),
     }
 }
 
@@ -104,10 +99,11 @@ fn ident(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
 
 /// Node name: SPICE allows nodes that are pure digits (`0`, `12`) or
 /// identifiers, plus `.` for hierarchical names that subckt instances may
-/// reference.
+/// reference. Letters and digits may be any Unicode ones (`å`, `µ`), as
+/// ngspice reads them.
 fn node_name(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
     take_while(1.., |c: char| {
-        c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '#'
+        c.is_alphanumeric() || c == '_' || c == '.' || c == '#'
     })
     .with_span()
     .map(|(s, span): (&str, Range<usize>)| (s.to_string(), span))
@@ -304,6 +300,108 @@ fn element_id(input: &mut Input<'_>) -> ModalResult<(String, char, Range<usize>)
         .parse_next(input)
 }
 
+/// A line ending in `value`, with `id_span` for its start.
+fn element_line(
+    id: String,
+    prefix: char,
+    id_span: Range<usize>,
+    nodes: Vec<String>,
+    body: RawElementBody,
+    end: usize,
+) -> RawElement {
+    RawElement {
+        id,
+        prefix,
+        nodes,
+        body,
+        span: Span {
+            start: id_span.start,
+            end,
+            file: Arc::from(""),
+            src: Arc::default(),
+        },
+    }
+}
+
+/// `n` node names, each after whitespace.
+fn nodes_n(input: &mut Input<'_>, n: usize) -> ModalResult<Vec<String>> {
+    let mut nodes = Vec::with_capacity(n);
+    for _ in 0..n {
+        ws(input)?;
+        nodes.push(node_name(input)?.0);
+    }
+    Ok(nodes)
+}
+
+/// A trailing value expression and the end of the line.
+fn final_value(input: &mut Input<'_>) -> ModalResult<(ParamExpr, Range<usize>)> {
+    ws(input)?;
+    let value = value_expr(input)?;
+    ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(value)
+}
+
+/// Parse `E` / `G` linear voltage-controlled sources:
+/// `<id> n+ n- nc+ nc- <value>`.
+fn parse_voltage_controlled(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let nodes = nodes_n(input, 4)?;
+    let (value, val_span) = final_value(input)?;
+    let body = RawElementBody::VoltageControlled { value };
+    Ok(element_line(id, prefix, id_span, nodes, body, val_span.end))
+}
+
+/// Parse `F` / `H` linear current-controlled sources:
+/// `<id> n+ n- <vname> <value>`.
+fn parse_current_controlled(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let nodes = nodes_n(input, 2)?;
+    ws(input)?;
+    let (source, _) = ident(input)?;
+    let (value, val_span) = final_value(input)?;
+    let body = RawElementBody::CurrentControlled { source, value };
+    Ok(element_line(id, prefix, id_span, nodes, body, val_span.end))
+}
+
+/// Parse `K` mutual inductance: `<id> <lname1> <lname2> <k>`.
+fn parse_coupling(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    ws(input)?;
+    let (l1, _) = ident(input)?;
+    ws(input)?;
+    let (l2, _) = ident(input)?;
+    let (k, val_span) = final_value(input)?;
+    let body = RawElementBody::Coupling {
+        inductors: [l1, l2],
+        k,
+    };
+    Ok(element_line(
+        id,
+        prefix,
+        id_span,
+        Vec::new(),
+        body,
+        val_span.end,
+    ))
+}
+
+/// The nonlinear forms of `E`/`G`/`F`/`H` (`POLY`, `VALUE`, `TABLE`,
+/// `LAPLACE`), which sindr doesn't model.
+fn behavioural_form(line: &str) -> Option<&'static str> {
+    line.split(|c: char| c.is_whitespace() || c == '=' || c == '(' || c == '{')
+        .skip(1)
+        .find_map(|token| match token {
+            "poly" => Some("POLY"),
+            "value" => Some("VALUE"),
+            "table" => Some("TABLE"),
+            "laplace" => Some("LAPLACE"),
+            _ => None,
+        })
+}
+
 /// Parse `R / L / C` passive: `<id> n+ n- <value>`.
 fn parse_passive(input: &mut Input<'_>) -> ModalResult<RawElement> {
     let (id, prefix, id_span) = element_id(input)?;
@@ -345,9 +443,6 @@ fn keyword<'a>(kw: &'static str) -> impl Parser<Input<'a>, &'a str, ErrMode<Cont
 /// next token is not a waveform keyword.
 fn parse_waveform(input: &mut Input<'_>) -> ModalResult<Option<RawWaveform>> {
     ws(input)?;
-    if input.is_empty() {
-        return Ok(None);
-    }
     let cp = input.checkpoint();
     // Try each waveform keyword followed by `(`.
     if keyword("pulse").parse_next(input).is_ok() {
@@ -386,34 +481,92 @@ fn parse_waveform(input: &mut Input<'_>) -> ModalResult<Option<RawWaveform>> {
     Ok(None)
 }
 
-/// Parse `V / I` source: `<id> n+ n- [DC] <value> | <waveform>`.
+/// A keyword that ends at a word boundary, so `ac` doesn't match `acx`.
+fn word<'a>(kw: &'static str) -> impl Parser<Input<'a>, &'a str, ErrMode<ContextError>> {
+    move |input: &mut Input<'a>| -> ModalResult<&'a str> {
+        let cp = input.checkpoint();
+        let got = keyword(kw).parse_next(input)?;
+        if input
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            input.reset(&cp);
+            return Err(ErrMode::from_input(input));
+        }
+        Ok(got)
+    }
+}
+
+/// A value if one comes next; `None` (consuming nothing) otherwise.
+fn opt_value(input: &mut Input<'_>) -> ModalResult<Option<ParamExpr>> {
+    let cp = input.checkpoint();
+    match value_expr(input) {
+        Ok((v, _)) => Ok(Some(v)),
+        Err(ErrMode::Backtrack(_)) => {
+            input.reset(&cp);
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Parse `V / I` source: `<id> n+ n- [[DC] v] [AC [mag [phase]]] [waveform]`,
+/// the three specs in any order and each at most once, as SPICE3 reads
+/// them. No spec at all is 0 DC.
 fn parse_source(input: &mut Input<'_>, kind: SourceKind) -> ModalResult<RawElement> {
     let (id, prefix, id_span) = element_id(input)?;
     ws(input)?;
     let (n_pos, _) = node_name(input)?;
     ws(input)?;
     let (n_neg, _) = node_name(input)?;
-    ws(input)?;
-    // Optional `dc` keyword.
-    let _ = opt(keyword("dc")).parse_next(input)?;
-    ws(input)?;
-    // Try waveform first; if no waveform, expect a value.
-    let wf = parse_waveform(input)?;
-    let (dc, waveform) = if wf.is_some() {
-        (None, wf)
-    } else {
-        let (val, _) = value_expr(input)?;
-        (Some(val), None)
-    };
-    ws(input)?;
-    if !input.is_empty() {
-        return Err(ErrMode::from_input(input));
+    let mut dc = None;
+    let mut ac = None;
+    let mut waveform = None;
+    loop {
+        ws(input)?;
+        if input.is_empty() {
+            break;
+        }
+        if opt(word("dc")).parse_next(input)?.is_some() {
+            ws(input)?;
+            let (val, _) = value_expr(input)?;
+            if dc.replace(val).is_some() {
+                return Err(ErrMode::from_input(input));
+            }
+        } else if opt(word("ac")).parse_next(input)?.is_some() {
+            ws(input)?;
+            let magnitude = opt_value(input)?;
+            ws(input)?;
+            let phase = if magnitude.is_some() {
+                opt_value(input)?
+            } else {
+                None
+            };
+            if ac.replace(RawAcSpec { magnitude, phase }).is_some() {
+                return Err(ErrMode::from_input(input));
+            }
+        } else if let Some(wf) = parse_waveform(input)? {
+            if waveform.replace(wf).is_some() {
+                return Err(ErrMode::from_input(input));
+            }
+        } else {
+            let (val, _) = value_expr(input)?;
+            if dc.replace(val).is_some() {
+                return Err(ErrMode::from_input(input));
+            }
+        }
     }
     Ok(RawElement {
         id,
         prefix,
         nodes: vec![n_pos, n_neg],
-        body: RawElementBody::Source { kind, dc, waveform },
+        body: RawElementBody::Source {
+            kind,
+            dc,
+            ac,
+            waveform,
+        },
         span: Span {
             start: id_span.start,
             end: id_span.end,
@@ -469,19 +622,15 @@ fn parse_bjt(input: &mut Input<'_>) -> ModalResult<RawElement> {
         }
     }
     ws(input)?;
-    if !input.is_empty() || tokens.len() < 4 || tokens.len() > 5 {
+    if !input.is_empty() {
         return Err(ErrMode::from_input(input));
     }
-    // `tokens.len()` is 4 or 5 here (checked above), so both pops are
-    // guaranteed `Some`; handle the `None` arm without panicking anyway.
-    let Some(model) = tokens.pop() else {
-        return Err(ErrMode::from_input(input));
+    let (model, substrate) = match tokens.as_slice() {
+        [_, _, _, model] => (model.clone(), None),
+        [_, _, _, substrate, model] => (model.clone(), Some(substrate.clone())),
+        _ => return Err(ErrMode::from_input(input)),
     };
-    let substrate = if tokens.len() == 4 {
-        tokens.pop()
-    } else {
-        None
-    };
+    tokens.truncate(3);
     // tokens now holds [nc, nb, ne].
     Ok(RawElement {
         id,
@@ -525,11 +674,9 @@ fn parse_subckt_instance(input: &mut Input<'_>) -> ModalResult<RawElement> {
         }
     }
     ws(input)?;
-    if !input.is_empty() || tokens.is_empty() {
-        return Err(ErrMode::from_input(input));
-    }
-    let Some(name) = tokens.pop() else {
-        return Err(ErrMode::from_input(input));
+    let name = match tokens.pop() {
+        Some(name) if input.is_empty() => name,
+        _ => return Err(ErrMode::from_input(input)),
     };
     Ok(RawElement {
         id,
@@ -561,7 +708,7 @@ fn dot_card_kind(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
 /// Parse `.subckt NAME [ports...] [param=default ...]`.
 fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
-    let (name, name_span) = ident(input)?;
+    let (name, _) = ident(input)?;
     let mut ports: Vec<String> = Vec::new();
     let mut defaults: Vec<(String, ParamExpr)> = Vec::new();
     loop {
@@ -580,17 +727,15 @@ fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
             Err(_) => break,
         }
     }
+    ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
     Ok(RawCard::Subckt(RawSubckt {
         name,
         ports,
         defaults,
         body: Vec::new(),
-        span: Span {
-            start: name_span.start,
-            end: name_span.end,
-            file: Arc::from(""),
-            src: Arc::default(),
-        },
     }))
 }
 
@@ -628,12 +773,18 @@ fn parse_card_model(input: &mut Input<'_>) -> ModalResult<RawCard> {
             }
             input.reset(&cp);
         }
-        match param_assign.parse_next(input) {
-            Ok(pair) => params.push(pair),
-            Err(_) => break,
+        // Vendor libraries often separate parameters with commas.
+        if opt(',').parse_next(input)?.is_some() {
+            continue;
         }
+        // Anything that isn't `name=value` is an error: stopping here would
+        // drop it and every parameter after it without a word.
+        params.push(param_assign.parse_next(input)?);
     }
     ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
     Ok(RawCard::Model(RawModel {
         name,
         kind,
@@ -655,15 +806,59 @@ fn parse_card_param(input: &mut Input<'_>) -> ModalResult<RawCard> {
         if input.is_empty() {
             break;
         }
+        let cp = input.checkpoint();
         match param_assign.parse_next(input) {
             Ok(pair) => bindings.push(pair),
-            Err(_) => break,
+            Err(_) => {
+                // Rewind: a half-read `b=` must count as input left over.
+                input.reset(&cp);
+                break;
+            }
         }
     }
-    if bindings.is_empty() {
+    ws(input)?;
+    if bindings.is_empty() || !input.is_empty() {
         return Err(ErrMode::from_input(input));
     }
     Ok(RawCard::Param(bindings, Span::detached()))
+}
+
+/// Parse `.options` / `.option` / `.opt`: `name=value` pairs and bare flags,
+/// in any order.
+fn parse_card_options(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    let mut options: Vec<(String, Option<ParamExpr>)> = Vec::new();
+    loop {
+        ws(input)?;
+        if input.is_empty() {
+            break;
+        }
+        let cp = input.checkpoint();
+        match param_assign.parse_next(input) {
+            Ok((name, expr)) => options.push((name, Some(expr))),
+            Err(_) => {
+                input.reset(&cp);
+                let (name, _) = ident(input)?;
+                options.push((name, None));
+            }
+        }
+    }
+    Ok(RawCard::Options(options, Span::detached()))
+}
+
+/// Parse `.global node [node ...]`.
+fn parse_card_global(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    let mut nets = Vec::new();
+    loop {
+        ws(input)?;
+        if input.is_empty() {
+            break;
+        }
+        nets.push(node_name(input)?.0);
+    }
+    if nets.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawCard::Global(nets))
 }
 
 /// Parse `.ic` / `.nodeset`: one or more `V(node)=value`.
@@ -687,7 +882,7 @@ fn parse_card_node_values(input: &mut Input<'_>, kind: NodeValueKind) -> ModalRe
     Ok(RawCard::NodeValues(kind, values, Span::detached()))
 }
 
-/// Parse `.tran tstep tstop [tstart]`.
+/// Parse `.tran tstep tstop [tstart [tmax]] [uic]`.
 fn parse_card_tran(input: &mut Input<'_>) -> ModalResult<RawCard> {
     let mut args: Vec<ParamExpr> = Vec::new();
     loop {
@@ -700,35 +895,53 @@ fn parse_card_tran(input: &mut Input<'_>) -> ModalResult<RawCard> {
             Err(_) => break,
         }
     }
-    if args.len() < 2 || args.len() > 3 {
+    // Case is already folded.
+    let uic = !input.is_empty() && {
+        let (word, _) = ident(input)?;
+        ws(input)?;
+        if word != "uic" || !input.is_empty() {
+            return Err(ErrMode::from_input(input));
+        }
+        true
+    };
+    if args.len() < 2 || args.len() > 4 {
         return Err(ErrMode::from_input(input));
     }
     Ok(RawCard::Analysis(
-        RawAnalysis::Tran { args },
+        RawAnalysis::Tran { args, uic },
         Span::detached(),
     ))
 }
 
 /// Parse `.dc source start stop step`.
 fn parse_card_dc(input: &mut Input<'_>) -> ModalResult<RawCard> {
-    ws(input)?;
-    let (source, _) = ident(input)?;
-    let mut args: Vec<ParamExpr> = Vec::new();
-    loop {
+    let sweep = |input: &mut Input<'_>| -> ModalResult<(String, Vec<ParamExpr>)> {
         ws(input)?;
-        if input.is_empty() {
-            break;
+        let (source, _) = ident(input)?;
+        let mut args: Vec<ParamExpr> = Vec::new();
+        while args.len() < 3 {
+            ws(input)?;
+            let (v, _) = value_expr(input)?;
+            args.push(v);
         }
-        match value_expr(input) {
-            Ok((v, _)) => args.push(v),
-            Err(_) => break,
-        }
-    }
-    if args.len() != 3 {
+        ws(input)?;
+        Ok((source, args))
+    };
+    let (source, args) = sweep(input)?;
+    let outer = if input.is_empty() {
+        None
+    } else {
+        Some(sweep(input)?)
+    };
+    if !input.is_empty() {
         return Err(ErrMode::from_input(input));
     }
     Ok(RawCard::Analysis(
-        RawAnalysis::Dc { source, args },
+        RawAnalysis::Dc {
+            source,
+            args,
+            outer,
+        },
         Span::detached(),
     ))
 }
@@ -813,6 +1026,346 @@ fn parse_card_tf(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ))
 }
 
+/// Parse `.noise v(node[,ref]) source dec|oct|lin points fstart fstop
+/// [pts_per_summary]`. The summary interval is ngspice's printing detail
+/// and is read and ignored.
+fn parse_card_noise(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    ws(input)?;
+    let crate::TfOutput::Voltage { node, reference } = output_variable(input)? else {
+        // Noise is measured at a voltage, never a current.
+        return Err(ErrMode::from_input(input));
+    };
+    ws(input)?;
+    let (source, _) = ident(input)?;
+    ws(input)?;
+    let (sweep_kw, _) = ident(input)?;
+    let sweep = match sweep_kw.as_str() {
+        "dec" => AcSweepKind::Dec,
+        "oct" => AcSweepKind::Oct,
+        "lin" => AcSweepKind::Lin,
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    ws(input)?;
+    let (points, _) = value_expr(input)?;
+    ws(input)?;
+    let (fstart, _) = value_expr(input)?;
+    ws(input)?;
+    let (fstop, _) = value_expr(input)?;
+    ws(input)?;
+    if !input.is_empty() {
+        value_expr(input)?;
+        ws(input)?;
+    }
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawCard::Analysis(
+        RawAnalysis::Noise {
+            node,
+            reference,
+            input: source,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        },
+        Span::detached(),
+    ))
+}
+
+/// Split a `.meas` card into words: `=` stands alone, and parentheses,
+/// braces and quotes keep what they hold in one word (`v(a, b)`,
+/// `{tstop/2}`). A quoted `'expr'` becomes `{expr}`.
+fn meas_words(text: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        if c == '=' {
+            chars.next();
+            words.push("=".to_string());
+            continue;
+        }
+        if c == '\'' {
+            chars.next();
+            let mut expr = String::from("{");
+            loop {
+                match chars.next() {
+                    Some('\'') => break,
+                    Some(ch) => expr.push(ch),
+                    None => return Err("unclosed quote".to_string()),
+                }
+            }
+            expr.push('}');
+            words.push(expr);
+            continue;
+        }
+        let mut word = String::new();
+        let mut depth = 0usize;
+        while let Some(&ch) = chars.peek() {
+            if depth == 0 && (ch.is_whitespace() || ch == '=') {
+                break;
+            }
+            match ch {
+                '(' | '{' => depth += 1,
+                ')' | '}' => {
+                    depth = depth
+                        .checked_sub(1)
+                        .ok_or_else(|| format!("unbalanced `{ch}`"))?;
+                }
+                _ => {}
+            }
+            word.push(ch);
+            chars.next();
+        }
+        if depth != 0 {
+            return Err(format!("unbalanced brackets in `{word}`"));
+        }
+        words.push(word);
+    }
+    Ok(words)
+}
+
+/// A `.meas` signal: `v(n)`, `v(a,b)`, `vdb(n)`, `vp(n)`, `vm(n)` or `i(x)`.
+fn meas_signal(word: &str) -> Result<crate::measure::Signal, String> {
+    use crate::measure::{Signal, View};
+    let bad = || {
+        format!(
+            "expected a signal such as `v(out)`, `v(a,b)`, `vdb(out)`, `vp(out)` or `i(r1)`, found `{word}`"
+        )
+    };
+    let (func, args) = word.split_once('(').ok_or_else(bad)?;
+    let args = args.strip_suffix(')').ok_or_else(bad)?;
+    let args: Vec<&str> = args.split(',').map(str::trim).collect();
+    if args.iter().any(|a| a.is_empty()) || args.len() > 2 {
+        return Err(bad());
+    }
+    // `split` yields at least one piece, and at most two passed the check.
+    let voltage = |view: View| {
+        let mut signal = match args.get(1) {
+            None => Signal::v(args[0]),
+            Some(r) => Signal::v_diff(args[0], *r),
+        };
+        signal.view = view;
+        signal
+    };
+    match func {
+        "v" | "vm" => Ok(voltage(View::Value)),
+        "vdb" => Ok(voltage(View::Db)),
+        "vp" => Ok(voltage(View::Phase)),
+        "i" if args.len() == 1 => Ok(Signal::i(args[0])),
+        "vr" | "vi" => Err(format!(
+            "`{word}`: real and imaginary parts aren't supported; use `vm`, `vdb` or `vp`"
+        )),
+        _ => Err(bad()),
+    }
+}
+
+/// A value word: a number with an optional SI suffix, or `{expr}`.
+fn meas_value(word: &str) -> Result<ParamExpr, String> {
+    let mut input = LocatingSlice::new(word);
+    match value_expr(&mut input) {
+        Ok((expr, _)) if input.is_empty() => Ok(expr),
+        _ => Err(format!(
+            "expected a number or `{{expression}}`, found `{word}`"
+        )),
+    }
+}
+
+/// The `key=value` options after a `.meas` measurement, up to `stop` (the
+/// `targ` keyword) or the end.
+fn meas_options<'w>(
+    words: &mut std::iter::Peekable<impl Iterator<Item = &'w String>>,
+    stop: Option<&str>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut options = Vec::new();
+    while let Some(key) = words.peek() {
+        if Some(key.as_str()) == stop {
+            break;
+        }
+        let key = words.next().map(String::as_str).unwrap_or_default();
+        if words.next().map(String::as_str) != Some("=") {
+            return Err(format!("expected `{key}=<value>`"));
+        }
+        let value = words
+            .next()
+            .ok_or_else(|| format!("`{key}=` needs a value"))?;
+        options.push((key.to_string(), value.clone()));
+    }
+    Ok(options)
+}
+
+/// `rise=n`, `fall=n` or `cross=n|last` from a crossing's options.
+fn meas_edge(
+    options: &[(String, String)],
+) -> Result<(crate::measure::Edge, crate::measure::Occurrence), String> {
+    use crate::measure::{Edge, Occurrence};
+    let mut found = None;
+    for (key, value) in options {
+        let edge = match key.as_str() {
+            "rise" => Edge::Rise,
+            "fall" => Edge::Fall,
+            "cross" => Edge::Cross,
+            _ => continue,
+        };
+        if found.is_some() {
+            return Err("give only one of `rise`, `fall` and `cross`".to_string());
+        }
+        let occurrence = if value == "last" {
+            Occurrence::Last
+        } else {
+            match value.parse::<usize>() {
+                Ok(n) if n >= 1 => Occurrence::Nth(n),
+                _ => {
+                    return Err(format!(
+                        "`{key}=` takes a count from 1 or `last`, found `{value}`"
+                    ))
+                }
+            }
+        };
+        found = Some((edge, occurrence));
+    }
+    Ok(found.unwrap_or((Edge::Cross, Occurrence::Nth(1))))
+}
+
+/// Reject options a form doesn't take.
+fn meas_only(options: &[(String, String)], allowed: &[&str]) -> Result<(), String> {
+    match options.iter().find(|(k, _)| !allowed.contains(&k.as_str())) {
+        Some((key, _)) => Err(format!("`{key}=` isn't supported here")),
+        None => Ok(()),
+    }
+}
+
+fn meas_option(options: &[(String, String)], key: &str) -> Result<Option<ParamExpr>, String> {
+    options
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| meas_value(v))
+        .transpose()
+}
+
+/// `<signal>=<level>` or `<signal> val=<level>`-style crossing, then its options.
+fn meas_crossing(
+    signal: &str,
+    level: ParamExpr,
+    options: &[(String, String)],
+) -> Result<RawCrossing, String> {
+    let (edge, occurrence) = meas_edge(options)?;
+    Ok(RawCrossing {
+        signal: meas_signal(signal)?,
+        level,
+        edge,
+        occurrence,
+    })
+}
+
+/// Parse `.meas tran|ac|dc <name> …`; see [`crate::spice::MeasureRequest`].
+fn parse_card_meas(text: &str) -> Result<RawCard, String> {
+    use crate::measure::Stat;
+    use crate::spice::MeasureAnalysis;
+
+    let words = meas_words(text)?;
+    let mut it = words.iter().peekable();
+    let analysis = match it.next().map(String::as_str) {
+        Some("tran") => MeasureAnalysis::Tran,
+        Some("ac") => MeasureAnalysis::Ac,
+        Some("dc") => MeasureAnalysis::Dc,
+        Some(other) => return Err(format!("measures `tran`, `ac` or `dc`, not `{other}`")),
+        None => return Err("expected `tran`, `ac` or `dc`".to_string()),
+    };
+    let name = it
+        .next()
+        .filter(|w| w.as_str() != "=")
+        .ok_or("expected a name for the measurement")?
+        .clone();
+    let keyword = it.next().ok_or("expected what to measure")?.clone();
+    let range = ["from", "to"];
+    let (kind, options) = match keyword.as_str() {
+        "avg" | "rms" | "min" | "max" | "pp" | "integ" | "integral" => {
+            let stat = match keyword.as_str() {
+                "avg" => Stat::Avg,
+                "rms" => Stat::Rms,
+                "min" => Stat::Min,
+                "max" => Stat::Max,
+                "pp" => Stat::PeakToPeak,
+                _ => Stat::Integral,
+            };
+            let signal = meas_signal(it.next().ok_or("expected a signal")?)?;
+            let options = meas_options(&mut it, None)?;
+            meas_only(&options, &range)?;
+            (RawMeasureKind::Stat(signal, stat), options)
+        }
+        "find" => {
+            let signal = meas_signal(it.next().ok_or("expected a signal")?)?;
+            if it.peek().is_some_and(|w| w.as_str() == "when") {
+                return Err(
+                    "`find … when` isn't supported; measure the `when` and then `find … at=`"
+                        .to_string(),
+                );
+            }
+            let options = meas_options(&mut it, None)?;
+            meas_only(&options, &["at"])?;
+            let at = meas_option(&options, "at")?.ok_or("`find` needs `at=<x>`")?;
+            (RawMeasureKind::Find(signal, at), Vec::new())
+        }
+        "when" => {
+            let signal = it.next().ok_or("expected `<signal>=<level>`")?.clone();
+            if it.next().map(String::as_str) != Some("=") {
+                return Err("expected `<signal>=<level>`".to_string());
+            }
+            let level = it.next().ok_or("expected a level after `=`")?;
+            let level = meas_value(level)
+                .map_err(|e| format!("{e} (crossing another signal isn't supported)"))?;
+            let options = meas_options(&mut it, None)?;
+            meas_only(&options, &["rise", "fall", "cross", "from", "to"])?;
+            (
+                RawMeasureKind::When(meas_crossing(&signal, level, &options)?),
+                options,
+            )
+        }
+        "trig" => {
+            let trig_signal = it.next().ok_or("expected a signal after `trig`")?.clone();
+            let trig_options = meas_options(&mut it, Some("targ"))?;
+            if it.next().map(String::as_str) != Some("targ") {
+                return Err("`trig` needs a `targ`".to_string());
+            }
+            let targ_signal = it.next().ok_or("expected a signal after `targ`")?.clone();
+            let targ_options = meas_options(&mut it, None)?;
+            let crossing = |signal: &str, options: &[(String, String)], which: &str| {
+                meas_only(options, &["val", "rise", "fall", "cross"])
+                    .map_err(|e| format!("{e} (on `{which}`)"))?;
+                let level = meas_option(options, "val")?
+                    .ok_or_else(|| format!("`{which}` needs `val=<level>`"))?;
+                meas_crossing(signal, level, options)
+            };
+            (
+                RawMeasureKind::Delay(
+                    crossing(&trig_signal, &trig_options, "trig")?,
+                    crossing(&targ_signal, &targ_options, "targ")?,
+                ),
+                Vec::new(),
+            )
+        }
+        "deriv" | "derivative" | "param" | "integral_of" => {
+            return Err(format!("`{keyword}` measurements aren't supported"));
+        }
+        other => return Err(format!("unknown measurement `{other}`")),
+    };
+    Ok(RawCard::Measure(
+        RawMeasure {
+            analysis,
+            name,
+            kind,
+            from: meas_option(&options, "from")?,
+            to: meas_option(&options, "to")?,
+        },
+        Span::detached(),
+    ))
+}
+
 /// Parse `.op` (no args).
 fn parse_card_op(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
@@ -822,14 +1375,6 @@ fn parse_card_op(input: &mut Input<'_>) -> ModalResult<RawCard> {
 // ---------------------------------------------------------------------------
 // Per-line dispatch
 // ---------------------------------------------------------------------------
-
-/// Outcome of dispatching a single logical line. The driver uses this to
-/// build the final `Vec<RawCard>` and to handle subckt body collection.
-#[derive(Debug)]
-enum LineOutcome {
-    /// A normal card (element, model, .param, .tran, .dc, .ac, .tf, .sens, .op, .subckt header, .ends).
-    Card(RawCard),
-}
 
 /// Dispatch a single preprocessed line to the appropriate parser. Errors
 /// returned here are raw winnow errors; the driver lifts them into
@@ -857,12 +1402,32 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "op" => parse_card_op(&mut input),
             "tf" => parse_card_tf(&mut input),
             "sens" => parse_card_sens(&mut input),
+            "noise" => parse_card_noise(&mut input),
+            "meas" | "measure" => {
+                return parse_card_meas(&trimmed[1 + kind_span.end..]).map_err(|message| {
+                    LocalError::Syntax {
+                        message: format!("`.{kind}`: {message}"),
+                        span: 0..trimmed.len(),
+                    }
+                });
+            }
             "ic" => parse_card_node_values(&mut input, NodeValueKind::Ic),
             "nodeset" => parse_card_node_values(&mut input, NodeValueKind::Nodeset),
-            "include" | "lib" => {
-                // Should have been resolved by the preprocessor.
+            "options" | "option" | "opt" | "opts" => parse_card_options(&mut input),
+            "global" => parse_card_global(&mut input),
+            // The preprocessor splices every well-formed one, so only a
+            // malformed card or a stray section marker gets here.
+            "include" => {
                 return Err(LocalError::Syntax {
-                    message: "internal: unresolved include reached parser".to_string(),
+                    message: "`.include` takes exactly one file path".to_string(),
+                    span: 0..trimmed.len(),
+                });
+            }
+            "lib" => {
+                return Err(LocalError::Syntax {
+                    message: "`.lib` takes a file path and an optional section; \
+                              `.lib <section>` alone only opens a section in a library file"
+                        .to_string(),
                     span: 0..trimmed.len(),
                 });
             }
@@ -892,6 +1457,23 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             'd' => parse_diode(&mut input),
             'q' => parse_bjt(&mut input),
             'x' => parse_subckt_instance(&mut input),
+            'e' | 'g' | 'f' | 'h' => {
+                if let Some(form) = behavioural_form(trimmed) {
+                    return Err(LocalError::UnsupportedDevice {
+                        device: format!(
+                            "{form} form of a controlled source ({})",
+                            prefix.to_ascii_uppercase()
+                        ),
+                        span: 0..trimmed.len(),
+                    });
+                }
+                if matches!(prefix, 'e' | 'g') {
+                    parse_voltage_controlled(&mut input)
+                } else {
+                    parse_current_controlled(&mut input)
+                }
+            }
+            'k' => parse_coupling(&mut input),
             'm' => {
                 return Err(LocalError::UnsupportedDevice {
                     device: "MOSFET (M)".to_string(),
@@ -910,7 +1492,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
                     span: 0..1,
                 });
             }
-            'k' | 's' => {
+            's' => {
                 return Err(LocalError::UnsupportedDevice {
                     device: format!("device prefix '{prefix}'"),
                     span: 0..1,
@@ -1010,6 +1592,7 @@ fn trim_offset(s: &str) -> (&str, usize) {
 
 /// Parse a [`Preprocessed`] netlist into a flat `Vec<RawCard>` in strict mode.
 /// `.subckt` bodies are collected into their parent `RawSubckt::body`.
+#[cfg(test)]
 pub(crate) fn parse(pre: &Preprocessed) -> Result<Vec<RawCard>, SpiceParseError> {
     let mut warnings = Vec::new();
     parse_with_options(pre, true, &mut warnings)
@@ -1063,6 +1646,9 @@ pub(crate) fn parse_with_options(
                 };
                 push_card(&mut top, &mut stack, RawCard::Subckt(closed));
             }
+            // As in ngspice, `.global` names nets for the whole deck even
+            // when written inside a `.subckt`, so it always goes to the top.
+            RawCard::Global(nets) => top.push(RawCard::Global(nets)),
             other => push_card(&mut top, &mut stack, other),
         }
     }
@@ -1099,7 +1685,6 @@ mod tests {
     fn line(text: &str) -> LogicalLine {
         LogicalLine {
             text: text.to_string(),
-            start_line: 1,
             file: Arc::from("test.cir"),
             src: Arc::new(text.to_string()),
             byte_range: 0..text.len(),
@@ -1112,10 +1697,9 @@ mod tests {
             ..Preprocessed::default()
         };
         let mut offset = 0usize;
-        for (i, l) in lines.iter().enumerate() {
+        for l in lines {
             out.lines.push(LogicalLine {
                 text: l.to_string(),
-                start_line: i + 1,
                 file: Arc::from("test.cir"),
                 src: Arc::new(lines.join("\n")),
                 byte_range: offset..offset + l.len(),
@@ -1258,6 +1842,7 @@ mod tests {
             RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: Some(v),
+                ac: None,
                 waveform: None,
             } => {
                 assert!((must_num(&v) - 5.0).abs() < 1e-9);
@@ -1432,13 +2017,29 @@ mod tests {
     fn cards_tran() {
         let card = parse_one_card_local(".tran 1u 1m").unwrap();
         match card {
-            RawCard::Analysis(RawAnalysis::Tran { args }, _) => {
+            RawCard::Analysis(RawAnalysis::Tran { args, uic }, _) => {
+                assert!(!uic);
                 assert_eq!(args.len(), 2);
                 assert!((must_num(&args[0]) - 1e-6).abs() < 1e-15);
                 assert!((must_num(&args[1]) - 1e-3).abs() < 1e-12);
             }
             other => panic!("got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cards_tran_uic_and_tmax() {
+        let card = parse_one_card_local(".tran 1u 1m 0 10n uic").unwrap();
+        match card {
+            RawCard::Analysis(RawAnalysis::Tran { args, uic }, _) => {
+                assert!(uic);
+                assert_eq!(args.len(), 4);
+                assert!((must_num(&args[3]) - 1e-8).abs() < 1e-20);
+            }
+            other => panic!("got {other:?}"),
+        }
+        assert!(parse_one_card_local(".tran 1u 1m bogus").is_err());
+        assert!(parse_one_card_local(".tran 1u 1m uic 5").is_err());
     }
 
     #[test]
@@ -1473,12 +2074,37 @@ mod tests {
     fn cards_dc_sweep() {
         let card = parse_one_card_local(".dc vin 0 5 0.1").unwrap();
         match card {
-            RawCard::Analysis(RawAnalysis::Dc { source, args }, _) => {
+            RawCard::Analysis(
+                RawAnalysis::Dc {
+                    source,
+                    args,
+                    outer,
+                },
+                _,
+            ) => {
                 assert_eq!(source, "vin");
+                assert_eq!(args.len(), 3);
+                assert!(outer.is_none());
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cards_dc_two_sources() {
+        let card = parse_one_card_local(".dc vds 0 10 1 vgs 0 5 0.5").unwrap();
+        match card {
+            RawCard::Analysis(RawAnalysis::Dc { source, outer, .. }, _) => {
+                assert_eq!(source, "vds");
+                let (outer, args) = outer.unwrap();
+                assert_eq!(outer, "vgs");
                 assert_eq!(args.len(), 3);
             }
             other => panic!("got {other:?}"),
         }
+        assert!(parse_one_card_local(".dc vds 0 10").is_err());
+        assert!(parse_one_card_local(".dc vds 0 10 1 vgs 0 5").is_err());
+        assert!(parse_one_card_local(".dc vds 0 10 1 vgs 0 5 1 2").is_err());
     }
 
     #[test]
@@ -1576,6 +2202,38 @@ mod tests {
             other => panic!("got {other:?}"),
         }
         assert!(matches!(&cards[1], RawCard::Element(e) if e.prefix == 'r'));
+    }
+
+    #[test]
+    fn driver_global_inside_subckt_goes_to_the_top() {
+        let pre = pre(&[
+            ".subckt rc in out",
+            ".global vcc vee",
+            ".ends",
+            ".global gnd2",
+        ]);
+        let cards = parse(&pre).expect("parse");
+        let globals: Vec<Vec<String>> = cards
+            .iter()
+            .filter_map(|c| match c {
+                RawCard::Global(nets) => Some(nets.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(globals, [vec!["vcc", "vee"], vec!["gnd2"]]);
+        assert!(
+            matches!(&cards[0], RawCard::Global(_)),
+            "hoisted out of the body"
+        );
+        assert!(matches!(&cards[1], RawCard::Subckt(s) if s.body.is_empty()));
+    }
+
+    #[test]
+    fn driver_global_without_nets_errors() {
+        assert!(matches!(
+            parse(&pre(&[".global"])),
+            Err(SpiceParseError::Syntax { .. })
+        ));
     }
 
     #[test]

@@ -16,18 +16,21 @@
 //!
 //! | Module | Device | Model |
 //! |---|---|---|
-//! | [`diode`] | Silicon diode | Shockley with series resistance + temperature IS scaling |
+//! | [`battery`] | Battery | Open-circuit voltage by state of charge, series R, optional RC pair |
+//! | [`diode`] | Silicon diode | Shockley with series resistance, temperature IS scaling, breakdown and junction charge |
 //! | [`bjt`] | BJT (NPN/PNP) | Ebers–Moll with Early voltage |
 //! | [`mosfet`] | MOSFET (NMOS/PMOS) | Level-1 |
 //! | [`jfet`] | JFET (N/P-channel) | Shichman–Hodges |
 //! | [`igbt`] | IGBT | MOSFET gate control + BJT output conductance |
 //! | [`led`] | LED | Diode with colour-dependent forward voltage |
-//! | [`zener`] | Zener diode | Shockley + reverse-breakdown branch |
+//! | [`zener`] | Zener diode | Shockley + piecewise `1/rz` reverse-breakdown branch (sindr itself stamps a zener as a [`diode`] with `Breakdown`) |
 //! | [`schottky`] | Schottky diode | Shockley with low-N, low-IS parameters |
 //! | [`varactor`] | Varactor | Voltage-dependent junction capacitance |
+//! | [`inductor`] | Saturating inductor core | `λ(i) = L_sat·i + (L₀ − L_sat)·I_sat·tanh(i/I_sat)` |
 //! | [`thermistor`] | NTC thermistor | Beta model `R(T) = R₀·exp(β·(1/T − 1/T₀))` |
 //! | [`photodiode`] | Photodiode | Diode + photocurrent offset |
 //! | [`photoresistor`] | Photoresistor (LDR) | Light-level-dependent resistance |
+//! | [`regulator`] | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation, positive or negative; LM7805 and AMS1117 presets |
 //!
 //! # Quick example
 //!
@@ -58,18 +61,22 @@
 //!   `(g_eq, i_eq)` at the operating point — the form Newton–Raphson stamps
 //!   directly.
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
 #![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
+pub mod battery;
 pub mod bjt;
 pub mod diode;
 pub mod igbt;
+pub mod inductor;
 pub mod jfet;
 pub mod led;
 pub mod mosfet;
 pub mod photodiode;
 pub mod photoresistor;
+pub mod regulator;
 pub mod schottky;
 pub mod thermistor;
 pub mod varactor;

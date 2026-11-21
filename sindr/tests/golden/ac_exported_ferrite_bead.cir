@@ -1,0 +1,9 @@
+ac_exported_ferrite_bead: written by sindr::spice::to_netlist
+v1 in 0 DC 0
+rs in a 50
+Rfb1_rdc a fb1_m 0.1
+Lfb1_l fb1_m out 1e-6
+Rfb1_rac fb1_m out 600
+Cfb1_c fb1_m out 1e-12
+rl out 0 50
+.end

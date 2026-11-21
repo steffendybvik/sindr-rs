@@ -7,12 +7,16 @@
 use crate::diode::{diode_companion, DiodeParams};
 
 /// Schottky diode parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct SchottkyParams {
     /// Saturation current (A). Higher than silicon due to lower barrier.
     pub is: f64,
-    /// Emission coefficient. ~1.0 for Schottky (more ideal than silicon).
+    /// Emission coefficient (dimensionless). ~1.0 for Schottky (more ideal
+    /// than silicon).
     pub n: f64,
 }
 
@@ -31,7 +35,8 @@ impl Default for SchottkyParams {
 
 /// Linearized companion model for a Schottky diode at operating point v_d.
 ///
-/// Returns (g_d, i_eq): conductance and equivalent Norton current.
+/// Returns `(g_d, i_eq)`: conductance (S) and equivalent Norton current (A)
+/// for current flowing anode → cathode, at `v_d` = anode − cathode (V).
 /// Delegates to diode_companion with Schottky parameters.
 pub fn schottky_companion(v_d: f64, params: &SchottkyParams) -> (f64, f64) {
     diode_companion(
@@ -41,6 +46,7 @@ pub fn schottky_companion(v_d: f64, params: &SchottkyParams) -> (f64, f64) {
             n: params.n,
             rs: 0.0,
             temperature: 300.15,
+            breakdown: None,
         },
     )
 }
@@ -66,6 +72,7 @@ mod tests {
                 n: 1.0,
                 rs: 0.0,
                 temperature: 300.15,
+                breakdown: None,
             },
         );
         assert!(

@@ -10,8 +10,6 @@
 //! example is `meg` vs `m` — without longest-match, `1Meg` would parse
 //! as 1e-3 with a leftover `eg`.
 
-#![allow(dead_code)] // some helpers are exercised only via tests
-
 /// Suffix table — longest prefixes first, case-insensitive at lookup.
 ///
 /// `mil` (25.4 µm) is a SPICE convention for thousandths of an inch and
@@ -174,6 +172,14 @@ mod tests {
     fn scientific_notation() {
         assert_eq!(val("2.5e3"), 2500.0);
         assert_eq!(val("1e-3"), 1e-3);
+    }
+
+    /// An `e` with no digits after it isn't an exponent; it's read as unit
+    /// decoration, so `2e` is 2 and `2e-` stops before the sign.
+    #[test]
+    fn e_without_digits_is_not_an_exponent() {
+        assert_eq!(val("2e"), 2.0);
+        assert_eq!(parse_number("2e-"), Some((2.0, 2)));
     }
 
     #[test]

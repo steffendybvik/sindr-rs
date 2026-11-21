@@ -1,0 +1,44 @@
+{
+  "components": [
+    {
+      "id": "Vcc",
+      "nodes": [
+        "vcc",
+        "0"
+      ],
+      "type": "voltage_source",
+      "voltage": 5.0
+    },
+    {
+      "id": "Rb",
+      "nodes": [
+        "vcc",
+        "base"
+      ],
+      "resistance": 10000.0,
+      "type": "resistor"
+    },
+    {
+      "id": "Rc",
+      "nodes": [
+        "vcc",
+        "collector"
+      ],
+      "resistance": 470.0,
+      "type": "resistor"
+    },
+    {
+      "bf": 100.0,
+      "id": "Q1",
+      "kind": "npn",
+      "nodes": [
+        "base",
+        "collector",
+        "0"
+      ],
+      "temperature": 300.15,
+      "type": "bjt"
+    }
+  ],
+  "ground_node": "0"
+}

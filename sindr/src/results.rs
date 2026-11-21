@@ -13,7 +13,7 @@ use nalgebra::DVector;
 use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::diode;
 use sindr_devices::jfet;
-use sindr_devices::mosfet::{self, MosfetKind};
+use sindr_devices::mosfet::MosfetKind;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
@@ -27,10 +27,12 @@ use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 /// dissipating energy. Components with more terminals report one port:
 /// BJTs and IGBTs give Vce and Ic, MOSFETs and JFETs give Vds and Id, with
 /// `power` as the magnitude `|V·I|` (their full results are in
-/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, and a
-/// transformer its primary.
+/// [`BjtResult`] and [`MosfetResult`]); a relay gives its coil, a
+/// transformer its primary, and a voltage regulator its pass element
+/// (`Vin − Vout`, the output current, and its dissipation).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ComponentResult {
     /// Component id (matches the id on the source [`CircuitElement`]).
     pub id: String,
@@ -46,6 +48,7 @@ pub struct ComponentResult {
 /// power, and which region of operation the device is in.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct BjtResult {
     /// Component id.
     pub id: String,
@@ -53,11 +56,14 @@ pub struct BjtResult {
     pub vbe: f64,
     /// Collector–emitter voltage (V).
     pub vce: f64,
-    /// Base current (A).
+    /// Base current (A), into the base: positive for a conducting NPN,
+    /// negative for a PNP.
     pub ib: f64,
-    /// Collector current (A).
+    /// Collector current (A), into the collector: positive for a
+    /// conducting NPN, negative for a PNP.
     pub ic: f64,
-    /// Emitter current (A).
+    /// Emitter current (A), into the emitter: `−(ic + ib)` by KCL, so
+    /// negative for a conducting NPN and positive for a PNP.
     pub ie: f64,
     /// Collector dissipation `|Ic·Vce|` (W). The base's `Ib·Vbe` is left
     /// out.
@@ -69,6 +75,7 @@ pub struct BjtResult {
 /// Per-MOSFET operating-point results.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct MosfetResult {
     /// Component id.
     pub id: String,
@@ -76,7 +83,8 @@ pub struct MosfetResult {
     pub vgs: f64,
     /// Drain–source voltage (V).
     pub vds: f64,
-    /// Drain current (A).
+    /// Drain current (A), into the drain: positive for a conducting NMOS,
+    /// negative for a PMOS.
     pub id_current: f64,
     /// Total dissipation (W).
     pub power: f64,
@@ -87,6 +95,7 @@ pub struct MosfetResult {
 /// Per-op-amp / comparator results: input/output voltages.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OpAmpResult {
     /// Component id.
     pub id: String,
@@ -103,31 +112,21 @@ pub struct OpAmpResult {
 /// Per-relay results: coil voltage and contact state.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RelayResult {
     /// Component id.
     pub id: String,
-    /// Voltage across the coil terminals (V).
+    /// Coil voltage, `coil+ − coil−` (`nodes[0] − nodes[1]`) (V).
     pub coil_voltage: f64,
     /// `true` when coil voltage exceeds the pickup threshold.
     pub contact_closed: bool,
-}
-
-/// Per-microcontroller results: per-pin GPIO output currents.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
-pub struct McuResult {
-    /// Component id.
-    pub id: String,
-    /// Current sourced/sunk by each GPIO pin (A), in pin index order.
-    pub pin_currents: Vec<f64>,
-    /// GPIO logic-high voltage used for this MCU (V).
-    pub gpio_voltage: f64,
 }
 
 /// One timestep of a transient simulation: time, node voltages, per-component
 /// state at that instant.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TimestepSnapshot {
     /// Simulation time at this snapshot (s).
     pub time: f64,
@@ -136,6 +135,21 @@ pub struct TimestepSnapshot {
     /// Per-component voltage/current/power at this instant. A source with a
     /// waveform reports its value at this time, not its DC term.
     pub component_results: Vec<ComponentResult>,
+    /// Junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data at this instant, by component id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
+    /// State of charge (0 to 1) of each battery at this instant, by
+    /// component id. Below 0 the cell is over-discharged; its voltage holds
+    /// the curve's 0 % value.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub state_of_charge: HashMap<String, f64>,
 }
 
 /// Time-series data from a transient simulation.
@@ -144,6 +158,7 @@ pub struct TimestepSnapshot {
 /// reactive elements (capacitors, inductors) or time-varying sources.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TransientData {
     /// Snapshots at each accepted integration step, in time order. They
     /// include every multiple of `time_step`, every waveform breakpoint and
@@ -182,11 +197,11 @@ pub struct TransientStats {
 /// - `mosfet_results` — for [`Mosfet`](crate::CircuitElement::Mosfet)
 /// - `op_amp_results` — for op-amps and comparators
 /// - `relay_results` — for relays
-/// - `mcu_results` — for microcontrollers
 /// - `transient` — for circuits with capacitors, inductors, or waveform
 ///   sources (DC analysis returns `None`)
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SimulationResult {
     /// Voltage at every node (V), keyed by node name. Includes the ground
     /// node (always 0.0).
@@ -198,6 +213,15 @@ pub struct SimulationResult {
     pub node_voltages: HashMap<String, f64>,
     /// Branch currents (A) for components that introduce a current unknown
     /// — voltage sources, op-amps, transformers, etc. Keyed by component id.
+    ///
+    /// The MNA convention: the current entering the element at `nodes[0]`
+    /// and leaving at `nodes[1]`, through the element. A source delivering
+    /// power reads **negative**: a 5 V supply feeding 5 mA into a load is
+    /// `-0.005`. For a VCVS, CCVS, op-amp or comparator it is the current
+    /// into the output node (`nodes[0]`, or the op-amp's `out`), so an
+    /// output sourcing current is negative too. For a voltage regulator it
+    /// is the current into its output pin (negative when it sources); its
+    /// [`ComponentResult`] has the output current as a positive number.
     pub branch_currents: HashMap<String, f64>,
     /// Per-component voltage, current, and power for every two-terminal
     /// component.
@@ -226,12 +250,6 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "Vec::is_empty", default)
     )]
     pub relay_results: Vec<RelayResult>,
-    /// Detailed per-microcontroller results.
-    #[cfg_attr(
-        feature = "serde",
-        serde(skip_serializing_if = "Vec::is_empty", default)
-    )]
-    pub mcu_results: Vec<McuResult>,
     /// Transient time-series, present only when the circuit has reactive
     /// elements or waveform sources.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -244,6 +262,21 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "Option::is_none", default)
     )]
     pub convergence_aid: Option<ConvergenceAid>,
+    /// Self-heated junction temperature (K) of each part with
+    /// [`Thermal`](crate::Thermal) data, by component id: the DC balance, or
+    /// the end of a transient. Empty when no part has thermal data.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub junction_temperatures: HashMap<String, f64>,
+    /// State of charge (0 to 1) of each battery, by component id: the
+    /// starting value at DC, the last step's after a transient.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub state_of_charge: HashMap<String, f64>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -270,11 +303,33 @@ fn node_voltage(node: &str, node_map: &NodeMap, solution: &DVector<f64>) -> f64 
     }
 }
 
+/// A regulator's result: its pass element, input to output. `Vin − Vout`,
+/// the output current, and the power it dissipates, quiescent included.
+pub(crate) fn regulator_result(
+    id: &str,
+    nodes: &[String; 3],
+    voltage: f64,
+    model: &Option<sindr_devices::regulator::RegulatorParams>,
+    node_map: &NodeMap,
+    solution: &DVector<f64>,
+    branch: usize,
+) -> ComponentResult {
+    let (vin, vout, iout) =
+        crate::stamp::regulator_state(node_map, nodes, branch, Some(solution)).unwrap_or_default();
+    let params = model.unwrap_or_default();
+    ComponentResult {
+        id: id.to_string(),
+        voltage_across: vin - vout,
+        current_through: iout,
+        power: sindr_devices::regulator::regulator_dissipation(&params, voltage, vin, vout, iout),
+    }
+}
+
 /// Extract simulation results from the MNA solution vector.
 ///
 /// Builds node voltages, branch currents (for voltage sources), and
 /// per-component V/I/P using passive sign convention.
-pub fn extract_results(
+pub(crate) fn extract_results(
     circuit: &Circuit,
     node_map: &NodeMap,
     solution: &DVector<f64>,
@@ -300,6 +355,10 @@ pub fn extract_results(
 
     for component in &circuit.components {
         match component {
+            // Split into their parts by `solver_circuit` first.
+            CircuitElement::SwitchSpdt { .. }
+            | CircuitElement::Crystal { .. }
+            | CircuitElement::FerriteBead { .. } => {}
             CircuitElement::Resistor {
                 id,
                 nodes,
@@ -365,6 +424,7 @@ pub fn extract_results(
                 });
             }
             CircuitElement::Diode {
+                model,
                 id,
                 nodes,
                 temperature,
@@ -372,7 +432,7 @@ pub fn extract_results(
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
-                let params = device_params::diode(*temperature);
+                let params = device_params::diode(model.as_ref(), *temperature);
                 let i_through = diode::diode_current(v_across, &params);
                 let power = v_across * i_through;
                 component_results.push(ComponentResult {
@@ -412,6 +472,7 @@ pub fn extract_results(
                 });
             }
             CircuitElement::Bjt {
+                model,
                 id,
                 nodes,
                 kind,
@@ -430,7 +491,7 @@ pub fn extract_results(
                 let vbe_eff = sign * (vb - ve);
                 let vbc_eff = sign * (vb - vc);
 
-                let params = device_params::bjt(*bf, *temperature);
+                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
                 let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
                 let region = bjt::detect_region(vbe_eff, vbc_eff);
 
@@ -476,8 +537,7 @@ pub fn extract_results(
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
 
-                let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
-                let comp = mosfet::mosfet_companion(vgs, vds, 0.0, &params.in_nmos_frame(*kind));
+                let comp = crate::device_params::mosfet_op(*kind, params, vg, vd, vs);
                 let id_current = match kind {
                     MosfetKind::Nmos => comp.id,
                     MosfetKind::Pmos => -comp.id,
@@ -637,9 +697,8 @@ pub fn extract_results(
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
-                let params = device_params::zener(*vz, *temperature);
-                let (g_eq, i_eq) = sindr_devices::zener::zener_companion(v_across, &params);
-                let i_through = g_eq * v_across + i_eq;
+                let params = device_params::zener_diode(*vz, *temperature);
+                let i_through = diode::diode_current(v_across, &params);
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_across,
@@ -665,14 +724,29 @@ pub fn extract_results(
                     power: v_across * i_through,
                 });
             }
+            CircuitElement::Battery {
+                id,
+                nodes,
+                params,
+                state_of_charge,
+            } => {
+                let (g, i_hist) = crate::battery_state::dc_norton(params, *state_of_charge);
+                let v_across = node_voltage(&nodes[0], node_map, solution)
+                    - node_voltage(&nodes[1], node_map, solution);
+                let i_through = g * v_across + i_hist;
+                component_results.push(ComponentResult {
+                    id: id.clone(),
+                    voltage_across: v_across,
+                    current_through: i_through,
+                    power: v_across * i_through,
+                });
+            }
             CircuitElement::Thermistor {
                 id,
                 nodes,
                 temperature,
             } => {
-                let therm_params = sindr_devices::thermistor::ThermistorParams::default();
-                let r =
-                    sindr_devices::thermistor::thermistor_resistance(*temperature, &therm_params);
+                let r = crate::device_params::thermistor_resistance(*temperature);
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -760,18 +834,8 @@ pub fn extract_results(
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
-                let vgs = vg - vs;
                 let vds = vd - vs;
-                // Compute drain current from companion model at final solution point
-                let c = jfet::jfet_companion(vgs, vds, *kind, *idss, *vp);
-                // P-channel companions come back in the mirrored N-channel
-                // frame: same gm and gds, Norton term negated (see
-                // stamp_jfet_companion).
-                let i_eq = match kind {
-                    jfet::JfetKind::NChannel => c.i_eq,
-                    jfet::JfetKind::PChannel => -c.i_eq,
-                };
-                let id_current = c.gm * vgs + c.gds * vds + i_eq;
+                let id_current = jfet_drain_current(vg - vs, vds, *kind, *idss, *vp);
                 let power = (id_current * vds).abs();
                 component_results.push(ComponentResult {
                     id: id.clone(),
@@ -796,21 +860,17 @@ pub fn extract_results(
                     power,
                 });
             }
-            CircuitElement::VoltageRegulator { id, nodes, voltage } => {
-                // Stamped as ideal voltage source between nodes[1] (output) and nodes[2] (gnd).
-                // Report voltage at output relative to the regulator's gnd node.
-                let vout = node_voltage(&nodes[1], node_map, solution);
-                let vgnd = node_voltage(&nodes[2], node_map, solution);
-                let v_across = vout - vgnd;
-                let i_through = solution[num_nodes + vsource_index];
-                let power = voltage * i_through;
-                branch_currents.insert(id.clone(), i_through);
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power,
-                });
+            CircuitElement::VoltageRegulator {
+                id,
+                nodes,
+                voltage,
+                model,
+            } => {
+                let branch = num_nodes + vsource_index;
+                branch_currents.insert(id.clone(), solution[branch]);
+                component_results.push(regulator_result(
+                    id, nodes, *voltage, model, node_map, solution, branch,
+                ));
                 vsource_index += 1;
             }
             CircuitElement::OpAmp { id, nodes, .. }
@@ -836,7 +896,7 @@ pub fn extract_results(
                     v_differential,
                     v_out,
                 });
-                vsource_index += 1;
+                vsource_index += component.branch_slots();
             }
         }
     }
@@ -849,18 +909,91 @@ pub fn extract_results(
         mosfet_results: mosfet_results_vec,
         op_amp_results: op_amp_results_vec,
         relay_results: relay_results_vec,
-        mcu_results: vec![],
         convergence_aid: None,
+        junction_temperatures: HashMap::new(),
+        state_of_charge: circuit
+            .components
+            .iter()
+            .filter_map(|c| match c {
+                CircuitElement::Battery {
+                    id,
+                    state_of_charge,
+                    ..
+                } => Some((id.clone(), *state_of_charge)),
+                _ => None,
+            })
+            .collect(),
         transient: None,
     }
 }
 
-#[cfg(test)]
+/// The op-amp and relay results a transient's last step implies: the same
+/// fields the DC path fills, read from the step's node voltages.
+pub(crate) fn op_amp_and_relay_results(
+    circuit: &Circuit,
+    node_voltages: &HashMap<String, f64>,
+) -> (Vec<OpAmpResult>, Vec<RelayResult>) {
+    let v = |n: &String| node_voltages.get(n).copied().unwrap_or(0.0);
+    let mut op_amps = Vec::new();
+    let mut relays = Vec::new();
+    for component in &circuit.components {
+        match component {
+            CircuitElement::OpAmp { id, nodes, .. }
+            | CircuitElement::Comparator { id, nodes, .. } => {
+                let (v_in_plus, v_in_minus) = (v(&nodes[0]), v(&nodes[1]));
+                op_amps.push(OpAmpResult {
+                    id: id.clone(),
+                    v_in_plus,
+                    v_in_minus,
+                    v_differential: v_in_plus - v_in_minus,
+                    v_out: v(&nodes[2]),
+                });
+            }
+            CircuitElement::Relay {
+                id,
+                nodes,
+                pickup_voltage,
+                ..
+            } => {
+                let coil_voltage = v(&nodes[0]) - v(&nodes[1]);
+                relays.push(RelayResult {
+                    id: id.clone(),
+                    coil_voltage,
+                    contact_closed: coil_voltage.abs() >= *pickup_voltage,
+                });
+            }
+            _ => {}
+        }
+    }
+    (op_amps, relays)
+}
+
+/// A JFET's drain current (A, into the drain) at physical `vgs` and `vds`.
+///
+/// `jfet_companion` mirrors a P-channel into the N-channel frame itself and
+/// returns the same gm and gds with the Norton term negated (see
+/// `stamp_jfet_companion`), so the voltages go in unmirrored.
+pub(crate) fn jfet_drain_current(
+    vgs: f64,
+    vds: f64,
+    kind: jfet::JfetKind,
+    idss: f64,
+    vp: f64,
+) -> f64 {
+    let c = jfet::jfet_companion(vgs, vds, kind, idss, vp);
+    let i_eq = match kind {
+        jfet::JfetKind::NChannel => c.i_eq,
+        jfet::JfetKind::PChannel => -c.i_eq,
+    };
+    c.gm * vgs + c.gds * vds + i_eq
+}
+
+// Every test here checks the serde shape.
+#[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
 
     /// DC-only SimulationResult (transient: None) serializes WITHOUT a "transient" key.
-    #[cfg(feature = "serde")]
     #[test]
     fn dc_result_omits_transient_key() {
         let result = SimulationResult {
@@ -871,8 +1004,9 @@ mod tests {
             mosfet_results: vec![],
             op_amp_results: vec![],
             relay_results: vec![],
-            mcu_results: vec![],
             convergence_aid: None,
+            junction_temperatures: HashMap::new(),
+            state_of_charge: HashMap::new(),
             transient: None,
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -881,7 +1015,6 @@ mod tests {
     }
 
     /// SimulationResult with transient data serializes the timesteps array.
-    #[cfg(feature = "serde")]
     #[test]
     fn transient_result_includes_timesteps() {
         let result = SimulationResult {
@@ -892,19 +1025,24 @@ mod tests {
             mosfet_results: vec![],
             op_amp_results: vec![],
             relay_results: vec![],
-            mcu_results: vec![],
             convergence_aid: None,
+            junction_temperatures: HashMap::new(),
+            state_of_charge: HashMap::new(),
             transient: Some(TransientData {
                 timesteps: vec![
                     TimestepSnapshot {
                         time: 0.0,
                         node_voltages: HashMap::from([("n1".into(), 0.0)]),
                         component_results: vec![],
+                        junction_temperatures: HashMap::new(),
+                        state_of_charge: HashMap::new(),
                     },
                     TimestepSnapshot {
                         time: 0.001,
                         node_voltages: HashMap::from([("n1".into(), 3.2)]),
                         component_results: vec![],
+                        junction_temperatures: HashMap::new(),
+                        state_of_charge: HashMap::new(),
                     },
                 ],
                 time_step: 0.001,
@@ -925,5 +1063,107 @@ mod tests {
         assert_eq!(td.time_step, 0.001);
         assert_eq!(td.duration, 0.002);
         assert_eq!(td.timesteps[1].node_voltages["n1"], 3.2);
+    }
+}
+
+#[cfg(test)]
+mod extract_tests {
+    use super::*;
+    use crate::circuit::CircuitElement;
+    use crate::device_params;
+
+    /// `extract_results` on elements the analyses lower before solving (a
+    /// Zener to a diode, C open, L and transformer windings to 0 V
+    /// sources): each still reports what it carries at a given solution,
+    /// and a transformer's two branch slots keep later sources reading
+    /// their own branch current.
+    #[test]
+    fn raw_elements_report_their_dc_terminal_values() {
+        let two = |a: &str, b: &str| -> [String; 2] { [a.into(), b.into()] };
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::ZenerDiode {
+                    id: "DZ1".into(),
+                    nodes: two("0", "a"),
+                    vz: 5.1,
+                    temperature: 300.15,
+                },
+                CircuitElement::Varactor {
+                    id: "CV1".into(),
+                    nodes: two("b", "a"),
+                    params: sindr_devices::varactor::VaractorParams::default(),
+                },
+                CircuitElement::Capacitor {
+                    id: "C1".into(),
+                    nodes: two("a", "0"),
+                    capacitance: 1e-6,
+                },
+                CircuitElement::Inductor {
+                    id: "L1".into(),
+                    nodes: two("a", "b"),
+                    inductance: 1e-3,
+                    saturation: None,
+                },
+                CircuitElement::Transformer {
+                    id: "T1".into(),
+                    nodes: ["a".into(), "b".into(), "b".into(), "0".into()],
+                    l1: 1e-3,
+                    l2: 1e-3,
+                    k: 0.99,
+                },
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: two("a", "0"),
+                    voltage: 6.0,
+                    waveform: None,
+                },
+            ],
+        );
+        let node_map = NodeMap::from_circuit(&circuit);
+        let n = node_map.num_nodes();
+        // V(a) = 6, V(b) = 2; branches: T1 primary, T1 secondary, V1.
+        let mut solution = DVector::zeros(n + 3);
+        solution[node_map.index("a").unwrap()] = 6.0;
+        solution[node_map.index("b").unwrap()] = 2.0;
+        solution[n + 2] = -0.25;
+        let result = extract_results(&circuit, &node_map, &solution, n);
+        let get = |id: &str| {
+            result
+                .component_results
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("no result for {id}"))
+        };
+
+        // The Zener sits 6 V reverse-biased, past its 5.1 V knee: the
+        // diode model's breakdown current, reported in the forward sense.
+        let dz = get("DZ1");
+        let expected =
+            sindr_devices::diode::diode_current(-6.0, &device_params::zener_diode(5.1, 300.15));
+        assert_eq!(dz.voltage_across, -6.0);
+        assert_eq!(dz.current_through, expected);
+        assert!(expected < -1e-3, "in breakdown: {expected} A");
+        assert_eq!(dz.power, -6.0 * expected);
+
+        let cv = get("CV1");
+        assert_eq!(
+            (cv.voltage_across, cv.current_through, cv.power),
+            (-4.0, 0.0, 0.0)
+        );
+        for id in ["C1", "L1"] {
+            let r = get(id);
+            assert_eq!(
+                (r.voltage_across, r.current_through, r.power),
+                (0.0, 0.0, 0.0)
+            );
+        }
+        let t1 = get("T1");
+        assert_eq!(
+            (t1.voltage_across, t1.current_through, t1.power),
+            (4.0, 0.0, 0.0)
+        );
+        assert_eq!(get("V1").current_through, -0.25);
+        assert_eq!(result.branch_currents["V1"], -0.25);
     }
 }

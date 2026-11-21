@@ -1,0 +1,9 @@
+dc: NMOS held off (gate at -5 V), drain pulled below its source through 10 ohm: the body diode conducts (built in Rust on the sindr side)
+V1 a 0 0
+VG g 0 -5
+R1 a d 10
+M1 d g 0 0 nmos1 W=1 L=1
+D1 0 d dbody
+.model nmos1 NMOS(LEVEL=1 KP=2e-4 VTO=0.7 LAMBDA=0.02 GAMMA=0.4 PHI=0.6 IS=1e-30)
+.model dbody D(IS=1e-12 N=1.2 RS=0.05 BV=60 IBV=250u)
+.end

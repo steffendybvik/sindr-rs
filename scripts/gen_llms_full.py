@@ -22,6 +22,8 @@ BODY_ITEM = re.compile(r"^(pub )(struct|enum|trait) ")
 # Items printed as a signature only.
 SIG_ITEM = re.compile(r"^\s*pub (fn|const|static|type|mod|use) ")
 IMPL = re.compile(r"^impl\b")
+# Private modules whose inherent impls are public API.
+PUBLIC_METHOD_MODULES = {"csv"}
 
 
 def strip_tests(lines):
@@ -139,8 +141,10 @@ def main():
 
     for crate in ["sindr", "sindr-devices"]:
         src = ROOT / crate / "src"
-        # Private top-level modules (`mod x;` in lib.rs) aren't API.
+        # Private top-level modules (`mod x;` in lib.rs) aren't API, except
+        # those holding public methods on public types (`csv`'s `to_csv`).
         private = set(re.findall(r"^mod (\w+);", (src / "lib.rs").read_text(), re.M))
+        private -= PUBLIC_METHOD_MODULES
         text = []
         for path in sorted(src.rglob("*.rs")):
             if path.relative_to(src).parts[0].removesuffix(".rs") in private:

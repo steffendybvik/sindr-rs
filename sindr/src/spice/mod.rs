@@ -3,18 +3,26 @@
 //! Parses a practical subset of Berkeley SPICE3f5 netlists into a
 //! [`crate::Circuit`] plus structured analysis directives. The supported
 //! device set tracks what `sindr` can solve: R, L, C, V, I, D, Q (NPN/PNP),
-//! and X (subcircuit instance). Subcircuits declared with `.subckt` /
-//! `.ends` are flattened with `.`-separated hierarchical node naming, and
-//! a [`SourceMap`] is returned so callers can recover the original
-//! instance path for any flattened node.
+//! the linear controlled sources E, G, F and H, K (two coupled `L` lines,
+//! read as one [`Transformer`](crate::CircuitElement::Transformer)) and X
+//! (subcircuit instance). Subcircuits declared with `.subckt` /
+//! `.ends` become [`Block`](crate::Block)s and X lines
+//! [`Instance`](crate::Instance)s; the solver flattens them with
+//! `.`-separated hierarchical naming ([`Circuit::flatten`](crate::Circuit::flatten)),
+//! and a [`SourceMap`] maps each flattened node back to its instance path.
+//! [`to_netlist`] writes blocks back as `.subckt`s.
+//! `.global` nets, declared anywhere in the deck (inside a `.subckt` too),
+//! land in [`Circuit::globals`](crate::Circuit::globals) and keep their name
+//! inside every instance instead of taking its prefix.
 //!
-//! `.ic` and `.nodeset` cards land in [`ParsedNetlist::initial_conditions`]
-//! and [`ParsedNetlist::nodesets`]; pass them to
-//! [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages)
-//! and [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages).
+//! `.ic` cards land in [`ParsedNetlist::initial_conditions`], which
+//! [`ParsedNetlist::transient_config`] passes on. `.options` (`RELTOL`,
+//! `VNTOL`, `TRTOL`, `ITL1`) and `.nodeset` cards land in
+//! [`ParsedNetlist::options`]; [`ParsedNetlist::solver`] runs the deck's
+//! analyses with them.
 //!
 //! Enable the optional `spice` feature to pull this module in
-//! (`sindr = { version = "0.1.0-alpha.7", features = ["spice"] }`); it is off by
+//! (`sindr = { version = "0.1", features = ["spice"] }`); it is off by
 //! default so the parser dependencies stay out of the baseline build.
 //!
 //! # Quick start
@@ -36,7 +44,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! For a deck on disk, parse it, hand the flattened [`Circuit`](crate::Circuit) to the
+//! For a deck on disk, parse it, hand the [`Circuit`](crate::Circuit) to the
 //! solver, then dispatch each parsed analysis directive to the matching
 //! `sindr` routine (`no_run`: `amp.cir` doesn't exist where doctests run):
 //!
@@ -46,40 +54,94 @@
 //! let netlist = parse_file("amp.cir")?;
 //! println!("parsed `{}` ({} components)", netlist.title, netlist.circuit.components.len());
 //!
-//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf` / `.sens`
+//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf` / `.sens` / `.noise`
 //! // directives, in source order. The parser does not run them — you do.
 //! for analysis in &netlist.analyses {
 //!     match analysis {
 //!         AnalysisRequest::Op => {
-//!             let result = sindr::solve_circuit(&netlist.circuit)?;
+//!             let result = sindr::solve_op(&netlist.circuit)?;
 //!             println!("op: {} node voltages", result.node_voltages.len());
 //!         }
-//!         AnalysisRequest::Dc { source, start, stop, step } => {
-//!             let points = ((stop - start) / step).abs() as usize + 1;
-//!             let sweep = sindr::dc_sweep(&netlist.circuit, source, *start, *stop, points)?;
-//!             println!("dc sweep of {source}: {} points", sweep.points.len());
+//!         AnalysisRequest::Dc { source, .. } => {
+//!             match analysis.dc_axes().unwrap()? {
+//!                 (inner, Some(outer)) => {
+//!                     let sweep = sindr::dc_sweep_nested(&netlist.circuit, &inner, &outer)?;
+//!                     println!("dc sweep of {source}: {} curves", sweep.curves.len());
+//!                 }
+//!                 (axis, None) => {
+//!                     let sweep = sindr::dc_sweep(
+//!                         &netlist.circuit, &axis.source_id, axis.start, axis.stop, axis.num_points,
+//!                     )?;
+//!                     println!("dc sweep of {source}: {} points", sweep.points.len());
+//!                 }
+//!             }
 //!         }
 //!         AnalysisRequest::Tran { tstop, .. } => {
 //!             let config = analysis.transient_config().unwrap();
 //!             let _ = sindr::solve_transient(&netlist.circuit, &config)?;
 //!             println!("transient to {tstop} s");
 //!         }
-//!         AnalysisRequest::Ac { fstart, fstop, .. } => {
-//!             // Build an `AcConfig` and call `sindr::ac_analysis::solve_ac`.
-//!             println!("ac sweep {fstart}..{fstop} Hz");
+//!         AnalysisRequest::Ac { .. } => {
+//!             // The stimulus comes from the deck's `AC` spec on a V line.
+//!             let config = netlist.ac_config().unwrap()?;
+//!             let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config)?;
+//!             println!("ac sweep: {} points", ac.points.len());
 //!         }
 //!         AnalysisRequest::Sens { .. } => {
 //!             let sens = sindr::solve_sensitivity(&netlist.circuit, &analysis.sens_config().unwrap())?;
 //!             println!("sens: {} parameters", sens.entries.len());
 //!         }
+//!         AnalysisRequest::Noise { .. } => {
+//!             let noise = sindr::solve_noise(&netlist.circuit, &analysis.noise_config().unwrap())?;
+//!             println!("noise: {} V rms at the output", noise.total_output_noise);
+//!         }
 //!         AnalysisRequest::Tf { .. } => {
 //!             let tf = sindr::solve_tf(&netlist.circuit, &analysis.tf_config().unwrap())?;
 //!             println!("tf: gain {}, rin {} Ω, rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
 //!         }
+//!         // `AnalysisRequest` is non-exhaustive: later releases add analyses.
+//!         other => println!("not run here: {other:?}"),
 //!     }
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! # Model cards
+//!
+//! A `.model` card's parameters are read where sindr's models have them:
+//!
+//! | Card | Parameters | Into |
+//! |---|---|---|
+//! | `D` | `IS`, `N`, `RS`, `CJO` (or `CJ0`, `CJ`), `VJ` (or `PB`), `M` (or `MJ`), `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` | [`DiodeModel`](crate::DiodeModel) |
+//! | `NPN`, `PNP` | `BF` | the element's `bf` |
+//! | `NPN`, `PNP` | `IS`, `BR`, `NF`, `NR`, `VAF` (or `VA`), `KF`, `AF` | [`BjtModel`](crate::BjtModel) |
+//!
+//! sindr's BJT is Ebers–Moll, so its Early effect isn't SPICE's
+//! Gummel–Poon base charge: with `VAF` set, results differ slightly from
+//! SPICE's. Any other parameter (`EG`, `XTI`, `CJE`, `VAR`, `IKF`, …) is an
+//! error in strict mode and a warning per card in lenient mode, naming them.
+//! Part annotations that don't affect the simulation (`MFG`, `TYPE`,
+//! `VCEO`, `ICRATING`, `IAVE`, `VPK`) are dropped without a word.
+//!
+//! # Controlled sources and coupling
+//!
+//! | Line | Into |
+//! |---|---|
+//! | `Exxx n+ n- nc+ nc- gain` | [`Vcvs`](crate::CircuitElement::Vcvs) |
+//! | `Gxxx n+ n- nc+ nc- gm` | [`Vccs`](crate::CircuitElement::Vccs) |
+//! | `Fxxx n+ n- vname alpha` | [`Cccs`](crate::CircuitElement::Cccs) |
+//! | `Hxxx n+ n- vname rm` | [`Ccvs`](crate::CircuitElement::Ccvs) |
+//! | `Kxxx lname1 lname2 k` | [`Transformer`](crate::CircuitElement::Transformer) |
+//!
+//! Nodes and current directions are SPICE's, so they map across as
+//! written. An `F` or `H` line's `vname` must be a `V` line in the same
+//! scope (the top level, or the same `.subckt` body). A `K` line replaces
+//! its two `L` lines, which must be in its scope, with one transformer named
+//! after the `K` line: primary from `lname1`, secondary from `lname2`, the
+//! first node of each its dot. Each `L` can be coupled once; sindr has no
+//! three-winding transformer. The nonlinear forms (`POLY`, `VALUE`,
+//! `TABLE`, `LAPLACE`) are unsupported devices: an error in strict mode, a
+//! warning (and the line dropped) in lenient mode.
 //!
 //! # Values
 //!
@@ -90,9 +152,9 @@
 //! at most 256 levels deep. A value that evaluates to NaN or ±∞ (`1e400`,
 //! `{1/0}`) is an error at its line.
 //!
-//! Analysis cards are checked as they are read: a `.dc` must sweep a
-//! voltage or current source the deck defines, with a non-zero step that
-//! moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
+//! Analysis cards are checked as they are read: a `.dc` must sweep one or
+//! two different voltage or current sources the deck defines, each with a
+//! non-zero step that moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
 //! `fstart > 0` for `dec`/`oct`.
 //!
 //! # Strictness and warnings
@@ -109,7 +171,7 @@
 //! use sindr::spice::{parse_str_with_options, ParseOptions};
 //! # let deck = "* deck\nV1 n1 0 1\nR1 n1 0 1k\n.end\n";
 //!
-//! let opts = ParseOptions { strict: false, include_search_path: None };
+//! let opts = ParseOptions::default().with_strict(false);
 //! let netlist = parse_str_with_options(deck, opts)?;
 //! for warning in &netlist.warnings {
 //!     eprintln!("warning: {warning:?}");
@@ -132,6 +194,13 @@
 //! }
 //! ```
 //!
+//! # Export
+//!
+//! [`to_netlist`] writes a [`Circuit`](crate::Circuit) as a SPICE deck that
+//! ngspice runs; its docs list what each element is written as. [`parse_str`]
+//! reads every line it writes back, so an exported deck parses to a circuit
+//! that solves the same (a transformer comes back named after its `K` line).
+//!
 //! Known gaps against full SPICE3 are listed in the repository's
 //! [`LIMITATIONS.md`](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
 
@@ -145,6 +214,7 @@ mod analysis;
 mod ast;
 mod build;
 mod error;
+mod export;
 mod flatten;
 mod param_eval;
 mod parser;
@@ -152,8 +222,11 @@ mod preprocess;
 mod si;
 mod source_map;
 
-pub use analysis::{AcSweep, AnalysisRequest};
+pub use analysis::{
+    AcStimulus, AcSweep, AnalysisRequest, DcSweepSpec, MeasureAnalysis, MeasureRequest,
+};
 pub use error::{ParseWarning, SpiceParseError};
+pub use export::{to_netlist, ExportError};
 pub use source_map::{HierarchyPath, SourceMap};
 
 use std::collections::HashMap;
@@ -161,31 +234,48 @@ use std::path::Path;
 
 /// Successful result of parsing a SPICE netlist.
 ///
-/// All hierarchy is already flattened into [`Self::circuit`]; use
-/// [`Self::source_map`] to translate flattened node names back to their
+/// [`Self::circuit`] keeps the `.subckt` hierarchy as blocks and
+/// instances. Every analysis flattens it; use [`Self::source_map`] to
+/// translate flattened node names back to their
 /// original `(instance_path, node)` pair.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ParsedNetlist {
-    /// Flattened circuit ready for the sindr solver.
+    /// The circuit, with each `.subckt` as a [`Block`](crate::Block) and each
+    /// X line as an [`Instance`](crate::Instance). A subckt whose instances
+    /// bind different `.param` values gives one block per distinct body,
+    /// named `name`, `name_2`, …. The solver takes it as is;
+    /// [`Circuit::flatten`](crate::Circuit::flatten) gives the flat element
+    /// list.
     pub circuit: crate::Circuit,
     /// Analysis directives declared in the netlist (`.op`, `.tran`, `.dc`,
     /// `.ac`, `.tf`, `.sens`).
     ///
     /// Order matches declaration order in the source.
     pub analyses: Vec<AnalysisRequest>,
-    /// `.ic` node voltages (V), keyed by node name: the state a transient
-    /// starts from. Pass them to
+    /// `.ic` node voltages (V), keyed by node name: where a transient
+    /// starts, or with no `uic` what its operating point holds them at.
+    /// [`ParsedNetlist::transient_config`] passes them to
     /// [`TransientConfig::with_initial_voltages`](crate::TransientConfig::with_initial_voltages).
     /// Only top-level cards are read.
     pub initial_conditions: HashMap<String, f64>,
     /// `.nodeset` node voltages (V), keyed by node name: a starting guess for
-    /// the DC operating point. Pass them to
-    /// [`solve_circuit_with_initial_voltages`](crate::solve_circuit_with_initial_voltages),
-    /// [`solve_ac_with_initial_voltages`](crate::ac_analysis::solve_ac_with_initial_voltages),
-    /// [`solve_tf_with_initial_voltages`](crate::transfer_function::solve_tf_with_initial_voltages)
-    /// or [`solve_sensitivity_with_initial_voltages`](crate::sensitivity::solve_sensitivity_with_initial_voltages).
-    /// Only top-level cards are read.
+    /// the DC operating point. [`Self::options`] carries them too, as its
+    /// [`nodeset`](crate::SolverOptions::nodeset). Only top-level cards are
+    /// read.
     pub nodesets: HashMap<String, f64>,
+    /// The deck's `.options` (`reltol`, `vntol`, `trtol`, `itl1`) over the
+    /// defaults, with its `.nodeset` cards as the nodeset. Run the deck's
+    /// analyses through [`Self::solver`] to use them. Only top-level cards
+    /// are read.
+    pub options: crate::SolverOptions,
+    /// `.meas` / `.measure` cards, in source order. Only top-level cards are
+    /// read.
+    pub measurements: Vec<MeasureRequest>,
+    /// The `AC` specs on the deck's `V` and `I` lines, in source order,
+    /// those inside `.subckt` bodies included under their flattened ids.
+    /// [`Self::ac_config`] drives `.ac` from them.
+    pub ac_stimuli: Vec<AcStimulus>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
     /// [`ParseOptions::strict`] is `true`.
     pub warnings: Vec<ParseWarning>,
@@ -196,12 +286,111 @@ pub struct ParsedNetlist {
     pub title: String,
 }
 
+impl ParsedNetlist {
+    /// A [`Solver`](crate::Solver) with the deck's [`options`](Self::options).
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* opts\nV1 in 0 5\nR1 in a 1k\nD1 a 0 dmod\n.model dmod D\n\
+    ///             .options reltol=1e-6 itl1=200\n.nodeset v(a)=0.7\n.op\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// assert_eq!(netlist.options.max_iterations, 200);
+    /// let op = netlist.solver().circuit(&netlist.circuit)?;
+    /// assert!((op.node_voltages["a"] - 0.7).abs() < 0.1);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn solver(&self) -> crate::Solver {
+        crate::Solver::new(self.options.clone())
+    }
+
+    /// The [`TransientConfig`](crate::TransientConfig) for the deck's first
+    /// `.tran`, with its `.ic` cards as
+    /// [`initial_voltages`](crate::TransientConfig::initial_voltages), so
+    /// the run starts as ngspice's does: from the operating point with the
+    /// `.ic` nodes held, or with `uic` from the `.ic` values alone. `None`
+    /// without a `.tran`. See [`AnalysisRequest::transient_config`] for the
+    /// rest of the card.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// // .ic holds `a` at 3 V while the operating point is solved; then
+    /// // the capacitor discharges towards the divider's 0.5 V.
+    /// let deck = "* ic\nV1 in 0 1\nR1 in a 1k\nR2 a 0 1k\nC1 a 0 1u\n\
+    ///             .ic v(a)=3\n.tran 10u 5m\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.transient_config().unwrap();
+    /// let tran = sindr::solve_transient(&netlist.circuit, &config)?.transient.unwrap();
+    /// assert!(tran.timesteps[0].node_voltages["a"] > 2.9);
+    /// assert!((tran.timesteps.last().unwrap().node_voltages["a"] - 0.5).abs() < 1e-3);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn transient_config(&self) -> Option<crate::TransientConfig> {
+        self.analyses
+            .iter()
+            .find_map(AnalysisRequest::transient_config)
+            .map(|config| config.with_initial_voltages(self.initial_conditions.clone()))
+    }
+
+    /// The [`AcConfig`](crate::ac_analysis::AcConfig) for the deck's first
+    /// `.ac`, driving the source whose line carries an `AC` spec at that
+    /// spec's magnitude and phase, so the deck runs as ngspice runs it.
+    /// `None` without an `.ac`. See [`AnalysisRequest::ac_config`] for the
+    /// sweep.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 dc 0 ac 2\nR1 in out 1k\nC1 out 0 1u\n.ac dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.ac_config().unwrap()?;
+    /// assert_eq!((config.source_id.as_str(), config.ac_magnitude), ("v1", 2.0));
+    /// let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config)?;
+    /// // Well below the 159 Hz pole the output follows the 2 V stimulus.
+    /// assert!((ac.points[0].node_voltages["out"].norm() - 2.0).abs() < 1e-3);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// unless exactly one source carries an `AC` spec and it's a `V` line:
+    /// sindr's AC analysis drives a single voltage source.
+    pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> {
+        let sweep = self.analyses.iter().find_map(|a| a.ac_config(""))?;
+        let invalid = |msg: String| crate::SimError::InvalidComponent(format!(".ac: {msg}"));
+        Some(match self.ac_stimuli.as_slice() {
+            [] => Err(invalid("no V line carries an `AC` spec to drive".into())),
+            [one] if one.current => Err(invalid(format!(
+                "`{}` is a current source; AC analysis drives a voltage source",
+                one.source
+            ))),
+            [one] => Ok(crate::ac_analysis::AcConfig {
+                source_id: one.source.clone(),
+                ac_magnitude: one.magnitude,
+                ac_phase_deg: one.phase_deg,
+                ..sweep
+            }),
+            many => Err(invalid(format!(
+                "AC analysis drives one source, but {} carry an `AC` spec",
+                many.iter()
+                    .map(|s| format!("`{}`", s.source))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+        })
+    }
+}
+
 /// Knobs controlling parser strictness and include-path resolution.
 ///
-/// Constructed via [`Default`] for the strict / no-override defaults, then
-/// mutated field-by-field — this is `#[non_exhaustive]`-spirit but kept
-/// open for now since the type is alpha.
+/// Start from [`Default`] (strict, no include-path override) and set what
+/// you need with [`with_strict`](Self::with_strict) and
+/// [`with_include_search_path`](Self::with_include_search_path). It is
+/// `#[non_exhaustive]`, so new options can come without breaking callers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ParseOptions {
     /// If `true` (default), any unsupported card/device or syntax error is
     /// fatal. If `false`, recoverable unsupported items are skipped and
@@ -222,6 +411,24 @@ impl Default for ParseOptions {
             strict: true,
             include_search_path: None,
         }
+    }
+}
+
+impl ParseOptions {
+    /// Set [`strict`](Self::strict): `false` turns recoverable unsupported
+    /// items into [`ParseWarning`]s instead of errors.
+    #[must_use]
+    pub fn with_strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+
+    /// Set [`include_search_path`](Self::include_search_path), the base
+    /// directory for relative `.include` / `.lib` paths.
+    #[must_use]
+    pub fn with_include_search_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.include_search_path = Some(path.into());
+        self
     }
 }
 
