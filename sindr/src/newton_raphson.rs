@@ -1569,4 +1569,56 @@ mod tests {
             "VCE {vce} vs closed form {expected}"
         );
     }
+
+    /// A raw `ZenerDiode` reaching the solver (the analyses lower it to a
+    /// `Diode` with `bv` first) is stamped, limited and reported as that
+    /// diode: both solve to the same clamp.
+    #[test]
+    fn raw_zener_solves_like_its_lowered_diode() {
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["in".into(), "0".into()],
+                    voltage: 12.0,
+                    waveform: None,
+                },
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["in".into(), "k".into()],
+                    resistance: 1e3,
+                },
+                CircuitElement::ZenerDiode {
+                    id: "DZ1".into(),
+                    nodes: ["0".into(), "k".into()],
+                    vz: 5.1,
+                    temperature: 300.15,
+                },
+            ],
+        );
+        let node_map = NodeMap::from_circuit(&circuit);
+        let raw = solve_nonlinear(
+            &circuit,
+            &node_map,
+            node_map.num_nodes(),
+            circuit.count_voltage_sources(),
+            &SolverOptions::default(),
+        )
+        .unwrap();
+        let lowered = crate::solve_circuit(&circuit).unwrap();
+        let (v_raw, v_lowered) = (raw.node_voltages["k"], lowered.node_voltages["k"]);
+        // Both converge to within vntol + reltol·|V| of the same root.
+        assert!((v_raw - v_lowered).abs() < 1e-5, "{v_raw} vs {v_lowered}");
+        assert!(v_raw > 5.0 && v_raw < 5.5, "clamped near vz: {v_raw}");
+        // KCL at k: R1's current is the Zener's reverse current.
+        let i_r = (12.0 - v_raw) / 1e3;
+        let i_z = raw
+            .component_results
+            .iter()
+            .find(|r| r.id == "DZ1")
+            .unwrap()
+            .current_through;
+        assert!((i_r + i_z).abs() < 1e-6 * i_r, "{i_r} vs {i_z}");
+    }
 }

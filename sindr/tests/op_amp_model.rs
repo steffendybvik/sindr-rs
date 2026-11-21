@@ -386,3 +386,76 @@ fn transfer_function_sees_the_model() {
         tf.output_resistance
     );
 }
+
+/// Inverting amplifier: `in+` on ground. With open-loop gain A the closed
+/// loop is −(RF/RIN)/(1 + (1 + RF/RIN)/A), at DC and settled in a
+/// transient started at the operating point.
+#[test]
+fn inverting_amplifier_with_its_plus_input_on_ground() {
+    let model = OpAmpModel::default();
+    let circuit = Circuit::new(
+        "0",
+        vec![
+            source(0.5, None),
+            op_amp("0", "fb", model),
+            r("RIN", "in", "fb", 1e3),
+            r("RF", "fb", "out", 10e3),
+            r("RL", "out", "0", 10e3),
+        ],
+    );
+    let ideal = -10.0 * 0.5;
+    let want = ideal / (1.0 + 11.0 / model.gain);
+    let dc = out(&circuit);
+    assert!((dc - want).abs() < 1e-6, "{dc} vs {want}");
+    let config = TransientConfig::new(1e-4, 1e-6).with_start(sindr::TransientStart::OperatingPoint);
+    let tran = solve_transient(&circuit, &config).unwrap();
+    for s in &tran.transient.unwrap().timesteps {
+        let v = s.node_voltages["out"];
+        assert!((v - want).abs() < 1e-6, "{v} at t = {}", s.time);
+    }
+}
+
+/// A comparator against ground (`in−` on ground) switches rail to rail as
+/// a sine crosses 0 V.
+#[test]
+fn comparator_against_ground_follows_the_sign_of_its_input() {
+    let circuit = Circuit::new(
+        "0",
+        vec![
+            source(
+                0.0,
+                Some(Waveform::Sine {
+                    amplitude: 1.0,
+                    frequency: 1e3,
+                    offset: 0.0,
+                    phase: 0.0,
+                }),
+            ),
+            CircuitElement::Comparator {
+                id: "U1".into(),
+                nodes: ["in".into(), "0".into(), "out".into()],
+                v_pos: 5.0,
+                v_neg: 0.0,
+            },
+            r("RL", "out", "0", 10e3),
+        ],
+    );
+    let tran = solve_transient(&circuit, &TransientConfig::new(2e-3, 5e-6)).unwrap();
+    let mut checked = 0;
+    for s in &tran.transient.unwrap().timesteps {
+        let vin = s.node_voltages["in"];
+        // Away from the crossing, where the 1e5 gain has long saturated.
+        if vin.abs() < 0.05 {
+            continue;
+        }
+        let rail = if vin > 0.0 { 5.0 } else { 0.0 };
+        let v = s.node_voltages["out"];
+        assert!(
+            (v - rail).abs() < 0.02,
+            "{v} with {vin} V in at t = {}",
+            s.time
+        );
+        checked += 1;
+    }
+    assert!(checked > 300, "{checked} samples");
+}

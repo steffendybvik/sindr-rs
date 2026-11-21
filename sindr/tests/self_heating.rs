@@ -404,3 +404,173 @@ fn noise_uses_the_heated_bias_point() {
         "heated {heated} vs cold {cold}"
     );
 }
+
+fn resistor_pair() -> Circuit {
+    // 1 W in R1 and 0.25 W in R2: resistors have no thermal feedback, so
+    // each junction is exactly ambient + P·Rθ.
+    let mut c = Circuit::new(
+        "0",
+        vec![
+            vsrc("V1", "a", "0", 10.0),
+            res("R1", "a", "0", 100.0),
+            vsrc("V2", "b", "0", 5.0),
+            res("R2", "b", "0", 100.0),
+        ],
+    );
+    c.parts
+        .insert("R1".into(), heated(Thermal::junction_to_ambient(100.0)));
+    c.parts.insert(
+        "R2".into(),
+        heated(Thermal {
+            ambient: 320.0,
+            ..Thermal::junction_to_ambient(40.0)
+        }),
+    );
+    c
+}
+
+#[test]
+fn several_heated_parts_each_settle_at_their_own_balance() {
+    let result = solve_circuit(&resistor_pair()).unwrap();
+    assert!((result.junction_temperatures["R1"] - (AMBIENT + 100.0)).abs() < 1e-9);
+    assert!((result.junction_temperatures["R2"] - (320.0 + 10.0)).abs() < 1e-9);
+}
+
+/// Without `cth` a junction has no thermal lag: every transient step sits at
+/// the DC balance of that step's power.
+#[test]
+fn junction_without_cth_follows_its_power_at_once() {
+    let result = solve_transient(&resistor_pair(), &TransientConfig::new(1e-3, 1e-4)).unwrap();
+    for step in &result.transient.as_ref().unwrap().timesteps {
+        let r1 = step.junction_temperatures["R1"];
+        assert!(
+            (r1 - (AMBIENT + 100.0)).abs() < 1e-9,
+            "t = {}: {r1}",
+            step.time
+        );
+        let r2 = step.junction_temperatures["R2"];
+        assert!((r2 - 330.0).abs() < 1e-9, "t = {}: {r2}", step.time);
+    }
+}
+
+/// The mirror that has no DC balance also runs away in a transient, switched
+/// on cold: the junction warms step by step until it passes the limit.
+#[test]
+fn undegenerated_mirror_runs_away_in_a_transient() {
+    let c = mirror(Thermal {
+        cth: Some(1e-3),
+        ..Thermal::junction_to_ambient(500.0)
+    });
+    match solve_transient(&c, &TransientConfig::new(5.0, 1e-2)) {
+        Err(SimError::ThermalRunaway { part, temperature }) => {
+            assert_eq!(part, "Q2");
+            assert!(temperature > 1000.0, "stopped at {temperature} K");
+        }
+        other => panic!("expected thermal runaway, got {other:?}"),
+    }
+}
+
+/// Values the thermal RC can't take are refused, naming the part and field.
+#[test]
+fn nonpositive_thermal_values_are_rejected_by_name() {
+    let cases = [
+        (
+            Thermal::junction_to_ambient(-1.0),
+            "thermal resistance",
+            "-1",
+        ),
+        (
+            Thermal {
+                cth: Some(0.0),
+                ..Thermal::junction_to_ambient(100.0)
+            },
+            "thermal capacitance cth",
+            "0",
+        ),
+        (
+            Thermal {
+                ambient: f64::NAN,
+                ..Thermal::junction_to_ambient(100.0)
+            },
+            "thermal ambient",
+            "NaN",
+        ),
+    ];
+    for (thermal, what, got) in cases {
+        let mut c = led_circuit();
+        c.parts.insert("D1".into(), heated(thermal));
+        match solve_circuit(&c) {
+            Err(SimError::InvalidComponent(msg)) => assert_eq!(
+                msg,
+                format!("part `D1`: {what} must be positive and finite (got {got})")
+            ),
+            other => panic!("{what}: expected InvalidComponent, got {other:?}"),
+        }
+    }
+}
+
+/// Documented: with `Thermal` on its part, an element's own `temperature`
+/// is ignored and `Thermal::ambient` is where its junction starts. A
+/// thermistor set to 350 K but heated from the default 300.15 K ambient
+/// runs at 300.15 K plus its own heating.
+#[test]
+fn thermal_ambient_replaces_the_element_temperature() {
+    let ntc = |temperature: f64| {
+        Circuit::new(
+            "0",
+            vec![
+                vsrc("V1", "a", "0", 1.0),
+                res("R1", "a", "t", 10e3),
+                CircuitElement::Thermistor {
+                    id: "TH1".into(),
+                    nodes: ["t".into(), "0".into()],
+                    temperature,
+                },
+            ],
+        )
+    };
+    let mut heated_ntc = ntc(350.0);
+    heated_ntc
+        .parts
+        .insert("TH1".into(), heated(Thermal::junction_to_ambient(1.0)));
+    let result = solve_circuit(&heated_ntc).unwrap();
+    // Tens of µW into 1 K/W: under a millikelvin of self-heating.
+    let tj = result.junction_temperatures["TH1"];
+    assert!((tj - AMBIENT).abs() < 1e-3, "Tj = {tj}");
+    let at_ambient = solve_circuit(&ntc(AMBIENT)).unwrap().node_voltages["t"];
+    let at_350 = solve_circuit(&ntc(350.0)).unwrap().node_voltages["t"];
+    let v = result.node_voltages["t"];
+    assert!((v - at_ambient).abs() < 1e-6, "{v} vs {at_ambient}");
+    assert!(
+        (v - at_350).abs() > 0.1,
+        "not run at 350 K: {v} vs {at_350}"
+    );
+}
+
+/// Both mirror transistors heated, on heatsinks, in a transient: each
+/// junction follows its own thermal RC (τ = 15 K/W · 10 mJ/K = 0.15 s) to
+/// the balance the DC solve finds.
+#[test]
+fn two_heated_junctions_settle_to_the_dc_balance() {
+    let thermal = Thermal {
+        cth: Some(10e-3),
+        ..Thermal::on_heatsink(5.0, 10.0)
+    };
+    let mut c = mirror(thermal);
+    c.parts.insert("Q1".into(), heated(thermal));
+    let dc = solve_circuit(&c).unwrap();
+    let tran = solve_transient(&c, &TransientConfig::new(1.5, 1e-2)).unwrap();
+    for q in ["Q1", "Q2"] {
+        let steady = dc.junction_temperatures[q];
+        let rise = steady - AMBIENT;
+        // Q1, diode-connected at ~0.7 V, warms by a tenth of a kelvin.
+        assert!(rise > 0.05, "{q} heats: {rise} K");
+        // Ten time constants: e^−10 of the rise left, plus the DC balance
+        // tolerance of a millikelvin.
+        let end = tran.junction_temperatures[q];
+        assert!(
+            (end - steady).abs() < 1e-3 * rise + 1e-3,
+            "{q}: {end} vs {steady}"
+        );
+    }
+}

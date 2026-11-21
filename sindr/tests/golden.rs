@@ -713,6 +713,24 @@ fn ac_deck_stimulus() {
     );
 }
 
+/// `.ac dec 10 1 50` spans 1.7 decades. ngspice sweeps ⌊10·1.7⌋ = 16 equal
+/// log steps from 1 Hz to exactly 50 Hz, 17 points; the deck's config must
+/// sweep the same ones.
+#[test]
+fn ac_partial_decade() {
+    let netlist = parse_file(case_path("ac_partial_decade", "cir")).unwrap();
+    let config = netlist.ac_config().unwrap().unwrap();
+    assert_eq!(config.num_points, 17);
+    assert_eq!(config.f_stop, 50.0);
+    check_ac_with(
+        "ac_partial_decade",
+        &netlist.circuit,
+        &config,
+        "out",
+        AC_LINEAR,
+    );
+}
+
 #[test]
 fn ac_rc_lowpass() {
     check_ac(
@@ -969,6 +987,25 @@ fn noise_bjt_ce() {
         &result,
         Tol {
             rel: 1e-5,
+            abs: 0.0,
+        },
+    );
+}
+
+/// `.noise ... dec 10 1 50`: ngspice's noise sweep steps by 10^(1/10) from
+/// 1 Hz and stops at 10^1.6 ≈ 39.8 Hz, the last point not past 50 Hz, unlike
+/// `.ac` over the same band.
+#[test]
+fn noise_partial_decade() {
+    let netlist = parse_file(case_path("noise_partial_decade", "cir")).unwrap();
+    let config = netlist.analyses[0].noise_config().unwrap();
+    assert_eq!(config.num_points, 17);
+    let result = solve_noise(&netlist.circuit, &config).unwrap();
+    check_noise(
+        "noise_partial_decade",
+        &result,
+        Tol {
+            rel: 1e-6,
             abs: 0.0,
         },
     );

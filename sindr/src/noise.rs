@@ -163,8 +163,8 @@ struct Generator {
 /// # Errors
 ///
 /// - [`SimError::InvalidComponent`] if the input isn't an independent
-///   voltage or current source, an output node isn't in the circuit, or
-///   the frequencies are invalid (`f_start` must be above 0)
+///   voltage or current source, the output or reference node isn't in the
+///   circuit, or the frequencies are invalid (`f_start` must be above 0)
 /// - Any [`SimError`] from the DC operating point
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -247,14 +247,19 @@ pub(crate) fn solve_noise_with(
         )));
     }
     let node_map = NodeMap::from_circuit(circuit);
-    let node = |name: &str| match node_map.index(name) {
+    let node = |role: &str, name: &str| match node_map.index(name) {
         None if name != circuit.ground_node => Err(invalid(format!(
-            "output node `{name}` is not in the circuit"
+            "{role} node `{name}` is not in the circuit"
         ))),
         index => Ok(index),
     };
-    let out = node(&config.output)?;
-    let reference = config.reference.as_deref().map(node).transpose()?.flatten();
+    let out = node("output", &config.output)?;
+    let reference = config
+        .reference
+        .as_deref()
+        .map(|name| node("reference", name))
+        .transpose()?
+        .flatten();
     let is_input = circuit.components.iter().any(|c| {
         matches!(c, CircuitElement::VoltageSource { id, .. } | CircuitElement::CurrentSource { id, .. } if *id == config.input_source)
     });

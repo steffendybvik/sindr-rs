@@ -312,3 +312,96 @@ fn zero_regulator_voltage_is_rejected() {
     .unwrap_err();
     assert!(err.to_string().contains("non-zero"), "{err}");
 }
+
+/// With no input the pass element is off: the output sits at ground rather
+/// than below it, and nothing is drawn from a supply that isn't there.
+#[test]
+fn unpowered_regulator_outputs_nothing() {
+    for vin in [0.0, 0.5, 1.0] {
+        let r =
+            solve_circuit(&regulator(vin, 5.0, RegulatorParams::lm7805(), load_r(1e3))).unwrap();
+        let expect = (vin - RegulatorParams::lm7805().dropout).max(0.0);
+        assert!(vout(&r) >= -1e-9, "vin {vin}: vout {}", vout(&r));
+        assert!(
+            (vout(&r) - expect).abs() < 1e-6,
+            "vin {vin}: vout {}",
+            vout(&r)
+        );
+        // No energy from nowhere: the input delivers at least what the load takes.
+        let p_load = vout(&r).powi(2) / 1e3;
+        assert!(iin(&r) * vin >= p_load - 1e-12, "vin {vin}");
+    }
+}
+
+/// An input pulled to ground through a resistor stays at ground: the
+/// quiescent current fades out with the input instead of pulling it negative.
+#[test]
+fn input_pulled_to_ground_stays_there() {
+    let mut c = regulator(0.0, 5.0, RegulatorParams::lm7805(), load_r(1e3));
+    c.components[0] = CircuitElement::Resistor {
+        id: "RIN".into(),
+        nodes: ["in".into(), "0".into()],
+        resistance: 1e3,
+    };
+    let r = solve_circuit(&c).unwrap();
+    assert!(
+        r.node_voltages["in"].abs() < 1e-9,
+        "vin {}",
+        r.node_voltages["in"]
+    );
+    assert!(vout(&r).abs() < 1e-9, "vout {}", vout(&r));
+    assert!(u1(&r).power.abs() < 1e-12);
+}
+
+/// The quiescent current ramps from 0 at no input to its full value at the
+/// dropout voltage, and is full from there up.
+#[test]
+fn quiescent_current_ramps_in_below_dropout() {
+    let p = RegulatorParams::lm7805();
+    let iq = |vin: f64| {
+        let r = solve_circuit(&regulator(vin, 5.0, p, load_i(0.0))).unwrap();
+        iin(&r)
+    };
+    assert!(iq(0.0).abs() < 1e-12);
+    assert!((iq(p.dropout / 2.0) - p.quiescent_current / 2.0).abs() < 1e-9);
+    assert!((iq(p.dropout) - p.quiescent_current).abs() < 1e-9);
+    assert!((iq(12.0) - p.quiescent_current).abs() < 1e-9);
+}
+
+/// From 0 V to well past regulation the output never steps: it is 0, then
+/// follows the input down by the dropout voltage, then holds.
+#[test]
+fn output_is_continuous_and_monotonic_in_the_input() {
+    let mut last = 0.0;
+    for k in 0..=240 {
+        let vin = k as f64 * 0.05;
+        let r = solve_circuit(&regulator(
+            vin,
+            5.0,
+            RegulatorParams::lm7805(),
+            load_r(100.0),
+        ))
+        .unwrap();
+        let v = vout(&r);
+        assert!(v >= last - 1e-9, "vin {vin}: {v} after {last}");
+        assert!(v - last < 0.05 + 1e-6, "vin {vin}: jumped {} V", v - last);
+        last = v;
+    }
+    assert!((last - 5.0).abs() < 0.05);
+}
+
+/// The same holds for a negative regulator, mirrored through its ground pin.
+#[test]
+fn unpowered_negative_regulator_outputs_nothing() {
+    let p = RegulatorParams::lm7805();
+    for vin in [0.0, -0.5, -1.0] {
+        let r = solve_circuit(&regulator(vin, -5.0, p, load_r(1e3))).unwrap();
+        let expect = (vin + p.dropout).min(0.0);
+        assert!(vout(&r) <= 1e-9, "vin {vin}: vout {}", vout(&r));
+        assert!(
+            (vout(&r) - expect).abs() < 1e-6,
+            "vin {vin}: vout {}",
+            vout(&r)
+        );
+    }
+}

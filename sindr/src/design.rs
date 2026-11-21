@@ -677,6 +677,27 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_ids_inside_a_block_name_the_block() {
+        // An instance in `stage` reusing a component's id clashes in the
+        // block's own scope, before any prefix is applied.
+        let mut c = nested();
+        c.blocks
+            .get_mut("stage")
+            .unwrap()
+            .instances
+            .push(Instance::new("R3", "inner", ["p", "q"]));
+        let err = c.flatten().unwrap_err();
+        assert_eq!(
+            err,
+            DesignError::DuplicateId {
+                id: "R3".into(),
+                scope: "block `stage`".into(),
+            }
+        );
+        assert_eq!(err.to_string(), "id `R3` is used twice in block `stage`");
+    }
+
+    #[test]
     fn nets_lists_the_top_level() {
         assert_eq!(nested().nets(), ["0", "in", "out"]);
     }

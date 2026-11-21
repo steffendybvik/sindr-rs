@@ -355,3 +355,255 @@ fn ratings_round_trip_through_json() {
     // A part with no ratings serialises as before.
     assert_eq!(serde_json::to_string(&Part::default()).unwrap(), "{}");
 }
+
+#[test]
+fn every_rating_kind_has_its_si_unit() {
+    use RatingKind::*;
+    for (kind, unit) in [
+        (Power, "W"),
+        (Voltage, "V"),
+        (Current, "A"),
+        (ReverseVoltage, "V"),
+        (ForwardCurrent, "A"),
+        (Vce, "V"),
+        (Vcb, "V"),
+        (Veb, "V"),
+        (Ic, "A"),
+        (Vds, "V"),
+        (Vgs, "V"),
+        (Id, "A"),
+        (Tj, "K"),
+    ] {
+        assert_eq!(kind.unit(), unit, "{kind:?}");
+    }
+}
+
+#[test]
+fn mosfet_terminal_ratings() {
+    // NMOS common source: gate at 3 V, 10 V rail through 1 kΩ.
+    let mut c = Circuit::new(
+        "0",
+        vec![
+            vsrc("VG", "g", "0", 3.0),
+            vsrc("VDD", "vdd", "0", 10.0),
+            res("RD", "vdd", "d", 1e3),
+            CircuitElement::Mosfet {
+                id: "M1".into(),
+                nodes: ["g".into(), "d".into(), "0".into()],
+                kind: sindr::MosfetKind::Nmos,
+                params: sindr_devices::mosfet::MosfetParams::default_nmos(),
+                parasitic_caps: None,
+                body_diode: None,
+            },
+        ],
+    );
+    c.parts.insert(
+        "M1".into(),
+        rated(Ratings {
+            vds: Some(60.0),
+            vgs: Some(2.0), // under the 3 V on the gate
+            id: Some(1.0),
+            ..Ratings::default()
+        }),
+    );
+    let result = solve_circuit(&c).unwrap();
+    let report = check_ratings(&c, &result).unwrap();
+    let m1: Vec<_> = report.for_part("M1").collect();
+    let kinds: Vec<_> = m1.iter().map(|c| c.rating).collect();
+    assert_eq!(
+        kinds,
+        [
+            RatingKind::Power,
+            RatingKind::Vds,
+            RatingKind::Vgs,
+            RatingKind::Id
+        ]
+    );
+    let check = |k| *m1.iter().find(|c| c.rating == k).unwrap();
+    let mos = &result.mosfet_results[0];
+    assert!((check(RatingKind::Vds).worst.unwrap() - mos.vds).abs() < 1e-12);
+    assert!((check(RatingKind::Vgs).worst.unwrap() - 3.0).abs() < 1e-12);
+    assert!((check(RatingKind::Id).worst.unwrap() - mos.id_current).abs() < 1e-12);
+    assert_eq!(check(RatingKind::Vgs).status, RatingStatus::Exceeded);
+    assert_eq!(check(RatingKind::Vds).status, RatingStatus::Within);
+    // No power rating set: needed, so unverified, and listed as such.
+    assert_eq!(check(RatingKind::Power).status, RatingStatus::Unverified);
+    let unverified: Vec<_> = report
+        .unverified()
+        .iter()
+        .map(|c| (c.part.as_str(), c.rating))
+        .collect();
+    assert!(
+        unverified.contains(&("M1", RatingKind::Power)),
+        "{unverified:?}"
+    );
+    assert!(
+        unverified.contains(&("RD", RatingKind::Power)),
+        "{unverified:?}"
+    );
+    assert!(report
+        .unverified()
+        .iter()
+        .all(|c| c.status == RatingStatus::Unverified));
+}
+
+/// A zero rating has no margin to divide by: anything above it is over,
+/// and exactly zero is within.
+#[test]
+fn zero_rating_has_no_margin() {
+    let mut c = Circuit::new(
+        "0",
+        vec![
+            vsrc("V1", "a", "0", 1.0),
+            res("R1", "a", "0", 1e3),
+            // Both ends at 1 V: no current, no power.
+            res("R2", "a", "a2", 1e3),
+            vsrc("V2", "a2", "0", 1.0),
+        ],
+    );
+    for id in ["R1", "R2"] {
+        c.parts.insert(
+            id.into(),
+            rated(Ratings {
+                power: Some(0.0),
+                ..Ratings::default()
+            }),
+        );
+    }
+    let result = solve_circuit(&c).unwrap();
+    let report = check_ratings(&c, &result).unwrap();
+    let power = |id| report.for_part(id).next().unwrap();
+    assert_eq!(power("R1").status, RatingStatus::Exceeded);
+    assert_eq!(power("R1").margin_percent, None);
+    assert_eq!(power("R2").status, RatingStatus::Within);
+    assert_eq!(power("R2").margin_percent, None);
+}
+
+/// An inductor's needed rating is its current, checked at every step.
+#[test]
+fn inductor_current_rating_sees_the_settled_current() {
+    let mut c = Circuit::new(
+        "0",
+        vec![
+            vsrc("V1", "a", "0", 1.0),
+            res("R1", "a", "b", 10.0),
+            CircuitElement::Inductor {
+                id: "L1".into(),
+                nodes: ["b".into(), "0".into()],
+                inductance: 1e-3,
+                saturation: None,
+            },
+        ],
+    );
+    c.parts.insert(
+        "L1".into(),
+        rated(Ratings {
+            current: Some(0.2),
+            ..Ratings::default()
+        }),
+    );
+    // τ = L/R = 100 µs; 2 ms is 20 τ, so the worst is the settled 100 mA.
+    let result = solve_transient(&c, &TransientConfig::new(2e-3, 10e-6)).unwrap();
+    let report = check_ratings(&c, &result).unwrap();
+    let l1: Vec<_> = report.for_part("L1").collect();
+    assert_eq!(l1.len(), 1);
+    assert_eq!(l1[0].rating, RatingKind::Current);
+    assert!((l1[0].worst.unwrap() - 0.1).abs() < 1e-6, "{:?}", l1[0]);
+    assert!((l1[0].margin_percent.unwrap() - 50.0).abs() < 1e-3);
+}
+
+/// A crystal's needed rating is its drive level, its power.
+#[test]
+fn crystal_needs_a_drive_level_rating() {
+    let c = Circuit::new(
+        "0",
+        vec![
+            vsrc("V1", "a", "0", 1.0),
+            res("R1", "a", "b", 1e3),
+            CircuitElement::Crystal {
+                id: "X1".into(),
+                nodes: ["b".into(), "0".into()],
+                params: sindr::circuit::CrystalParams::from_datasheet(32768.0, 35e3, 1.5e-12),
+            },
+            res("RB", "b", "0", 1e6),
+        ],
+    );
+    let result = sindr::solve_op(&c).unwrap();
+    let report = check_ratings(&c, &result).unwrap();
+    let x1: Vec<_> = report.for_part("X1").map(|c| c.rating).collect();
+    assert_eq!(x1, [RatingKind::Power]);
+}
+
+/// Which ratings a Zener, a varactor and an IGBT need, and what they read.
+#[test]
+fn zener_varactor_and_igbt_needed_ratings() {
+    let c = Circuit::new(
+        "0",
+        vec![
+            vsrc("V1", "in", "0", 12.0),
+            res("R1", "in", "k", 1e3),
+            CircuitElement::ZenerDiode {
+                id: "DZ1".into(),
+                nodes: ["0".into(), "k".into()],
+                vz: 5.1,
+                temperature: 300.15,
+            },
+            // Reverse-biased 5 V through 1 MΩ.
+            vsrc("V2", "c", "0", 5.0),
+            res("R2", "c", "cv", 1e6),
+            CircuitElement::Varactor {
+                id: "CV1".into(),
+                nodes: ["0".into(), "cv".into()],
+                params: sindr::VaractorParams::default(),
+            },
+            // IGBT: gate at 6 V, 15 V through 100 Ω.
+            vsrc("VG", "g", "0", 6.0),
+            vsrc("VCC", "vcc", "0", 15.0),
+            res("RL", "vcc", "col", 100.0),
+            CircuitElement::Igbt {
+                id: "Z1".into(),
+                nodes: ["g".into(), "col".into(), "0".into()],
+                params: sindr::IgbtParams::default(),
+            },
+        ],
+    );
+    let result = sindr::solve_op(&c).unwrap();
+    let report = check_ratings(&c, &result).unwrap();
+    let kinds = |id| report.for_part(id).map(|c| c.rating).collect::<Vec<_>>();
+    assert_eq!(kinds("DZ1"), [RatingKind::Power]);
+    assert_eq!(kinds("CV1"), [RatingKind::ReverseVoltage]);
+    assert_eq!(
+        kinds("Z1"),
+        [
+            RatingKind::Power,
+            RatingKind::Vce,
+            RatingKind::Ic,
+            RatingKind::Vgs
+        ]
+    );
+    let worst = |id, kind| {
+        report
+            .for_part(id)
+            .find(|c| c.rating == kind)
+            .unwrap()
+            .worst
+            .unwrap()
+    };
+    let port = |id: &str| {
+        result
+            .component_results
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+    };
+    assert_eq!(worst("DZ1", RatingKind::Power), port("DZ1").power);
+    // Open at DC: the whole 5 V, less the 1 TΩ shunt's 5 µV across 1 MΩ.
+    assert!((worst("CV1", RatingKind::ReverseVoltage) - 5.0).abs() < 1e-4);
+    assert_eq!(worst("Z1", RatingKind::Vgs), 6.0);
+    let vce = result.node_voltages["col"];
+    assert!((worst("Z1", RatingKind::Vce) - vce).abs() < 1e-12);
+    assert_eq!(
+        worst("Z1", RatingKind::Ic),
+        port("Z1").current_through.abs()
+    );
+}

@@ -106,27 +106,53 @@ pub struct DcSweepSpec {
     pub step: f64,
 }
 
-/// The total point count and spacing of a `.ac` / `.noise` sweep: a `dec`
-/// or `oct` count is per decade or octave, both ends included.
-fn sweep_points(
+/// ngspice's default RELTOL. A `dec` / `oct` sweep keeps every point up to
+/// `fstop·(1 + ratio·RELTOL)`, so a point that rounding puts just past
+/// `fstop` isn't lost.
+const NGSPICE_RELTOL: f64 = 1e-3;
+
+/// The frequency grid of a `.ac` (`ac = true`) or `.noise` sweep as ngspice
+/// steps it: the last frequency, the point count and the spacing. The first
+/// frequency is always `fstart`.
+///
+/// A `dec` or `oct` sweep multiplies `fstart` by a fixed ratio, 10^(1/points)
+/// or 2^(1/points), and keeps every point up to `fstop` (plus the
+/// tolerance), so it stops at or a hair past `fstop` only when the band is a
+/// whole number of steps, and short of it otherwise. A `.ac dec` over a
+/// decade or more is the exception: ngspice splits it into
+/// ⌊points·decades⌋ equal steps that land on `fstop`.
+fn sweep_grid(
+    ac: bool,
     sweep: AcSweep,
     points: usize,
     fstart: f64,
     fstop: f64,
-) -> (usize, crate::ac_analysis::FrequencySpacing) {
+) -> (f64, usize, crate::ac_analysis::FrequencySpacing) {
     use crate::ac_analysis::FrequencySpacing;
-    let span = |base: f64| (fstop / fstart).log(base);
-    match sweep {
-        AcSweep::Dec => (
-            (points as f64 * span(10.0)).round() as usize + 1,
-            FrequencySpacing::Logarithmic,
-        ),
-        AcSweep::Oct => (
-            (points as f64 * span(2.0)).round() as usize + 1,
-            FrequencySpacing::Logarithmic,
-        ),
-        AcSweep::Lin => (points, FrequencySpacing::Linear),
+    let base: f64 = match sweep {
+        AcSweep::Lin => return (fstop, points, FrequencySpacing::Linear),
+        AcSweep::Dec => 10.0,
+        AcSweep::Oct => 2.0,
+    };
+    if fstart == fstop {
+        return (fstart, 1, FrequencySpacing::Logarithmic);
     }
+    let ratio = fstop / fstart;
+    let steps_to_fstop = (ac && sweep == AcSweep::Dec && fstop / 10.0 >= fstart)
+        .then(|| (points as f64 * ratio.log10()).floor());
+    let ln_delta = match steps_to_fstop {
+        Some(steps) => ratio.ln() / steps,
+        None => base.ln() / points as f64,
+    };
+    let delta = ln_delta.exp();
+    let n = ((ratio * (1.0 + delta * NGSPICE_RELTOL)).ln() / ln_delta).floor() as usize;
+    let n = n.saturating_add(1);
+    let last = if steps_to_fstop == Some((n - 1) as f64) {
+        fstop
+    } else {
+        fstart * ((n - 1) as f64 * ln_delta).exp()
+    };
+    (last, n, FrequencySpacing::Logarithmic)
 }
 
 /// An `AC [mag [phase]]` spec on a `V` or `I` line: the small-signal
@@ -278,11 +304,18 @@ impl AnalysisRequest {
     }
 
     /// The [`AcConfig`](crate::ac_analysis::AcConfig) for an `.ac` request,
-    /// driving `source_id` at 1 V and 0°; `None` for any other analysis. A
-    /// `dec` or `oct` sweep's per-decade or per-octave count becomes the
-    /// total over the band, both ends included.
+    /// driving `source_id` at 1 V and 0°; `None` for any other analysis.
     /// [`ParsedNetlist::ac_config`](crate::spice::ParsedNetlist::ac_config)
     /// takes the source and its stimulus from the deck's `AC` spec instead.
+    ///
+    /// The frequencies are ngspice's. A `lin` sweep is `points` from
+    /// `fstart` to `fstop`. A `dec` sweep over a decade or more is
+    /// ⌊points·decades⌋ equal log steps from `fstart` to `fstop`, so
+    /// `.ac dec 10 1 50` is 17 points. Any other `dec` or `oct` sweep steps
+    /// from `fstart` by 10^(1/points) or 2^(1/points) and stops at the last
+    /// point not past `fstop` (within ngspice's 0.1 % tolerance), so the
+    /// config's `f_stop` can fall short of the card's: `.ac oct 3 1 10`
+    /// ends at 8 Hz.
     ///
     /// ```
     /// use sindr::spice::parse_str;
@@ -303,10 +336,10 @@ impl AnalysisRequest {
         else {
             return None;
         };
-        let (num_points, spacing) = sweep_points(*sweep, *points, *fstart, *fstop);
+        let (f_stop, num_points, spacing) = sweep_grid(true, *sweep, *points, *fstart, *fstop);
         Some(crate::ac_analysis::AcConfig {
             f_start: *fstart,
-            f_stop: *fstop,
+            f_stop,
             num_points,
             spacing,
             source_id: source_id.to_string(),
@@ -317,8 +350,13 @@ impl AnalysisRequest {
 
     /// The [`NoiseConfig`](crate::NoiseConfig) for a `.noise` request, to
     /// pass to [`solve_noise`](crate::solve_noise); `None` for any other
-    /// analysis. A `dec` or `oct` sweep's per-decade or per-octave count
-    /// becomes the total over the band, both ends included.
+    /// analysis.
+    ///
+    /// The frequencies are ngspice's: a `lin` sweep is `points` from
+    /// `fstart` to `fstop`; a `dec` or `oct` sweep steps from `fstart` by
+    /// 10^(1/points) or 2^(1/points) and stops at the last point not past
+    /// `fstop` (within ngspice's 0.1 % tolerance). The config's `f_stop` is
+    /// that last point, so `.noise ... dec 10 1 50` ends at 10^1.6 ≈ 39.8 Hz.
     ///
     /// ```
     /// use sindr::spice::parse_str;
@@ -345,13 +383,13 @@ impl AnalysisRequest {
         else {
             return None;
         };
-        let (num_points, spacing) = sweep_points(*sweep, *points, *fstart, *fstop);
+        let (f_stop, num_points, spacing) = sweep_grid(false, *sweep, *points, *fstart, *fstop);
         Some(crate::NoiseConfig {
             output: node.clone(),
             reference: reference.clone(),
             input_source: input.clone(),
             f_start: *fstart,
-            f_stop: *fstop,
+            f_stop,
             num_points,
             spacing,
         })
@@ -710,21 +748,176 @@ mod tests {
         }
     }
 
+    /// `(first, last, count)` of a deck's `.ac` and `.noise` grids.
+    fn grids(sweep: &str) -> ((f64, f64, usize), (f64, f64, usize)) {
+        let got = analyses(&format!(".ac {sweep}\n.noise v(in) v1 {sweep}"));
+        let ac = got[0].ac_config("v1").unwrap();
+        let noise = got[1].noise_config().unwrap();
+        (
+            (ac.f_start, ac.f_stop, ac.num_points),
+            (noise.f_start, noise.f_stop, noise.num_points),
+        )
+    }
+
+    fn assert_grid(got: (f64, f64, usize), want: (f64, f64, usize), what: &str) {
+        assert_eq!(got.2, want.2, "{what}: point count");
+        assert_eq!(got.0, want.0, "{what}: first frequency");
+        // ngspice prints eight digits.
+        assert!(
+            (got.1 / want.1 - 1.0).abs() < 1e-8,
+            "{what}: last frequency {} vs {}",
+            got.1,
+            want.1
+        );
+    }
+
+    /// Each grid is ngspice 47's for the same card (`print frequency`).
+    #[test]
+    fn sweep_grids_match_ngspice() {
+        for (sweep, ac, noise) in [
+            // Whole decades: both land on fstop.
+            ("dec 10 1 100k", (1.0, 1e5, 51), (1.0, 1e5, 51)),
+            // `.ac dec` spreads ⌊10·1.699⌋ = 16 steps over the band;
+            // `.noise` steps by 10^0.1 and stops at 10^1.6.
+            ("dec 10 1 50", (1.0, 50.0, 17), (1.0, 39.810_717, 17)),
+            ("dec 4 1 50", (1.0, 50.0, 7), (1.0, 31.622_776_6, 7)),
+            // Under a decade `.ac` steps by 10^(1/points) too.
+            ("dec 10 2 3", (2.0, 2.517_850_8, 2), (2.0, 2.517_850_8, 2)),
+            ("dec 1 1 5", (1.0, 1.0, 1), (1.0, 1.0, 1)),
+            // 10 is within 0.1 %·10 of 9.99, so ngspice keeps it.
+            ("dec 1 1 9.99", (1.0, 10.0, 2), (1.0, 10.0, 2)),
+            ("dec 1 1 9.9", (1.0, 1.0, 1), (1.0, 1.0, 1)),
+            // An octave sweep never stretches its step to reach fstop.
+            ("oct 3 1 10", (1.0, 8.0, 10), (1.0, 8.0, 10)),
+            ("oct 4 10 1280", (10.0, 1280.0, 29), (10.0, 1280.0, 29)),
+            ("lin 5 1 2", (1.0, 2.0, 5), (1.0, 2.0, 5)),
+            ("dec 10 5 5", (5.0, 5.0, 1), (5.0, 5.0, 1)),
+        ] {
+            let (got_ac, got_noise) = grids(sweep);
+            assert_grid(got_ac, ac, &format!(".ac {sweep}"));
+            assert_grid(got_noise, noise, &format!(".noise {sweep}"));
+        }
+    }
+
+    /// The frequencies `solve_ac` sweeps for `.ac dec 10 1 50`, as ngspice
+    /// 47 prints them: 50^(k/16).
+    #[test]
+    fn partial_decade_ac_frequencies() {
+        let config = analyses(".ac dec 10 1 50")[0].ac_config("v1").unwrap();
+        let freqs = crate::ac_analysis::generate_frequencies(&config);
+        let ngspice = [
+            1.0,
+            1.276_984_498_3,
+            1.630_689_409_0,
+            2.082_365_096_8,
+            2.659_147_948_5,
+            3.395_690_708_9,
+            4.336_244_396_4,
+            5.537_316_875_2,
+            7.071_067_811_9,
+            9.029_643_982_3,
+            11.530_715_391,
+            14.724_544_809,
+            18.803_015_465,
+            24.011_159_271,
+            30.661_878_176,
+            39.154_743_120,
+            50.0,
+        ];
+        assert_eq!(freqs.len(), ngspice.len());
+        for (got, want) in freqs.iter().zip(ngspice) {
+            assert!((got / want - 1.0).abs() < 1e-10, "{got} vs {want}");
+        }
+    }
+
+    /// A request built by hand needn't be valid, but its grid mustn't
+    /// panic: an inverted band is a single point, and `solve_ac` rejects a
+    /// zero `fstart` whatever the count.
+    #[test]
+    fn sweep_grid_survives_a_hand_built_request() {
+        let ac = |fstart, fstop| {
+            AnalysisRequest::Ac {
+                sweep: AcSweep::Dec,
+                points: 10,
+                fstart,
+                fstop,
+            }
+            .ac_config("v1")
+            .unwrap()
+        };
+        assert!(ac(0.0, 1e3).num_points >= 1);
+        assert_eq!(ac(1e3, 1.0).num_points, 1);
+    }
+
+    /// Each `*_config` builds its own analysis's config and `None` for
+    /// every other, so a caller can `find_map` over a deck's analyses.
+    #[test]
+    fn configs_come_only_from_their_own_card() {
+        use crate::TfOutput;
+        let got = analyses(
+            ".op\n.tf v(in) v1\n.sens i(v1)\n.dc v1 0 1 0.5\n.tran 1u 1m\n\
+             .ac dec 10 1 1k\n.noise v(in) v1 dec 10 1 1k",
+        );
+        let found = |f: &dyn Fn(&AnalysisRequest) -> bool| -> Vec<usize> {
+            (0..got.len()).filter(|&i| f(&got[i])).collect()
+        };
+        assert_eq!(found(&|a| a.tf_config().is_some()), [1]);
+        assert_eq!(found(&|a| a.sens_config().is_some()), [2]);
+        assert_eq!(found(&|a| a.dc_axes().is_some()), [3]);
+        assert_eq!(found(&|a| a.transient_config().is_some()), [4]);
+        assert_eq!(found(&|a| a.ac_config("v1").is_some()), [5]);
+        assert_eq!(found(&|a| a.noise_config().is_some()), [6]);
+
+        let tf = got[1].tf_config().unwrap();
+        assert_eq!(tf.input_source, "v1");
+        assert_eq!(
+            tf.output,
+            TfOutput::Voltage {
+                node: "in".into(),
+                reference: None
+            }
+        );
+        assert_eq!(
+            got[2].sens_config().unwrap().output,
+            TfOutput::Current {
+                source_id: "v1".into()
+            }
+        );
+        let (inner, outer) = got[3].dc_axes().unwrap().unwrap();
+        assert_eq!((inner.source_id.as_str(), inner.num_points), ("v1", 3));
+        assert!(outer.is_none());
+    }
+
+    /// A linear `.ac` sweep's count is the total, as written.
+    #[test]
+    fn linear_ac_config() {
+        let config = analyses(".ac lin 11 0 1k")[0].ac_config("v1").unwrap();
+        assert_eq!(
+            (config.f_start, config.f_stop, config.num_points),
+            (0.0, 1e3, 11)
+        );
+        assert_eq!(config.spacing, crate::ac_analysis::FrequencySpacing::Linear);
+        assert_eq!((config.ac_magnitude, config.ac_phase_deg), (1.0, 0.0));
+    }
+
     #[test]
     fn directives_keep_source_order() {
-        let kinds: Vec<&str> = analyses(".ac lin 2 1 2\n.op\n.tran 1u 1m\n.dc V1 0 1 1")
-            .iter()
-            .map(|a| match a {
-                AnalysisRequest::Op => "op",
-                AnalysisRequest::Tran { .. } => "tran",
-                AnalysisRequest::Dc { .. } => "dc",
-                AnalysisRequest::Ac { .. } => "ac",
-                AnalysisRequest::Tf { .. } => "tf",
-                AnalysisRequest::Sens { .. } => "sens",
-                AnalysisRequest::Noise { .. } => "noise",
-            })
-            .collect();
-        assert_eq!(kinds, ["ac", "op", "tran", "dc"]);
+        let kinds: Vec<&str> = analyses(
+            ".ac lin 2 1 2\n.sens v(in)\n.op\n.noise v(in) v1 lin 2 1 2\n.tran 1u 1m\n\
+             .tf v(in) v1\n.dc V1 0 1 1",
+        )
+        .iter()
+        .map(|a| match a {
+            AnalysisRequest::Op => "op",
+            AnalysisRequest::Tran { .. } => "tran",
+            AnalysisRequest::Dc { .. } => "dc",
+            AnalysisRequest::Ac { .. } => "ac",
+            AnalysisRequest::Tf { .. } => "tf",
+            AnalysisRequest::Sens { .. } => "sens",
+            AnalysisRequest::Noise { .. } => "noise",
+        })
+        .collect();
+        assert_eq!(kinds, ["ac", "sens", "op", "noise", "tran", "tf", "dc"]);
     }
 
     #[test]

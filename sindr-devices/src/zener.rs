@@ -73,6 +73,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_is_a_5v1_zener_at_the_nominal_temperature() {
+        let p = ZenerParams::default();
+        assert_eq!((p.vz, p.rz, p.is, p.temperature), (5.1, 1.0, 1e-14, T_NOM));
+    }
+
+    #[test]
     fn forward_bias_conducts() {
         let p = ZenerParams::new(5.1);
         let (g, _) = zener_companion(0.65, &p);

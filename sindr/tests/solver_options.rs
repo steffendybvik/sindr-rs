@@ -3,9 +3,11 @@
 
 use std::collections::HashMap;
 
+use sindr::dc_sweep::DcSweepAxis;
 use sindr::{
-    solve_circuit, solve_transient, BjtKind, Circuit, CircuitElement, ConvergenceAid, SimError,
-    Solver, SolverOptions, TransientConfig,
+    solve_circuit, solve_transient, BjtKind, Circuit, CircuitElement, ConvergenceAid,
+    FrequencySpacing, NoiseConfig, SensConfig, SimError, SolvePoint, Solver, SolverOptions,
+    TfConfig, TfOutput, TransientConfig,
 };
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
@@ -288,10 +290,57 @@ fn deprecated_seeded_functions_still_work() {
     let mut seed = HashMap::new();
     seed.insert("a".to_string(), 0.7);
     let old = sindr::solve_circuit_with_initial_voltages(&diode_circuit(), &seed).unwrap();
-    let new = Solver::new(SolverOptions::default().with_nodeset(seed))
-        .circuit(&diode_circuit())
-        .unwrap();
+    let solver = Solver::new(SolverOptions::default().with_nodeset(seed.clone()));
+    let new = solver.circuit(&diode_circuit()).unwrap();
     assert_eq!(old.node_voltages, new.node_voltages);
+
+    // The small-signal ones: the same answer as the solver with that nodeset.
+    let c = diode_circuit();
+    let out = TfOutput::Voltage {
+        node: "a".into(),
+        reference: None,
+    };
+    let tf = TfConfig {
+        output: out.clone(),
+        input_source: "V1".into(),
+    };
+    assert_eq!(
+        sindr::transfer_function::solve_tf_with_initial_voltages(&c, &tf, &seed).unwrap(),
+        solver.tf(&c, &tf).unwrap()
+    );
+    let sens = SensConfig { output: out };
+    assert_eq!(
+        sindr::sensitivity::solve_sensitivity_with_initial_voltages(&c, &sens, &seed).unwrap(),
+        solver.sensitivity(&c, &sens).unwrap()
+    );
+    let noise = NoiseConfig {
+        output: "a".into(),
+        reference: None,
+        input_source: "V1".into(),
+        f_start: 10.0,
+        f_stop: 1e3,
+        num_points: 3,
+        spacing: FrequencySpacing::Logarithmic,
+    };
+    assert_eq!(
+        sindr::noise::solve_noise_with_initial_voltages(&c, &noise, &seed).unwrap(),
+        solver.noise(&c, &noise).unwrap()
+    );
+    let ac = sindr::AcConfig {
+        f_start: 10.0,
+        f_stop: 1e3,
+        num_points: 3,
+        spacing: FrequencySpacing::Logarithmic,
+        source_id: "V1".into(),
+        ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
+    };
+    let (old, new) = (
+        sindr::ac_analysis::solve_ac_with_initial_voltages(&c, &ac, &seed).unwrap(),
+        solver.ac(&c, &ac).unwrap(),
+    );
+    assert_eq!(old.gain_curve("a"), new.gain_curve("a"));
+    assert_eq!(old.phase_curve("a"), new.phase_curve("a"));
 }
 
 #[cfg(feature = "serde")]
@@ -352,5 +401,138 @@ mod spice_options {
             let deck = format!("{DECK}{card}\n.end\n");
             assert!(parse_str(&deck).is_err(), "{card}");
         }
+    }
+}
+
+/// Every analysis a `Solver` runs, on `c` (which has `V1` and a node `a`),
+/// each failure tagged with the analysis' name.
+fn every_analysis(solver: &Solver, c: &Circuit) -> Vec<(&'static str, Result<(), SimError>)> {
+    let out = TfOutput::Voltage {
+        node: "a".into(),
+        reference: None,
+    };
+    let tf = TfConfig {
+        output: out.clone(),
+        input_source: "V1".into(),
+    };
+    let noise = NoiseConfig {
+        output: "a".into(),
+        reference: None,
+        input_source: "V1".into(),
+        f_start: 10.0,
+        f_stop: 1e3,
+        num_points: 3,
+        spacing: FrequencySpacing::Logarithmic,
+    };
+    let ac = sindr::AcConfig {
+        f_start: 10.0,
+        f_stop: 1e3,
+        num_points: 3,
+        spacing: FrequencySpacing::Logarithmic,
+        source_id: "V1".into(),
+        ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
+    };
+    let inner = DcSweepAxis::new("V1", 5.0, 5.001, 2);
+    let outer = DcSweepAxis::new("V2", 1.0, 1.001, 2);
+    vec![
+        ("op", solver.op(c).map(drop)),
+        ("ac", solver.ac(c, &ac).map(drop)),
+        ("noise", solver.noise(c, &noise).map(drop)),
+        ("tf", solver.tf(c, &tf).map(drop)),
+        (
+            "sensitivity",
+            solver.sensitivity(c, &SensConfig { output: out }).map(drop),
+        ),
+        (
+            "dc_sweep",
+            solver.dc_sweep(c, "V1", 5.0, 5.001, 2).map(drop),
+        ),
+        (
+            "dc_sweep_nested",
+            solver.dc_sweep_nested(c, &inner, &outer).map(drop),
+        ),
+        (
+            "temperature_sweep",
+            solver.temperature_sweep(c, 300.15, 300.25, 2).map(drop),
+        ),
+    ]
+}
+
+/// The diode circuit with a second source, `V2`, for the nested sweep.
+fn two_source_diode_circuit() -> Circuit {
+    let mut c = diode_circuit();
+    c.components.push(vsource("V2", "b", "0", 1.0));
+    c.components.push(resistor("R2", "b", "a", 10e3));
+    c
+}
+
+/// No convergence aids and a budget of `iterations`.
+fn starved(iterations: usize) -> SolverOptions {
+    let mut o = SolverOptions::default();
+    o.max_iterations = iterations;
+    o.gmin_steps.clear();
+    o.source_stepping = false;
+    o
+}
+
+#[test]
+fn the_solver_keeps_its_options() {
+    let o = starved(3);
+    assert_eq!(Solver::new(o.clone()).options(), &o);
+    assert_eq!(Solver::default().options(), &SolverOptions::default());
+}
+
+/// Every wrapper validates its options before solving.
+#[test]
+fn every_analysis_rejects_bad_options() {
+    let mut o = SolverOptions::default();
+    o.reltol = -1.0;
+    for (name, result) in every_analysis(&Solver::new(o), &two_source_diode_circuit()) {
+        assert!(
+            matches!(&result, Err(SimError::InvalidComponent(m)) if m.contains("reltol")),
+            "{name}: {result:?}"
+        );
+    }
+}
+
+/// The options reach the bias point of every analysis: one Newton step with
+/// no aids can't find the diode from 0 V, and the error says where, the
+/// first point of a sweep included. Two steps from 0 V aren't enough either,
+/// but from a nodeset at the answer they are, so the nodeset reaches every
+/// analysis too.
+#[test]
+fn every_analysis_runs_with_the_solvers_options() {
+    let c = two_source_diode_circuit();
+    for (name, result) in every_analysis(&Solver::default(), &c) {
+        assert!(result.is_ok(), "{name}: {result:?}");
+    }
+    for (name, result) in every_analysis(&Solver::new(starved(1)), &c) {
+        let want = match name {
+            // The nested sweep names the inner source's point.
+            "dc_sweep" | "dc_sweep_nested" => SolvePoint::DcSweep {
+                source: "V1".into(),
+                value: 5.0,
+            },
+            "temperature_sweep" => SolvePoint::Temperature { kelvin: 300.15 },
+            _ => SolvePoint::OperatingPoint,
+        };
+        match result {
+            Err(SimError::ConvergenceFailed { iterations, at, .. }) => {
+                assert_eq!(iterations, 1, "{name}");
+                assert_eq!(at, want, "{name}");
+            }
+            other => panic!("{name}: expected ConvergenceFailed, got {other:?}"),
+        }
+    }
+
+    for (name, result) in every_analysis(&Solver::new(starved(2)), &c) {
+        assert!(result.is_err(), "{name} needs more than two steps from 0 V");
+    }
+    let exact = solve_circuit(&c).unwrap().node_voltages;
+    let mut seeded = starved(2);
+    seeded.nodeset = exact.clone();
+    for (name, result) in every_analysis(&Solver::new(seeded), &c) {
+        assert!(result.is_ok(), "{name}: {result:?}");
     }
 }

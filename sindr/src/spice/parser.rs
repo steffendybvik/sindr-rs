@@ -71,6 +71,10 @@ fn anchor_to_line(card: RawCard, line: &LogicalLine) -> RawCard {
             e.span = line_span(line);
             RawCard::Element(e)
         }
+        RawCard::Model(mut m) => {
+            m.span = line_span(line);
+            RawCard::Model(m)
+        }
         RawCard::Param(bindings, _) => RawCard::Param(bindings, line_span(line)),
         RawCard::Analysis(analysis, _) => RawCard::Analysis(analysis, line_span(line)),
         RawCard::NodeValues(kind, values, _) => RawCard::NodeValues(kind, values, line_span(line)),
@@ -439,9 +443,6 @@ fn keyword<'a>(kw: &'static str) -> impl Parser<Input<'a>, &'a str, ErrMode<Cont
 /// next token is not a waveform keyword.
 fn parse_waveform(input: &mut Input<'_>) -> ModalResult<Option<RawWaveform>> {
     ws(input)?;
-    if input.is_empty() {
-        return Ok(None);
-    }
     let cp = input.checkpoint();
     // Try each waveform keyword followed by `(`.
     if keyword("pulse").parse_next(input).is_ok() {
@@ -621,19 +622,15 @@ fn parse_bjt(input: &mut Input<'_>) -> ModalResult<RawElement> {
         }
     }
     ws(input)?;
-    if !input.is_empty() || tokens.len() < 4 || tokens.len() > 5 {
+    if !input.is_empty() {
         return Err(ErrMode::from_input(input));
     }
-    // `tokens.len()` is 4 or 5 here (checked above), so both pops are
-    // guaranteed `Some`; handle the `None` arm without panicking anyway.
-    let Some(model) = tokens.pop() else {
-        return Err(ErrMode::from_input(input));
+    let (model, substrate) = match tokens.as_slice() {
+        [_, _, _, model] => (model.clone(), None),
+        [_, _, _, substrate, model] => (model.clone(), Some(substrate.clone())),
+        _ => return Err(ErrMode::from_input(input)),
     };
-    let substrate = if tokens.len() == 4 {
-        tokens.pop()
-    } else {
-        None
-    };
+    tokens.truncate(3);
     // tokens now holds [nc, nb, ne].
     Ok(RawElement {
         id,
@@ -677,11 +674,9 @@ fn parse_subckt_instance(input: &mut Input<'_>) -> ModalResult<RawElement> {
         }
     }
     ws(input)?;
-    if !input.is_empty() || tokens.is_empty() {
-        return Err(ErrMode::from_input(input));
-    }
-    let Some(name) = tokens.pop() else {
-        return Err(ErrMode::from_input(input));
+    let name = match tokens.pop() {
+        Some(name) if input.is_empty() => name,
+        _ => return Err(ErrMode::from_input(input)),
     };
     Ok(RawElement {
         id,
@@ -1148,11 +1143,11 @@ fn meas_signal(word: &str) -> Result<crate::measure::Signal, String> {
     if args.iter().any(|a| a.is_empty()) || args.len() > 2 {
         return Err(bad());
     }
+    // `split` yields at least one piece, and at most two passed the check.
     let voltage = |view: View| {
-        let mut signal = match args.as_slice() {
-            [n] => Signal::v(*n),
-            [n, r] => Signal::v_diff(*n, *r),
-            _ => unreachable!("checked above"),
+        let mut signal = match args.get(1) {
+            None => Signal::v(args[0]),
+            Some(r) => Signal::v_diff(args[0], *r),
         };
         signal.view = view;
         signal
@@ -1420,10 +1415,19 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "nodeset" => parse_card_node_values(&mut input, NodeValueKind::Nodeset),
             "options" | "option" | "opt" | "opts" => parse_card_options(&mut input),
             "global" => parse_card_global(&mut input),
-            "include" | "lib" => {
-                // Should have been resolved by the preprocessor.
+            // The preprocessor splices every well-formed one, so only a
+            // malformed card or a stray section marker gets here.
+            "include" => {
                 return Err(LocalError::Syntax {
-                    message: "internal: unresolved include reached parser".to_string(),
+                    message: "`.include` takes exactly one file path".to_string(),
+                    span: 0..trimmed.len(),
+                });
+            }
+            "lib" => {
+                return Err(LocalError::Syntax {
+                    message: "`.lib` takes a file path and an optional section; \
+                              `.lib <section>` alone only opens a section in a library file"
+                        .to_string(),
                     span: 0..trimmed.len(),
                 });
             }

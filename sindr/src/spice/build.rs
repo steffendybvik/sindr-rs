@@ -147,12 +147,12 @@ pub(crate) fn build_netlist(
     let mut initial_conditions = HashMap::new();
     let mut nodesets = HashMap::new();
     for (kind, values, span) in &flat.node_values {
-        let (card, map) = match kind {
-            NodeValueKind::Ic => (".ic", &mut initial_conditions),
-            NodeValueKind::Nodeset => (".nodeset", &mut nodesets),
+        let map = match kind {
+            NodeValueKind::Ic => &mut initial_conditions,
+            NodeValueKind::Nodeset => &mut nodesets,
         };
         for (node, expr) in values {
-            let v = eval_finite(expr, &top_scope, card, node).map_err(|e| e.locate(span))?;
+            let v = eval_or_lift(expr, &top_scope).map_err(|e| e.locate(span))?;
             map.insert(node.clone(), v);
         }
     }
@@ -214,7 +214,16 @@ fn couple(
     let find = |name: &str| {
         elements
             .iter()
-            .position(|e| matches!(e, CircuitElement::Inductor { id, .. } if id == name))
+            .enumerate()
+            .find_map(|(i, e)| match e {
+                CircuitElement::Inductor {
+                    id,
+                    nodes,
+                    inductance,
+                    ..
+                } if id == name => Some((i, nodes.clone(), *inductance)),
+                _ => None,
+            })
             .ok_or_else(|| {
                 fail(format!(
                     "`{id}` couples `{name}`, which isn't an `L` line in the same scope \
@@ -222,16 +231,8 @@ fn couple(
                 ))
             })
     };
-    let (i1, i2) = (find(l1)?, find(l2)?);
-    let winding = |i: usize| match &elements[i] {
-        CircuitElement::Inductor {
-            nodes, inductance, ..
-        } => Some((nodes.clone(), *inductance)),
-        _ => None,
-    };
-    let (Some(([p1, q1], l1)), Some(([p2, q2], l2))) = (winding(i1), winding(i2)) else {
-        return Err(fail(format!("internal: `{id}` lost its inductors")));
-    };
+    let (i1, [p1, q1], l1) = find(l1)?;
+    let (i2, [p2, q2], l2) = find(l2)?;
     let transformer = CircuitElement::Transformer {
         id,
         nodes: [p1, q1, p2, q2],
@@ -802,7 +803,7 @@ fn build_options(
                 let expr = expr.as_ref().ok_or_else(|| {
                     card_error(format!("`.options` {what} needs a value: `{what}=<value>`"))
                 })?;
-                let v = eval_finite(expr, scope, ".options", what)?;
+                let v = eval_or_lift(expr, scope)?;
                 if v <= 0.0 {
                     return Err(card_error(format!(
                         "`.options` {what} must be positive (got {v})"
@@ -898,9 +899,9 @@ fn build_dc_axis(
             bad_span: (0, 0).into(),
         });
     }
-    let start = eval_finite(&args[0], scope, ".dc", "start")?;
-    let stop = eval_finite(&args[1], scope, ".dc", "stop")?;
-    let step = eval_finite(&args[2], scope, ".dc", "step")?;
+    let start = eval_or_lift(&args[0], scope)?;
+    let stop = eval_or_lift(&args[1], scope)?;
+    let step = eval_or_lift(&args[2], scope)?;
     // A zero step never reaches stop, and one pointing away from it
     // never gets there either.
     if start != stop && (step == 0.0 || (stop - start).signum() != step.signum()) {
@@ -913,27 +914,27 @@ fn build_dc_axis(
 
 fn build_measure(raw: &RawMeasure, scope: &ParamScope) -> Result<MeasureRequest, SpiceParseError> {
     use crate::measure::{Crossing, Measure, Measurement};
-    let value = |expr: &ParamExpr, what: &str| eval_finite(expr, scope, ".meas", what);
-    let crossing = |c: &RawCrossing, what: &str| -> Result<Crossing, SpiceParseError> {
+    let value = |expr: &ParamExpr| eval_or_lift(expr, scope);
+    let crossing = |c: &RawCrossing| -> Result<Crossing, SpiceParseError> {
         Ok(Crossing {
             signal: c.signal.clone(),
-            level: value(&c.level, what)?,
+            level: value(&c.level)?,
             edge: c.edge,
             occurrence: c.occurrence,
         })
     };
     let measure = match &raw.kind {
         RawMeasureKind::Stat(signal, stat) => Measure::stat(signal.clone(), *stat),
-        RawMeasureKind::Find(signal, at) => Measure::find(signal.clone(), value(at, "at")?),
-        RawMeasureKind::When(c) => Measure::When(crossing(c, "level")?),
+        RawMeasureKind::Find(signal, at) => Measure::find(signal.clone(), value(at)?),
+        RawMeasureKind::When(c) => Measure::When(crossing(c)?),
         RawMeasureKind::Delay(trig, targ) => Measure::Delay {
-            trig: crossing(trig, "trig val")?,
-            targ: crossing(targ, "targ val")?,
+            trig: crossing(trig)?,
+            targ: crossing(targ)?,
         },
     };
     let mut measurement = Measurement::new(raw.name.clone(), measure);
-    measurement.from = raw.from.as_ref().map(|e| value(e, "from")).transpose()?;
-    measurement.to = raw.to.as_ref().map(|e| value(e, "to")).transpose()?;
+    measurement.from = raw.from.as_ref().map(value).transpose()?;
+    measurement.to = raw.to.as_ref().map(value).transpose()?;
     Ok(MeasureRequest {
         analysis: raw.analysis,
         measurement,
@@ -956,14 +957,14 @@ fn build_analysis(
                     bad_span: (0, 0).into(),
                 });
             }
-            let tstep = eval_finite(&args[0], scope, ".tran", "tstep")?;
-            let tstop = eval_finite(&args[1], scope, ".tran", "tstop")?;
+            let tstep = eval_or_lift(&args[0], scope)?;
+            let tstop = eval_or_lift(&args[1], scope)?;
             let tstart = match args.get(2) {
-                Some(arg) => Some(eval_finite(arg, scope, ".tran", "tstart")?),
+                Some(arg) => Some(eval_or_lift(arg, scope)?),
                 None => None,
             };
             let tmax = match args.get(3) {
-                Some(arg) => Some(eval_finite(arg, scope, ".tran", "tmax")?),
+                Some(arg) => Some(eval_or_lift(arg, scope)?),
                 None => None,
             };
             Ok(AnalysisRequest::Tran {
@@ -1016,14 +1017,14 @@ fn build_analysis(
             fstart,
             fstop,
         } => {
-            let pts = eval_finite(points, scope, ".noise", "points")?;
+            let pts = eval_or_lift(points, scope)?;
             if pts < 1.0 || pts > MAX_AC_POINTS as f64 {
                 return Err(card_error(format!(
                     "`.noise` points must be a positive integer in 1..={MAX_AC_POINTS} (got {pts})"
                 )));
             }
-            let fstart = eval_finite(fstart, scope, ".noise", "fstart")?;
-            let fstop = eval_finite(fstop, scope, ".noise", "fstop")?;
+            let fstart = eval_or_lift(fstart, scope)?;
+            let fstop = eval_or_lift(fstop, scope)?;
             if fstart <= 0.0 {
                 return Err(card_error(format!(
                     "`.noise` fstart must be above 0, where flicker noise is finite (got {fstart})"
@@ -1054,7 +1055,7 @@ fn build_analysis(
             fstart,
             fstop,
         } => {
-            let pts = eval_finite(points, scope, ".ac", "points")?;
+            let pts = eval_or_lift(points, scope)?;
             // Bound the count before the `as usize` cast: a float→int cast
             // saturates (e.g. `1e18 as usize == usize::MAX`), which would make
             // the downstream `Vec::with_capacity` abort the process.
@@ -1067,8 +1068,8 @@ fn build_analysis(
                     bad_span: (0, 0).into(),
                 });
             }
-            let fstart = eval_finite(fstart, scope, ".ac", "fstart")?;
-            let fstop = eval_finite(fstop, scope, ".ac", "fstop")?;
+            let fstart = eval_or_lift(fstart, scope)?;
+            let fstop = eval_or_lift(fstop, scope)?;
             let log = !matches!(sweep, AcSweepKind::Lin);
             if (log && fstart <= 0.0) || fstart < 0.0 {
                 return Err(card_error(format!(
@@ -1139,32 +1140,12 @@ fn scope_from_snapshot(snapshot: &HashMap<String, f64>) -> ParamScope {
 }
 
 /// Evaluates `expr`, rejecting NaN and ±∞: `1e400` or `{1/0}` would
-/// otherwise reach the solver as an infinite component value.
+/// otherwise reach the solver as an infinite component value, and an
+/// analysis directive as a degenerate sweep.
 fn eval_or_lift(expr: &ParamExpr, scope: &ParamScope) -> Result<f64, SpiceParseError> {
     let v = eval(expr, scope).map_err(|e| eval_error_to_parse_error(e, "<build>"))?;
     if !v.is_finite() {
         return Err(card_error(format!("value is {v}, not a finite number")));
-    }
-    Ok(v)
-}
-
-/// Like [`eval_or_lift`], but additionally rejects non-finite (NaN / ±∞)
-/// results. Analysis-directive arguments flow straight into the solver, so a
-/// non-finite timestep / frequency would otherwise silently produce a
-/// degenerate sweep. `card`/`what` name the directive and field for the error.
-fn eval_finite(
-    expr: &ParamExpr,
-    scope: &ParamScope,
-    card: &str,
-    what: &str,
-) -> Result<f64, SpiceParseError> {
-    let v = eval_or_lift(expr, scope)?;
-    if !v.is_finite() {
-        return Err(SpiceParseError::Syntax {
-            message: format!("`{card}` {what} must be a finite number (got {v})"),
-            src: NamedSource::new("<build>", String::new()),
-            bad_span: (0, 0).into(),
-        });
     }
     Ok(v)
 }

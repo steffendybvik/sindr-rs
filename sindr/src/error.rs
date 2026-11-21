@@ -315,4 +315,33 @@ mod tests {
             .to_string()
             .contains("n1"));
     }
+
+    #[test]
+    fn convergence_message_at_each_point_and_without_components() {
+        let failed =
+            |node: Option<&str>, components: Vec<String>, at| SimError::ConvergenceFailed {
+                iterations: 3,
+                max_step_volts: 0.5,
+                node: node.map(String::from),
+                components,
+                at,
+            };
+        assert_eq!(
+            failed(Some("x"), vec![], SolvePoint::OperatingPoint).to_string(),
+            "Newton-Raphson failed to converge at the DC operating point after 3 iterations: \
+             node `x` was still moving 5.000e-1 V per iteration. \
+             The circuit may have no valid operating point there."
+        );
+        assert_eq!(
+            failed(None, vec![], SolvePoint::Temperature { kelvin: 398.15 }).to_string(),
+            "Newton-Raphson failed to converge at temperature sweep point 398.15 K after \
+             3 iterations. The circuit may have no valid operating point there."
+        );
+        let many: Vec<String> = (1..=8).map(|k| format!("R{k}")).collect();
+        let msg = failed(Some("x"), many, SolvePoint::OperatingPoint).to_string();
+        assert!(
+            msg.contains("node `x` (on R1, R2, R3, R4, R5, R6 and 2 more)"),
+            "{msg}"
+        );
+    }
 }

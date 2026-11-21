@@ -213,6 +213,8 @@ mod tests {
     fn not_values() {
         for text in [
             "", "BC547", "k", "red", "10x", "1.2.3", "4k7k", "--1", "NE555",
+            // An `e` with no exponent digits after it isn't an exponent.
+            "1e", "2e+", "3E-", "1ex",
         ] {
             assert_eq!(parse_value(text), None, "{text:?}");
         }

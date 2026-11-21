@@ -341,21 +341,14 @@ pub fn stamp_circuit(
                     stamp_jfet_companion(system, node_map, nodes, *kind, *idss, *vp, vp_prev);
                 }
             }
-            // Transformer — DC: both windings are near-short-circuit resistors
+            // Transformer at DC: both windings shorted, each a 0 V source on
+            // one of its two branch slots, as `dc_equivalent` has them.
             CircuitElement::Transformer { nodes, .. } => {
-                // DC: pure inductors are short circuits. Use very small resistance to avoid singular matrix.
-                stamp_resistor(
-                    system,
-                    node_map,
-                    &[nodes[0].clone(), nodes[1].clone()],
-                    1e-9,
-                );
-                stamp_resistor(
-                    system,
-                    node_map,
-                    &[nodes[2].clone(), nodes[3].clone()],
-                    1e-9,
-                );
+                let [p1, q1, p2, q2] = nodes.clone();
+                let branch = num_nodes + vsource_index;
+                stamp_voltage_source(system, node_map, &[p1, q1], 0.0, branch);
+                stamp_voltage_source(system, node_map, &[p2, q2], 0.0, branch + 1);
+                vsource_index += 2;
             }
             CircuitElement::VoltageRegulator {
                 nodes,
@@ -528,12 +521,30 @@ pub(crate) fn stamp_regulator(
     v_prev: Option<&DVector<f64>>,
 ) {
     let piece = regulator_piece_at(node_map, nodes, voltage, model, branch, v_prev);
-    // A negative regulator's quiescent current runs the other way: in at
-    // the ground pin, out at the (negative) input.
-    let iq = model.map_or(0.0, |m| m.quiescent_current).copysign(voltage);
     let input = node_map.index(&nodes[0]);
     let out = node_map.index(&nodes[1]);
     let gnd = node_map.index(&nodes[2]);
+    // Quiescent current `iq + g·(Vin − Vg)` from the input to the ground pin,
+    // on the piece of its ramp the previous iterate is on. A negative
+    // regulator's runs the other way: in at the ground pin, out at the
+    // (negative) input.
+    let (iq, g_q) = match model {
+        Some(params) => {
+            let vin = regulator_state(node_map, nodes, branch, v_prev)
+                .map_or(f64::INFINITY.copysign(voltage), |(vin, _, _)| vin);
+            sindr_devices::regulator::regulator_quiescent(params, voltage, vin)
+        }
+        None => (0.0, 0.0),
+    };
+    let mut conductance = |r: Option<usize>, c: Option<usize>, g: f64| {
+        if let (Some(r), Some(c)) = (r, c) {
+            system.a[(r, c)] += g;
+        }
+    };
+    conductance(input, input, g_q);
+    conductance(input, gnd, -g_q);
+    conductance(gnd, input, -g_q);
+    conductance(gnd, gnd, g_q);
     if let Some(o) = out {
         system.a[(o, branch)] += 1.0;
         system.a[(branch, o)] += 1.0;
@@ -1065,6 +1076,54 @@ mod tests {
     use super::*;
     use crate::circuit::Circuit;
     use approx::assert_relative_eq;
+
+    /// A transformer at DC shorts both windings on its own two branch
+    /// rows, and a voltage source after it still gets the next row.
+    #[test]
+    fn dc_transformer_takes_its_two_branch_rows() {
+        let r = |id: &str, a: &str, b: &str, ohms: f64| CircuitElement::Resistor {
+            id: id.into(),
+            nodes: [a.into(), b.into()],
+            resistance: ohms,
+        };
+        let v = |id: &str, a: &str, volts: f64| CircuitElement::VoltageSource {
+            id: id.into(),
+            nodes: [a.into(), "0".into()],
+            voltage: volts,
+            waveform: None,
+        };
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                v("V1", "a", 2.0),
+                r("R1", "a", "p", 1e3),
+                CircuitElement::Transformer {
+                    id: "T1".into(),
+                    nodes: ["p".into(), "0".into(), "s".into(), "0".into()],
+                    l1: 1e-3,
+                    l2: 1e-3,
+                    k: 0.99,
+                },
+                r("R2", "s", "0", 1e3),
+                v("V2", "b", 3.0),
+                r("R3", "b", "0", 1e3),
+            ],
+            ..Default::default()
+        };
+        let node_map = NodeMap::from_circuit(&circuit);
+        let n = node_map.num_nodes();
+        let mut system = MnaSystem::new(n, circuit.count_voltage_sources());
+        stamp_circuit(&circuit, &mut system, &node_map, None).unwrap();
+        let x = system.solve().unwrap();
+        let at = |node: &str| x[node_map.index(node).unwrap()];
+        assert_relative_eq!(at("p"), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(at("s"), 0.0, epsilon = 1e-12);
+        assert_relative_eq!(at("b"), 3.0, epsilon = 1e-12);
+        // Rows: V1, then the two windings, then V2. The primary carries
+        // V1's 2 mA through R1.
+        assert_relative_eq!(x[n + 1], 2e-3, epsilon = 1e-12);
+        assert_relative_eq!(x[n + 3], -3e-3, epsilon = 1e-12);
+    }
 
     /// Resistor stamp isolation: R=1k between n1 and ground.
     /// A matrix is 1x1 (one non-ground node, zero vsources).
@@ -2140,5 +2199,119 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The linear pass (`v_prev = None`) stamps nothing for a nonlinear
+    /// device or a capacitor (open at DC) and leaves an inductor to the
+    /// caller, which shorts it with a 0 V source first: the system is the
+    /// resistors' alone. A varactor is a 1 TΩ shunt, so its node keeps a
+    /// DC path.
+    #[test]
+    fn linear_pass_stamps_only_the_linear_parts() {
+        let r = |id: &str, a: &str| CircuitElement::Resistor {
+            id: id.into(),
+            nodes: [a.into(), "0".into()],
+            resistance: 1e3,
+        };
+        let resistors = vec![r("RA", "a"), r("RB", "b"), r("RC", "c")];
+        let two = || -> [String; 2] { ["a".into(), "b".into()] };
+        let three = || -> [String; 3] { ["a".into(), "b".into(), "c".into()] };
+        let nonlinear = vec![
+            CircuitElement::Diode {
+                id: "D1".into(),
+                nodes: two(),
+                temperature: 300.15,
+                model: None,
+            },
+            CircuitElement::Led {
+                id: "LED1".into(),
+                nodes: two(),
+                color: "red".into(),
+                temperature: 300.15,
+            },
+            CircuitElement::ZenerDiode {
+                id: "DZ1".into(),
+                nodes: two(),
+                vz: 5.1,
+                temperature: 300.15,
+            },
+            CircuitElement::SchottkyDiode {
+                id: "DS1".into(),
+                nodes: two(),
+                temperature: 300.15,
+            },
+            CircuitElement::Photodiode {
+                id: "PD1".into(),
+                nodes: two(),
+                irradiance: 1.0,
+                temperature: 300.15,
+            },
+            CircuitElement::Bjt {
+                id: "Q1".into(),
+                nodes: three(),
+                kind: BjtKind::Npn,
+                bf: 100.0,
+                temperature: 300.15,
+                parasitic_caps: None,
+                model: None,
+            },
+            CircuitElement::Mosfet {
+                id: "M1".into(),
+                nodes: three(),
+                kind: MosfetKind::Nmos,
+                params: MosfetParams::default_nmos(),
+                parasitic_caps: None,
+                body_diode: None,
+            },
+            CircuitElement::Igbt {
+                id: "Z1".into(),
+                nodes: three(),
+                params: sindr_devices::igbt::IgbtParams::default(),
+            },
+            CircuitElement::Capacitor {
+                id: "C1".into(),
+                nodes: two(),
+                capacitance: 1e-6,
+            },
+            CircuitElement::Inductor {
+                id: "L1".into(),
+                nodes: two(),
+                inductance: 1e-3,
+                saturation: None,
+            },
+        ];
+        let full = Circuit::new("0", [resistors.clone(), nonlinear].concat());
+        let node_map = NodeMap::from_circuit(&full);
+        let stamped = |circuit: &Circuit| {
+            let mut system = MnaSystem::new(node_map.num_nodes(), 0);
+            stamp_circuit(circuit, &mut system, &node_map, None).unwrap();
+            system
+        };
+        let all = stamped(&full);
+        let only_r = stamped(&Circuit::new("0", resistors.clone()));
+        for i in 0..all.size() {
+            assert_eq!(all.b[i], only_r.b[i], "b[{i}]");
+            for j in 0..all.size() {
+                assert_eq!(all.a[(i, j)], only_r.a[(i, j)], "A[{i},{j}]");
+            }
+        }
+
+        let varactor = CircuitElement::Varactor {
+            id: "CV1".into(),
+            nodes: two(),
+            params: sindr_devices::varactor::VaractorParams::default(),
+        };
+        let with_varactor = stamped(&Circuit::new("0", [resistors, vec![varactor]].concat()));
+        let (a, b) = (node_map.index("a").unwrap(), node_map.index("b").unwrap());
+        assert_relative_eq!(
+            with_varactor.a[(a, a)] - only_r.a[(a, a)],
+            1e-12,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            with_varactor.a[(a, b)] - only_r.a[(a, b)],
+            -1e-12,
+            max_relative = 1e-12
+        );
     }
 }

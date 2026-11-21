@@ -355,10 +355,7 @@ impl ParsedNetlist {
     /// unless exactly one source carries an `AC` spec and it's a `V` line:
     /// sindr's AC analysis drives a single voltage source.
     pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> {
-        let request = self
-            .analyses
-            .iter()
-            .find(|a| matches!(a, AnalysisRequest::Ac { .. }))?;
+        let sweep = self.analyses.iter().find_map(|a| a.ac_config(""))?;
         let invalid = |msg: String| crate::SimError::InvalidComponent(format!(".ac: {msg}"));
         Some(match self.ac_stimuli.as_slice() {
             [] => Err(invalid("no V line carries an `AC` spec to drive".into())),
@@ -366,14 +363,12 @@ impl ParsedNetlist {
                 "`{}` is a current source; AC analysis drives a voltage source",
                 one.source
             ))),
-            [one] => request
-                .ac_config(&one.source)
-                .map(|mut config| {
-                    config.ac_magnitude = one.magnitude;
-                    config.ac_phase_deg = one.phase_deg;
-                    config
-                })
-                .ok_or_else(|| invalid("internal: not an .ac request".into())),
+            [one] => Ok(crate::ac_analysis::AcConfig {
+                source_id: one.source.clone(),
+                ac_magnitude: one.magnitude,
+                ac_phase_deg: one.phase_deg,
+                ..sweep
+            }),
             many => Err(invalid(format!(
                 "AC analysis drives one source, but {} carry an `AC` spec",
                 many.iter()

@@ -4840,8 +4840,8 @@ pub struct NoiseResult {
 /// # Errors
 ///
 /// - [`SimError::InvalidComponent`] if the input isn't an independent
-///   voltage or current source, an output node isn't in the circuit, or
-///   the frequencies are invalid (`f_start` must be above 0)
+///   voltage or current source, the output or reference node isn't in the
+///   circuit, or the frequencies are invalid (`f_start` must be above 0)
 /// - Any [`SimError`] from the DC operating point
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -5846,11 +5846,18 @@ impl AnalysisRequest {
     pub fn tf_config(&self) -> Option<crate::TfConfig> { … }
 
     /// The [`AcConfig`](crate::ac_analysis::AcConfig) for an `.ac` request,
-    /// driving `source_id` at 1 V and 0°; `None` for any other analysis. A
-    /// `dec` or `oct` sweep's per-decade or per-octave count becomes the
-    /// total over the band, both ends included.
+    /// driving `source_id` at 1 V and 0°; `None` for any other analysis.
     /// [`ParsedNetlist::ac_config`](crate::spice::ParsedNetlist::ac_config)
     /// takes the source and its stimulus from the deck's `AC` spec instead.
+    ///
+    /// The frequencies are ngspice's. A `lin` sweep is `points` from
+    /// `fstart` to `fstop`. A `dec` sweep over a decade or more is
+    /// ⌊points·decades⌋ equal log steps from `fstart` to `fstop`, so
+    /// `.ac dec 10 1 50` is 17 points. Any other `dec` or `oct` sweep steps
+    /// from `fstart` by 10^(1/points) or 2^(1/points) and stops at the last
+    /// point not past `fstop` (within ngspice's 0.1 % tolerance), so the
+    /// config's `f_stop` can fall short of the card's: `.ac oct 3 1 10`
+    /// ends at 8 Hz.
     ///
     /// ```
     /// use sindr::spice::parse_str;
@@ -5865,8 +5872,13 @@ impl AnalysisRequest {
 
     /// The [`NoiseConfig`](crate::NoiseConfig) for a `.noise` request, to
     /// pass to [`solve_noise`](crate::solve_noise); `None` for any other
-    /// analysis. A `dec` or `oct` sweep's per-decade or per-octave count
-    /// becomes the total over the band, both ends included.
+    /// analysis.
+    ///
+    /// The frequencies are ngspice's: a `lin` sweep is `points` from
+    /// `fstart` to `fstop`; a `dec` or `oct` sweep steps from `fstart` by
+    /// 10^(1/points) or 2^(1/points) and stops at the last point not past
+    /// `fstop` (within ngspice's 0.1 % tolerance). The config's `f_stop` is
+    /// that last point, so `.noise ... dec 10 1 50` ends at 10^1.6 ≈ 39.8 Hz.
     ///
     /// ```
     /// use sindr::spice::parse_str;
@@ -8381,10 +8393,25 @@ pub fn regulator_piece(
     iout: f64,
 ) -> RegulatorLinear { … }
 
-/// Power the regulator dissipates (W): `(Vin − Vout)·Iout + |Vin|·Iq`, with
-/// voltages from the ground pin. Both terms are positive for a negative
-/// regulator too, where `Vin`, `Vout` and `Iout` are all negative.
-pub fn regulator_dissipation(params: &RegulatorParams, vin: f64, vout: f64, iout: f64) -> f64 { … }
+/// The quiescent current a regulator set to `voltage` draws from its input
+/// at `vin` (V, from the ground pin), as `i0 + g·Vin` (A, into the input and
+/// out at the ground pin). It is the full `quiescent_current` once the input
+/// reaches the dropout voltage (0.1 V at least), ramps linearly to 0 below
+/// that, and is 0 with no input. Mirrored for a negative `voltage`.
+pub fn regulator_quiescent(params: &RegulatorParams, voltage: f64, vin: f64) -> (f64, f64) { … }
+
+/// Power a regulator set to `voltage` dissipates (W): `(Vin − Vout)·Iout +
+/// Vin·Iq`, with voltages from the ground pin and `Iq` the quiescent current
+/// drawn at `vin` ([`regulator_quiescent`]). Both terms are positive for a
+/// negative regulator too, where `Vin`, `Vout`, `Iout` and `Iq` are all
+/// negative.
+pub fn regulator_dissipation(
+    params: &RegulatorParams,
+    voltage: f64,
+    vin: f64,
+    vout: f64,
+    iout: f64,
+) -> f64 { … }
 ```
 
 ## `sindr-devices/src/schottky.rs`

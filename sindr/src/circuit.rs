@@ -1838,4 +1838,350 @@ mod tests {
             _ => panic!("Expected OpAmp variant"),
         }
     }
+
+    /// One of every element, with nets `<id>.0`, `<id>.1`, …, so a test can
+    /// tell which field an accessor reached.
+    fn every_element() -> Vec<CircuitElement> {
+        fn n<const N: usize>(id: &str) -> [String; N] {
+            std::array::from_fn(|k| format!("{id}.{k}"))
+        }
+        vec![
+            CircuitElement::Resistor {
+                id: "R".into(),
+                nodes: n("R"),
+                resistance: 1.0,
+            },
+            CircuitElement::VoltageSource {
+                id: "V".into(),
+                nodes: n("V"),
+                voltage: 1.0,
+                waveform: None,
+            },
+            CircuitElement::CurrentSource {
+                id: "I".into(),
+                nodes: n("I"),
+                current: 1.0,
+                waveform: None,
+            },
+            CircuitElement::Switch {
+                id: "S".into(),
+                nodes: n("S"),
+                closed: true,
+            },
+            CircuitElement::Capacitor {
+                id: "C".into(),
+                nodes: n("C"),
+                capacitance: 1.0,
+            },
+            CircuitElement::Battery {
+                id: "B".into(),
+                nodes: n("B"),
+                params: sindr_devices::battery::BatteryParams::constant(3.0, 1.0, 0.1),
+                state_of_charge: 1.0,
+            },
+            CircuitElement::Inductor {
+                id: "L".into(),
+                nodes: n("L"),
+                inductance: 1.0,
+                saturation: None,
+            },
+            CircuitElement::Diode {
+                id: "D".into(),
+                nodes: n("D"),
+                temperature: 300.15,
+                model: None,
+            },
+            CircuitElement::Led {
+                id: "LED".into(),
+                nodes: n("LED"),
+                color: "red".into(),
+                temperature: 300.15,
+            },
+            CircuitElement::Bjt {
+                id: "Q".into(),
+                nodes: n("Q"),
+                kind: BjtKind::Npn,
+                bf: 100.0,
+                temperature: 300.15,
+                parasitic_caps: None,
+                model: None,
+            },
+            CircuitElement::Mosfet {
+                id: "M".into(),
+                nodes: n("M"),
+                kind: MosfetKind::Nmos,
+                params: MosfetParams::default_nmos(),
+                parasitic_caps: None,
+                body_diode: None,
+            },
+            CircuitElement::Jfet {
+                id: "J".into(),
+                nodes: n("J"),
+                kind: JfetKind::NChannel,
+                idss: 1e-3,
+                vp: -2.0,
+            },
+            CircuitElement::Vcvs {
+                id: "E".into(),
+                nodes: n("E"),
+                control_nodes: ["E.c0".into(), "E.c1".into()],
+                gain: 1.0,
+            },
+            CircuitElement::Vccs {
+                id: "G".into(),
+                nodes: n("G"),
+                control_nodes: ["G.c0".into(), "G.c1".into()],
+                gm: 1.0,
+            },
+            CircuitElement::Ccvs {
+                id: "H".into(),
+                nodes: n("H"),
+                control_source: "V".into(),
+                rm: 1.0,
+            },
+            CircuitElement::Cccs {
+                id: "F".into(),
+                nodes: n("F"),
+                control_source: "V".into(),
+                alpha: 1.0,
+            },
+            CircuitElement::Pushbutton {
+                id: "PB".into(),
+                nodes: n("PB"),
+                closed: false,
+            },
+            CircuitElement::Relay {
+                id: "K".into(),
+                nodes: n("K"),
+                coil_resistance: 500.0,
+                pickup_voltage: 3.0,
+                inductance: 0.0,
+            },
+            CircuitElement::Photoresistor {
+                id: "LDR".into(),
+                nodes: n("LDR"),
+                light_level: 0.5,
+            },
+            CircuitElement::Potentiometer {
+                id: "POT".into(),
+                nodes: n("POT"),
+                resistance: 1e3,
+                position: 0.5,
+            },
+            CircuitElement::ZenerDiode {
+                id: "DZ".into(),
+                nodes: n("DZ"),
+                vz: 5.1,
+                temperature: 300.15,
+            },
+            CircuitElement::OpAmp {
+                id: "U".into(),
+                nodes: n("U"),
+                v_pos: 15.0,
+                v_neg: -15.0,
+                model: None,
+            },
+            CircuitElement::Comparator {
+                id: "CMP".into(),
+                nodes: n("CMP"),
+                v_pos: 5.0,
+                v_neg: 0.0,
+            },
+            CircuitElement::SchottkyDiode {
+                id: "DS".into(),
+                nodes: n("DS"),
+                temperature: 300.15,
+            },
+            CircuitElement::Thermistor {
+                id: "TH".into(),
+                nodes: n("TH"),
+                temperature: 298.15,
+            },
+            CircuitElement::Photodiode {
+                id: "PD".into(),
+                nodes: n("PD"),
+                irradiance: 1.0,
+                temperature: 300.15,
+            },
+            CircuitElement::Varactor {
+                id: "CV".into(),
+                nodes: n("CV"),
+                params: sindr_devices::varactor::VaractorParams::default(),
+            },
+            CircuitElement::Igbt {
+                id: "Z".into(),
+                nodes: n("Z"),
+                params: sindr_devices::igbt::IgbtParams::default(),
+            },
+            CircuitElement::Transformer {
+                id: "T".into(),
+                nodes: n("T"),
+                l1: 1.0,
+                l2: 1.0,
+                k: 0.99,
+            },
+            CircuitElement::Fuse {
+                id: "FU".into(),
+                nodes: n("FU"),
+                rating: 1.0,
+                blown: false,
+            },
+            CircuitElement::VoltageRegulator {
+                id: "REG".into(),
+                nodes: n("REG"),
+                voltage: 5.0,
+                model: None,
+            },
+            CircuitElement::SwitchSpdt {
+                id: "SW".into(),
+                nodes: n("SW"),
+                position: SpdtPosition::default(),
+            },
+            CircuitElement::Crystal {
+                id: "X".into(),
+                nodes: n("X"),
+                params: CrystalParams::from_datasheet(32768.0, 35e3, 1.5e-12),
+            },
+            CircuitElement::FerriteBead {
+                id: "FB".into(),
+                nodes: n("FB"),
+                params: FerriteBeadParams::from_datasheet(600.0, 0.1),
+            },
+        ]
+    }
+
+    /// `nodes_mut` and `id_mut` reach the very fields `nodes` and `id`
+    /// read, for every element: renaming nets and ids (as flattening a
+    /// hierarchy does) can't miss a terminal or rename the wrong field.
+    #[test]
+    fn mutable_accessors_reach_the_fields_the_readers_read() {
+        let elements = every_element();
+        assert_eq!(elements.len(), 34, "one of every CircuitElement");
+        for mut element in elements {
+            let id = element.id().to_string();
+            let nodes = element.nodes().to_vec();
+            assert!(
+                nodes
+                    .iter()
+                    .enumerate()
+                    .all(|(k, n)| *n == format!("{id}.{k}")),
+                "{id}: nodes() is {nodes:?}"
+            );
+            assert_eq!(element.nodes_mut().to_vec(), nodes, "{id}");
+            for net in element.nodes_mut() {
+                net.insert_str(0, "top/");
+            }
+            let renamed: Vec<String> = nodes.iter().map(|n| format!("top/{n}")).collect();
+            assert_eq!(element.nodes(), renamed.as_slice(), "{id}");
+            // all_nodes() adds only the control pair of a VCVS or VCCS.
+            let extra = element.all_nodes().len() - element.nodes().len();
+            assert_eq!(extra, element.control_nodes_mut().map_or(0, |_| 2), "{id}");
+
+            element.id_mut().push_str("_x");
+            assert_eq!(element.id(), format!("{id}_x"));
+        }
+    }
+
+    /// A branch current's index counts every earlier element's branch
+    /// slots: one per voltage-type source, two for a transformer or a
+    /// modelled op-amp.
+    #[test]
+    fn vsource_branch_index_counts_earlier_branch_slots() {
+        let v = |id: &str| CircuitElement::VoltageSource {
+            id: id.into(),
+            nodes: ["a".into(), "0".into()],
+            voltage: 1.0,
+            waveform: None,
+        };
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                v("V1"),
+                CircuitElement::OpAmp {
+                    id: "U1".into(),
+                    nodes: ["a".into(), "b".into(), "c".into()],
+                    v_pos: 15.0,
+                    v_neg: -15.0,
+                    model: Some(OpAmpModel::default()),
+                },
+                CircuitElement::Transformer {
+                    id: "T1".into(),
+                    nodes: ["a".into(), "0".into(), "b".into(), "0".into()],
+                    l1: 1.0,
+                    l2: 1.0,
+                    k: 0.99,
+                },
+                v("V2"),
+            ],
+        );
+        assert_eq!(circuit.vsource_branch_index("V1"), Some(0));
+        assert_eq!(circuit.vsource_branch_index("U1"), Some(1));
+        assert_eq!(circuit.vsource_branch_index("V2"), Some(5));
+        // A transformer's winding currents aren't a source's current.
+        assert_eq!(circuit.vsource_branch_index("T1"), None);
+        assert_eq!(circuit.vsource_branch_index("V9"), None);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn fields_left_out_of_json_take_their_documented_defaults() {
+        let json = r#"{
+            "ground_node": "0",
+            "components": [
+                {"type": "thermistor", "id": "TH1", "nodes": ["a", "0"]},
+                {"type": "transformer", "id": "T1", "nodes": ["a", "0", "b", "0"],
+                 "l1": 1e-3, "l2": 4e-3},
+                {"type": "fuse", "id": "F1", "nodes": ["a", "b"]},
+                {"type": "jfet", "id": "J1", "nodes": ["g", "d", "s"], "kind": "nchannel"},
+                {"type": "mosfet", "id": "M1", "nodes": ["g", "d", "s"], "kind": "nmos",
+                 "params": {"kp": 2e-4, "vto": 1.0, "lambda": 0.02, "gamma": 0.4, "phi": 0.6}}
+            ]
+        }"#;
+        let circuit: Circuit = serde_json::from_str(json).unwrap();
+        let expected = [
+            CircuitElement::Thermistor {
+                id: "TH1".into(),
+                nodes: ["a".into(), "0".into()],
+                temperature: 298.15,
+            },
+            CircuitElement::Transformer {
+                id: "T1".into(),
+                nodes: ["a".into(), "0".into(), "b".into(), "0".into()],
+                l1: 1e-3,
+                l2: 4e-3,
+                k: 0.999,
+            },
+            CircuitElement::Fuse {
+                id: "F1".into(),
+                nodes: ["a".into(), "b".into()],
+                rating: 1.0,
+                blown: false,
+            },
+            CircuitElement::Jfet {
+                id: "J1".into(),
+                nodes: ["g".into(), "d".into(), "s".into()],
+                kind: JfetKind::NChannel,
+                idss: 10e-3,
+                vp: -2.0,
+            },
+            // No flicker noise unless asked: kf 0, af 1.
+            CircuitElement::Mosfet {
+                id: "M1".into(),
+                nodes: ["g".into(), "d".into(), "s".into()],
+                kind: MosfetKind::Nmos,
+                params: MosfetParams {
+                    kp: 2e-4,
+                    vto: 1.0,
+                    lambda: 0.02,
+                    gamma: 0.4,
+                    phi: 0.6,
+                    kf: 0.0,
+                    af: 1.0,
+                },
+                parasitic_caps: None,
+                body_diode: None,
+            },
+        ];
+        assert_eq!(circuit.components, expected);
+    }
 }

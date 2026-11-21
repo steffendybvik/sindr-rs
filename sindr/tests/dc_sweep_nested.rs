@@ -206,6 +206,16 @@ fn from_step_reads_spice_steps() {
     assert!(DcSweepAxis::from_step("V1", 0.0, 1.0, -0.1).is_err());
     assert!(DcSweepAxis::from_step("V1", 0.0, 1.0, 0.0).is_err());
     assert!(DcSweepAxis::from_step("V1", 0.0, 1.0, 1e-12).is_err());
+    for (start, stop, step) in [
+        (f64::NAN, 1.0, 0.1),
+        (0.0, f64::INFINITY, 0.1),
+        (0.0, 1.0, f64::NAN),
+    ] {
+        match DcSweepAxis::from_step("V1", start, stop, step) {
+            Err(sindr::SimError::InvalidComponent(m)) => assert!(m.contains("finite"), "{m}"),
+            other => panic!("{start}, {stop}, {step}: {other:?}"),
+        }
+    }
 }
 
 #[cfg(feature = "spice")]

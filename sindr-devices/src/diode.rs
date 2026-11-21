@@ -797,4 +797,59 @@ mod tests {
         // CJO / (1 + 5/VJ)^M, the diffusion part being negligible.
         assert_relative_eq!(c_j, 4e-12 / 6.0_f64.powf(0.4), max_relative = 1e-6);
     }
+
+    #[test]
+    fn a_junction_stores_charge_with_either_depletion_or_diffusion() {
+        assert!(JunctionCharge::default().is_none());
+        let depletion = JunctionCharge {
+            cjo: 1e-12,
+            ..JunctionCharge::default()
+        };
+        assert!(!depletion.is_none());
+        let diffusion = JunctionCharge {
+            tt: 5e-9,
+            ..JunctionCharge::default()
+        };
+        assert!(!diffusion.is_none());
+        // Diffusion only: Q = TT·I_d and C = TT·g_d, exactly.
+        assert_eq!(
+            diffusion.charge(0.65, 2e-3, 0.08),
+            (5e-9 * 2e-3, 5e-9 * 0.08)
+        );
+    }
+
+    /// With no series resistance the terminals are the junction: the
+    /// diode's dQ/dV is the junction capacitance itself.
+    #[test]
+    fn without_rs_the_terminal_capacitance_is_the_junction_capacitance() {
+        let (p, charge) = card_1n4148();
+        let p = DiodeParams { rs: 0.0, ..p };
+        for v_d in [-5.0, 0.0, 0.6] {
+            let (i_d, g_d) = junction_current(v_d, &p);
+            let (q, c) = diode_charge(v_d, &p, &charge);
+            assert_eq!((q, c), charge.charge(v_d, i_d, g_d), "v_d = {v_d}");
+        }
+    }
+
+    /// As documented on [`Breakdown`]: the current at −BV is −IBV less the
+    /// `IS·BV/V_T` ngspice's fit carries, to the fit's 0.1 %. Taking
+    /// `xbv ≈ bv` in that term costs `IS·(bv − xbv)/V_T`, under 3e-4 of
+    /// IBV for these cards.
+    #[test]
+    fn breakdown_carries_ibv_at_minus_bv() {
+        for (bv, ibv, is) in [
+            (100.0, 100e-6, 2.52e-9),
+            (5.1, 5e-3, 1e-14),
+            (5.1, 1.0, 1e-14),
+            (30.0, 1e-9, 1e-14),
+        ] {
+            let p = DiodeParams {
+                is,
+                breakdown: Some(Breakdown { bv, ibv }),
+                ..DiodeParams::silicon()
+            };
+            let i = diode_current(-bv, &p);
+            assert_relative_eq!(-i, ibv - is * bv / p.vt(), max_relative = 1.5e-3);
+        }
+    }
 }
