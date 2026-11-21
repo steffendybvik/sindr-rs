@@ -976,12 +976,12 @@ pub(crate) fn jfet_drain_current(
     c.gm * vgs + c.gds * vds + i_eq
 }
 
-#[cfg(test)]
+// Every test here checks the serde shape.
+#[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
 
     /// DC-only SimulationResult (transient: None) serializes WITHOUT a "transient" key.
-    #[cfg(feature = "serde")]
     #[test]
     fn dc_result_omits_transient_key() {
         let result = SimulationResult {
@@ -1003,7 +1003,6 @@ mod tests {
     }
 
     /// SimulationResult with transient data serializes the timesteps array.
-    #[cfg(feature = "serde")]
     #[test]
     fn transient_result_includes_timesteps() {
         let result = SimulationResult {
