@@ -1,0 +1,17 @@
+op: B sources against ngspice: a multiplier, a current reading i(), a self-referencing current, the VALUE forms of E and G, and a .param inside an expression
+.param k=0.25
+VA a 0 1.5
+VB b 0 -2
+RA a 0 1k
+RB b 0 2k
+B1 m 0 V={v(a)*v(b)}
+RM m 0 2k
+B2 0 n I={-3*i(va)}
+RN n 0 1k
+B3 0 x I={1m*(v(a)-v(x))^2}
+RX x 0 1k
+E1 e 0 VALUE={k*v(a)*v(m)}
+RE e 0 1k
+G1 0 g VALUE={tanh(v(e))*1m}
+RG g 0 1k
+.end

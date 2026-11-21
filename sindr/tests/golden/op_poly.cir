@@ -1,0 +1,16 @@
+op: POLY on all four controlled sources against ngspice: 2-D E with a cross term, a 1-D G, F and H, and a 1-D E over a node pair
+VA a 0 1.5
+VB b 0 -0.5
+RA a 0 1k
+RB b 0 2k
+E1 e 0 POLY(2) a 0 b 0 0.1 2 -1 0.5 0.25 -0.75
+RE e 0 1k
+G1 0 g POLY(1) (a,0) 1m 2m 0.5m
+RG g 0 1k
+F1 0 f POLY(1) va 0 3 100
+RF f 0 1k
+H1 h 0 POLY(2) va vb 0.2 1k 0 0 0 4meg
+RH h 0 1k
+E2 l 0 POLY(1) a b 0 3
+RL l 0 1k
+.end

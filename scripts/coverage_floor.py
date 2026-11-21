@@ -41,6 +41,7 @@ FLOORS = {
     "sindr/src/device_params.rs": 98.5,  # 100.00% when set
     "sindr/src/error.rs": 97.5,  # 99.07% when set
     "sindr/src/examples.rs": 98.0,  # 99.80% when set
+    "sindr/src/expression.rs": 95.5,  # 97.44% when set
     "sindr/src/import/bench.rs": 98.5,  # 100.00% when set
     "sindr/src/import/mod.rs": 98.0,  # 99.68% when set
     "sindr/src/import/value.rs": 97.5,  # 99.28% when set

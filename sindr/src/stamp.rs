@@ -224,6 +224,27 @@ pub fn stamp_circuit(
                     stamp_cccs(system, node_map, nodes, *alpha, ctrl_branch_idx);
                 }
             }
+            CircuitElement::Behavioural {
+                id,
+                nodes,
+                output,
+                expr,
+            } => {
+                let branch = num_nodes + vsource_index;
+                // Linear first pass: linearised at all-zero unknowns.
+                let zero;
+                let x = match v_prev {
+                    Some(x) => x,
+                    None => {
+                        zero = DVector::zeros(system.b.len());
+                        &zero
+                    }
+                };
+                stamp_behavioural(
+                    system, circuit, node_map, id, nodes, *output, expr, x, 0.0, branch,
+                )?;
+                vsource_index += component.branch_slots();
+            }
             CircuitElement::Pushbutton { nodes, closed, .. } => {
                 let resistance = if *closed {
                     SWITCH_R_CLOSED
@@ -1043,6 +1064,157 @@ pub fn stamp_ccvs(
         system.a[(branch, qi)] -= 1.0;
     }
     system.a[(branch, ctrl_branch)] -= rm;
+}
+
+/// A behavioural source's expression linearised at `x` (the MNA unknowns)
+/// and time `t`: `f(x) ≈ c + Σ jacobian[k].1 · x[jacobian[k].0]`.
+///
+/// `v(n, m)` reads `x[n] − x[m]`, `i(src)` the branch column of `src`,
+/// `time` is `t`.
+///
+/// # Errors
+///
+/// [`SimError::InvalidComponent`] when `i(src)` names no voltage-defined
+/// element, or the expression isn't finite at `x`. An infinite slope at a
+/// finite value is taken as 0.
+pub(crate) fn behavioural_linearisation(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    id: &str,
+    expr: &crate::expression::Expression,
+    x: &DVector<f64>,
+    t: f64,
+) -> Result<(Vec<(usize, f64)>, f64), SimError> {
+    use crate::expression::Variable;
+    let num_nodes = node_map.num_nodes();
+    let at = |k: usize| x.get(k).copied().unwrap_or(0.0);
+    let mut columns: Vec<Vec<(usize, f64)>> = Vec::with_capacity(expr.variables().len());
+    let mut values = Vec::with_capacity(expr.variables().len());
+    for variable in expr.variables() {
+        let (cols, value) = match variable {
+            Variable::Voltage { node, reference } => {
+                let mut cols = Vec::new();
+                let mut value = 0.0;
+                if let Some(k) = node_map.index(node) {
+                    cols.push((k, 1.0));
+                    value += at(k);
+                }
+                if let Some(k) = reference.as_deref().and_then(|r| node_map.index(r)) {
+                    cols.push((k, -1.0));
+                    value -= at(k);
+                }
+                (cols, value)
+            }
+            Variable::Current { source } => {
+                let branch = circuit.vsource_branch_index(source).ok_or_else(|| {
+                    SimError::InvalidComponent(format!(
+                        "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
+                         element (voltage source, VCVS, CCVS, op-amp, regulator or \
+                         behavioural voltage source)"
+                    ))
+                })?;
+                let k = num_nodes + branch;
+                (vec![(k, 1.0)], at(k))
+            }
+            Variable::Time => (Vec::new(), t),
+        };
+        columns.push(cols);
+        values.push(value);
+    }
+    let mut gradient = vec![0.0; values.len()];
+    let f = expr.evaluate_with_gradient(&values, &mut gradient);
+    // A finite value with an infinite slope (sqrt at 0, say) is stamped
+    // flat for this iteration, so Newton can move off it.
+    for g in &mut gradient {
+        if !g.is_finite() {
+            *g = 0.0;
+        }
+    }
+    if !f.is_finite() {
+        return Err(SimError::InvalidComponent(format!(
+            "`{id}`'s expression `{expr}` isn't finite at {}",
+            expr.variables()
+                .iter()
+                .zip(&values)
+                .map(|(v, x)| format!("{} = {x}", variable_name(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    let mut jacobian: Vec<(usize, f64)> = Vec::new();
+    for (cols, g) in columns.iter().zip(&gradient) {
+        for (k, coefficient) in cols {
+            match jacobian.iter_mut().find(|(c, _)| c == k) {
+                Some((_, j)) => *j += g * coefficient,
+                None => jacobian.push((*k, g * coefficient)),
+            }
+        }
+    }
+    let c = f - jacobian.iter().map(|(k, j)| j * at(*k)).sum::<f64>();
+    Ok((jacobian, c))
+}
+
+fn variable_name(variable: &crate::expression::Variable) -> String {
+    use crate::expression::Variable;
+    match variable {
+        Variable::Voltage {
+            node,
+            reference: None,
+        } => format!("v({node})"),
+        Variable::Voltage {
+            node,
+            reference: Some(r),
+        } => format!("v({node},{r})"),
+        Variable::Current { source } => format!("i({source})"),
+        Variable::Time => "time".to_string(),
+    }
+}
+
+/// Stamps a behavioural source linearised at `x` and time `t`. A voltage
+/// output takes branch row `branch`; a current output takes none.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stamp_behavioural(
+    system: &mut MnaSystem,
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    id: &str,
+    nodes: &[String; 2],
+    output: crate::BehaviouralOutput,
+    expr: &crate::expression::Expression,
+    x: &DVector<f64>,
+    t: f64,
+    branch: usize,
+) -> Result<(), SimError> {
+    let (jacobian, c) = behavioural_linearisation(circuit, node_map, id, expr, x, t)?;
+    let p = node_map.index(&nodes[0]);
+    let q = node_map.index(&nodes[1]);
+    match output {
+        crate::BehaviouralOutput::Current => {
+            // Out of n+, into n-: f leaves p, so p's row gets +∂f/∂x.
+            for (k, j) in &jacobian {
+                if let Some(pi) = p {
+                    system.a[(pi, *k)] += j;
+                }
+                if let Some(qi) = q {
+                    system.a[(qi, *k)] -= j;
+                }
+            }
+            if let Some(pi) = p {
+                system.b[pi] -= c;
+            }
+            if let Some(qi) = q {
+                system.b[qi] += c;
+            }
+        }
+        _ => {
+            // V(p) − V(q) − ∇f·x = c.
+            stamp_voltage_source(system, node_map, nodes, c, branch);
+            for (k, j) in &jacobian {
+                system.a[(branch, *k)] -= j;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Stamp a Current-Controlled Current Source (CCCS).

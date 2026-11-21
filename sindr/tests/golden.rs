@@ -294,6 +294,36 @@ fn op_reactive() {
     check_op("op_reactive", &parse("op_reactive"), (OP_V, OP_I));
 }
 
+/// B sources and the `VALUE` forms of E and G: a multiplier, `i()` of a
+/// source, a current that depends on its own output, and a `.param`
+/// inside an expression. Pins `I=`'s direction and `i()`'s sign.
+#[test]
+fn op_behavioural() {
+    check_op("op_behavioural", &parse("op_behavioural"), (OP_V, OP_I));
+}
+
+/// `POLY` on E, G, F and H, lowered to behavioural sources: pins SPICE2's
+/// coefficient order (`x1², x1·x2, x2²` after the linear terms).
+#[test]
+fn op_poly() {
+    check_op("op_poly", &parse("op_poly"), (OP_V, OP_I));
+}
+
+/// A squarer's small-signal gain is its slope at the bias, 2·1.5, into
+/// an RC pole.
+#[test]
+fn ac_behavioural() {
+    check_ac(
+        "ac_behavioural",
+        &parse("ac_behavioural"),
+        "vin",
+        "out",
+        5,
+        (10.0, 1e6),
+        OP_V,
+    );
+}
+
 #[test]
 fn op_resistive() {
     check_op("op_resistive", &parse("op_resistive"), (OP_V, OP_I));
@@ -1305,6 +1335,12 @@ fn tran_bjt_switch() {
 #[test]
 fn tran_rlc_ring() {
     check_deck_tran("tran_rlc_ring", &["v(b)", "i(v1)"]);
+}
+
+/// A B-source time function into an RC, from the deck's own `.tran`.
+#[test]
+fn tran_behavioural() {
+    check_deck_tran("tran_behavioural", &["v(s)", "v(out)"]);
 }
 
 // ---------------------------------------------------------------- temperature
