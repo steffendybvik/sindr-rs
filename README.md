@@ -116,20 +116,19 @@ and sindr has no global state, so solves run in parallel threads. ngspice
 solves large transients about five times faster: past a few hundred nodes,
 a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics)).
 
-## Compared with
+## When to use sindr
 
-| | sindr | [`thevenin`](https://crates.io/crates/thevenin) | ngspice bindings (`ngspice-sys`, `elektron_ngspice`, …) |
-|---|---|---|---|
-| What it is | A simulator built to embed, with design checks | A from-scratch rewrite of ngspice in Rust | The C library behind a Rust API |
-| Main input | `Circuit` values or JSON; a SPICE3 subset (feature `spice`) | SPICE netlists and its own Cirq language | Netlist text |
-| WebAssembly | Yes | Yes | No |
-| Needs a C library | No | No | libngspice |
-| Ratings, self-heating, pass/fail specs | Yes | No | No |
-| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens`, `.noise`, `.meas` | Those plus pole-zero, AC sensitivity, Fourier and FFT | All of ngspice's |
-| Device models | Shockley diode, Ebers–Moll BJT, MOSFET Level 1, JFET, IGBT, op-amp macromodel, and part-level elements (LED, regulator, relay, battery …) | **Far more:** Gummel–Poon and VBIC, MOSFET levels 1–3 and BSIM, MESFETs, transmission lines, XSPICE code models | All of ngspice's |
-| SPICE dialect coverage | A practical subset | **Broad**, close to ngspice's | **Full** ngspice |
+| | sindr | A full SPICE simulator |
+|---|---|---|
+| What it is | A simulator built to embed, with design checks | A standalone program or C library that runs netlists |
+| Main input | `Circuit` values or JSON; a SPICE3 subset (feature `spice`) | SPICE netlists in its own dialect |
+| WebAssembly, no C library | Yes | Usually not |
+| Ratings, self-heating, pass/fail specs | Built in | Scripted by hand, if at all |
+| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens`, `.noise`, `.meas` | Those and more: pole-zero, AC sensitivity, Fourier, distortion |
+| Device models | Shockley diode, Ebers–Moll BJT, MOSFET Level 1, JFET, IGBT, op-amp macromodel, and part-level elements (LED, regulator, relay, battery …) | **Far more:** Gummel–Poon, BSIM, transmission lines, behavioural and code models |
+| SPICE dialect coverage | A practical subset | Full |
 
-Pick ngspice, or `thevenin` for the same in Rust, to run existing SPICE decks and vendor model libraries as they are. Pick sindr to put a simulator inside a Rust program or a web app, describe circuits as data, and ask whether the parts survive.
+Use a full SPICE simulator to run existing decks and vendor model libraries as they are. Use sindr to put a simulator inside a Rust program or a web app, describe circuits as data, and ask whether the parts survive.
 
 ## SPICE netlist input
 

@@ -633,7 +633,7 @@ const KEY_ALIASES: &[(&str, &str)] = &[
 const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf", "kf", "af"];
 
 /// `.model` parameters that describe the part rather than its behaviour
-/// (LTspice and vendor libraries add them). They are dropped without a word,
+/// (vendor model libraries add them). They are dropped without a word,
 /// even in strict mode, as SPICE simulators drop them.
 const ANNOTATION_KEYS: &[&str] = &["mfg", "type", "vceo", "icrating", "iave", "vpk"];
 
