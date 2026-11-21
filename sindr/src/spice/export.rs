@@ -774,6 +774,8 @@ impl<'a> Deck<'a> {
                     ("FC", "fc", model.fc, default.fc),
                     ("TT", "tt", model.tt, default.tt),
                     ("IBV", "ibv", model.ibv, default.ibv),
+                    ("EG", "eg", model.eg, default.eg),
+                    ("XTI", "xti", model.xti, default.xti),
                 ] {
                     if value != unset {
                         card.push_str(&format!(" {key}={}", num(id, field, value)?));
@@ -812,14 +814,15 @@ impl<'a> Deck<'a> {
         };
         let n = format!("qmod{}", self.bjt_models.len() + 1);
         self.models.push(format!(
-            ".model {n} {card}(IS={} BF={} BR={} NF={} NR={} VAF={}{})",
+            ".model {n} {card}(IS={} BF={} BR={} NF={} NR={} VAF={}{}{})",
             num(id, "is", model.is)?,
             num(id, "bf", bf)?,
             num(id, "br", model.br)?,
             num(id, "nf", model.nf)?,
             num(id, "nr", model.nr)?,
             num(id, "vaf", model.vaf)?,
-            flicker(id, model.kf, model.af)?
+            flicker(id, model.kf, model.af)?,
+            bjt_temperature(id, &model)?
         ));
         self.bjt_models.push((kind, bf, model, n.clone()));
         Ok(n)
@@ -930,6 +933,22 @@ fn nominal(id: &str, temperature: f64) -> Result<(), ExportError> {
         });
     }
     Ok(())
+}
+
+/// ` EG=… XTI=…` for a BJT card whose `IS` follows temperature other than
+/// as silicon's; nothing for the defaults, which are SPICE's too.
+fn bjt_temperature(id: &str, model: &BjtModel) -> Result<String, ExportError> {
+    let default = BjtModel::default();
+    let mut out = String::new();
+    for (key, field, value, unset) in [
+        ("EG", "eg", model.eg, default.eg),
+        ("XTI", "xti", model.xti, default.xti),
+    ] {
+        if value != unset {
+            out.push_str(&format!(" {key}={}", num(id, field, value)?));
+        }
+    }
+    Ok(out)
 }
 
 /// ` KF=… AF=…` for a card with flicker noise; nothing when `kf` is 0, so

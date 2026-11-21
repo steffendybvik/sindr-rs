@@ -239,6 +239,8 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             non_negative("model.kf", model.kf, "")?;
             positive("model.af", model.af, "")?;
+            positive("model.eg", model.eg, " eV")?;
+            non_negative("model.xti", model.xti, "")?;
             Ok(())
         }
         CircuitElement::Diode { temperature, .. }
@@ -265,6 +267,8 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
                 non_negative("model.vaf", model.vaf, " V")?;
                 non_negative("model.kf", model.kf, "")?;
                 positive("model.af", model.af, "")?;
+                positive("model.eg", model.eg, " eV")?;
+                non_negative("model.xti", model.xti, "")?;
             }
             Ok(())
         }
@@ -507,6 +511,10 @@ mod tests {
             (bjt(crate::BjtModel { nf: -1.0, ..q }), "model.nf"),
             (bjt(crate::BjtModel { nr: 0.0, ..q }), "model.nr"),
             (bjt(crate::BjtModel { vaf: -5.0, ..q }), "model.vaf"),
+            (diode(crate::DiodeModel { eg: 0.0, ..d }), "model.eg"),
+            (diode(crate::DiodeModel { xti: -1.0, ..d }), "model.xti"),
+            (bjt(crate::BjtModel { eg: f64::NAN, ..q }), "model.eg"),
+            (bjt(crate::BjtModel { xti: -0.5, ..q }), "model.xti"),
         ];
         for (circuit, field) in bad {
             match validate_circuit(&circuit) {

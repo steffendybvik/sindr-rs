@@ -367,6 +367,8 @@ fn build_element(
                         "bv" => model.bv = Some(value),
                         "kf" => model.kf = value,
                         "af" => model.af = value,
+                        "eg" => model.eg = value,
+                        "xti" => model.xti = value,
                         _ => model.ibv = value,
                     }
                 }
@@ -437,6 +439,8 @@ fn build_element(
                     "nr" => model.nr = value,
                     "kf" => model.kf = value,
                     "af" => model.af = value,
+                    "eg" => model.eg = value,
+                    "xti" => model.xti = value,
                     _ => model.vaf = value,
                 }
             }
@@ -725,7 +729,7 @@ fn poly_text(variables: &[String], coefficients: &[f64]) -> String {
 /// A syntax error with no span of its own: the caller locates it on the card.
 /// `.model D` parameters sindr's diode uses.
 const DIODE_KEYS: &[&str] = &[
-    "is", "n", "rs", "cjo", "vj", "m", "fc", "tt", "bv", "ibv", "kf", "af",
+    "is", "n", "rs", "cjo", "vj", "m", "fc", "tt", "bv", "ibv", "kf", "af", "eg", "xti",
 ];
 
 /// SPICE's alternative names for `.model` parameters, and the name sindr
@@ -738,13 +742,13 @@ const KEY_ALIASES: &[(&str, &str)] = &[
     ("mj", "m"),
 ];
 
-/// Diode and BJT card parameters for how `IS` follows temperature, read
-/// only at the values sindr scales it with: silicon's bandgap `EG`, SPICE's
-/// default `XTI`, and a nominal temperature `TNOM` of 27 °C.
-const JUNCTION_NEUTRAL: &[(&str, f64)] = &[("eg", 1.11), ("xti", 3.0), ("tnom", 27.0)];
+/// Diode and BJT card parameters sindr has no field for, read only at the
+/// value it assumes: `TNOM`, the temperature a card's values are at, of
+/// 27 °C.
+const JUNCTION_NEUTRAL: &[(&str, f64)] = &[("tnom", 27.0)];
 
 /// `.model NPN`/`PNP` parameters sindr's Ebers–Moll transistor uses.
-const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf", "kf", "af"];
+const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf", "kf", "af", "eg", "xti"];
 
 /// `.model NMOS`/`PMOS` parameters sindr's level-1 MOSFET uses. `vj` and
 /// `m` are `PB` and `MJ` under [`KEY_ALIASES`]; `cbs` is the source–bulk
@@ -1093,7 +1097,7 @@ fn model_params(
         ignored.join(", ")
     );
     let hint = if off_neutral {
-        "; it scales IS as silicon, with EG=1.11, XTI=3 and TNOM=27"
+        "; its values are at TNOM=27"
     } else {
         ""
     };
@@ -2325,12 +2329,12 @@ mod tests {
     fn unused_parameters_are_an_error_in_strict_mode() {
         for (kind, element) in [("D", diode_card("D1", "m")), ("NPN", bjt_card("m"))] {
             let cards = vec![
-                model_card("m", kind, &[("IS", 1e-14), ("XTI", 2.0), ("VAR", 10.0)]),
+                model_card("m", kind, &[("IS", 1e-14), ("TNOM", 25.0), ("VAR", 10.0)]),
                 element,
             ];
             let err = build_from_cards(cards).unwrap_err().to_string();
             assert!(
-                err.contains("XTI=2, VAR") && err.contains("m") && err.contains("as silicon"),
+                err.contains("TNOM=25, VAR") && err.contains("m") && err.contains("TNOM=27"),
                 "{kind}: {err}"
             );
         }
@@ -2339,7 +2343,7 @@ mod tests {
     #[test]
     fn unused_parameters_warn_once_per_card_in_lenient_mode() {
         let cards = vec![
-            model_card("m", "D", &[("IS", 1e-12), ("EG", 0.69), ("XTI", 2.0)]),
+            model_card("m", "D", &[("IS", 1e-12), ("TNOM", 25.0), ("VAR", 2.0)]),
             diode_card("D1", "m"),
             diode_card("D2", "m"),
         ];
@@ -2350,7 +2354,7 @@ mod tests {
             .collect();
         assert_eq!(about_card.len(), 1, "{warnings:?}");
         assert!(
-            about_card[0].message.contains("EG=0.69, XTI=2"),
+            about_card[0].message.contains("TNOM=25, VAR"),
             "{warnings:?}"
         );
         // What is used still applies.

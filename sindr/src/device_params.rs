@@ -33,8 +33,13 @@ fn scale_is(is: f64, temperature: f64, n: f64) -> f64 {
 
 /// [`scale_is`] for a junction whose bandgap is `eg` (eV).
 fn scale_is_eg(is: f64, temperature: f64, n: f64, eg: f64) -> f64 {
+    scale_is_with(is, temperature, n, eg, XTI)
+}
+
+/// [`scale_is`] with a card's bandgap `eg` (eV) and exponent `xti`.
+fn scale_is_with(is: f64, temperature: f64, n: f64, eg: f64, xti: f64) -> f64 {
     if (temperature - T_NOM).abs() > 1e-6 {
-        temperature_scale_is(is, temperature, T_NOM, eg, XTI, n)
+        temperature_scale_is(is, temperature, T_NOM, eg, xti, n)
     } else {
         is
     }
@@ -54,16 +59,13 @@ fn led_eg(vf: f64) -> f64 {
 /// Diode with `model` (the built-in silicon diode if `None`) at `temperature` (K).
 pub(crate) fn diode(model: Option<&DiodeModel>, temperature: f64) -> DiodeParams {
     let model = model.copied().unwrap_or_default();
-    with_temperature(
-        DiodeParams {
-            is: model.is,
-            n: model.n,
-            rs: model.rs,
-            temperature: T_NOM,
-            breakdown: model.bv.map(|bv| Breakdown { bv, ibv: model.ibv }),
-        },
+    DiodeParams {
+        is: scale_is_with(model.is, temperature, model.n, model.eg, model.xti),
+        n: model.n,
+        rs: model.rs,
         temperature,
-    )
+        breakdown: model.bv.map(|bv| Breakdown { bv, ibv: model.ibv }),
+    }
 }
 
 /// The charge a diode with `model` stores, or `None` if it stores none.
@@ -154,7 +156,7 @@ pub(crate) fn bjt(bf: f64, model: Option<&BjtModel>, temperature: f64) -> BjtPar
     params.nf = model.nf;
     params.nr = model.nr;
     params.vaf = model.vaf;
-    params.is = scale_is(model.is, temperature, 1.0);
+    params.is = scale_is_with(model.is, temperature, 1.0, model.eg, model.xti);
     params.temperature = temperature;
     params
 }

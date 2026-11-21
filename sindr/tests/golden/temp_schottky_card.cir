@@ -1,0 +1,6 @@
+temp: a Schottky-style card, whose IS follows EG=0.69 and XTI=2
+V1 in 0 5
+R1 in out 1k
+D1 out 0 dsk
+.model dsk D(IS=3.2e-8 N=1.05 RS=0.1 EG=0.69 XTI=2)
+.end
