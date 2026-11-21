@@ -59,6 +59,7 @@ fn assert_ac_matches_dc(name: &str, circuit: &Circuit, biases: &[f64]) {
             spacing: FrequencySpacing::Linear,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
         let ac = solve_ac(&at, &config).unwrap_or_else(|e| panic!("{name} at {v0} V: {e}"));
         let ac = &ac.points[0].node_voltages;

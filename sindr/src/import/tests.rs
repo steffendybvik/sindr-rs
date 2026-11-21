@@ -279,6 +279,7 @@ fn ac_and_dc_sweep_name_a_bench_source() {
             spacing: FrequencySpacing::Logarithmic,
             source_id: "sig".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         }));
     let Simulation::Ac(r) = simulate(&netlist, &ac).unwrap().result else {
         panic!()

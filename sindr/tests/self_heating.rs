@@ -333,6 +333,7 @@ fn ac_gain(circuit: &Circuit) -> f64 {
         spacing: FrequencySpacing::Linear,
         source_id: "VIN".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     let gain = solve_ac(circuit, &config).unwrap().points[0].node_voltages["c"];
     assert!(gain.im.abs() < 1e-9 * gain.re.abs(), "{gain}");

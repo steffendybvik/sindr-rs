@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines into one `Transformer`. Every deck `to_netlist` writes now parses
   back, and so do vendor decks with linear controlled sources. The
   `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms are unsupported devices.
+- V and I lines read `[DC] v`, `AC [mag [phase]]` and a waveform in any
+  order, as SPICE3 does; before, any `AC` spec was a syntax error.
+  `ParsedNetlist::ac_stimuli` lists the `AC` specs, and
+  `ParsedNetlist::ac_config()` builds the `AcConfig` for the deck's `.ac`
+  from its source line, so a vendor or textbook AC deck runs as written.
+  `AnalysisRequest::ac_config(source)` gives the sweep alone.
+- Node names may use any Unicode letters and digits (`å`, `µ`), as in
+  ngspice.
+- `AcConfig::ac_phase_deg`: the AC source's phase, which shifts every
+  node's phase as SPICE's `AC mag phase` does. It's a new field, so a
+  struct literal needs `ac_phase_deg: 0.0` (serde defaults it to 0).
 
 ### Fixed
 

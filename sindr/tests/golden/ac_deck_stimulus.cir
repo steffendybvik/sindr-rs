@@ -1,0 +1,7 @@
+ac: series RLC driven by its own source line, AC 2 V at 30 degrees
+V1 in 0 dc 1 ac 2 30
+L1 in a 10m
+C1 a out 1u
+R1 out 0 50
+.ac dec 20 100 100k
+.end

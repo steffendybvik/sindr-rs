@@ -197,7 +197,7 @@ proptest! {
             let config = AcConfig {
                 f_start: f, f_stop: f, num_points: 1,
                 spacing: FrequencySpacing::Linear,
-                source_id: "V1".into(), ac_magnitude: 1.0,
+                source_id: "V1".into(), ac_magnitude: 1.0, ac_phase_deg: 0.0,
             };
             solve_ac(&circuit(elements), &config).unwrap().points[0].node_voltages[to]
         };

@@ -208,6 +208,7 @@ fn ac_bias_point_takes_a_nodeset() {
         spacing: FrequencySpacing::Linear,
         source_id: "VIN".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     let plain = solve_ac(&stage, &config).unwrap().points[0].node_voltages["c"];
     let seed = HashMap::from([("c".to_string(), 5.0)]);

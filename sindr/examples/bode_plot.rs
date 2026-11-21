@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         spacing: FrequencySpacing::Logarithmic,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
 
     let result = solve_ac(&circuit, &config)?;

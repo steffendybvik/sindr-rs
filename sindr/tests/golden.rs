@@ -622,7 +622,6 @@ fn check_ac(
     f: (f64, f64),
     mag_tol: Tol,
 ) {
-    let golden = Golden::load(case);
     let decades = (f.1 / f.0).log10().round() as usize;
     let config = AcConfig {
         f_start: f.0,
@@ -631,8 +630,22 @@ fn check_ac(
         spacing: FrequencySpacing::Logarithmic,
         source_id: source.into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
-    let result = solve_ac(circuit, &config).unwrap_or_else(|e| panic!("{case}: {e}"));
+    check_ac_with(case, circuit, &config, node, mag_tol);
+}
+
+/// Runs `config` and compares `mag(v(node))` and, when the golden has it,
+/// phase in degrees.
+fn check_ac_with(
+    case: &'static str,
+    circuit: &Circuit,
+    config: &AcConfig,
+    node: &str,
+    mag_tol: Tol,
+) {
+    let golden = Golden::load(case);
+    let result = solve_ac(circuit, config).unwrap_or_else(|e| panic!("{case}: {e}"));
     let freqs: Vec<f64> = result.points.iter().map(|p| p.frequency).collect();
     let phasors: Vec<_> = result
         .points
@@ -681,6 +694,23 @@ fn check_ac(
         );
     }
     check.finish();
+}
+
+/// The deck drives its own `.ac` from `V1 in 0 dc 1 ac 2 30`: the
+/// stimulus's magnitude and phase come from the source line, the sweep from
+/// the `.ac` card, with nothing set by hand.
+#[test]
+fn ac_deck_stimulus() {
+    let netlist = parse_file(case_path("ac_deck_stimulus", "cir")).unwrap();
+    let config = netlist.ac_config().unwrap().unwrap();
+    assert_eq!((config.ac_magnitude, config.ac_phase_deg), (2.0, 30.0));
+    check_ac_with(
+        "ac_deck_stimulus",
+        &netlist.circuit,
+        &config,
+        "out",
+        AC_LINEAR,
+    );
 }
 
 #[test]
@@ -1481,6 +1511,7 @@ fn check_cv(case: &'static str) {
                     spacing: FrequencySpacing::Linear,
                     source_id: "v1".into(),
                     ac_magnitude: 1.0,
+                    ac_phase_deg: 0.0,
                 },
             )
             .unwrap();

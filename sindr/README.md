@@ -493,6 +493,7 @@ let config = AcConfig {
     spacing: FrequencySpacing::Logarithmic, // or Linear
     source_id: "V1".into(),                 // voltage source that carries the AC stimulus
     ac_magnitude: 1.0,
+    ac_phase_deg: 0.0,
 };
 let result = solve_ac(&circuit, &config)?;
 

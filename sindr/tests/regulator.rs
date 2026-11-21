@@ -234,6 +234,7 @@ fn input_ripple_reaches_the_output_through_line_regulation() {
                 spacing: FrequencySpacing::Linear,
                 source_id: "VIN".into(),
                 ac_magnitude: 1.0,
+                ac_phase_deg: 0.0,
             },
         )
         .unwrap();

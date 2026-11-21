@@ -177,6 +177,7 @@ fn ac_gain_at_n2(circuit: &Circuit) -> f64 {
         spacing: FrequencySpacing::Linear,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     let ac = solve_ac(circuit, &config).expect("AC solve");
     ac.points[0].node_voltages["n2"].norm()
@@ -281,6 +282,7 @@ fn ac_bjt_transconductance_matches_dc_model_off_nominal_temperature() {
             spacing: FrequencySpacing::Linear,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
         let gain = solve_ac(&circuit, &config).unwrap().points[0].node_voltages["c"].norm();
         assert!(

@@ -237,6 +237,7 @@ pub(crate) fn solve_noise_with(
         spacing: config.spacing,
         source_id: config.input_source.clone(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     validate_config(&ac)?;
     if config.f_start <= 0.0 {

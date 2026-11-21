@@ -49,9 +49,14 @@ pub struct AcConfig {
     pub spacing: FrequencySpacing,
     /// ID of the AC source (voltage source with AC stimulus).
     pub source_id: String,
-    /// AC amplitude of the source: volts, linear (not dB), at 0° phase.
-    /// Results scale with it; 1 V makes node voltages read as gain.
+    /// AC amplitude of the source: volts, linear (not dB). Results scale
+    /// with it; 1 V makes node voltages read as gain.
     pub ac_magnitude: f64,
+    /// AC phase of the source in degrees, as SPICE's `AC mag phase`. Every
+    /// node's phase shifts by it; 0 makes [`AcPoint::phase_deg`] read as the
+    /// phase relative to the source.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub ac_phase_deg: f64,
 }
 
 /// Result at a single frequency point.
@@ -77,8 +82,9 @@ impl AcPoint {
         })
     }
 
-    /// Phase of a node's voltage in degrees, in (−180°, 180°], relative to
-    /// the source (which is at 0°). `None` when the node isn't in the
+    /// Phase of a node's voltage in degrees, in (−180°, 180°]: relative to
+    /// the source when [`AcConfig::ac_phase_deg`] is 0, absolute otherwise,
+    /// as ngspice reports it. `None` when the node isn't in the
     /// circuit.
     pub fn phase_deg(&self, node: &str) -> Option<f64> {
         self.node_voltages.get(node).map(|v| v.arg().to_degrees())
@@ -367,6 +373,7 @@ pub(crate) fn validate_config(config: &AcConfig) -> Result<(), SimError> {
         ("f_start", config.f_start),
         ("f_stop", config.f_stop),
         ("ac_magnitude", config.ac_magnitude),
+        ("ac_phase_deg", config.ac_phase_deg),
     ] {
         if !value.is_finite() {
             return invalid(format!("{name} must be finite (got {value})"));
@@ -1155,6 +1162,7 @@ pub(crate) fn small_signal_system(
 ///     spacing: FrequencySpacing::Logarithmic,
 ///     source_id: "V1".into(),
 ///     ac_magnitude: 1.0,
+///     ac_phase_deg: 0.0,
 /// };
 ///
 /// let result = solve_ac(&circuit, &config).unwrap();
@@ -1230,7 +1238,8 @@ pub(crate) fn solve_ac_with(
         // sources open.
         let mut b = DVector::from_element(system.size(), Complex64::new(0.0, 0.0));
         if let Some(branch) = system.vsource_branch(&config.source_id) {
-            b[branch] = Complex64::new(config.ac_magnitude, 0.0);
+            b[branch] =
+                Complex64::from_polar(config.ac_magnitude, config.ac_phase_deg.to_radians());
         }
         let solution = system.solve(&b)?;
 
@@ -1295,6 +1304,7 @@ mod tests {
             spacing: FrequencySpacing::Logarithmic,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
 
         let result = solve_ac(&circuit, &config).unwrap();
@@ -1365,6 +1375,7 @@ mod tests {
             spacing: FrequencySpacing::Linear,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
 
         let result = solve_ac(&circuit, &config).unwrap();
@@ -1407,6 +1418,7 @@ mod tests {
             spacing: FrequencySpacing::Logarithmic,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
 
         let result = solve_ac(&circuit, &config).unwrap();
@@ -1428,6 +1440,7 @@ mod tests {
             spacing: FrequencySpacing::Logarithmic,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
         let freqs = generate_frequencies(&config);
         assert_eq!(freqs.len(), 4);
@@ -1446,6 +1459,7 @@ mod tests {
             spacing: FrequencySpacing::Linear,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
         let freqs = generate_frequencies(&config);
         assert_eq!(freqs.len(), 4);
@@ -1525,6 +1539,7 @@ mod tests {
             spacing: FrequencySpacing::Linear,
             source_id: "VIN".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
         let result = solve_ac(&bjt_stage(kind, vin, temperature), &config).unwrap();
         let gain = result.points[0].node_voltages["c"];
@@ -1587,6 +1602,7 @@ mod tests {
             spacing: FrequencySpacing::Linear,
             source_id: "VIN".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
         let gain = solve_ac(&build(vin), &config).unwrap().points[0].node_voltages[node];
         let tol = 1e-3 * slope.abs() + 1e-5;
@@ -1716,6 +1732,7 @@ mod tests {
             spacing: FrequencySpacing::Linear,
             source_id: "VIN".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
         let v = solve_ac(&circuit, &config).unwrap().points[0].node_voltages["out"];
         assert!(
@@ -1793,6 +1810,7 @@ mod tests {
             spacing: FrequencySpacing::Linear,
             source_id: "VIN".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         };
         let gain = solve_ac(&stage(true), &config).unwrap().points[0].node_voltages["c"];
         assert!(

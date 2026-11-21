@@ -686,6 +686,7 @@ let config = AcConfig {
     spacing: FrequencySpacing::Logarithmic, // or Linear
     source_id: "V1".into(),                 // voltage source that carries the AC stimulus
     ac_magnitude: 1.0,
+    ac_phase_deg: 0.0,
 };
 let result = solve_ac(&circuit, &config)?;
 
@@ -1256,8 +1257,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. Full SPICE3 coverage, behavioural (`B`) sources and the `POLY`/`VALUE`/`TABLE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
-- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards are written. sindr's parser reads every line it writes back.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage, behavioural (`B`) sources and the `POLY`/`VALUE`/`TABLE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries (TI, Infineon, ON Semi, Wolfspeed, etc.) that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
 - **No Verilog-A / behavioural device language.** Adding a new device means writing a Rust companion model.
@@ -1388,9 +1389,14 @@ pub struct AcConfig {
     pub spacing: FrequencySpacing,
     /// ID of the AC source (voltage source with AC stimulus).
     pub source_id: String,
-    /// AC amplitude of the source: volts, linear (not dB), at 0° phase.
-    /// Results scale with it; 1 V makes node voltages read as gain.
+    /// AC amplitude of the source: volts, linear (not dB). Results scale
+    /// with it; 1 V makes node voltages read as gain.
     pub ac_magnitude: f64,
+    /// AC phase of the source in degrees, as SPICE's `AC mag phase`. Every
+    /// node's phase shifts by it; 0 makes [`AcPoint::phase_deg`] read as the
+    /// phase relative to the source.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub ac_phase_deg: f64,
 }
 
 /// Result at a single frequency point.
@@ -1409,8 +1415,9 @@ impl AcPoint {
     /// circuit.
     pub fn gain_db(&self, node: &str, source_magnitude: f64) -> Option<f64> { … }
 
-    /// Phase of a node's voltage in degrees, in (−180°, 180°], relative to
-    /// the source (which is at 0°). `None` when the node isn't in the
+    /// Phase of a node's voltage in degrees, in (−180°, 180°]: relative to
+    /// the source when [`AcConfig::ac_phase_deg`] is 0, absolute otherwise,
+    /// as ngspice reports it. `None` when the node isn't in the
     /// circuit.
     pub fn phase_deg(&self, node: &str) -> Option<f64> { … }
 }
@@ -1500,6 +1507,7 @@ impl AcResult {
 ///     spacing: FrequencySpacing::Logarithmic,
 ///     source_id: "V1".into(),
 ///     ac_magnitude: 1.0,
+///     ac_phase_deg: 0.0,
 /// };
 ///
 /// let result = solve_ac(&circuit, &config).unwrap();
@@ -5749,6 +5757,19 @@ pub struct DcSweepSpec {
     pub step: f64,
 }
 
+/// An `AC [mag [phase]]` spec on a `V` or `I` line: the small-signal
+/// stimulus a deck's `.ac` drives. A bare `AC` is 1 at 0°, as in ngspice.
+pub struct AcStimulus {
+    /// Id of the source as the flattened circuit names it (`v1`, `x1.v2`).
+    pub source: String,
+    /// `true` for an `I` line (a current source), `false` for a `V` line.
+    pub current: bool,
+    /// Magnitude: volts for a `V` line, amps for an `I` line.
+    pub magnitude: f64,
+    /// Phase in degrees.
+    pub phase_deg: f64,
+}
+
 impl AnalysisRequest {
     /// The sweep axes of a `.dc` request: the inner source, and the outer
     /// one if the card names two. `None` for any other analysis.
@@ -5823,6 +5844,24 @@ impl AnalysisRequest {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn tf_config(&self) -> Option<crate::TfConfig> { … }
+
+    /// The [`AcConfig`](crate::ac_analysis::AcConfig) for an `.ac` request,
+    /// driving `source_id` at 1 V and 0°; `None` for any other analysis. A
+    /// `dec` or `oct` sweep's per-decade or per-octave count becomes the
+    /// total over the band, both ends included.
+    /// [`ParsedNetlist::ac_config`](crate::spice::ParsedNetlist::ac_config)
+    /// takes the source and its stimulus from the deck's `AC` spec instead.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 0\nR1 in out 1k\nC1 out 0 1u\n.ac dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].ac_config("v1").unwrap();
+    /// assert_eq!(config.num_points, 51);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn ac_config(&self, source_id: &str) -> Option<crate::ac_analysis::AcConfig> { … }
 
     /// The [`NoiseConfig`](crate::NoiseConfig) for a `.noise` request, to
     /// pass to [`solve_noise`](crate::solve_noise); `None` for any other
@@ -6479,9 +6518,11 @@ for analysis in &netlist.analyses {
             let _ = sindr::solve_transient(&netlist.circuit, &config)?;
             println!("transient to {tstop} s");
         }
-        AnalysisRequest::Ac { fstart, fstop, .. } => {
-            // Build an `AcConfig` and call `sindr::ac_analysis::solve_ac`.
-            println!("ac sweep {fstart}..{fstop} Hz");
+        AnalysisRequest::Ac { .. } => {
+            // The stimulus comes from the deck's `AC` spec on a V line.
+            let config = netlist.ac_config().unwrap()?;
+            let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config)?;
+            println!("ac sweep: {} points", ac.points.len());
         }
         AnalysisRequest::Sens { .. } => {
             let sens = sindr::solve_sensitivity(&netlist.circuit, &analysis.sens_config().unwrap())?;
@@ -6596,7 +6637,7 @@ Known gaps against full SPICE3 are listed in the repository's
 [`LIMITATIONS.md`](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
 
 ```rust
-pub use analysis::{AcSweep, AnalysisRequest, DcSweepSpec, MeasureAnalysis, MeasureRequest};
+pub use analysis:: { … }
 
 pub use error::{ParseWarning, SpiceParseError};
 
@@ -6642,6 +6683,10 @@ pub struct ParsedNetlist {
     /// `.meas` / `.measure` cards, in source order. Only top-level cards are
     /// read.
     pub measurements: Vec<MeasureRequest>,
+    /// The `AC` specs on the deck's `V` and `I` lines, in source order,
+    /// those inside `.subckt` bodies included under their flattened ids.
+    /// [`Self::ac_config`] drives `.ac` from them.
+    pub ac_stimuli: Vec<AcStimulus>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
     /// [`ParseOptions::strict`] is `true`.
     pub warnings: Vec<ParseWarning>,
@@ -6691,6 +6736,32 @@ impl ParsedNetlist {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn transient_config(&self) -> Option<crate::TransientConfig> { … }
+
+    /// The [`AcConfig`](crate::ac_analysis::AcConfig) for the deck's first
+    /// `.ac`, driving the source whose line carries an `AC` spec at that
+    /// spec's magnitude and phase, so the deck runs as ngspice runs it.
+    /// `None` without an `.ac`. See [`AnalysisRequest::ac_config`] for the
+    /// sweep.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 dc 0 ac 2\nR1 in out 1k\nC1 out 0 1u\n.ac dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.ac_config().unwrap()?;
+    /// assert_eq!((config.source_id.as_str(), config.ac_magnitude), ("v1", 2.0));
+    /// let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config)?;
+    /// // Well below the 159 Hz pole the output follows the 2 V stimulus.
+    /// assert!((ac.points[0].node_voltages["out"].norm() - 2.0).abs() < 1e-3);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// unless exactly one source carries an `AC` spec and it's a `V` line:
+    /// sindr's AC analysis drives a single voltage source.
+    pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> { … }
 }
 
 /// Knobs controlling parser strictness and include-path resolution.
@@ -8509,6 +8580,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         spacing: FrequencySpacing::Logarithmic,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
 
     let result = solve_ac(&circuit, &config)?;
@@ -8806,9 +8878,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let steps = result.transient.map_or(0, |t| t.timesteps.len());
                 println!("transient to {tstop} s in {tstep} s steps: {steps} snapshots");
             }
-            AnalysisRequest::Ac { fstart, fstop, .. } => {
-                println!("ac sweep {fstart}..{fstop} Hz (build an AcConfig for solve_ac)");
-            }
+            AnalysisRequest::Ac { fstart, fstop, .. } => match netlist.ac_config() {
+                Some(Ok(config)) => {
+                    let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config)?;
+                    println!("ac sweep {fstart}..{fstop} Hz: {} points", ac.points.len());
+                }
+                // No `AC` spec on a V line: the stimulus has to be set by hand.
+                _ => println!("ac sweep {fstart}..{fstop} Hz (no AC source in the deck)"),
+            },
             AnalysisRequest::Sens { .. } => {
                 let config = analysis.sens_config().ok_or("not a .sens")?;
                 let sens = sindr::solve_sensitivity(&netlist.circuit, &config)?;
@@ -9261,6 +9338,7 @@ fn per_call(s: &Settings, dir: &Path, startup: Duration) {
         spacing: FrequencySpacing::Logarithmic,
         source_id: "v1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     let cases: [(&str, &str, &str); 4] = [
         ("op_diode_series", "op", "op"),

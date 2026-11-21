@@ -154,6 +154,7 @@ fn ac_uses_the_incremental_inductance_at_the_bias() {
             spacing: FrequencySpacing::Linear,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         },
     )
     .expect("solves");

@@ -266,6 +266,7 @@ fn every_result_type() {
         spacing: FrequencySpacing::Logarithmic,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     round_trip("ac config", &ac);
     round_trip("ac", &solve_ac(&c, &ac).unwrap());

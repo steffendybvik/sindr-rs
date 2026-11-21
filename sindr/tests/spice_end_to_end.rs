@@ -434,3 +434,143 @@ fn global_nets_reach_into_subckts() {
         assert_relative_eq!(op.node_voltages["out"], 2.0, epsilon = 1e-9);
     }
 }
+
+/// The DC value and `AC` stimulus of a deck's only source, `v1`.
+fn source_specs(line: &str) -> (f64, Vec<(f64, f64)>) {
+    let deck = format!("* specs\n{line}\nR1 a 0 1k\n.end\n");
+    let netlist = parse_str(&deck).unwrap_or_else(|e| panic!("{line}: {e}"));
+    let dc = match &netlist.circuit.components[0] {
+        CircuitElement::VoltageSource { voltage, .. } => *voltage,
+        CircuitElement::CurrentSource { current, .. } => *current,
+        other => panic!("{line}: expected a source, got {other:?}"),
+    };
+    let ac = netlist
+        .ac_stimuli
+        .iter()
+        .map(|s| (s.magnitude, s.phase_deg))
+        .collect();
+    (dc, ac)
+}
+
+/// A source line, its DC value and its `AC` specs as (magnitude, phase).
+type SpecCase = (&'static str, f64, &'static [(f64, f64)]);
+
+/// SPICE3 reads `[DC] v`, `AC [mag [phase]]` and a waveform in any order.
+#[test]
+fn source_dc_and_ac_specs_in_any_order() {
+    let cases: &[SpecCase] = &[
+        ("V1 a 0 dc 0 ac 1", 0.0, &[(1.0, 0.0)]),
+        ("V1 a 0 0 ac 1", 0.0, &[(1.0, 0.0)]),
+        ("V1 a 0 ac 1", 0.0, &[(1.0, 0.0)]),
+        ("V1 a 0 1 AC 1 0", 1.0, &[(1.0, 0.0)]),
+        ("V1 a 0 AC 2 45 DC 3", 3.0, &[(2.0, 45.0)]),
+        ("V1 a 0 ac", 0.0, &[(1.0, 0.0)]),
+        ("V1 a 0 ac 1m dc 5", 5.0, &[(1e-3, 0.0)]),
+        ("I1 a 0 dc 1m ac 1u", 1e-3, &[(1e-6, 0.0)]),
+        ("V1 a 0 dc 2", 2.0, &[]),
+        ("V1 a 0", 0.0, &[]),
+    ];
+    for &(line, dc, ac) in cases {
+        assert_eq!(source_specs(line), (dc, ac.to_vec()), "{line}");
+    }
+}
+
+/// A waveform can sit before or after the `AC` spec; the DC value stays the
+/// offset it's added to.
+#[test]
+fn source_waveform_with_ac_spec() {
+    for line in [
+        "V1 a 0 dc 1 sin(0 1 1k) ac 1",
+        "V1 a 0 ac 1 sin(0 1 1k) dc 1",
+        "V1 a 0 sin(0 1 1k) 1 ac 1",
+    ] {
+        let deck = format!("* wf\n{line}\nR1 a 0 1k\n.end\n");
+        let netlist = parse_str(&deck).unwrap_or_else(|e| panic!("{line}: {e}"));
+        let CircuitElement::VoltageSource {
+            voltage, waveform, ..
+        } = &netlist.circuit.components[0]
+        else {
+            panic!("{line}: expected a voltage source");
+        };
+        assert_eq!(*voltage, 1.0, "{line}");
+        assert!(waveform.is_some(), "{line}");
+        assert_eq!(netlist.ac_stimuli.len(), 1, "{line}");
+    }
+}
+
+/// Giving a spec twice is a mistake, not a later one winning.
+#[test]
+fn source_repeated_spec_is_rejected() {
+    for line in [
+        "V1 a 0 1 2",
+        "V1 a 0 dc 1 dc 2",
+        "V1 a 0 ac 1 ac 2",
+        "V1 a 0 sin(0 1 1k) pulse(0 1 0 1n 1n 1u 2u)",
+    ] {
+        let deck = format!("* twice\n{line}\nR1 a 0 1k\n.end\n");
+        assert!(parse_str(&deck).is_err(), "{line} should not parse");
+    }
+}
+
+/// `AC` values may be `.param` expressions, evaluated in the source's scope.
+#[test]
+fn source_ac_spec_takes_params() {
+    let deck = "* p\n.param amp=0.5 ph=-90\nV1 a 0 ac {amp*2} {ph}\nR1 a 0 1k\n.end\n";
+    assert_eq!(parse_str(deck).unwrap().ac_stimuli[0].phase_deg, -90.0);
+    assert_eq!(parse_str(deck).unwrap().ac_stimuli[0].magnitude, 1.0);
+}
+
+/// An `AC` source inside a `.subckt` is named by its flattened id, and the
+/// deck's `.ac` drives it.
+#[test]
+fn ac_config_drives_a_source_inside_a_subckt() {
+    let deck = "* sub\n.subckt drv out\nVs out 0 dc 0 ac 1\n.ends\n\
+                X1 in drv\nR1 in out 1k\nC1 out 0 1u\n.ac dec 10 1 100k\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let config = netlist.ac_config().unwrap().unwrap();
+    assert_eq!(config.source_id, "x1.vs");
+    let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config).unwrap();
+    // At the 159 Hz pole the RC is 3 dB down.
+    let at_pole = sindr::ac_analysis::solve_ac(
+        &netlist.circuit,
+        &sindr::ac_analysis::AcConfig {
+            f_start: 159.154_943,
+            f_stop: 159.154_943,
+            num_points: 1,
+            ..config.clone()
+        },
+    )
+    .unwrap();
+    assert_relative_eq!(
+        at_pole.points[0].node_voltages["out"].norm(),
+        std::f64::consts::FRAC_1_SQRT_2,
+        max_relative = 1e-6
+    );
+    assert_eq!(ac.points.len(), 51);
+}
+
+/// `ac_config` needs exactly one `AC` voltage source.
+#[test]
+fn ac_config_rejects_missing_extra_or_current_stimuli() {
+    let with = |sources: &str| {
+        let deck = format!("* s\n{sources}\nR1 a b 1k\nR2 b 0 1k\n.ac dec 10 1 1k\n.end\n");
+        parse_str(&deck).unwrap().ac_config().unwrap()
+    };
+    assert!(with("V1 a 0 1").is_err());
+    assert!(with("V1 a 0 ac 1\nV2 b 0 ac 1").is_err());
+    assert!(with("I1 0 a ac 1m").is_err());
+    assert!(with("V1 a 0 ac 1\nV2 b 0 2").is_ok());
+    // No `.ac` card, no config.
+    let deck = "* none\nV1 a 0 ac 1\nR1 a 0 1k\n.op\n.end\n";
+    assert!(parse_str(deck).unwrap().ac_config().is_none());
+}
+
+/// ngspice reads node names in any script, not only ASCII.
+#[test]
+fn non_ascii_node_names() {
+    let deck = "* unicode\nV1 å 0 1\nR1 å µ 1k\nR2 µ 0 1k\n.op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let op = sindr::solve_circuit(&netlist.circuit).unwrap();
+    assert_relative_eq!(op.node_voltages["µ"], 0.5, max_relative = 1e-9);
+    assert_relative_eq!(op.node_voltages["å"], 1.0, max_relative = 1e-9);
+}

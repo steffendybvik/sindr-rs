@@ -32,8 +32,9 @@ use winnow::token::{one_of, take_while};
 use winnow::{ModalResult, Parser};
 
 use crate::spice::ast::{
-    AcSweepKind, BinOp, NodeValueKind, ParamExpr, RawAnalysis, RawCard, RawCrossing, RawElement,
-    RawElementBody, RawMeasure, RawMeasureKind, RawModel, RawSubckt, RawWaveform, SourceKind, Span,
+    AcSweepKind, BinOp, NodeValueKind, ParamExpr, RawAcSpec, RawAnalysis, RawCard, RawCrossing,
+    RawElement, RawElementBody, RawMeasure, RawMeasureKind, RawModel, RawSubckt, RawWaveform,
+    SourceKind, Span,
 };
 use crate::spice::error::SpiceParseError;
 use crate::spice::preprocess::{LogicalLine, Preprocessed};
@@ -94,10 +95,11 @@ fn ident(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
 
 /// Node name: SPICE allows nodes that are pure digits (`0`, `12`) or
 /// identifiers, plus `.` for hierarchical names that subckt instances may
-/// reference.
+/// reference. Letters and digits may be any Unicode ones (`å`, `µ`), as
+/// ngspice reads them.
 fn node_name(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
     take_while(1.., |c: char| {
-        c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '#'
+        c.is_alphanumeric() || c == '_' || c == '.' || c == '#'
     })
     .with_span()
     .map(|(s, span): (&str, Range<usize>)| (s.to_string(), span))
@@ -478,34 +480,92 @@ fn parse_waveform(input: &mut Input<'_>) -> ModalResult<Option<RawWaveform>> {
     Ok(None)
 }
 
-/// Parse `V / I` source: `<id> n+ n- [DC] <value> | <waveform>`.
+/// A keyword that ends at a word boundary, so `ac` doesn't match `acx`.
+fn word<'a>(kw: &'static str) -> impl Parser<Input<'a>, &'a str, ErrMode<ContextError>> {
+    move |input: &mut Input<'a>| -> ModalResult<&'a str> {
+        let cp = input.checkpoint();
+        let got = keyword(kw).parse_next(input)?;
+        if input
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            input.reset(&cp);
+            return Err(ErrMode::from_input(input));
+        }
+        Ok(got)
+    }
+}
+
+/// A value if one comes next; `None` (consuming nothing) otherwise.
+fn opt_value(input: &mut Input<'_>) -> ModalResult<Option<ParamExpr>> {
+    let cp = input.checkpoint();
+    match value_expr(input) {
+        Ok((v, _)) => Ok(Some(v)),
+        Err(ErrMode::Backtrack(_)) => {
+            input.reset(&cp);
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Parse `V / I` source: `<id> n+ n- [[DC] v] [AC [mag [phase]]] [waveform]`,
+/// the three specs in any order and each at most once, as SPICE3 reads
+/// them. No spec at all is 0 DC.
 fn parse_source(input: &mut Input<'_>, kind: SourceKind) -> ModalResult<RawElement> {
     let (id, prefix, id_span) = element_id(input)?;
     ws(input)?;
     let (n_pos, _) = node_name(input)?;
     ws(input)?;
     let (n_neg, _) = node_name(input)?;
-    ws(input)?;
-    // Optional `dc` keyword.
-    let _ = opt(keyword("dc")).parse_next(input)?;
-    ws(input)?;
-    // Try waveform first; if no waveform, expect a value.
-    let wf = parse_waveform(input)?;
-    let (dc, waveform) = if wf.is_some() {
-        (None, wf)
-    } else {
-        let (val, _) = value_expr(input)?;
-        (Some(val), None)
-    };
-    ws(input)?;
-    if !input.is_empty() {
-        return Err(ErrMode::from_input(input));
+    let mut dc = None;
+    let mut ac = None;
+    let mut waveform = None;
+    loop {
+        ws(input)?;
+        if input.is_empty() {
+            break;
+        }
+        if opt(word("dc")).parse_next(input)?.is_some() {
+            ws(input)?;
+            let (val, _) = value_expr(input)?;
+            if dc.replace(val).is_some() {
+                return Err(ErrMode::from_input(input));
+            }
+        } else if opt(word("ac")).parse_next(input)?.is_some() {
+            ws(input)?;
+            let magnitude = opt_value(input)?;
+            ws(input)?;
+            let phase = if magnitude.is_some() {
+                opt_value(input)?
+            } else {
+                None
+            };
+            if ac.replace(RawAcSpec { magnitude, phase }).is_some() {
+                return Err(ErrMode::from_input(input));
+            }
+        } else if let Some(wf) = parse_waveform(input)? {
+            if waveform.replace(wf).is_some() {
+                return Err(ErrMode::from_input(input));
+            }
+        } else {
+            let (val, _) = value_expr(input)?;
+            if dc.replace(val).is_some() {
+                return Err(ErrMode::from_input(input));
+            }
+        }
     }
     Ok(RawElement {
         id,
         prefix,
         nodes: vec![n_pos, n_neg],
-        body: RawElementBody::Source { kind, dc, waveform },
+        body: RawElementBody::Source {
+            kind,
+            dc,
+            ac,
+            waveform,
+        },
         span: Span {
             start: id_span.start,
             end: id_span.end,
@@ -1778,6 +1838,7 @@ mod tests {
             RawElementBody::Source {
                 kind: SourceKind::Voltage,
                 dc: Some(v),
+                ac: None,
                 waveform: None,
             } => {
                 assert!((must_num(&v) - 5.0).abs() < 1e-9);

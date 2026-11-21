@@ -60,6 +60,7 @@ fn operating_point_ac_and_transient() {
             spacing: FrequencySpacing::Logarithmic,
             source_id: "V1".into(),
             ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
         },
     )
     .unwrap();

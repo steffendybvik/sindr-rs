@@ -81,9 +81,11 @@
 //!             let _ = sindr::solve_transient(&netlist.circuit, &config)?;
 //!             println!("transient to {tstop} s");
 //!         }
-//!         AnalysisRequest::Ac { fstart, fstop, .. } => {
-//!             // Build an `AcConfig` and call `sindr::ac_analysis::solve_ac`.
-//!             println!("ac sweep {fstart}..{fstop} Hz");
+//!         AnalysisRequest::Ac { .. } => {
+//!             // The stimulus comes from the deck's `AC` spec on a V line.
+//!             let config = netlist.ac_config().unwrap()?;
+//!             let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config)?;
+//!             println!("ac sweep: {} points", ac.points.len());
 //!         }
 //!         AnalysisRequest::Sens { .. } => {
 //!             let sens = sindr::solve_sensitivity(&netlist.circuit, &analysis.sens_config().unwrap())?;
@@ -218,7 +220,9 @@ mod preprocess;
 mod si;
 mod source_map;
 
-pub use analysis::{AcSweep, AnalysisRequest, DcSweepSpec, MeasureAnalysis, MeasureRequest};
+pub use analysis::{
+    AcStimulus, AcSweep, AnalysisRequest, DcSweepSpec, MeasureAnalysis, MeasureRequest,
+};
 pub use error::{ParseWarning, SpiceParseError};
 pub use export::{to_netlist, ExportError};
 pub use source_map::{HierarchyPath, SourceMap};
@@ -265,6 +269,10 @@ pub struct ParsedNetlist {
     /// `.meas` / `.measure` cards, in source order. Only top-level cards are
     /// read.
     pub measurements: Vec<MeasureRequest>,
+    /// The `AC` specs on the deck's `V` and `I` lines, in source order,
+    /// those inside `.subckt` bodies included under their flattened ids.
+    /// [`Self::ac_config`] drives `.ac` from them.
+    pub ac_stimuli: Vec<AcStimulus>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
     /// [`ParseOptions::strict`] is `true`.
     pub warnings: Vec<ParseWarning>,
@@ -320,6 +328,60 @@ impl ParsedNetlist {
             .iter()
             .find_map(AnalysisRequest::transient_config)
             .map(|config| config.with_initial_voltages(self.initial_conditions.clone()))
+    }
+
+    /// The [`AcConfig`](crate::ac_analysis::AcConfig) for the deck's first
+    /// `.ac`, driving the source whose line carries an `AC` spec at that
+    /// spec's magnitude and phase, so the deck runs as ngspice runs it.
+    /// `None` without an `.ac`. See [`AnalysisRequest::ac_config`] for the
+    /// sweep.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 dc 0 ac 2\nR1 in out 1k\nC1 out 0 1u\n.ac dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.ac_config().unwrap()?;
+    /// assert_eq!((config.source_id.as_str(), config.ac_magnitude), ("v1", 2.0));
+    /// let ac = sindr::ac_analysis::solve_ac(&netlist.circuit, &config)?;
+    /// // Well below the 159 Hz pole the output follows the 2 V stimulus.
+    /// assert!((ac.points[0].node_voltages["out"].norm() - 2.0).abs() < 1e-3);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// unless exactly one source carries an `AC` spec and it's a `V` line:
+    /// sindr's AC analysis drives a single voltage source.
+    pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> {
+        let request = self
+            .analyses
+            .iter()
+            .find(|a| matches!(a, AnalysisRequest::Ac { .. }))?;
+        let invalid = |msg: String| crate::SimError::InvalidComponent(format!(".ac: {msg}"));
+        Some(match self.ac_stimuli.as_slice() {
+            [] => Err(invalid("no V line carries an `AC` spec to drive".into())),
+            [one] if one.current => Err(invalid(format!(
+                "`{}` is a current source; AC analysis drives a voltage source",
+                one.source
+            ))),
+            [one] => request
+                .ac_config(&one.source)
+                .map(|mut config| {
+                    config.ac_magnitude = one.magnitude;
+                    config.ac_phase_deg = one.phase_deg;
+                    config
+                })
+                .ok_or_else(|| invalid("internal: not an .ac request".into())),
+            many => Err(invalid(format!(
+                "AC analysis drives one source, but {} carry an `AC` spec",
+                many.iter()
+                    .map(|s| format!("`{}`", s.source))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+        })
     }
 }
 

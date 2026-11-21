@@ -152,6 +152,7 @@ fn ac_sweep(circuit: &Circuit, f_start: f64, f_stop: f64) -> sindr::ac_analysis:
         spacing: FrequencySpacing::Logarithmic,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     solve_ac(circuit, &config).unwrap()
 }
@@ -199,6 +200,7 @@ fn ac_rc_lowpass_matches_transfer_function() {
         spacing: FrequencySpacing::Linear,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     let at_corner = &solve_ac(&lowpass, &config).unwrap().points[0];
     assert!((at_corner.gain_db("out", 1.0).unwrap() + 3.010_299_957).abs() < 1e-8);
@@ -267,6 +269,7 @@ fn ac_series_rlc_resonance() {
         spacing: FrequencySpacing::Linear,
         source_id: "V1".into(),
         ac_magnitude: 1.0,
+        ac_phase_deg: 0.0,
     };
     let at_f0 = solve_ac(&series, &config).unwrap().points[0].node_voltages["out"];
     assert!((at_f0 - Complex64::new(1.0, 0.0)).norm() < 1e-9, "{at_f0}");
