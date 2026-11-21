@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for analysis in &netlist.analyses {
         match analysis {
             AnalysisRequest::Op => {
-                sindr::solve_circuit(&netlist.circuit)?;
+                sindr::solve_op(&netlist.circuit)?;
             }
             AnalysisRequest::Dc { source, .. } => {
                 let (axis, _outer) = analysis.dc_axes().ok_or("not a .dc")??;

@@ -1266,8 +1266,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 | Analysis | Supported | Notes |
 |----------|-----------|-------|
-| `.op` (operating point) | ✅ | via `solve_circuit` |
-| `.dc` (DC sweep) | ✅ | one source (`dc_sweep`) or two nested (`dc_sweep_nested`), voltage or current |
+| `.op` (operating point) | ✅ | via `solve_op`: capacitors open, inductors shorted, sources at their t = 0 value |
+| `.dc` (DC sweep) | ✅ | one source (`dc_sweep`) or two nested (`dc_sweep_nested`), voltage or current; each point an operating point, as `.op` |
 | `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` keeps the result from there on |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
@@ -4094,13 +4094,13 @@ hierarchy is [`SimError::Design`].
 
 | Analysis | Entry point | Notes |
 |---|---|---|
-| Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
+| Operating point (linear or nonlinear DC) | [`solve_op`], [`solve_circuit`] | Newton–Raphson for nonlinear devices. [`solve_op`] is SPICE's `.op` (C open, L shorted, sources at t = 0); [`solve_circuit`] runs a transient when the circuit has C, L or waveforms |
 | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
 | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
-| DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`) |
+| DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`); each point an operating point as [`solve_op`] solves it |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
@@ -5544,6 +5544,13 @@ impl Solver {
     /// [`SolverOptions::validate`].
     pub fn circuit(&self, circuit: &Circuit) -> Result<SimulationResult, SimError> { … }
 
+    /// As [`solve_op`](crate::solve_op).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_op`](crate::solve_op), and [`SolverOptions::validate`].
+    pub fn op(&self, circuit: &Circuit) -> Result<SimulationResult, SimError> { … }
+
     /// As [`solve_transient`](crate::solve_transient).
     ///
     /// # Errors
@@ -6450,7 +6457,7 @@ println!("parsed `{}` ({} components)", netlist.title, netlist.circuit.component
 for analysis in &netlist.analyses {
     match analysis {
         AnalysisRequest::Op => {
-            let result = sindr::solve_circuit(&netlist.circuit)?;
+            let result = sindr::solve_op(&netlist.circuit)?;
             println!("op: {} node voltages", result.node_voltages.len());
         }
         AnalysisRequest::Dc { source, .. } => {
@@ -8774,7 +8781,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for analysis in &netlist.analyses {
         match analysis {
             AnalysisRequest::Op => {
-                sindr::solve_circuit(&netlist.circuit)?;
+                sindr::solve_op(&netlist.circuit)?;
             }
             AnalysisRequest::Dc { source, .. } => {
                 let (axis, _outer) = analysis.dc_axes().ok_or("not a .dc")??;

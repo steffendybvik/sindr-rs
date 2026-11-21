@@ -191,6 +191,16 @@ impl Solver {
         crate::solve_circuit_with(circuit, &self.options)
     }
 
+    /// As [`solve_op`](crate::solve_op).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_op`](crate::solve_op), and [`SolverOptions::validate`].
+    pub fn op(&self, circuit: &Circuit) -> Result<SimulationResult, SimError> {
+        self.options.validate()?;
+        crate::solve_op_with(circuit, &self.options)
+    }
+
     /// As [`solve_transient`](crate::solve_transient).
     ///
     /// # Errors

@@ -2125,26 +2125,8 @@ fn operating_point_start(
     config: &TransientConfig,
     opts: &SolverOptions,
 ) -> Result<Start, SimError> {
+    // Each source at its t = 0 value.
     let mut dc = crate::dc_equivalent(circuit);
-    for component in &mut dc.components {
-        match component {
-            CircuitElement::VoltageSource {
-                voltage, waveform, ..
-            } => {
-                if let Some(w) = waveform.take() {
-                    *voltage += w.evaluate(0.0);
-                }
-            }
-            CircuitElement::CurrentSource {
-                current, waveform, ..
-            } => {
-                if let Some(w) = waveform.take() {
-                    *current += w.evaluate(0.0);
-                }
-            }
-            _ => {}
-        }
-    }
     // An inductor given a current carries it: a current source in place
     // of its short. (A relay coil is a resistor at DC, and just starts at
     // its current.)

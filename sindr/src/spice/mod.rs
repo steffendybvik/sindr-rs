@@ -59,7 +59,7 @@
 //! for analysis in &netlist.analyses {
 //!     match analysis {
 //!         AnalysisRequest::Op => {
-//!             let result = sindr::solve_circuit(&netlist.circuit)?;
+//!             let result = sindr::solve_op(&netlist.circuit)?;
 //!             println!("op: {} node voltages", result.node_voltages.len());
 //!         }
 //!         AnalysisRequest::Dc { source, .. } => {

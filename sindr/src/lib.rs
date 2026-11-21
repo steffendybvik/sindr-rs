@@ -69,13 +69,13 @@
 //!
 //! | Analysis | Entry point | Notes |
 //! |---|---|---|
-//! | Operating point (linear or nonlinear DC) | [`solve_circuit`] | Newton–Raphson for nonlinear devices |
+//! | Operating point (linear or nonlinear DC) | [`solve_op`], [`solve_circuit`] | Newton–Raphson for nonlinear devices. [`solve_op`] is SPICE's `.op` (C open, L shorted, sources at t = 0); [`solve_circuit`] runs a transient when the circuit has C, L or waveforms |
 //! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 //! | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
 //! | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
-//! | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`) |
+//! | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`); each point an operating point as [`solve_op`] solves it |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 //! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
@@ -565,6 +565,70 @@ fn solve_circuit_parts(
     })
 }
 
+/// The DC operating point, as SPICE's `.op`: capacitors open, inductors
+/// and transformer windings shorted, and each source with a waveform at its
+/// t = 0 value, at the self-heating balance when any part has [`Thermal`]
+/// data.
+///
+/// [`solve_circuit`] differs for a circuit with a capacitor, inductor or
+/// waveform: it runs a transient and reports its end state (5 τ), which is
+/// only close to the bias point. Here an inductor reads 0 V across and
+/// carries its DC current, which [`SimulationResult::branch_currents`] has
+/// under its id; a capacitor reads the voltage across it and (near) no
+/// current.
+///
+/// ```
+/// use sindr::{solve_op, Circuit, CircuitElement};
+///
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 1.0, waveform: None,
+///         },
+///         CircuitElement::Inductor {
+///             id: "L1".into(), nodes: ["in".into(), "mid".into()], inductance: 1e-3, saturation: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(), nodes: ["mid".into(), "0".into()], resistance: 1e3,
+///         },
+///     ],
+///     ..Default::default()
+/// };
+/// let op = solve_op(&circuit)?;
+/// assert_eq!(op.node_voltages["mid"], 1.0);
+/// assert!((op.branch_currents["L1"] - 1e-3).abs() < 1e-12);
+/// # Ok::<(), sindr::SimError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`solve_circuit`]'s DC path: an invalid circuit, a singular matrix
+/// (for instance an inductor straight across a voltage source, a short at
+/// DC), or no convergence.
+pub fn solve_op(circuit: &Circuit) -> Result<SimulationResult, SimError> {
+    solve_op_with(circuit, &SolverOptions::default())
+}
+
+/// [`solve_op`] with `opts`.
+pub(crate) fn solve_op_with(
+    circuit: &Circuit,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
+    let flat = crate::solver_circuit(circuit)?;
+    let mut result = solve_dc_operating_point(&flat, opts)?;
+    strip_secondary_windings(&mut result);
+    composite::fold(circuit, &mut result);
+    Ok(result)
+}
+
+/// Drops the `id#2` branch a transformer's shorted secondary leaves in a
+/// result solved on [`dc_equivalent`]: its id isn't one the caller gave.
+pub(crate) fn strip_secondary_windings(result: &mut SimulationResult) {
+    result.branch_currents.retain(|id, _| !id.ends_with("#2"));
+    result.component_results.retain(|c| !c.id.ends_with("#2"));
+}
+
 /// `solve` on flat `circuit`, iterated to a self-heating balance when any
 /// part has [`Thermal`] data.
 pub(crate) fn solve_dc_heated(
@@ -614,10 +678,37 @@ pub(crate) fn solve_dc_circuit(
 }
 
 /// `circuit` as it stands at DC: capacitors and varactors open (a 1 TΩ leak), inductors and
-/// transformer windings shorted (0 V sources). The bias point and the `.tf`
-/// small-signal system are both solved on it. It keeps `circuit`'s part
-/// data, which carries the thermal data the heated bias point needs.
+/// transformer windings shorted (0 V sources), and each source with a
+/// waveform at its t = 0 value, as SPICE's operating point takes it. The
+/// bias point and the `.tf` small-signal system are both solved on it. It
+/// keeps `circuit`'s part data, which carries the thermal data the heated
+/// bias point needs.
 pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
+    let mut dc = dc_reactances(circuit);
+    for component in &mut dc.components {
+        match component {
+            CircuitElement::VoltageSource {
+                voltage, waveform, ..
+            } => {
+                if let Some(w) = waveform.take() {
+                    *voltage += w.evaluate(0.0);
+                }
+            }
+            CircuitElement::CurrentSource {
+                current, waveform, ..
+            } => {
+                if let Some(w) = waveform.take() {
+                    *current += w.evaluate(0.0);
+                }
+            }
+            _ => {}
+        }
+    }
+    dc
+}
+
+/// [`dc_equivalent`]'s reactive elements replaced, sources left as they are.
+fn dc_reactances(circuit: &Circuit) -> Circuit {
     Circuit {
         ground_node: circuit.ground_node.clone(),
         components: circuit

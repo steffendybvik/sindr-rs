@@ -46,8 +46,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 | Analysis | Supported | Notes |
 |----------|-----------|-------|
-| `.op` (operating point) | ✅ | via `solve_circuit` |
-| `.dc` (DC sweep) | ✅ | one source (`dc_sweep`) or two nested (`dc_sweep_nested`), voltage or current |
+| `.op` (operating point) | ✅ | via `solve_op`: capacitors open, inductors shorted, sources at their t = 0 value |
+| `.dc` (DC sweep) | ✅ | one source (`dc_sweep`) or two nested (`dc_sweep_nested`), voltage or current; each point an operating point, as `.op` |
 | `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` keeps the result from there on |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |

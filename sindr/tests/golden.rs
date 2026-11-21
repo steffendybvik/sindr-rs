@@ -17,8 +17,8 @@ use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 use sindr::noise::{solve_noise, NoiseConfig, NoiseResult};
 use sindr::spice::{parse_file, to_netlist};
 use sindr::{
-    dc_sweep, solve_circuit, temperature_sweep, Circuit, CircuitElement, JfetKind, MosfetKind,
-    SimulationResult,
+    dc_sweep, solve_circuit, solve_op, temperature_sweep, Circuit, CircuitElement, JfetKind,
+    MosfetKind, SimulationResult,
 };
 use sindr_devices::mosfet::MosfetParams;
 
@@ -267,10 +267,11 @@ fn source_current(result: &SimulationResult, id: &str) -> f64 {
     result.branch_currents[id]
 }
 
-/// Compares an operating point: `v(<node>)` and `i(<source>)` vectors.
+/// Compares an operating point, as `.op` maps onto [`solve_op`]:
+/// `v(<node>)` and `i(<source or inductor>)` vectors.
 fn check_op(case: &'static str, circuit: &Circuit, tol: (Tol, Tol)) {
     let golden = Golden::load(case);
-    let result = solve_circuit(circuit).unwrap_or_else(|e| panic!("{case}: {e}"));
+    let result = solve_op(circuit).unwrap_or_else(|e| panic!("{case}: {e}"));
     let mut check = Check::new(case);
     for name in golden.names.iter().skip(1) {
         let inner = &name[2..name.len() - 1];
@@ -284,6 +285,14 @@ fn check_op(case: &'static str, circuit: &Circuit, tol: (Tol, Tol)) {
 }
 
 // ---------------------------------------------------------------- .op
+
+/// An inductor shorted, capacitors open, and a `PULSE` current source at
+/// its t = 0 value, as ngspice's `.op`; `solve_circuit` would report the
+/// 5 τ end of a transient instead.
+#[test]
+fn op_reactive() {
+    check_op("op_reactive", &parse("op_reactive"), (OP_V, OP_I));
+}
 
 #[test]
 fn op_resistive() {
@@ -515,6 +524,35 @@ fn op_photodiode() {
 }
 
 // ---------------------------------------------------------------- .dc
+
+/// The `op_reactive` deck swept: every point is an operating point, with
+/// the inductor shorted and the capacitors open.
+#[test]
+fn dc_reactive() {
+    let golden = Golden::load("dc_reactive");
+    let sweep = dc_sweep(&parse("dc_reactive"), "v1", 0.0, 2.0, 5).unwrap();
+    let scale = golden.scale();
+    let column = |node: &str| -> Vec<f64> {
+        sweep
+            .points
+            .iter()
+            .map(|p| p.result.node_voltages[node])
+            .collect()
+    };
+    let i: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| source_current(&p.result, "v1"))
+        .collect();
+    let mut check = Check::new("dc_reactive");
+    check.series("v-sweep", &scale, &sweep_values(&sweep), &scale, OP_V);
+    for node in ["mid", "b", "c"] {
+        let name = format!("v({node})");
+        check.series(&name, &scale, &column(node), &golden.column(&name), OP_V);
+    }
+    check.series("i(v1)", &scale, &i, &golden.column("i(v1)"), OP_I);
+    check.finish();
+}
 
 #[test]
 fn dc_diode_iv() {
