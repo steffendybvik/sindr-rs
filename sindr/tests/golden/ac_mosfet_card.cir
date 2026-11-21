@@ -1,0 +1,8 @@
+ac: NMOS common-source from a level-1 card with geometry, multiplier, overlap caps and a drain-bulk junction
+VDD vdd 0 12
+VG in 0 2
+RG in g 50k
+RD vdd d 4.7k
+M1 d g 0 0 nfet W=20u L=2u M=2
+.model nfet NMOS(LEVEL=1 KP=50u VTO=1.2 LAMBDA=0.01 LD=0.1u CGSO=1n CGDO=0.3n CGBO=0.2n CBD=5p PB=0.9 MJ=0.4)
+.end

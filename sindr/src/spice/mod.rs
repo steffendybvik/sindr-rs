@@ -3,8 +3,9 @@
 //! Parses a practical subset of Berkeley SPICE3f5 netlists into a
 //! [`crate::Circuit`] plus structured analysis directives. The supported
 //! device set tracks what `sindr` can solve: R, L, C, V, I, D, Q (NPN/PNP),
-//! B (behavioural), the linear controlled sources E, G, F and H (and their
-//! `POLY` form, and the `VALUE` form of E and G), K (two coupled `L` lines,
+//! M (level-1 NMOS/PMOS), J (NJF/PJF), B (behavioural), the linear controlled
+//! sources E, G, F and H (and their `POLY` form, and the `VALUE` form of E and
+//! G), K (two coupled `L` lines,
 //! read as one [`Transformer`](crate::CircuitElement::Transformer)) and X
 //! (subcircuit instance). Subcircuits declared with `.subckt` /
 //! `.ends` become [`Block`](crate::Block)s and X lines
@@ -116,6 +117,41 @@
 //! | `D` | `IS`, `N`, `RS`, `CJO` (or `CJ0`, `CJ`), `VJ` (or `PB`), `M` (or `MJ`), `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` | [`DiodeModel`](crate::DiodeModel) |
 //! | `NPN`, `PNP` | `BF` | the element's `bf` |
 //! | `NPN`, `PNP` | `IS`, `BR`, `NF`, `NR`, `VAF` (or `VA`), `KF`, `AF` | [`BjtModel`](crate::BjtModel) |
+//! | `NMOS`, `PMOS` | `LEVEL` (1 only), `KP`, `VTO`, `LAMBDA`, `GAMMA`, `PHI`, `LD` | [`MosfetParams`](crate::devices::mosfet::MosfetParams) |
+//! | `NMOS`, `PMOS` | `CGSO`, `CGDO`, `CGBO` | [`MosfetParasiticCaps`](crate::circuit::MosfetParasiticCaps) |
+//! | `NMOS`, `PMOS` | `IS`, `CBD`, `PB`, `MJ`, `FC` (the drain–bulk junction) | the element's `body_diode` |
+//! | `NJF`, `PJF` | `VTO`, `BETA` | the element's `idss` and `vp` |
+//!
+//! A `.model` inside a `.subckt` belongs to that subcircuit: its elements
+//! use it ahead of a top-level card of the same name, and nothing outside
+//! sees it, as vendor model files expect.
+//!
+//! # MOSFETs and JFETs
+//!
+//! `Mxxx nd ng ns nb model [W=] [L=] [M=]` is SPICE's level 1 with
+//! ngspice's defaults (`W` = `L` = 100 µm, `KP` = 2e-5 A/V², `IS` =
+//! 1e-14 A):
+//!
+//! * `kp = KP·W/(L − 2·LD)·M`; `VTO`, `LAMBDA`, `GAMMA` and `PHI` as written.
+//! * The gate capacitances are SPICE's overlap ones, `CGSO·W + CGBO·(L − 2·LD)`
+//!   and `CGDO·W`, times `M`: the bulk is the source, so gate–bulk is
+//!   gate–source.
+//! * The drain–bulk junction becomes the body diode. `IS=0` with no `CBD`
+//!   leaves none.
+//!
+//! sindr's MOSFET ties its body to its source, so a bulk node other than
+//! the source is an error in strict mode and a warning in lenient mode.
+//! `LEVEL` other than 1 is always an error: another level is a different
+//! model. `AD`, `AS`, `PD`, `PS`, `NRD` and `NRS` only scale parameters
+//! sindr refuses, so they are dropped. `TOX` (which turns on SPICE's Meyer
+//! gate capacitance), `RD`/`RS` above 0, `KF`, the `OFF` flag and other
+//! instance parameters are unsupported.
+//!
+//! `Jxxx nd ng ns model [area]` gives `idss = BETA·VTO²·area` and a
+//! pinch-off of `VTO` (default −2 V), signed as
+//! [`JfetKind`](crate::JfetKind) expects. sindr's JFET has no gate
+//! junction, channel-length modulation, series resistance or capacitance,
+//! so `IS`, `LAMBDA`, `RD`, `RS`, `CGS` and `CGD` are read only at 0.
 //!
 //! sindr's BJT is Ebers–Moll, so its Early effect isn't SPICE's
 //! Gummel–Poon base charge: with `VAF` set, results differ slightly from

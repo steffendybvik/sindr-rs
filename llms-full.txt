@@ -151,7 +151,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 
@@ -222,7 +222,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -1267,10 +1267,10 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
-- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, B, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, M, J, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, M, J, B, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. A MOSFET with flicker noise, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation.
-- **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, and MOSFET, JFET and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
+- **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, MOSFET and JFET take level-1 `NMOS`/`PMOS` and `NJF`/`PJF` cards, and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
 - **Behavioural sources are expressions, not a device language.** `CircuitElement::Behavioural` (SPICE's `B`) is one voltage or current set by an expression of node voltages, branch currents and time. There is no Verilog-A, no internal state or charge (`ddt`, `idt`), and no XSPICE code models; a new device with its own state means writing a Rust companion model. Steps and comparisons in an expression have zero slope, so a hard switch can stall Newton where a smooth one (`tanh`) converges.
 
 #### Analyses
@@ -1354,7 +1354,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 ### Useful workarounds
 
-- Need a vendor BJT / MOSFET? Fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
+- Need a vendor BJT / MOSFET? A level-1 MOSFET or JFET subcircuit loads as is; otherwise fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
 - Need digital control around an analog plant? Drive the analog circuit step-by-step from your own Rust loop, sampling node voltages between transient calls and updating sources / switches between them. This is not co-simulation, but it works for slow control loops.
 - Need a second pole or phase margin on an op-amp? Build it from VCVS stages and RC networks around an `OpAmp` with an `OpAmpModel`.
 - Need a tolerance on a device-model parameter, or correlated parts? Loop in Rust over your own variations of the `Circuit`; sindr is fast enough for thousands of solves on small circuits.
@@ -4378,15 +4378,17 @@ keyed by the caller's component and net ids, and every
 #### SPICE input (feature `spice`)
 
 [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q,
-B (behavioural, also E/G `VALUE=` and E/G/F/H `POLY`), linear E/G/F/H, K (two coupled `L`
-lines) and X elements, with `[DC] v`,
+M, J, B (behavioural, also E/G `VALUE=` and E/G/F/H `POLY`), linear E/G/F/H,
+K (two coupled `L` lines) and X elements, with `[DC] v`,
 `AC mag [phase]` and a waveform on V and I lines in any order;
 `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
 `.ac`, `.tf`, `.sens`, `.noise` and `.tran`. `.model` cards fill in what
 sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
-`NR`, `VAF`, `KF`, `AF`). Not read: MOSFET (M) and JFET (J) elements,
+`NR`, `VAF`, `KF`, `AF`; level-1 MOSFETs: `KP`, `VTO`, `LAMBDA`, `GAMMA`,
+`PHI`, `LD`, `CGSO`, `CGDO`, `CGBO` and the drain–bulk junction; JFETs:
+`VTO`, `BETA`), inside a `.subckt` or at the top level. Not read:
 the `TABLE`/`LAPLACE` forms of E/G/F/H, and
 couplings of more than two inductors.
 [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
@@ -6281,7 +6283,7 @@ pub enum SpiceParseError {
     #[error("unknown device prefix '{prefix}'")]
     #[diagnostic(
         code(sindr::spice::unknown_device),
-        help("supported device prefixes: R, L, C, V, I, D, Q, B, E, G, F, H, K, X")
+        help("supported device prefixes: R, L, C, V, I, D, Q, M, J, B, E, G, F, H, K, X")
     )]
     UnknownDevice {
         /// The unrecognised prefix character.
@@ -6315,7 +6317,7 @@ pub enum SpiceParseError {
     #[error("unsupported device '{device}'")]
     #[diagnostic(
         code(sindr::spice::unsupported_device),
-        help("the parser currently supports: R, L, C, V, I, D, Q, B, E, G, F, H, K, X, with the POLY form of E/G/F/H and the VALUE form of E/G. M (MOSFET), J (JFET) and the TABLE/LAPLACE forms are not implemented yet.")
+        help("the parser currently supports: R, L, C, V, I, D, Q, M, J, B, E, G, F, H, K, X, with the POLY form of E/G/F/H and the VALUE form of E/G. The TABLE/LAPLACE forms are not implemented yet.")
     )]
     UnsupportedDevice {
         /// Element id that triggered the error.
@@ -6332,7 +6334,7 @@ pub enum SpiceParseError {
     #[error("unsupported model type '{kind}' on model '{name}'")]
     #[diagnostic(
         code(sindr::spice::unsupported_model_type),
-        help("sindr currently supports model types: D, NPN, PNP")
+        help("sindr currently supports model types: D, NPN, PNP, NMOS, PMOS, NJF, PJF")
     )]
     UnsupportedModelType {
         /// Model type token (e.g. `NMOS`).
@@ -6591,8 +6593,8 @@ pub enum ExportError {
 /// analysis cards are written.
 ///
 /// The deck is SPICE3, so ngspice reads it, and [`parse_str`](super::parse_str)
-/// reads back every element it can parse (R, L, C, V, I, D, Q) into a circuit
-/// that solves the same.
+/// reads back every element it can parse (R, L, C, V, I, D, Q, M, J) into a
+/// circuit that solves the same.
 ///
 /// # What is written
 ///
@@ -6601,6 +6603,8 @@ pub enum ExportError {
 /// | `Resistor`, `Capacitor`, `Inductor` | `R`, `C`, `L` |
 /// | `VoltageSource`, `CurrentSource` | `V`, `I`, with `DC` or a waveform |
 /// | `Diode`, `Bjt` | `D`, `Q`, with a `.model` card |
+/// | `Mosfet` | `M d g s s` with `W=1 L=1`, so a level-1 card's `KP`, `CGSO` and `CGDO` are sindr's values as they are. A body diode with only `IS`, `CJO`, `VJ`, `M` and `FC` is the card's drain–bulk junction; one with more is a `D<name>_body` line beside it, and the card's `IS` is 0 |
+/// | `Jfet` | `J`, with an `NJF`/`PJF` card: `VTO` the pinch-off, `BETA = idss/VTO²`, `IS=0` for sindr's ideal gate |
 /// | `Vcvs`, `Vccs`, `Ccvs`, `Cccs` | `E`, `G`, `H`, `F` |
 /// | `Behavioural` | `B n+ n- V={expr}` or `I={expr}`, its nodes and sources by their deck names |
 /// | `Transformer` | two `L` and a `K` |
@@ -6630,7 +6634,8 @@ pub enum ExportError {
 /// # Errors
 ///
 /// [`ExportError::Unsupported`] for an element with no SPICE equivalent:
-/// MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode,
+/// a MOSFET with flicker noise, a JFET with a pinch-off SPICE can't write,
+/// IGBT, zener, op-amp, comparator, relay, photodiode,
 /// varactor, voltage regulator, a BJT with parasitic capacitances, a junction
 /// away from 27 °C (sindr reads no temperature from a deck), or a phased sine
 /// of zero frequency. [`ExportError::BadName`] for a name holding whitespace
@@ -6708,8 +6713,9 @@ SPICE3 netlist parser for the sindr circuit simulator.
 Parses a practical subset of Berkeley SPICE3f5 netlists into a
 [`crate::Circuit`] plus structured analysis directives. The supported
 device set tracks what `sindr` can solve: R, L, C, V, I, D, Q (NPN/PNP),
-B (behavioural), the linear controlled sources E, G, F and H (and their
-`POLY` form, and the `VALUE` form of E and G), K (two coupled `L` lines,
+M (level-1 NMOS/PMOS), J (NJF/PJF), B (behavioural), the linear controlled
+sources E, G, F and H (and their `POLY` form, and the `VALUE` form of E and
+G), K (two coupled `L` lines,
 read as one [`Transformer`](crate::CircuitElement::Transformer)) and X
 (subcircuit instance). Subcircuits declared with `.subckt` /
 `.ends` become [`Block`](crate::Block)s and X lines
@@ -6819,6 +6825,41 @@ A `.model` card's parameters are read where sindr's models have them:
 | `D` | `IS`, `N`, `RS`, `CJO` (or `CJ0`, `CJ`), `VJ` (or `PB`), `M` (or `MJ`), `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` | [`DiodeModel`](crate::DiodeModel) |
 | `NPN`, `PNP` | `BF` | the element's `bf` |
 | `NPN`, `PNP` | `IS`, `BR`, `NF`, `NR`, `VAF` (or `VA`), `KF`, `AF` | [`BjtModel`](crate::BjtModel) |
+| `NMOS`, `PMOS` | `LEVEL` (1 only), `KP`, `VTO`, `LAMBDA`, `GAMMA`, `PHI`, `LD` | [`MosfetParams`](crate::devices::mosfet::MosfetParams) |
+| `NMOS`, `PMOS` | `CGSO`, `CGDO`, `CGBO` | [`MosfetParasiticCaps`](crate::circuit::MosfetParasiticCaps) |
+| `NMOS`, `PMOS` | `IS`, `CBD`, `PB`, `MJ`, `FC` (the drain–bulk junction) | the element's `body_diode` |
+| `NJF`, `PJF` | `VTO`, `BETA` | the element's `idss` and `vp` |
+
+A `.model` inside a `.subckt` belongs to that subcircuit: its elements
+use it ahead of a top-level card of the same name, and nothing outside
+sees it, as vendor model files expect.
+
+### MOSFETs and JFETs
+
+`Mxxx nd ng ns nb model [W=] [L=] [M=]` is SPICE's level 1 with
+ngspice's defaults (`W` = `L` = 100 µm, `KP` = 2e-5 A/V², `IS` =
+1e-14 A):
+
+* `kp = KP·W/(L − 2·LD)·M`; `VTO`, `LAMBDA`, `GAMMA` and `PHI` as written.
+* The gate capacitances are SPICE's overlap ones, `CGSO·W + CGBO·(L − 2·LD)`
+  and `CGDO·W`, times `M`: the bulk is the source, so gate–bulk is
+  gate–source.
+* The drain–bulk junction becomes the body diode. `IS=0` with no `CBD`
+  leaves none.
+
+sindr's MOSFET ties its body to its source, so a bulk node other than
+the source is an error in strict mode and a warning in lenient mode.
+`LEVEL` other than 1 is always an error: another level is a different
+model. `AD`, `AS`, `PD`, `PS`, `NRD` and `NRS` only scale parameters
+sindr refuses, so they are dropped. `TOX` (which turns on SPICE's Meyer
+gate capacitance), `RD`/`RS` above 0, `KF`, the `OFF` flag and other
+instance parameters are unsupported.
+
+`Jxxx nd ng ns model [area]` gives `idss = BETA·VTO²·area` and a
+pinch-off of `VTO` (default −2 V), signed as
+[`JfetKind`](crate::JfetKind) expects. sindr's JFET has no gate
+junction, channel-length modulation, series resistance or capacitance,
+so `IS`, `LAMBDA`, `RD`, `RS`, `CGS` and `CGD` are read only at 0.
 
 sindr's BJT is Ebers–Moll, so its Early effect isn't SPICE's
 Gummel–Poon base charge: with `VAF` set, results differ slightly from
@@ -9625,11 +9666,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 4. Lenient mode: an unsupported element (M = MOSFET) becomes a
-    //    collected warning instead of a hard error.
-    let with_mosfet = format!("{DECK}M1 n2 n1 0 nmod\n");
+    // 4. Lenient mode: an unsupported element (B = behavioural source)
+    //    becomes a collected warning instead of a hard error.
+    let with_behavioural = format!("{DECK}B1 n2 0 V=1\n");
     let opts = ParseOptions::default().with_strict(false);
-    let lenient = parse_str_with_options(&with_mosfet, opts)?;
+    let lenient = parse_str_with_options(&with_behavioural, opts)?;
     for warning in &lenient.warnings {
         println!("warning: {warning:?}");
     }

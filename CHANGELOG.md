@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The SPICE parser reads `M` and `J` lines with level-1 `NMOS`/`PMOS`
+  and `NJF`/`PJF` cards. `kp` is `KP·W/(L − 2·LD)·M`, the overlap
+  capacitances become the gate caps, and the drain–bulk junction becomes
+  the body diode. `idss` is `BETA·VTO²·area`. A `LEVEL` other than 1 is
+  an error. A bulk node off the source, and parameters sindr's FETs don't
+  have, are errors in strict mode and warnings in lenient mode.
+- `to_netlist` writes MOSFETs and JFETs, and they parse back to the same
+  circuit. A body diode SPICE's junction can't hold goes out as its own
+  `D` line.
+- A `.model` inside a `.subckt` is read, local to that subcircuit, so
+  vendor model files that keep their cards inside the subcircuit load.
+  Before, it was ignored with a warning.
 - `CircuitElement::Behavioural`: SPICE's `B` source, a voltage or
   current set by an `Expression` of node voltages (`v(n)`, `v(n,m)`),
   branch currents (`i(src)`), `time`, arithmetic, comparisons, `?:` and

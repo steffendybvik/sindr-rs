@@ -10,7 +10,10 @@ use crate::circuit::{BjtModel, DiodeModel};
 use crate::design::{DesignError, Instance};
 use crate::expression::Variable;
 use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
-use crate::{device_params, BehaviouralOutput, BjtKind, Circuit, CircuitElement, Waveform};
+use crate::{
+    device_params, BehaviouralOutput, BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind,
+    Waveform,
+};
 
 /// Resistance of an intact fuse, as sindr stamps it (Ω).
 const FUSE_R_INTACT: f64 = 0.001;
@@ -58,8 +61,8 @@ pub enum ExportError {
 /// analysis cards are written.
 ///
 /// The deck is SPICE3, so ngspice reads it, and [`parse_str`](super::parse_str)
-/// reads back every element it can parse (R, L, C, V, I, D, Q) into a circuit
-/// that solves the same.
+/// reads back every element it can parse (R, L, C, V, I, D, Q, M, J) into a
+/// circuit that solves the same.
 ///
 /// # What is written
 ///
@@ -68,6 +71,8 @@ pub enum ExportError {
 /// | `Resistor`, `Capacitor`, `Inductor` | `R`, `C`, `L` |
 /// | `VoltageSource`, `CurrentSource` | `V`, `I`, with `DC` or a waveform |
 /// | `Diode`, `Bjt` | `D`, `Q`, with a `.model` card |
+/// | `Mosfet` | `M d g s s` with `W=1 L=1`, so a level-1 card's `KP`, `CGSO` and `CGDO` are sindr's values as they are. A body diode with only `IS`, `CJO`, `VJ`, `M` and `FC` is the card's drain–bulk junction; one with more is a `D<name>_body` line beside it, and the card's `IS` is 0 |
+/// | `Jfet` | `J`, with an `NJF`/`PJF` card: `VTO` the pinch-off, `BETA = idss/VTO²`, `IS=0` for sindr's ideal gate |
 /// | `Vcvs`, `Vccs`, `Ccvs`, `Cccs` | `E`, `G`, `H`, `F` |
 /// | `Behavioural` | `B n+ n- V={expr}` or `I={expr}`, its nodes and sources by their deck names |
 /// | `Transformer` | two `L` and a `K` |
@@ -97,7 +102,8 @@ pub enum ExportError {
 /// # Errors
 ///
 /// [`ExportError::Unsupported`] for an element with no SPICE equivalent:
-/// MOSFET, JFET, IGBT, zener, op-amp, comparator, relay, photodiode,
+/// a MOSFET with flicker noise, a JFET with a pinch-off SPICE can't write,
+/// IGBT, zener, op-amp, comparator, relay, photodiode,
 /// varactor, voltage regulator, a BJT with parasitic capacitances, a junction
 /// away from 27 °C (sindr reads no temperature from a deck), or a phased sine
 /// of zero frequency. [`ExportError::BadName`] for a name holding whitespace
@@ -191,6 +197,8 @@ struct Deck<'a> {
     models: Vec<String>,
     diode_models: Vec<(DiodeModel, String)>,
     bjt_models: Vec<(BjtKind, f64, BjtModel, String)>,
+    /// MOSFET and JFET cards written so far: `TYPE(params)` and its name.
+    fet_models: Vec<(String, String)>,
 }
 
 impl<'a> Deck<'a> {
@@ -204,6 +212,7 @@ impl<'a> Deck<'a> {
             models: Vec::new(),
             diode_models: Vec::new(),
             bjt_models: Vec::new(),
+            fet_models: Vec::new(),
         }
     }
 
@@ -603,12 +612,119 @@ impl<'a> Deck<'a> {
                 self.line(format!("{name} {primary} {secondary} {k}"));
                 Ok(())
             }
-            CircuitElement::Mosfet { .. } => Err(unsupported(
-                "MOSFET cards aren't written yet (sindr's parser has no M element)",
-            )),
-            CircuitElement::Jfet { .. } => Err(unsupported(
-                "JFET cards aren't written yet (sindr's parser has no J element)",
-            )),
+            CircuitElement::Mosfet {
+                nodes,
+                kind,
+                params,
+                parasitic_caps,
+                body_diode,
+                ..
+            } => {
+                if params.kf != 0.0 {
+                    return Err(unsupported(
+                        "a level-1 card's flicker noise needs a gate oxide sindr doesn't model",
+                    ));
+                }
+                let caps = parasitic_caps.clone().unwrap_or_default();
+                // The card's drain–bulk junction holds a body diode with
+                // nothing SPICE's junction lacks; any other is its own D line.
+                let plain = DiodeModel {
+                    is: 0.0,
+                    cjo: 0.0,
+                    vj: 0.8,
+                    m: 0.5,
+                    fc: 0.5,
+                    ..DiodeModel::default()
+                };
+                let (junction, separate) = match body_diode {
+                    None => (plain, None),
+                    Some(d)
+                        if *d
+                            == DiodeModel {
+                                is: d.is,
+                                cjo: d.cjo,
+                                vj: d.vj,
+                                m: d.m,
+                                fc: d.fc,
+                                ..DiodeModel::default()
+                            } =>
+                    {
+                        (*d, None)
+                    }
+                    Some(d) => (plain, Some(*d)),
+                };
+                let card = format!(
+                    "{}(LEVEL=1 KP={} VTO={} LAMBDA={} GAMMA={} PHI={} CGSO={} CGDO={} IS={} CBD={} PB={} MJ={} FC={})",
+                    match kind {
+                        MosfetKind::Nmos => "NMOS",
+                        MosfetKind::Pmos => "PMOS",
+                    },
+                    num(id, "kp", params.kp)?,
+                    num(id, "vto", params.vto)?,
+                    num(id, "lambda", params.lambda)?,
+                    num(id, "gamma", params.gamma)?,
+                    num(id, "phi", params.phi)?,
+                    num(id, "cgs", caps.cgs)?,
+                    num(id, "cgd", caps.cgd)?,
+                    num(id, "is", junction.is)?,
+                    num(id, "cjo", junction.cjo)?,
+                    num(id, "vj", junction.vj)?,
+                    num(id, "m", junction.m)?,
+                    num(id, "fc", junction.fc)?,
+                );
+                let model_name = self.fet_model("mmod", card);
+                // SPICE's M line is [drain, gate, source, bulk]; sindr's is
+                // [g, d, s], its body tied to the source. W = L = 1 m makes
+                // KP and CGSO/CGDO sindr's values as they are.
+                let [g, d, s] = nodes.clone();
+                let line_nodes = self.nodes(&[d.clone(), g, s.clone(), s.clone()])?;
+                self.line(format!("{name} {line_nodes} {model_name} W=1 L=1"));
+                if let Some(diode) = separate {
+                    let diode_name = self.extra_name(id, format!("D{name}_body"))?;
+                    let (anode, cathode) = match kind {
+                        MosfetKind::Nmos => (s, d),
+                        MosfetKind::Pmos => (d, s),
+                    };
+                    self.diode(id, &diode_name, &[anode, cathode], diode)?;
+                }
+                Ok(())
+            }
+            CircuitElement::Jfet {
+                nodes,
+                kind,
+                idss,
+                vp,
+                ..
+            } => {
+                // sindr's P-channel JFET pinches off at −|vp| in the mirrored
+                // frame, so either sign of `vp` is its |vp|; SPICE's VTO for
+                // both polarities is that negative number.
+                let vto = match kind {
+                    JfetKind::NChannel => *vp,
+                    JfetKind::PChannel => -vp.abs(),
+                };
+                if !(vto < 0.0 && *idss > 0.0) {
+                    return Err(unsupported(
+                        "SPICE's JFET needs IDSS above 0 and an N-channel pinch-off below 0",
+                    ));
+                }
+                // IS=0: sindr's gate draws no current, as SPICE's then doesn't.
+                let card = format!(
+                    "{}(VTO={} BETA={} IS=0)",
+                    match kind {
+                        JfetKind::NChannel => "NJF",
+                        JfetKind::PChannel => "PJF",
+                    },
+                    num(id, "vp", vto)?,
+                    num(id, "idss", idss / (vto * vto))?,
+                );
+                let model_name = self.fet_model("jmod", card);
+                // SPICE's J line is [drain, gate, source]; sindr's is [g, d, s].
+                let [g, d, s] = nodes.clone();
+                let line_nodes = self.nodes(&[d, g, s])?;
+                self.line(format!("{name} {line_nodes} {model_name}"));
+                Ok(())
+            }
             CircuitElement::Igbt { .. } => Err(unsupported("SPICE has no IGBT primitive")),
             CircuitElement::ZenerDiode { .. } => Err(unsupported(
                 "sindr's breakdown clamp isn't SPICE's BV/IBV breakdown",
@@ -707,6 +823,22 @@ impl<'a> Deck<'a> {
         ));
         self.bjt_models.push((kind, bf, model, n.clone()));
         Ok(n)
+    }
+
+    /// The name of the card `TYPE(params)`, writing it on first use.
+    fn fet_model(&mut self, prefix: &str, card: String) -> String {
+        if let Some((_, n)) = self.fet_models.iter().find(|(c, _)| *c == card) {
+            return n.clone();
+        }
+        let used = self
+            .fet_models
+            .iter()
+            .filter(|(_, n)| n.starts_with(prefix))
+            .count();
+        let n = format!("{prefix}{}", used + 1);
+        self.models.push(format!(".model {n} {card}"));
+        self.fet_models.push((card, n.clone()));
+        n
     }
 
     fn controlled(

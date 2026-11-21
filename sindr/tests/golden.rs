@@ -893,6 +893,132 @@ fn ac_jfet() {
     check_ac("ac_jfet", &circuit, "vin", "d", 5, (0.1, 100e3), JFET.0);
 }
 
+// ------------------------------------------------- M and J lines, parsed
+
+/// The FET decks above, read by sindr's parser instead of built in Rust.
+/// Their cards leave `IS` at SPICE's 1e-14 A, so each MOSFET also gets
+/// that drain–bulk junction as its body diode, reverse-biased here.
+#[test]
+fn op_fet_decks_parse() {
+    for case in ["op_mosfet_cs", "op_mosfet_follower", "op_pmos_highside"] {
+        check_op(case, &parse(case), (OP_V, OP_I));
+    }
+    check_op("op_jfet", &parse("op_jfet"), JFET);
+}
+
+#[test]
+fn ac_fet_decks_parse() {
+    check_ac(
+        "ac_mosfet_cs",
+        &parse("ac_mosfet_cs"),
+        "vg",
+        "d",
+        5,
+        (1e3, 1e9),
+        OP_V,
+    );
+    check_ac(
+        "ac_jfet",
+        &parse("ac_jfet"),
+        "vin",
+        "d",
+        5,
+        (0.1, 100e3),
+        JFET.0,
+    );
+}
+
+/// A level-1 card with what the M line maps beyond the defaults: `W`, `L`,
+/// `LD` and `M` into `kp`, `CGSO`/`CGDO`/`CGBO` into the gate capacitances
+/// and `CBD`/`PB`/`MJ` into the body diode's junction capacitance.
+#[test]
+fn ac_mosfet_card() {
+    let circuit = parse("ac_mosfet_card");
+    let Some(CircuitElement::Mosfet {
+        params,
+        parasitic_caps: Some(caps),
+        body_diode: Some(body),
+        ..
+    }) = circuit.components.iter().find(|c| c.id() == "m1")
+    else {
+        panic!("ac_mosfet_card: m1 should be a MOSFET with caps and a body diode");
+    };
+    let (w, l_eff, m) = (20e-6, 2e-6 - 2.0 * 0.1e-6, 2.0);
+    assert!((params.kp - 50e-6 * w / l_eff * m).abs() < 1e-12);
+    assert!((caps.cgs - (1e-9 * w + 0.2e-9 * l_eff) * m).abs() < 1e-20);
+    assert!((caps.cgd - 0.3e-9 * w * m).abs() < 1e-20);
+    assert!((body.cjo - 5e-12 * m).abs() < 1e-20);
+    check_ac("ac_mosfet_card", &circuit, "vg", "d", 5, (1e3, 1e9), OP_V);
+}
+
+/// A P-channel JFET with an area factor: `IDSS = BETA·VTO²·area`.
+#[test]
+fn op_pjf() {
+    check_op("op_pjf", &parse("op_pjf"), JFET);
+}
+
+/// A DC sweep of a parsed deck: `v(<node>)` and `i(<source>)` against
+/// ngspice's. Off, ngspice adds GMIN leakage sindr doesn't, hence 1 nA.
+fn check_dc_deck(case: &'static str, source: &str, from: f64, to: f64) {
+    let golden = Golden::load(case);
+    let scale = golden.scale();
+    let sweep = dc_sweep(&parse(case), source, from, to, scale.len())
+        .unwrap_or_else(|e| panic!("{case}: {e}"));
+    let mut check = Check::new(case);
+    for name in golden.names.iter().skip(1) {
+        let inner = &name[2..name.len() - 1];
+        let (values, tol): (Vec<f64>, Tol) = if name.starts_with("v(") {
+            let v = sweep.points.iter().map(|p| p.result.node_voltages[inner]);
+            (v.collect(), OP_V)
+        } else {
+            let i = sweep
+                .points
+                .iter()
+                .map(|p| source_current(&p.result, inner));
+            (
+                i.collect(),
+                Tol {
+                    rel: 1e-4,
+                    abs: 1e-9,
+                },
+            )
+        };
+        check.series(name, &scale, &values, &golden.column(name), tol);
+    }
+    check.finish();
+}
+
+/// A vendor-style power MOSFET: a `.subckt` holding a gate resistor, a
+/// level-1 core, an explicit body diode and its own `.model` cards,
+/// switching a 1 Ω load from off to fully on.
+#[test]
+fn dc_power_mosfet_subckt() {
+    check_dc_deck("dc_power_mosfet_subckt", "vg", 0.0, 10.0);
+}
+
+/// The same part held off, its drain pulled below its source: the body
+/// diode from the subckt's local card conducts amps.
+#[test]
+fn dc_power_mosfet_body() {
+    check_dc_deck("dc_power_mosfet_body", "vd", -3.0, 0.0);
+}
+
+/// The body-diode deck parsed: its MOSFET card switches the built-in
+/// junction off (`IS=1e-30`) and the explicit `D1` does the conducting.
+#[test]
+fn dc_mosfet_body_diode_deck_parses() {
+    let golden = Golden::load("dc_mosfet_body_diode");
+    let sweep = dc_sweep(&parse("dc_mosfet_body_diode"), "v1", -5.0, 5.0, 41).unwrap();
+    let vd: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["d"])
+        .collect();
+    let mut check = Check::new("dc_mosfet_body_diode");
+    check.series("v(d)", &golden.scale(), &vd, &golden.column("v(d)"), OP_V);
+    check.finish();
+}
+
 // ---------------------------------------------------------------- noise
 
 fn noise(
@@ -1172,6 +1298,85 @@ fn ac_exported_transformer() {
         (10.0, 1e6),
         AC_LINEAR,
     );
+}
+
+/// Every FET `to_netlist` writes: both JFET polarities, and a MOSFET of
+/// each kind, one body diode on the card's drain–bulk junction and one, with
+/// series resistance and breakdown SPICE's junction lacks, as its own `D`.
+fn exported_fets() -> Circuit {
+    circuit(vec![
+        vsource("vdd", "vdd", "0", 12.0),
+        resistor("rjd", "vdd", "jd", 1e3),
+        resistor("rjs", "js", "0", 220.0),
+        resistor("rjg", "jg", "0", 1e6),
+        CircuitElement::Jfet {
+            id: "j1".into(),
+            nodes: ["jg".into(), "jd".into(), "js".into()],
+            kind: JfetKind::NChannel,
+            idss: 10e-3,
+            vp: -2.0,
+        },
+        resistor("rps", "vdd", "ps", 330.0),
+        resistor("rpg", "pg", "vdd", 1e6),
+        resistor("rpd", "pd", "0", 1e3),
+        CircuitElement::Jfet {
+            id: "j2".into(),
+            nodes: ["pg".into(), "pd".into(), "ps".into()],
+            kind: JfetKind::PChannel,
+            idss: 12.5e-3,
+            vp: 2.5,
+        },
+        vsource("vg1", "g1", "0", 3.0),
+        resistor("rd1", "vdd", "d1", 10e3),
+        CircuitElement::Mosfet {
+            id: "m1".into(),
+            nodes: ["g1".into(), "d1".into(), "0".into()],
+            kind: MosfetKind::Nmos,
+            params: MosfetParams::default_nmos(),
+            parasitic_caps: None,
+            body_diode: Some(sindr::DiodeModel {
+                is: 1e-12,
+                n: 1.2,
+                rs: 0.05,
+                bv: Some(60.0),
+                ibv: 250e-6,
+                ..Default::default()
+            }),
+        },
+        vsource("vg2", "g2", "0", 5.0),
+        resistor("rd2", "d2", "0", 10e3),
+        CircuitElement::Mosfet {
+            id: "m2".into(),
+            nodes: ["g2".into(), "d2".into(), "vdd".into()],
+            kind: MosfetKind::Pmos,
+            params: MosfetParams::default_pmos(),
+            parasitic_caps: Some(sindr::circuit::MosfetParasiticCaps {
+                cgs: 10e-12,
+                cgd: 2e-12,
+            }),
+            body_diode: Some(sindr::DiodeModel {
+                is: 1e-14,
+                cjo: 5e-12,
+                vj: 0.8,
+                ..Default::default()
+            }),
+        },
+    ])
+}
+
+#[test]
+fn op_exported_fets() {
+    let circuit = exported_fets();
+    check_op(
+        "op_exported_fets",
+        exported("op_exported_fets", &circuit),
+        JFET,
+    );
+    // Read back, the deck solves the same: the separate body diode is then
+    // `dm1_body` beside a junction-less `m1`.
+    let parsed = parse("op_exported_fets");
+    check_op("op_exported_fets", &parsed, JFET);
+    assert!(parsed.components.iter().any(|c| c.id() == "dm1_body"));
 }
 
 // ---------------------------------------------------------------- .tran
