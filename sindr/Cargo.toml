@@ -35,6 +35,9 @@ examples = []
 # SPICE3 netlist parsing (`sindr::spice`). Off by default to keep the
 # baseline dependency tree lean.
 spice = ["dep:winnow", "dep:miette"]
+# Monte Carlo and corner runs across threads (`sindr::variation`). Off by
+# default: wasm32 has no threads.
+parallel = []
 # Unstable, not covered by semver: exposes the MNA matrix for sindr's own
 # `mna_solve` bench.
 internals = []

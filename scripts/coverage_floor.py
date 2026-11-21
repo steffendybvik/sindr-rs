@@ -74,6 +74,7 @@ FLOORS = {
     "sindr/src/transfer_function.rs": 94.5,  # 96.32% when set
     "sindr/src/transient.rs": 97.5,  # 99.06% when set
     "sindr/src/validation.rs": 96.5,  # 98.29% when set
+    "sindr/src/variation.rs": 95.5,  # 97.27% when set
     "sindr/src/waveform.rs": 97.0,  # 98.88% when set
     "TOTAL": 96.5,  # 98.12% when set
 }
