@@ -978,9 +978,11 @@ println!("vout = {:.3} V", op.node_voltages["vout"]);
 ```
 
 - **Ids carry through.** Element ids are your component ids and node names your net ids, so results land on your parts. Every `ImportError` names the component, net or bench item: an unknown kind, a terminal the kind doesn't have, a terminal on two nets or on none, a value that isn't one.
-- **Terminals by name, never pin number:** `anode`/`cathode` (or `A`/`K`), `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out`, case ignored. Unpolarised two-terminal parts also take `1` and `2`. `ComponentKind::terminals` lists each kind's names. A MOSFET's `body` must sit on its source's net; an op-amp's `V+`/`V-` pins set its rails from the bench supplies on those nets.
+- **Terminals by name, never pin number:** `anode`/`cathode` (or `A`/`K`), `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out` (or `Non-inverting`, `Inverting`, `Output`, `Positive supply`, `Negative supply`), case ignored and `-`, `_` and spaces alike. Unpolarised two-terminal parts also take `1` and `2`. `ComponentKind::terminals` lists each kind's names. A MOSFET's `body` must sit on its source's net; an op-amp's `V+`/`V-` pins set its rails from the bench supplies on those nets.
+- **Netlists as an editor exports them.** `ComponentKind::from_name` reads symbol ids (`resistor-iec`, `capacitor-polarized`, `op-amp`, `push-button`, `switch-spst`, `test-point`, `header-4`). When nets name terminals by id and the names sit in a table on each component, pass the table with `ImportOptions::with_terminal_names` to `Netlist::to_circuit_with` or `import::simulate_with`: a named terminal matches by its name, an unnamed one by its id, so pin `1` of an LED still needs its `Anode` name.
+- **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently.
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
-- **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals.
+- **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
 
@@ -1338,6 +1340,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No CLI**. sindr is a library only.
 - **No schematic input**. Circuits are written as Rust `Vec<CircuitElement>` (or JSON via serde).
 - **No parsers for editors' own netlist files.** `sindr::import` takes a netlist an editor has already read (components, values, nets), not the editor's file format.
+- **ICs import as black boxes.** A part `sindr::import` has no kind for (a microcontroller, a timer) can come in as a `ComponentKind::BlackBox`, which simulates nothing: its pins draw and drive no current, so a net only it holds up floats. Model the part's behaviour with bench sources and loads, or leave it out of the analysis.
 - **Waveform export is CSV only.** Transient, AC and sweep results have `to_csv()`; there's no VCD, Touchstone or Common Simulation Data Format.
 - **No built-in plotting**. Examples like `bode_plot.rs` produce data; rendering is on the user.
 - **No interactive REPL or notebook integration.**
@@ -3792,6 +3795,46 @@ pub enum BenchError {
 /// [`BenchError::Import`] when the circuit can't be built,
 /// [`BenchError::Sim`] when it doesn't solve.
 pub fn simulate(netlist: &Netlist, bench: &Bench) -> Result<Imported, BenchError> { … }
+
+/// [`simulate`], reading the netlist as `options` say
+/// ([`Netlist::to_circuit_with`]): terminal names from each component's
+/// table, unknown kinds refused or kept as black boxes. The black boxes
+/// are listed in the result's [`ImportedCircuit::black_boxes`].
+///
+/// ```
+/// use sindr::import::{simulate_with, Bench, BenchSource, Component, ComponentKind,
+///                     ImportOptions, Net, Netlist, Simulation};
+///
+/// // An LED whose nets name its terminals by id.
+/// let netlist = Netlist {
+///     components: vec![
+///         Component::new("r1", ComponentKind::from_name("resistor")).with_value("470"),
+///         Component::new("d1", ComponentKind::from_name("led")).with_value("Green"),
+///     ],
+///     nets: vec![
+///         Net::new("vcc", [("r1", "1")]),
+///         Net::new("a", [("r1", "2"), ("d1", "1")]),
+///         Net::new("gnd", [("d1", "2")]),
+///     ],
+/// };
+/// let options = ImportOptions::new().with_terminal_names("d1", [("1", "Anode"), ("2", "Cathode")]);
+/// let bench = Bench::new("gnd").with_source(BenchSource::voltage("vs", "vcc", 5.0));
+///
+/// let Simulation::OperatingPoint(op) = simulate_with(&netlist, &bench, &options)?.result else {
+///     unreachable!()
+/// };
+/// assert!(op.node_voltages["a"] > 1.5 && op.node_voltages["a"] < 2.2);
+/// # Ok::<(), sindr::import::BenchError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`simulate`].
+pub fn simulate_with(
+    netlist: &Netlist,
+    bench: &Bench,
+    options: &ImportOptions,
+) -> Result<Imported, BenchError> { … }
 ```
 
 ## `sindr/src/import/mod.rs`
@@ -3820,9 +3863,27 @@ caller's own parts and nets. Every [`ImportError`] names the component,
 net or bench item it is about.
 
 Terminals are matched by name, never by pin number, since pin numbers
-depend on the package. Names are compared without case; each kind lists
+depend on the package. Names are compared without case, with `-`, `_`
+and spaces alike (`Non-inverting`, `non_inverting`); each kind lists
 the names it takes in [`ComponentKind::terminals`]. Unpolarised
-two-terminal parts also take `1` and `2`.
+two-terminal parts also take `1` and `2`. Kind names read the same way,
+so a schematic tool's symbol id (`resistor-iec`, `op-amp`, `header-4`)
+names its kind.
+
+### Netlists as an editor exports them
+
+An editor's nets often name a terminal by its id (`"1"`) and keep the
+terminal's name (`"Base"`) in a table on the component. Pass that table
+in [`ImportOptions::with_terminal_names`] and import with
+[`Netlist::to_circuit_with`] or [`simulate_with`]: a terminal with a
+name is matched by its name, one without by its id. A bare pin number
+still never picks a polarised terminal.
+
+A part sindr can't simulate, such as an IC, is a
+[`ComponentKind::BlackBox`]: it adds no element, but a bench can still
+attach to its terminals. Any other kind sindr doesn't know is refused
+by default; [`UnknownKinds::BlackBox`] makes those black boxes too.
+Either way each one is listed in [`ImportedCircuit::black_boxes`].
 
 ### Example
 
@@ -3958,9 +4019,11 @@ pub enum Model {
 }
 
 /// What a [`Component`] is. Serialised as its snake_case name
-/// (`"resistor"`, `"npn"`); a name sindr doesn't know reads as
-/// [`Other`](Self::Other), which [`Netlist::to_circuit`] refuses with the
-/// component's id.
+/// (`"resistor"`, `"npn"`). [`from_name`](Self::from_name) also reads a
+/// schematic tool's symbol ids (`"resistor-iec"`, `"op-amp"`); a name
+/// sindr doesn't know reads as [`Other`](Self::Other), which
+/// [`Netlist::to_circuit`] refuses with the component's id unless
+/// [`UnknownKinds::BlackBox`] says to keep it as a black box.
 ///
 /// Parameters each kind takes, besides [`Component::value`] (numbers in SI
 /// units, or text for [`parse_value`]):
@@ -3984,16 +4047,30 @@ pub enum Model {
 /// | `fuse` | A (rating) | `blown` (default false) | |
 /// | `relay` | | `pickup_voltage` (V, required), `coil_resistance` (Ω), `inductance` (H) | |
 /// | `transformer` | | `l1`, `l2` (H, required), `k` | |
+/// | `crystal` | Hz (series resonance) or `frequency` | `frequency`, `esr` (Ω, default 50), `c0` (F, default 5 pF) | |
+/// | `ferrite_bead` | Ω (impedance at 100 MHz) or `z_100mhz` | `z_100mhz`, `r_dc` (Ω, default 0.1) | |
 /// | `regulator` | V (output) or `voltage` | `voltage` | `Regulator` |
 /// | `battery` | V, unless a model | `state_of_charge` (default 1), `r_series` (Ω, default 0.1), `capacity` (Ah, default 1) | `Battery` |
 /// | `thermistor` | | `temperature` (K) | |
 /// | `photoresistor` | | `light_level` (0 dark to 1 bright) | |
 /// | `voltage_source`, `current_source` | V or A, required | | |
 /// | `connector`, `test_point`, `net_tie`, `mounting_hole` | | | |
+/// | `black_box` | | | |
 ///
-/// The last row are [passive](Self::is_passive): they add no element, and
-/// any terminal name is fine. A bench attaches sources and loads to their
-/// terminals.
+/// The last two rows add no element, and any terminal name is fine. A
+/// bench attaches sources and loads to their terminals. The connectors and
+/// the like are [passive](Self::is_passive); a black box stands for a part
+/// sindr can't simulate (an IC), takes any value, parameters and model and
+/// ignores them, and is listed in [`ImportedCircuit::black_boxes`].
+///
+/// Names besides the canonical ones: `resistor_iec`, `resistor_us`, `res`;
+/// `cap`, `capacitor_polarised`, `capacitor_electrolytic`, `electrolytic`;
+/// `zener`, `schottky`; `opamp`, `operational_amplifier`; `pot`,
+/// `trimmer`; `pushbutton`, `button`; `switch_spst`, `spst`;
+/// `xtal`, `quartz`; `ferrite`, `bead`; `ldo`, `voltage_regulator`;
+/// `cell`; `ntc`; `ldr`; `testpoint`; `header`, `header_<n>`,
+/// `pin_header`, `terminal_block`, `conn` for a connector; `ic` for a
+/// black box.
 pub enum ComponentKind {
     Resistor,
     Capacitor,
@@ -4022,6 +4099,13 @@ pub enum ComponentKind {
     Transformer,
     Regulator,
     Battery,
+    /// A quartz crystal ([`CircuitElement::Crystal`]).
+    Crystal,
+    /// A ferrite bead ([`CircuitElement::FerriteBead`]).
+    FerriteBead,
+    /// A part sindr doesn't simulate, kept for its terminals: it adds no
+    /// element, and a bench may attach to its terminals.
+    BlackBox,
     Thermistor,
     Photoresistor,
     VoltageSource,
@@ -4035,20 +4119,28 @@ pub enum ComponentKind {
 }
 
 impl ComponentKind {
-    /// The kind with this snake_case name, or [`Other`](Self::Other).
+    /// The kind with this name, or [`Other`](Self::Other) with the name as
+    /// given. Case is ignored and `-`, `_` and spaces are alike, so a
+    /// symbol id such as `"Op-Amp"` or `"push button"` reads too; the
+    /// aliases on [`ComponentKind`] (`resistor-iec`, `header-4`, `xtal`)
+    /// name kinds as well.
     pub fn from_name(name: &str) -> Self { … }
 
     /// The kind's snake_case name; an [`Other`](Self::Other) kind's own.
     pub fn name(&self) -> &str { … }
 
-    /// Whether the kind adds no element: connectors, test points, net ties
-    /// and mounting holes.
+    /// Whether the kind is a connector, test point, net tie or mounting
+    /// hole: no element, any terminal name. A [`BlackBox`](Self::BlackBox)
+    /// adds no element either, but isn't passive.
     pub fn is_passive(&self) -> bool { … }
 
     /// The kind's terminals in element order: each a list of the names it
-    /// answers to, lowercase, canonical first. Required terminals come
-    /// first; [`optional_terminals`](Self::optional_terminals) says how
-    /// many at the end may be left off. Empty for passive and unknown
+    /// answers to, lowercase, canonical first. A terminal given as
+    /// `Non-inverting` or `positive supply` matches `non_inverting` and
+    /// `positive_supply`: case is ignored and `-`, `_` and spaces are
+    /// alike. Required terminals come first;
+    /// [`optional_terminals`](Self::optional_terminals) says how many at
+    /// the end may be left off. Empty for passive, black-box and unknown
     /// kinds.
     pub fn terminals(&self) -> &'static [&'static [&'static str]] { … }
 
@@ -4132,7 +4224,8 @@ pub enum ImportError {
         component: String,
         /// Its kind's name.
         kind: String,
-        /// The terminal as given.
+        /// The terminal as given, followed by its name in parentheses when
+        /// [`ImportOptions::with_terminal_names`] gave it one.
         terminal: String,
         /// The names it takes.
         expected: String,
@@ -4228,6 +4321,79 @@ pub enum ImportError {
     },
 }
 
+/// What to do with a component of a kind sindr doesn't know
+/// ([`ComponentKind::Other`]).
+pub enum UnknownKinds {
+    /// Refuse the import with [`ImportError::UnsupportedKind`], naming the
+    /// first such component. The default, and what
+    /// [`Netlist::to_circuit`] does.
+    #[default]
+    Refuse,
+    /// Import it as a [`ComponentKind::BlackBox`]: no element, terminals
+    /// kept for the bench, listed in [`ImportedCircuit::black_boxes`].
+    BlackBox,
+}
+
+/// How [`Netlist::to_circuit_with`] and [`simulate_with`] read a netlist:
+/// what to do with unknown kinds, and each component's terminal names.
+///
+/// Built with [`new`](Self::new) and the `with_*` setters. The default
+/// reads a netlist as [`Netlist::to_circuit`] does.
+///
+/// ```
+/// use sindr::import::{ImportOptions, UnknownKinds};
+///
+/// let options = ImportOptions::new()
+///     .with_unknown_kinds(UnknownKinds::BlackBox)
+///     .with_terminal_names("q1", [("1", "Base"), ("2", "Emitter"), ("3", "Collector")]);
+/// assert_eq!(options.terminal_names["q1"]["1"], "Base");
+/// ```
+pub struct ImportOptions {
+    /// What to do with a component of a kind sindr doesn't know.
+    pub unknown_kinds: UnknownKinds,
+    /// Terminal names by component id, then terminal id: the table a
+    /// schematic tool keeps on each component (`"1"` is `"Base"`). A pin
+    /// whose terminal has a name here is matched by that name, then by its
+    /// id; one without is matched by the id alone, so a bare pin number
+    /// still can't pick a polarised terminal. On a passive or black-box
+    /// part, a bench may attach to a terminal by its name. Names for a
+    /// component that isn't in the netlist are unused.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
+    pub terminal_names: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl ImportOptions {
+    /// Options that read a netlist as [`Netlist::to_circuit`] does.
+    pub fn new() -> Self { … }
+
+    /// Sets [`unknown_kinds`](Self::unknown_kinds).
+    pub fn with_unknown_kinds(mut self, unknown_kinds: UnknownKinds) -> Self { … }
+
+    /// Adds names for `component`'s terminals, as `(terminal id, name)`
+    /// pairs. Leave out terminals that have no name.
+    pub fn with_terminal_names<T, N>(
+        mut self,
+        component: impl Into<String>,
+        names: impl IntoIterator<Item = (T, N)>,
+    ) -> Self
+    where
+        T: Into<String>,
+        N: Into<String>,
+ { … }
+}
+
+/// A component imported as a black box: a [`ComponentKind::BlackBox`],
+/// or an unknown kind under [`UnknownKinds::BlackBox`]. It simulates
+/// nothing.
+pub struct BlackBoxPart {
+    /// The component's id.
+    pub component: String,
+    /// Its kind's name: `"black_box"`, or the unknown kind as given.
+    pub kind: String,
+    /// Net id by terminal id, for the terminals that are on a net.
+    pub terminals: BTreeMap<String, String>,
+}
+
 /// A [`Circuit`] built from a [`Netlist`], with the map from the caller's
 /// net ids to its node names.
 pub struct ImportedCircuit {
@@ -4237,6 +4403,10 @@ pub struct ImportedCircuit {
     /// Node name by net id. Nets the bench ties together share one node,
     /// named after one of them; every other net's node is its own id.
     pub nodes: BTreeMap<String, String>,
+    /// Every component imported as a black box, in netlist order. None of
+    /// them is in [`circuit`](Self::circuit), so a result has nothing for
+    /// them; check this list before calling a design done.
+    pub black_boxes: Vec<BlackBoxPart>,
 }
 
 impl ImportedCircuit {
@@ -4247,14 +4417,60 @@ impl ImportedCircuit {
 impl Netlist {
     /// Builds the circuit: the netlist's components, with `bench`'s ground,
     /// ties, sources and loads. The bench's analysis isn't run; see
-    /// [`simulate`].
+    /// [`simulate`]. Unknown kinds are refused; [`to_circuit_with`]
+    /// can keep them as black boxes.
     ///
     /// # Errors
     ///
     /// An [`ImportError`] naming the component, net or bench item that
     /// can't be built. Solver checks (a floating node, no path to ground)
     /// come later, from the analysis.
+    ///
+    /// [`to_circuit_with`]: Self::to_circuit_with
     pub fn to_circuit(&self, bench: &Bench) -> Result<ImportedCircuit, ImportError> { … }
+
+    /// [`to_circuit`](Self::to_circuit), reading the netlist as `options`
+    /// say: with each component's terminal names, and unknown kinds
+    /// refused or kept as black boxes.
+    ///
+    /// ```
+    /// use sindr::import::{Bench, BenchSource, Component, ComponentKind, ImportOptions,
+    ///                     Net, Netlist, UnknownKinds};
+    ///
+    /// // A transistor whose nets name terminals by id, and an IC sindr
+    /// // doesn't know on the supply.
+    /// let netlist = Netlist {
+    ///     components: vec![
+    ///         Component::new("q1", ComponentKind::from_name("npn")),
+    ///         Component::new("r1", ComponentKind::from_name("resistor-iec")).with_value("100k"),
+    ///         Component::new("u1", ComponentKind::from_name("mcu-qfn32")).with_value("MCU"),
+    ///     ],
+    ///     nets: vec![
+    ///         Net::new("vcc", [("r1", "1"), ("q1", "3"), ("u1", "8")]),
+    ///         Net::new("base", [("r1", "2"), ("q1", "1")]),
+    ///         Net::new("gnd", [("q1", "2"), ("u1", "1")]),
+    ///     ],
+    /// };
+    /// let options = ImportOptions::new()
+    ///     .with_unknown_kinds(UnknownKinds::BlackBox)
+    ///     .with_terminal_names("q1", [("1", "Base"), ("2", "Emitter"), ("3", "Collector")]);
+    /// let bench = Bench::new("gnd").with_source(BenchSource::voltage("vs", "vcc", 5.0));
+    ///
+    /// let imported = netlist.to_circuit_with(&bench, &options).unwrap();
+    /// assert_eq!(imported.black_boxes[0].component, "u1");
+    /// assert_eq!(imported.black_boxes[0].terminals["8"], "vcc");
+    /// assert!(netlist.to_circuit(&bench).is_err());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`to_circuit`](Self::to_circuit); with
+    /// [`UnknownKinds::BlackBox`], never [`ImportError::UnsupportedKind`].
+    pub fn to_circuit_with(
+        &self,
+        bench: &Bench,
+        options: &ImportOptions,
+    ) -> Result<ImportedCircuit, ImportError> { … }
 }
 ```
 
@@ -4420,6 +4636,9 @@ adds what a schematic leaves out (ground, supplies, signal sources,
 loads, the analysis), and [`import::simulate`] runs it. Results are
 keyed by the caller's component and net ids, and every
 [`import::ImportError`] names the part, net or bench item at fault.
+Symbol ids (`resistor-iec`, `op-amp`) name kinds, a component's
+terminal-name table comes in through [`import::ImportOptions`], and
+parts sindr can't simulate import as listed black boxes.
 
 #### SPICE input (feature `spice`)
 

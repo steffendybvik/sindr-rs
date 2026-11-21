@@ -107,6 +107,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No CLI**. sindr is a library only.
 - **No schematic input**. Circuits are written as Rust `Vec<CircuitElement>` (or JSON via serde).
 - **No parsers for editors' own netlist files.** `sindr::import` takes a netlist an editor has already read (components, values, nets), not the editor's file format.
+- **ICs import as black boxes.** A part `sindr::import` has no kind for (a microcontroller, a timer) can come in as a `ComponentKind::BlackBox`, which simulates nothing: its pins draw and drive no current, so a net only it holds up floats. Model the part's behaviour with bench sources and loads, or leave it out of the analysis.
 - **Waveform export is CSV only.** Transient, AC and sweep results have `to_csv()`; there's no VCD, Touchstone or Common Simulation Data Format.
 - **No built-in plotting**. Examples like `bode_plot.rs` produce data; rendering is on the user.
 - **No interactive REPL or notebook integration.**

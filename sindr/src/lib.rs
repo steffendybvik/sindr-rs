@@ -130,6 +130,9 @@
 //! loads, the analysis), and [`import::simulate`] runs it. Results are
 //! keyed by the caller's component and net ids, and every
 //! [`import::ImportError`] names the part, net or bench item at fault.
+//! Symbol ids (`resistor-iec`, `op-amp`) name kinds, a component's
+//! terminal-name table comes in through [`import::ImportOptions`], and
+//! parts sindr can't simulate import as listed black boxes.
 //!
 //! ## SPICE input (feature `spice`)
 //!
