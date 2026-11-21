@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.1]
 
+### Added
+
+- `sindr::variation`: Monte Carlo (`monte_carlo`) and corner (`corners`)
+  analysis around any analysis. A `Tolerance` varies a resistance,
+  capacitance, inductance or source value uniformly or Gaussian, from a
+  seeded generator so runs repeat. Results give each run's values and
+  measurements, and each measurement's mean, standard deviation, min, max
+  and yield. A run that fails is recorded, not fatal. The `parallel`
+  feature spreads runs across threads.
+
 ## [0.1.0] - 2026-11-21
 
 The first plain release. Versions are now `0.x` with no prereleases: a
