@@ -3,8 +3,8 @@
 //! Parses a practical subset of Berkeley SPICE3f5 netlists into a
 //! [`crate::Circuit`] plus structured analysis directives. The supported
 //! device set tracks what `sindr` can solve: R, L, C, V, I, D, Q (NPN/PNP),
-//! B (behavioural), the linear controlled sources E, G, F and H (and the
-//! `VALUE` form of E and G), K (two coupled `L` lines,
+//! B (behavioural), the linear controlled sources E, G, F and H (and their
+//! `POLY` form, and the `VALUE` form of E and G), K (two coupled `L` lines,
 //! read as one [`Transformer`](crate::CircuitElement::Transformer)) and X
 //! (subcircuit instance). Subcircuits declared with `.subckt` /
 //! `.ends` become [`Block`](crate::Block)s and X lines
@@ -140,8 +140,8 @@
 //! its two `L` lines, which must be in its scope, with one transformer named
 //! after the `K` line: primary from `lname1`, secondary from `lname2`, the
 //! first node of each its dot. Each `L` can be coupled once; sindr has no
-//! three-winding transformer. The nonlinear forms `POLY`, `TABLE` and
-//! `LAPLACE` are unsupported devices: an error in strict mode, a warning
+//! three-winding transformer. The nonlinear forms `TABLE` and `LAPLACE`
+//! are unsupported devices: an error in strict mode, a warning
 //! (and the line dropped) in lenient mode.
 //!
 //! # Behavioural sources
@@ -150,6 +150,14 @@
 //! |---|---|
 //! | `Bxxx n+ n- V={expr}`, `Exxx n+ n- VALUE={expr}` | [`Behavioural`](crate::CircuitElement::Behavioural), a voltage |
 //! | `Bxxx n+ n- I={expr}`, `Gxxx n+ n- VALUE={expr}` | [`Behavioural`](crate::CircuitElement::Behavioural), a current from `n+` to `n-` |
+//! | `Exxx`/`Hxxx n+ n- POLY(n) …` | a behavioural voltage: the polynomial of `n` node-pair voltages (E) or `V`-line currents (H) |
+//! | `Gxxx`/`Fxxx n+ n- POLY(n) …` | a behavioural current, the same of voltages (G) or currents (F) |
+//!
+//! `POLY` coefficients follow SPICE2's order: by total degree, and within
+//! one degree over the controls in nondecreasing index order, so for two
+//! `p0 + p1·x1 + p2·x2 + p3·x1² + p4·x1·x2 + p5·x2² + …`. A
+//! one-dimensional `POLY` with one coefficient is its linear term, as in
+//! SPICE2 and PSpice (ngspice refuses it).
 //!
 //! The expression runs to the end of the card, braces optional, in the
 //! syntax of [`Expression`](crate::expression::Expression): `v(n)`,

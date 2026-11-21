@@ -516,18 +516,14 @@ fn a_bjt_on_a_diode_model_is_an_unsupported_model_type() {
     assert_eq!(labelled(&err, &deck), ["Q1 c b e dmod"]);
 }
 
-/// The `POLY`, `TABLE` and `LAPLACE` forms of `E`/`G`/`F`/`H` are
-/// unsupported devices: fatal in strict mode, a warning (and no element)
-/// in lenient mode. (`B` lines and `VALUE` are read; see
+/// The `TABLE` and `LAPLACE` forms of `E`/`G`/`F`/`H` are unsupported
+/// devices: fatal in strict mode, a warning (and no element) in lenient
+/// mode. (`B` lines, `VALUE` and `POLY` are read; see
 /// `spice_behavioural.rs`.)
 #[test]
 fn behavioural_forms_are_unsupported_devices() {
     use sindr::spice::{parse_str_with_options, ParseOptions};
     for (line, device) in [
-        (
-            "E1 a 0 poly(1) a 0 0 1",
-            "POLY form of a controlled source (E)",
-        ),
         (
             "E1 a 0 a 0 table {v(a)} = (0,0) (1,1)",
             "TABLE form of a controlled source (E)",

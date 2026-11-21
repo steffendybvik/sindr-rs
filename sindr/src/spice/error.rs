@@ -63,7 +63,7 @@ pub enum SpiceParseError {
     #[error("unsupported device '{device}'")]
     #[diagnostic(
         code(sindr::spice::unsupported_device),
-        help("the parser currently supports: R, L, C, V, I, D, Q, B, E, G, F, H, K, X, and the VALUE form of E/G. M (MOSFET), J (JFET) and the POLY/TABLE/LAPLACE forms of E/G/F/H are not implemented yet.")
+        help("the parser currently supports: R, L, C, V, I, D, Q, B, E, G, F, H, K, X, with the POLY form of E/G/F/H and the VALUE form of E/G. M (MOSFET), J (JFET) and the TABLE/LAPLACE forms are not implemented yet.")
     )]
     UnsupportedDevice {
         /// Element id that triggered the error.

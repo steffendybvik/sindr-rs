@@ -133,7 +133,7 @@
 //! ## SPICE input (feature `spice`)
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q,
-//! B (behavioural, also E/G `VALUE=`), linear E/G/F/H, K (two coupled `L`
+//! B (behavioural, also E/G `VALUE=` and E/G/F/H `POLY`), linear E/G/F/H, K (two coupled `L`
 //! lines) and X elements, with `[DC] v`,
 //! `AC mag [phase]` and a waveform on V and I lines in any order;
 //! `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
@@ -142,7 +142,7 @@
 //! sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 //! `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
 //! `NR`, `VAF`, `KF`, `AF`). Not read: MOSFET (M) and JFET (J) elements,
-//! the `POLY`/`TABLE`/`LAPLACE` forms of E/G/F/H, and
+//! the `TABLE`/`LAPLACE` forms of E/G/F/H, and
 //! couplings of more than two inductors.
 //! [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
 //! and behavioural sources and `.subckt`s included.

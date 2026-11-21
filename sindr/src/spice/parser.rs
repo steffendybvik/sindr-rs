@@ -32,9 +32,9 @@ use winnow::token::{one_of, take_while};
 use winnow::{ModalResult, Parser};
 
 use crate::spice::ast::{
-    AcSweepKind, BinOp, NodeValueKind, ParamExpr, RawAcSpec, RawAnalysis, RawCard, RawCrossing,
-    RawElement, RawElementBody, RawMeasure, RawMeasureKind, RawModel, RawSubckt, RawWaveform,
-    SourceKind, Span,
+    AcSweepKind, BinOp, NodeValueKind, ParamExpr, PolyControls, RawAcSpec, RawAnalysis, RawCard,
+    RawCrossing, RawElement, RawElementBody, RawMeasure, RawMeasureKind, RawModel, RawSubckt,
+    RawWaveform, SourceKind, Span,
 };
 use crate::spice::error::SpiceParseError;
 use crate::spice::preprocess::{LogicalLine, Preprocessed};
@@ -389,8 +389,8 @@ fn parse_coupling(input: &mut Input<'_>) -> ModalResult<RawElement> {
 }
 
 /// The nonlinear forms of `E`/`G`/`F`/`H` (`POLY`, `VALUE`, `TABLE`,
-/// `LAPLACE`). sindr reads `VALUE` on `E` and `G` as a behavioural source
-/// and doesn't model the rest.
+/// `LAPLACE`). sindr reads `POLY`, and `VALUE` on `E` and `G`, as
+/// behavioural sources and doesn't model the rest.
 fn behavioural_form(line: &str) -> Option<&'static str> {
     line.split(|c: char| c.is_whitespace() || c == '=' || c == '(' || c == '{')
         .skip(1)
@@ -440,6 +440,75 @@ fn parse_behavioural(input: &mut Input<'_>, value: bool) -> ModalResult<RawEleme
             src: Arc::default(),
         },
     })
+}
+
+/// Skips whitespace and the `(`, `)` and `,` that some decks put around
+/// and between `POLY` controls and coefficients.
+fn poly_separators(input: &mut Input<'_>) -> ModalResult<()> {
+    loop {
+        ws(input)?;
+        if opt(one_of(['(', ')', ','])).parse_next(input)?.is_none() {
+            return Ok(());
+        }
+    }
+}
+
+/// Parse `E`/`G`/`F`/`H` `POLY`: `<id> n+ n- POLY(n) controls… coefficients…`,
+/// where the controls are `n` node pairs (E, G) or `n` `V` line names
+/// (F, H).
+fn parse_poly(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let nodes = nodes_n(input, 2)?;
+    ws(input)?;
+    keyword("poly").parse_next(input)?;
+    ws(input)?;
+    '('.parse_next(input)?;
+    ws(input)?;
+    let dims: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+    let dims: usize = dims.parse().map_err(|_| ErrMode::from_input(input))?;
+    ws(input)?;
+    ')'.parse_next(input)?;
+    if dims == 0 || dims > 16 {
+        return Err(ErrMode::from_input(input));
+    }
+    let controls = if matches!(prefix, 'e' | 'g') {
+        let mut pairs = Vec::with_capacity(dims);
+        for _ in 0..dims {
+            poly_separators(input)?;
+            let (p, _) = node_name(input)?;
+            poly_separators(input)?;
+            let (n, _) = node_name(input)?;
+            pairs.push((p, n));
+        }
+        PolyControls::Voltages(pairs)
+    } else {
+        let mut sources = Vec::with_capacity(dims);
+        for _ in 0..dims {
+            poly_separators(input)?;
+            sources.push(node_name(input)?.0);
+        }
+        PolyControls::Currents(sources)
+    };
+    let mut coefficients = Vec::new();
+    let mut end = id_span.end;
+    loop {
+        poly_separators(input)?;
+        if input.is_empty() {
+            break;
+        }
+        let (value, span) = value_expr(input)?;
+        coefficients.push(value);
+        end = span.end;
+    }
+    if coefficients.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    let body = RawElementBody::Poly {
+        current: matches!(prefix, 'g' | 'f'),
+        controls,
+        coefficients,
+    };
+    Ok(element_line(id, prefix, id_span, nodes, body, end))
 }
 
 /// Parse `R / L / C` passive: `<id> n+ n- <value>`.
@@ -1499,6 +1568,15 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             'x' => parse_subckt_instance(&mut input),
             'e' | 'g' | 'f' | 'h' => {
                 let form = behavioural_form(trimmed);
+                if form == Some("POLY") {
+                    let parsed = parse_poly(&mut input);
+                    return parsed
+                        .map(RawCard::Element)
+                        .map_err(|_| LocalError::Syntax {
+                            message: format!("malformed `{prefix}` POLY element"),
+                            span: 0..trimmed.len(),
+                        });
+                }
                 if form == Some("VALUE") && matches!(prefix, 'e' | 'g') {
                     let parsed = parse_behavioural(&mut input, true);
                     return parsed

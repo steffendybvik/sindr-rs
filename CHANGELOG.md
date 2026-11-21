@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The SPICE parser reads `B` lines and the `VALUE` form of `E`/`G` into
   behavioural sources, with `.param` names resolved inside the
   expression. `to_netlist` writes them back as `B` lines.
+- The `POLY(n)` form of `E`, `G`, `F` and `H` is read too, as a
+  behavioural source holding SPICE2's polynomial of `n` controlling
+  voltages or currents.
 
 ## [0.1.0] - 2026-11-21
 

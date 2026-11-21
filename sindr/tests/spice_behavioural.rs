@@ -195,3 +195,37 @@ fn exporting_an_expression_that_reads_a_missing_source_is_an_error() {
         "{err}"
     );
 }
+
+/// SPICE2's shorthand: a one-dimensional POLY with a single coefficient
+/// is its linear term (ngspice refuses it; SPICE2 and PSpice read it).
+#[test]
+fn single_coefficient_poly_is_linear() {
+    let result = op("t\nV1 a 0 2\nR1 a 0 1k\nE1 out 0 POLY(1) a 0 3\nR2 out 0 1k\n.end\n");
+    close(result.node_voltages["out"], 6.0);
+}
+
+#[test]
+fn poly_reads_params_and_separators() {
+    let result = op("t\n\
+        .param k=0.5\n\
+        V1 a 0 2\n\
+        R1 a 0 1k\n\
+        E1 out 0 POLY(1) (a, 0) 1, {k}, 0.25\n\
+        R2 out 0 1k\n\
+        .end\n");
+    close(result.node_voltages["out"], 1.0 + 0.5 * 2.0 + 0.25 * 4.0);
+}
+
+#[test]
+fn malformed_poly_lines_are_syntax_errors() {
+    for line in [
+        "E1 out 0 POLY(0) a 0 1",
+        "E1 out 0 POLY(x) a 0 1",
+        "E1 out 0 POLY(2) a 0 1",
+        "E1 out 0 POLY(1) a 0",
+        "F1 out 0 POLY(1)",
+    ] {
+        let deck = format!("t\nV1 a 0 1\nR1 a 0 1k\n{line}\nR2 out 0 1k\n.end\n");
+        assert!(parse_str(&deck).is_err(), "{line}");
+    }
+}

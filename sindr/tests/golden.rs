@@ -302,6 +302,13 @@ fn op_behavioural() {
     check_op("op_behavioural", &parse("op_behavioural"), (OP_V, OP_I));
 }
 
+/// `POLY` on E, G, F and H, lowered to behavioural sources: pins SPICE2's
+/// coefficient order (`x1², x1·x2, x2²` after the linear terms).
+#[test]
+fn op_poly() {
+    check_op("op_poly", &parse("op_poly"), (OP_V, OP_I));
+}
+
 /// A squarer's small-signal gain is its slope at the bias, 2·1.5, into
 /// an RC pole.
 #[test]
