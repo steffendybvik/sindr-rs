@@ -7417,7 +7417,7 @@ let divider = Circuit::new(
 let tolerances = Tolerance::on_every(&divider, Parameter::Resistance, 0.01);
 let config = MonteCarloConfig::new(tolerances, 200).with_seed(7);
 let vout = Measurement::new("vout", Measure::stat(Signal::v("out"), Stat::Avg));
-let result = monte_carlo(&divider, &config, &[vout], |c| solve_op(c))?;
+let result = monte_carlo(&divider, &config, &[vout], solve_op)?;
 let stats = result.stats("vout").unwrap();
 assert!((stats.mean - 5.0).abs() < 0.01);
 assert!(stats.min > 4.9 && stats.max < 5.1);
