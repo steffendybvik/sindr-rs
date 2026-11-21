@@ -144,7 +144,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, linear E/G/F/H, K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, B, X, linear E/G/F/H (and `VALUE`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 

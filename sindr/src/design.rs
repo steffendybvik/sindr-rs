@@ -433,6 +433,12 @@ impl<'a> Expander<'a> {
             if let Some(source) = el.control_source_mut() {
                 *source = join(&path, source);
             }
+            if let Some(expr) = el.expression_mut() {
+                expr.rename(
+                    |net| self.net(net, &path, &ports),
+                    |source| join(&path, source),
+                );
+            }
             self.out.components.push(el);
         }
         for (id, part) in &block.parts {

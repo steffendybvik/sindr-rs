@@ -88,6 +88,10 @@ pub(crate) enum RawElementBody {
         model: String,
         substrate: Option<String>,
     },
+    /// B — `n+ n- V=expr` or `I=expr`, and E / G — `n+ n- VALUE=expr`:
+    /// an expression of node voltages, branch currents and time, its
+    /// braces removed, as a voltage (B `V=`, E) or a current (B `I=`, G).
+    Behavioural { current: bool, text: String },
     /// E / G — `n+ n- nc+ nc- value`: the four nodes, output pair first.
     VoltageControlled { value: ParamExpr },
     /// F / H — `n+ n- vname value`: the two output nodes and the voltage

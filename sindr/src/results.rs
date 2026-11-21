@@ -305,6 +305,41 @@ fn node_voltage(node: &str, node_map: &NodeMap, solution: &DVector<f64>) -> f64 
 
 /// A regulator's result: its pass element, input to output. `Vin − Vout`,
 /// the output current, and the power it dissipates, quiescent included.
+/// A behavioural source's voltage, current and power at `solution` and
+/// time `t`. A voltage output's current is its branch current (at
+/// `branch`); a current output's is its expression's value, NaN if the
+/// expression can't be evaluated there.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn behavioural_result(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    solution: &DVector<f64>,
+    t: f64,
+    id: &str,
+    nodes: &[String; 2],
+    output: crate::BehaviouralOutput,
+    expr: &crate::expression::Expression,
+    branch: usize,
+) -> ComponentResult {
+    let v_across =
+        node_voltage(&nodes[0], node_map, solution) - node_voltage(&nodes[1], node_map, solution);
+    let current = match output {
+        crate::BehaviouralOutput::Current => {
+            crate::stamp::behavioural_linearisation(circuit, node_map, id, expr, solution, t)
+                .map_or(f64::NAN, |(jacobian, c)| {
+                    c + jacobian.iter().map(|(k, j)| j * solution[*k]).sum::<f64>()
+                })
+        }
+        _ => solution[branch],
+    };
+    ComponentResult {
+        id: id.to_string(),
+        voltage_across: v_across,
+        current_through: current,
+        power: v_across * current,
+    }
+}
+
 pub(crate) fn regulator_result(
     id: &str,
     nodes: &[String; 3],
@@ -562,6 +597,29 @@ pub(crate) fn extract_results(
                     power,
                     region: comp.region.as_str().to_string(),
                 });
+            }
+            CircuitElement::Behavioural {
+                id,
+                nodes,
+                output,
+                expr,
+            } => {
+                let result = behavioural_result(
+                    circuit,
+                    node_map,
+                    solution,
+                    0.0,
+                    id,
+                    nodes,
+                    *output,
+                    expr,
+                    num_nodes + vsource_index,
+                );
+                if component.branch_slots() > 0 {
+                    branch_currents.insert(id.clone(), result.current_through);
+                }
+                component_results.push(result);
+                vsource_index += component.branch_slots();
             }
             CircuitElement::Vcvs { id, nodes, .. } | CircuitElement::Ccvs { id, nodes, .. } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);

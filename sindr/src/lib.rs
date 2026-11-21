@@ -133,7 +133,8 @@
 //! ## SPICE input (feature `spice`)
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q,
-//! linear E/G/F/H, K (two coupled `L` lines) and X elements, with `[DC] v`,
+//! B (behavioural, also E/G `VALUE=`), linear E/G/F/H, K (two coupled `L`
+//! lines) and X elements, with `[DC] v`,
 //! `AC mag [phase]` and a waveform on V and I lines in any order;
 //! `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 //! `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
@@ -141,10 +142,18 @@
 //! sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 //! `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
 //! `NR`, `VAF`, `KF`, `AF`). Not read: MOSFET (M) and JFET (J) elements,
-//! `B` sources, the `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms of E/G/F/H, and
+//! the `POLY`/`TABLE`/`LAPLACE` forms of E/G/F/H, and
 //! couplings of more than two inductors.
 //! [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
-//! sources and `.subckt`s included.
+//! and behavioural sources and `.subckt`s included.
+//!
+//! ## Behavioural sources
+//!
+//! [`CircuitElement::Behavioural`] is a voltage or current set by an
+//! [`expression::Expression`] of node voltages, branch currents and time,
+//! such as `v(a)*v(b)` or `1m*tanh(v(in)/26m)`. Newton stamps its exact
+//! gradient (forward-mode automatic differentiation), AC linearises it at
+//! the bias point, and transient reads `time`.
 //!
 //! The full list of what sindr doesn't do is in
 //! [LIMITATIONS.md](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
@@ -294,6 +303,7 @@ mod integration;
 pub mod measure;
 // The matrix type is public only for sindr's own `mna_solve` bench, behind
 // the unstable `internals` feature.
+pub mod expression;
 #[cfg(feature = "internals")]
 #[doc(hidden)]
 pub mod mna;
@@ -322,8 +332,8 @@ pub mod waveform;
 
 pub use ac_analysis::{solve_ac, AcConfig, AcPoint, AcResult, FrequencySpacing};
 pub use circuit::{
-    BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel, FerriteBeadParams, OpAmpModel,
-    SpdtPosition,
+    BehaviouralOutput, BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel,
+    FerriteBeadParams, OpAmpModel, SpdtPosition,
 };
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};

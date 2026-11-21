@@ -1,0 +1,1 @@
+v(in,ref)>0?tanh(v(x)/26m):-1

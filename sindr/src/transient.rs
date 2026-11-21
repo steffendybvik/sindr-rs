@@ -405,6 +405,18 @@ fn stamp_circuit_transient(
                     stamp_cccs(system, node_map, nodes, *alpha, num_nodes + cb);
                 }
             }
+            CircuitElement::Behavioural {
+                id,
+                nodes,
+                output,
+                expr,
+            } => {
+                let branch = num_nodes + vsource_index;
+                crate::stamp::stamp_behavioural(
+                    system, circuit, node_map, id, nodes, *output, expr, v_prev, t, branch,
+                )?;
+                vsource_index += component.branch_slots();
+            }
             CircuitElement::Pushbutton { nodes, closed, .. } => {
                 let resistance = if *closed {
                     SWITCH_R_CLOSED
@@ -832,6 +844,25 @@ fn extract_timestep_results(
                     current_through: id_current,
                     power: (id_current * vds_phys).abs(),
                 });
+            }
+            CircuitElement::Behavioural {
+                id,
+                nodes,
+                output,
+                expr,
+            } => {
+                component_results.push(crate::results::behavioural_result(
+                    circuit,
+                    node_map,
+                    solution,
+                    source_time,
+                    id,
+                    nodes,
+                    *output,
+                    expr,
+                    num_nodes + vsource_index,
+                ));
+                vsource_index += component.branch_slots();
             }
             CircuitElement::Vcvs { id, nodes, .. } | CircuitElement::Ccvs { id, nodes, .. } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);

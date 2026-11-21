@@ -18,6 +18,7 @@ use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 use std::collections::BTreeMap;
 
 use crate::design::{Block, Instance, Part};
+use crate::expression::Expression;
 use crate::waveform::Waveform;
 
 /// BJT parasitic capacitances. All values in Farads. Default 0.0 disables each cap.
@@ -220,6 +221,18 @@ pub struct MosfetParasiticCaps {
     /// Gate-Drain capacitance (Miller capacitance) (F). Typical: 10–100 pF.
     #[cfg_attr(feature = "serde", serde(default))]
     pub cgd: f64,
+}
+
+/// What a [`CircuitElement::Behavioural`] source's expression sets.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BehaviouralOutput {
+    /// The voltage across the source, `n+` over `n-` (V): SPICE's `V=`.
+    Voltage,
+    /// The current through the source from `n+` to `n-` (A): SPICE's `I=`.
+    Current,
 }
 
 /// Which throw of a [`CircuitElement::SwitchSpdt`] the common terminal
@@ -640,6 +653,43 @@ pub enum CircuitElement {
         control_source: String,
         /// Current gain α (A/A): `I_out = alpha * I_control`.
         alpha: f64,
+    },
+
+    /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
+    /// voltage or current set by an [`Expression`] of node voltages,
+    /// branch currents and time.
+    ///
+    /// A voltage output holds `V(nodes[0]) − V(nodes[1])` at the
+    /// expression, and like a [`CircuitElement::VoltageSource`] has a
+    /// branch current others can read with `i(id)`. A current output
+    /// drives the expression's value through the source from `nodes[0]` to
+    /// `nodes[1]`, as a [`CircuitElement::CurrentSource`] does. Newton
+    /// stamps it with the expression's exact gradient, AC analysis
+    /// linearises it at the bias point, and `time` reads the transient's
+    /// time (0 elsewhere).
+    ///
+    /// ```
+    /// use sindr::{BehaviouralOutput, CircuitElement};
+    /// use sindr::expression::Expression;
+    ///
+    /// let multiplier = CircuitElement::Behavioural {
+    ///     id: "b1".into(),
+    ///     nodes: ["out".into(), "0".into()],
+    ///     output: BehaviouralOutput::Voltage,
+    ///     expr: Expression::parse("v(a)*v(b)")?,
+    /// };
+    /// # Ok::<(), sindr::expression::ExpressionError>(())
+    /// ```
+    #[cfg_attr(feature = "serde", serde(rename = "behavioural"))]
+    Behavioural {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[n+, n-]`.
+        nodes: [String; 2],
+        /// Whether the expression is a voltage or a current.
+        output: BehaviouralOutput,
+        /// The value, in volts or amperes.
+        expr: Expression,
     },
 
     /// Pushbutton (momentary switch): identical behaviour to Switch.
@@ -1064,6 +1114,7 @@ impl CircuitElement {
             CircuitElement::SwitchSpdt { nodes, .. } => nodes,
             CircuitElement::Crystal { nodes, .. } => nodes,
             CircuitElement::FerriteBead { nodes, .. } => nodes,
+            CircuitElement::Behavioural { nodes, .. } => nodes,
         }
     }
 
@@ -1086,6 +1137,15 @@ impl CircuitElement {
             }
             CircuitElement::Ccvs { nodes, .. } => vec![&nodes[0], &nodes[1]],
             CircuitElement::Cccs { nodes, .. } => vec![&nodes[0], &nodes[1]],
+            CircuitElement::Behavioural { nodes, expr, .. } => {
+                let mut all: Vec<&String> = nodes.iter().collect();
+                for node in expr.nodes() {
+                    if !all.contains(&node) {
+                        all.push(node);
+                    }
+                }
+                all
+            }
             _ => self.nodes().iter().collect(),
         }
     }
@@ -1127,6 +1187,7 @@ impl CircuitElement {
             CircuitElement::SwitchSpdt { id, .. } => id,
             CircuitElement::Crystal { id, .. } => id,
             CircuitElement::FerriteBead { id, .. } => id,
+            CircuitElement::Behavioural { id, .. } => id,
         }
     }
 
@@ -1137,7 +1198,11 @@ impl CircuitElement {
     pub fn branch_slots(&self) -> usize {
         match self {
             CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. } => 2,
-            CircuitElement::VoltageSource { .. }
+            CircuitElement::Behavioural {
+                output: BehaviouralOutput::Voltage,
+                ..
+            }
+            | CircuitElement::VoltageSource { .. }
             | CircuitElement::Vcvs { .. }
             | CircuitElement::Ccvs { .. }
             | CircuitElement::OpAmp { .. }
@@ -1184,6 +1249,7 @@ impl CircuitElement {
             CircuitElement::SwitchSpdt { nodes, .. } => nodes,
             CircuitElement::Crystal { nodes, .. } => nodes,
             CircuitElement::FerriteBead { nodes, .. } => nodes,
+            CircuitElement::Behavioural { nodes, .. } => nodes,
         }
     }
 
@@ -1224,6 +1290,7 @@ impl CircuitElement {
             CircuitElement::SwitchSpdt { id, .. } => id,
             CircuitElement::Crystal { id, .. } => id,
             CircuitElement::FerriteBead { id, .. } => id,
+            CircuitElement::Behavioural { id, .. } => id,
         }
     }
 
@@ -1241,6 +1308,15 @@ impl CircuitElement {
         match self {
             CircuitElement::Ccvs { control_source, .. }
             | CircuitElement::Cccs { control_source, .. } => Some(control_source),
+            _ => None,
+        }
+    }
+
+    /// The expression of a behavioural source, for renaming the nodes and
+    /// sources it reads.
+    pub(crate) fn expression_mut(&mut self) -> Option<&mut Expression> {
+        match self {
+            CircuitElement::Behavioural { expr, .. } => Some(expr),
             _ => None,
         }
     }
@@ -1384,6 +1460,7 @@ impl Circuit {
                     | CircuitElement::Photodiode { .. }
                     | CircuitElement::Igbt { .. }
                     | CircuitElement::Jfet { .. }
+                    | CircuitElement::Behavioural { .. }
                     | CircuitElement::VoltageRegulator { .. } // Thermistor is passive (temperature-dependent resistance, no NR)
                                                               // Varactor is passive in DC (open circuit), no NR needed
             )
@@ -1433,7 +1510,10 @@ impl Circuit {
             let slots = component.branch_slots();
             let has_current = matches!(
                 component,
-                CircuitElement::VoltageSource { .. }
+                CircuitElement::Behavioural {
+                    output: BehaviouralOutput::Voltage,
+                    ..
+                } | CircuitElement::VoltageSource { .. }
                     | CircuitElement::Vcvs { .. }
                     | CircuitElement::Ccvs { .. }
                     | CircuitElement::OpAmp { .. }

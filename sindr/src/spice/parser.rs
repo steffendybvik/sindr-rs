@@ -389,7 +389,8 @@ fn parse_coupling(input: &mut Input<'_>) -> ModalResult<RawElement> {
 }
 
 /// The nonlinear forms of `E`/`G`/`F`/`H` (`POLY`, `VALUE`, `TABLE`,
-/// `LAPLACE`), which sindr doesn't model.
+/// `LAPLACE`). sindr reads `VALUE` on `E` and `G` as a behavioural source
+/// and doesn't model the rest.
 fn behavioural_form(line: &str) -> Option<&'static str> {
     line.split(|c: char| c.is_whitespace() || c == '=' || c == '(' || c == '{')
         .skip(1)
@@ -400,6 +401,45 @@ fn behavioural_form(line: &str) -> Option<&'static str> {
             "laplace" => Some("LAPLACE"),
             _ => None,
         })
+}
+
+/// Parse a behavioural source: `B<id> n+ n- V=expr` / `I=expr`, or
+/// `E<id>`/`G<id> n+ n- VALUE=expr` (`value` is `true`). The expression
+/// runs to the end of the card, braces optional.
+fn parse_behavioural(input: &mut Input<'_>, value: bool) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    ws(input)?;
+    let (n_pos, _) = node_name(input)?;
+    ws(input)?;
+    let (n_neg, _) = node_name(input)?;
+    ws(input)?;
+    let rest: &str = winnow::token::rest.parse_next(input)?;
+    let (key, text) = rest
+        .split_once('=')
+        .ok_or_else(|| ErrMode::from_input(input))?;
+    let current = match (key.trim(), value) {
+        ("v", false) => false,
+        ("i", false) => true,
+        ("value", true) => prefix == 'g',
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    let text: String = text.chars().filter(|c| !matches!(c, '{' | '}')).collect();
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawElement {
+        id,
+        prefix,
+        nodes: vec![n_pos, n_neg],
+        body: RawElementBody::Behavioural { current, text },
+        span: Span {
+            start: id_span.start,
+            end: id_span.end,
+            file: Arc::from(""),
+            src: Arc::default(),
+        },
+    })
 }
 
 /// Parse `R / L / C` passive: `<id> n+ n- <value>`.
@@ -1458,7 +1498,17 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             'q' => parse_bjt(&mut input),
             'x' => parse_subckt_instance(&mut input),
             'e' | 'g' | 'f' | 'h' => {
-                if let Some(form) = behavioural_form(trimmed) {
+                let form = behavioural_form(trimmed);
+                if form == Some("VALUE") && matches!(prefix, 'e' | 'g') {
+                    let parsed = parse_behavioural(&mut input, true);
+                    return parsed
+                        .map(RawCard::Element)
+                        .map_err(|_| LocalError::Syntax {
+                            message: format!("malformed `{prefix}` element"),
+                            span: 0..trimmed.len(),
+                        });
+                }
+                if let Some(form) = form {
                     return Err(LocalError::UnsupportedDevice {
                         device: format!(
                             "{form} form of a controlled source ({})",
@@ -1486,12 +1536,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
                     span: 0..1,
                 });
             }
-            'b' => {
-                return Err(LocalError::UnsupportedDevice {
-                    device: "behavioural source (B)".to_string(),
-                    span: 0..1,
-                });
-            }
+            'b' => parse_behavioural(&mut input, false),
             's' => {
                 return Err(LocalError::UnsupportedDevice {
                     device: format!("device prefix '{prefix}'"),

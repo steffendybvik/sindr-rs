@@ -450,6 +450,21 @@ fn build_element(
             })
         }
 
+        RawElementBody::Behavioural { current, text } => {
+            let expr = crate::expression::Expression::parse_with(text, &|name| scope.get(name))
+                .map_err(|e| card_error(format!("`{}`: {e}", raw.id)))?;
+            Ok(CircuitElement::Behavioural {
+                id: raw.id.clone(),
+                nodes: two_nodes(&raw.nodes, &raw.id)?,
+                output: if *current {
+                    crate::BehaviouralOutput::Current
+                } else {
+                    crate::BehaviouralOutput::Voltage
+                },
+                expr,
+            })
+        }
+
         // sindr's controlled sources take SPICE's node order and current
         // direction, so the nodes go across as written.
         RawElementBody::VoltageControlled { value } => {
