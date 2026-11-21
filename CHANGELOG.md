@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ngspice's functions. Newton stamps its exact Jacobian by forward-mode
   automatic differentiation, AC linearises it at the bias point, and
   transient reads `time`. In JSON the expression is its text.
+- An expression that overflows or leaves its domain on the way to the
+  answer (`exp` of the whole supply on the first step, `ln` of a node
+  that starts at 0 V) no longer ends the solve. Newton shortens the step,
+  gmin and source stepping or a shorter transient step take over, and
+  the answer is checked for finite values before it's returned.
+  `SimError::NotFinite` names the source, its expression and what it
+  read, when it can't be got past.
 - `sindr::expression`: `Expression::parse`, `variables` and `evaluate`.
 - The SPICE parser reads `B` lines and the `VALUE` form of `E`/`G` into
   behavioural sources, with `.param` names resolved inside the

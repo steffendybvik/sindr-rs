@@ -1677,7 +1677,8 @@ impl TransientConfig {
 /// or isn't finite, any
 /// validation error from [`validate_circuit`](crate::validate_circuit),
 /// [`SimError::ConvergenceFailed`] if Newton–Raphson fails even at a step a
-/// million times smaller than `tstep`, and [`SimError::SingularMatrix`] or
+/// million times smaller than `tstep` ([`SimError::NotFinite`] when a
+/// behavioural expression overflows there), and [`SimError::SingularMatrix`] or
 /// [`SimError::InvalidSolution`] if a step can't be solved.
 ///
 /// # Example
@@ -1981,7 +1982,7 @@ pub(crate) fn run_transient(
         };
         let next = match step.solve(&integ, t_src, &caps, &inds, &parasitic, &solution) {
             Ok(next) => next,
-            Err(e @ SimError::ConvergenceFailed { .. }) => {
+            Err(e) if e.is_retryable() => {
                 stats.newton_rejections += 1;
                 h = dt / 2.0;
                 if h < h_min {
@@ -2468,6 +2469,7 @@ impl<'a> StepSolver<'a> {
                     self.opts,
                 )
             {
+                crate::stamp::behavioural_finite_at(self.circuit, self.node_map, &v_limited, t)?;
                 return Ok(v_limited);
             }
             last_step = newton_raphson::max_node_step(&v_prev, &v_limited, self.num_nodes);

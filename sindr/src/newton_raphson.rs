@@ -43,7 +43,9 @@ use crate::stamp;
 /// # Errors
 ///
 /// [`SimError::ConvergenceFailed`] if plain Newton–Raphson, gmin stepping
-/// and source stepping all fail, plus any stamping or solve error.
+/// and source stepping all fail, or [`SimError::NotFinite`] when a
+/// behavioural source's expression overflowed on the way; plus any stamping
+/// or solve error.
 pub fn solve_nonlinear(
     circuit: &Circuit,
     node_map: &NodeMap,
@@ -64,41 +66,53 @@ pub fn solve_nonlinear(
         opts,
     ) {
         Ok((result, _)) => Ok(result),
-        Err(e @ SimError::ConvergenceFailed { .. }) => {
+        // SingularMatrix and InvalidSolution are topology / numerical errors
+        // that no convergence aid can fix: propagate them at once.
+        Err(e) if !e.is_retryable() => Err(e),
+        Err(first) => {
+            // An expression that overflowed on the way is the better report
+            // when every aid fails: it names the source and what it read.
+            let (mut not_finite, mut last) = (None, None);
+            let mut record = |e: SimError| match e {
+                SimError::NotFinite { .. } if not_finite.is_none() => not_finite = Some(e),
+                e => last = Some(e),
+            };
+            record(first);
             // Fall back to gmin stepping: progressively softens the Jacobian
             // by adding extra conductance to ground on every node, then ramps
             // it down while warm-starting from the previous step's solution.
-            let gmin = if opts.gmin_steps.is_empty() {
-                Err(e)
-            } else {
-                gmin_stepping(
+            if !opts.gmin_steps.is_empty() {
+                match gmin_stepping(
                     circuit,
                     node_map,
                     num_nodes,
                     num_vsources,
                     initial_voltages,
                     opts,
-                )
-            };
-            match gmin {
-                Ok(mut result) => {
-                    result.convergence_aid = Some(ConvergenceAid::GminStepping);
-                    Ok(result)
+                ) {
+                    Ok(mut result) => {
+                        result.convergence_aid = Some(ConvergenceAid::GminStepping);
+                        return Ok(result);
+                    }
+                    Err(e) if !e.is_retryable() => return Err(e),
+                    Err(e) => record(e),
                 }
-                Err(e @ SimError::ConvergenceFailed { .. }) if !opts.source_stepping => Err(e),
-                Err(SimError::ConvergenceFailed { .. }) => {
-                    // Then source stepping: ramp every source up from zero.
-                    let mut result =
-                        source_stepping(circuit, node_map, num_nodes, num_vsources, opts)?;
-                    result.convergence_aid = Some(ConvergenceAid::SourceStepping);
-                    Ok(result)
-                }
-                Err(e) => Err(e),
             }
+            if opts.source_stepping {
+                // Then source stepping: ramp every source up from zero.
+                match source_stepping(circuit, node_map, num_nodes, num_vsources, opts) {
+                    Ok(mut result) => {
+                        result.convergence_aid = Some(ConvergenceAid::SourceStepping);
+                        return Ok(result);
+                    }
+                    Err(e) if !e.is_retryable() => return Err(e),
+                    Err(e) => record(e),
+                }
+            }
+            Err(not_finite
+                .or(last)
+                .expect("the first attempt's error is always recorded"))
         }
-        // SingularMatrix and InvalidSolution are topology / numerical errors
-        // that gmin stepping cannot fix — propagate immediately.
-        Err(e) => Err(e),
     }
 }
 
@@ -141,7 +155,7 @@ fn source_stepping(
                 warm = Some(v);
                 increment = (increment * 2.0).min(0.25);
             }
-            Err(e @ SimError::ConvergenceFailed { .. }) => {
+            Err(e) if e.is_retryable() => {
                 increment /= 2.0;
                 if increment < opts.min_source_step {
                     return Err(e);
@@ -294,19 +308,68 @@ fn nr_inner(
     let igbt_info = collect_igbt_info(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
     let mut last_step = (f64::INFINITY, None);
+    // The iterate `v_prev` stepped from, to shorten a step that lands where
+    // a behavioural expression isn't finite.
+    let mut v_base: Option<DVector<f64>> = None;
+    // The overflow of the full step, reported if halving doesn't help.
+    let mut overflow: Option<SimError> = None;
+    let mut recent: Option<SimError> = None;
+    let mut halvings = 0;
     for _iteration in 0..opts.max_iterations {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(circuit, &mut system, node_map, Some(&v_prev))?;
-
-        // Add Gmin shunts (default GMIN floor + any homotopy extra).
-        add_gmin_shunts(&mut system, num_nodes);
-        if gmin_extra > 0.0 {
-            for i in 0..num_nodes {
-                system.a[(i, i)] += gmin_extra;
+        let stamped = if v_base.is_none() {
+            stamp_first(
+                circuit,
+                &mut system,
+                node_map,
+                &v_prev,
+                (num_nodes, num_vsources),
+            )
+        } else {
+            stamp::stamp_circuit(circuit, &mut system, node_map, Some(&v_prev))
+        };
+        let solved = stamped.and_then(|()| {
+            // Add Gmin shunts (default GMIN floor + any homotopy extra).
+            add_gmin_shunts(&mut system, num_nodes);
+            if gmin_extra > 0.0 {
+                for i in 0..num_nodes {
+                    system.a[(i, i)] += gmin_extra;
+                }
             }
-        }
-
-        let v_new = system.solve()?;
+            system.solve()
+        });
+        let v_new = match (solved, &v_base) {
+            (Ok(v), _) => {
+                // A step that only stamped once shortened: the overflow is
+                // what to report if Newton never settles.
+                recent = if halvings > 0 { overflow.take() } else { None };
+                (overflow, halvings) = (None, 0);
+                v
+            }
+            // The step landed where a behavioural expression isn't finite,
+            // or where the conductances it gives swamp the rest of the
+            // matrix: shorten it toward the iterate it left.
+            (Err(e @ (SimError::NotFinite { .. } | SimError::SingularMatrix)), Some(base)) => {
+                let e = overflow.take().unwrap_or(e);
+                if halvings == MAX_STEP_HALVINGS {
+                    return Err(match e {
+                        SimError::SingularMatrix => convergence_failed(
+                            circuit,
+                            node_map,
+                            last_step,
+                            SolvePoint::OperatingPoint,
+                            opts.max_iterations,
+                        ),
+                        e => e,
+                    });
+                }
+                halvings += 1;
+                overflow = Some(e);
+                v_prev = base + (&v_prev - base) * 0.5;
+                continue;
+            }
+            (Err(e), _) => return Err(e),
+        };
 
         let mut v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
         let igbt_limited = apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
@@ -322,14 +385,18 @@ fn nr_inner(
         }
 
         if !igbt_limited && converged(&v_prev, &v_limited, num_nodes, &diode_info, opts) {
+            stamp::behavioural_finite_at(circuit, node_map, &v_limited, 0.0)?;
             let result = results::extract_results(circuit, node_map, &v_limited, num_nodes);
             return Ok((result, v_limited));
         }
 
         last_step = max_node_step(&v_prev, &v_limited, num_nodes);
-        v_prev = v_limited;
+        v_base = Some(std::mem::replace(&mut v_prev, v_limited));
     }
 
+    if let Some(e) = recent {
+        return Err(e);
+    }
     Err(convergence_failed(
         circuit,
         node_map,
@@ -338,6 +405,49 @@ fn nr_inner(
         opts.max_iterations,
     ))
 }
+
+/// Stamps `circuit` at the starting guess. A behavioural source whose
+/// expression isn't finite there (`ln` of a node that starts at 0 V) is
+/// left out of this first iteration, so the rest of the circuit moves its
+/// inputs to where it is.
+fn stamp_first(
+    circuit: &Circuit,
+    system: &mut MnaSystem,
+    node_map: &NodeMap,
+    v: &DVector<f64>,
+    (num_nodes, num_vsources): (usize, usize),
+) -> Result<(), SimError> {
+    let mut off: Option<Circuit> = None;
+    loop {
+        let stamped =
+            stamp::stamp_circuit(off.as_ref().unwrap_or(circuit), system, node_map, Some(v));
+        match stamped {
+            Err(SimError::NotFinite { component, .. })
+                if switch_off(off.get_or_insert_with(|| circuit.clone()), &component) =>
+            {
+                *system = MnaSystem::new(num_nodes, num_vsources);
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Sets behavioural source `id`'s expression to 0; false if it already is.
+fn switch_off(circuit: &mut Circuit, id: &str) -> bool {
+    let zero = crate::expression::Expression::parse("0").expect("0 parses");
+    circuit.components.iter_mut().any(|c| match c {
+        CircuitElement::Behavioural { id: this, expr, .. } if this == id && *expr != zero => {
+            *expr = zero.clone();
+            true
+        }
+        _ => false,
+    })
+}
+
+/// How many times one Newton step is halved, toward the iterate it left,
+/// when it lands where a behavioural expression isn't finite: 2⁻²⁰ of a
+/// 1 kV step is about a millivolt.
+const MAX_STEP_HALVINGS: usize = 20;
 
 /// Rails far enough out that the op-amp clamp never engages.
 const UNCLAMPED_RAIL: f64 = 1e12;
