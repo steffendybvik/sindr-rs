@@ -23,6 +23,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `.model` inside a `.subckt` is read, local to that subcircuit, so
   vendor model files that keep their cards inside the subcircuit load.
   Before, it was ignored with a warning.
+- `CircuitElement::Behavioural`: SPICE's `B` source, a voltage or
+  current set by an `Expression` of node voltages (`v(n)`, `v(n,m)`),
+  branch currents (`i(src)`), `time`, arithmetic, comparisons, `?:` and
+  ngspice's functions. Newton stamps its exact Jacobian by forward-mode
+  automatic differentiation, AC linearises it at the bias point, and
+  transient reads `time`. In JSON the expression is its text.
+- `sindr::expression`: `Expression::parse`, `variables` and `evaluate`.
+- The SPICE parser reads `B` lines and the `VALUE` form of `E`/`G` into
+  behavioural sources, with `.param` names resolved inside the
+  expression. `to_netlist` writes them back as `B` lines.
+- The `POLY(n)` form of `E`, `G`, `F` and `H` is read too, as a
+  behavioural source holding SPICE2's polynomial of `n` controlling
+  voltages or currents.
+- `sindr::variation`: Monte Carlo (`monte_carlo`) and corner (`corners`)
+  analysis around any analysis. A `Tolerance` varies a resistance,
+  capacitance, inductance or source value uniformly or Gaussian, from a
+  seeded generator so runs repeat. Results give each run's values and
+  measurements, and each measurement's mean, standard deviation, min, max
+  and yield. A run that fails is recorded, not fatal. The `parallel`
+  feature spreads runs across threads.
+- Worst case over tolerances: `VariationResult::check_specs` judges each
+  spec on every run, and `ratings_over` checks every part's ratings on
+  every run of a Monte Carlo or corner `Sampling`. Each reports its worst
+  run with the tolerance values behind it.
 
 ## [0.1.0] - 2026-11-21
 

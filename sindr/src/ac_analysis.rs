@@ -1075,6 +1075,56 @@ pub(crate) fn small_signal_system(
                     }
                 }
             }
+            CircuitElement::Behavioural {
+                id,
+                nodes,
+                output,
+                expr,
+            } => {
+                // Its Jacobian at the bias point; the constant term is a DC
+                // source and drops out of the small-signal system. `circuit`
+                // was checked by the bias solve, so this can't fail here.
+                let (jacobian, _) = crate::stamp::behavioural_linearisation(
+                    circuit,
+                    node_map,
+                    id,
+                    expr,
+                    dc_solution,
+                    0.0,
+                )
+                .unwrap_or_default();
+                let p = node_map.index(&nodes[0]);
+                let q = node_map.index(&nodes[1]);
+                match output {
+                    crate::BehaviouralOutput::Current => {
+                        for (k, g) in &jacobian {
+                            let g = Complex64::new(*g, 0.0);
+                            if let Some(pi) = p {
+                                a[(pi, *k)] += g;
+                            }
+                            if let Some(qi) = q {
+                                a[(qi, *k)] -= g;
+                            }
+                        }
+                    }
+                    _ => {
+                        let branch = num_nodes + vsource_index;
+                        let one = Complex64::new(1.0, 0.0);
+                        if let Some(pi) = p {
+                            a[(pi, branch)] += one;
+                            a[(branch, pi)] += one;
+                        }
+                        if let Some(qi) = q {
+                            a[(qi, branch)] -= one;
+                            a[(branch, qi)] -= one;
+                        }
+                        for (k, g) in &jacobian {
+                            a[(branch, *k)] -= Complex64::new(*g, 0.0);
+                        }
+                    }
+                }
+                vsource_index += component.branch_slots();
+            }
             // Fuse: stamp as resistor (intact=0.001 Ohm, blown=1e9 Ohm) in AC
             CircuitElement::Fuse { nodes, blown, .. } => {
                 let r = if *blown { 1e9_f64 } else { 0.001_f64 };

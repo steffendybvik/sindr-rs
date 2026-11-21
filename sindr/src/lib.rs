@@ -81,11 +81,12 @@
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 //! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
+//! | Monte Carlo and corners | [`variation::monte_carlo`], [`variation::corners`] | Any analysis repeated with parts drawn within their tolerances (uniform or Gaussian, seeded) or at every low/high corner; each [`measure::Measurement`] per run, with mean, standard deviation, min, max and yield; specs and ratings at their worst run, with the condition behind it ([`variation::ratings_over`]) |
 //! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 //! | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 //!
-//! Not available: distortion, pole-zero, AC sensitivity, Monte Carlo,
+//! Not available: distortion, pole-zero, AC sensitivity,
 //! periodic steady state, S-parameters, variable-order integration.
 //!
 //! ## Device models
@@ -133,7 +134,8 @@
 //! ## SPICE input (feature `spice`)
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q,
-//! M, J, linear E/G/F/H, K (two coupled `L` lines) and X elements, with `[DC] v`,
+//! M, J, B (behavioural, also E/G `VALUE=` and E/G/F/H `POLY`), linear E/G/F/H,
+//! K (two coupled `L` lines) and X elements, with `[DC] v`,
 //! `AC mag [phase]` and a waveform on V and I lines in any order;
 //! `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 //! `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
@@ -143,10 +145,18 @@
 //! `NR`, `VAF`, `KF`, `AF`; level-1 MOSFETs: `KP`, `VTO`, `LAMBDA`, `GAMMA`,
 //! `PHI`, `LD`, `CGSO`, `CGDO`, `CGBO` and the drain–bulk junction; JFETs:
 //! `VTO`, `BETA`), inside a `.subckt` or at the top level. Not read:
-//! `B` sources, the `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms of E/G/F/H, and
+//! the `TABLE`/`LAPLACE` forms of E/G/F/H, and
 //! couplings of more than two inductors.
 //! [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
-//! sources and `.subckt`s included.
+//! and behavioural sources and `.subckt`s included.
+//!
+//! ## Behavioural sources
+//!
+//! [`CircuitElement::Behavioural`] is a voltage or current set by an
+//! [`expression::Expression`] of node voltages, branch currents and time,
+//! such as `v(a)*v(b)` or `1m*tanh(v(in)/26m)`. Newton stamps its exact
+//! gradient (forward-mode automatic differentiation), AC linearises it at
+//! the bias point, and transient reads `time`.
 //!
 //! The full list of what sindr doesn't do is in
 //! [LIMITATIONS.md](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
@@ -168,6 +178,8 @@
 //!   (voltage divider, BJT amp, RC transient, etc.) with ids and
 //!   descriptions. The circuits themselves are always in [`examples`].
 //! - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
+//! - `parallel` — [`variation`] spreads its runs over one thread per core.
+//!   Off by default, and serial anyway where there are no threads (wasm).
 //!
 //! ```toml
 //! [dependencies]
@@ -296,6 +308,7 @@ mod integration;
 pub mod measure;
 // The matrix type is public only for sindr's own `mna_solve` bench, behind
 // the unstable `internals` feature.
+pub mod expression;
 #[cfg(feature = "internals")]
 #[doc(hidden)]
 pub mod mna;
@@ -320,12 +333,13 @@ mod thermal;
 pub mod transfer_function;
 mod transient;
 pub mod validation;
+pub mod variation;
 pub mod waveform;
 
 pub use ac_analysis::{solve_ac, AcConfig, AcPoint, AcResult, FrequencySpacing};
 pub use circuit::{
-    BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel, FerriteBeadParams, OpAmpModel,
-    SpdtPosition,
+    BehaviouralOutput, BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel,
+    FerriteBeadParams, OpAmpModel, SpdtPosition,
 };
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};

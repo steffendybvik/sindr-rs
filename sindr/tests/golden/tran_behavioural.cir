@@ -1,0 +1,6 @@
+tran: a B source reading time drives an RC: 2*sin(2*pi*1k*time) into 1k and 100n
+B1 s 0 V={2*sin(2*pi*1k*time)}
+R1 s out 1k
+C1 out 0 100n
+.tran 5u 2m 0 1u
+.end

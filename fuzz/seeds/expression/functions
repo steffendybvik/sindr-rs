@@ -1,0 +1,1 @@
+limit(i(vs)*1k,-1,1)+2*sin(2*pi*1k*time)^2

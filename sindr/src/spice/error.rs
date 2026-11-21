@@ -29,7 +29,7 @@ pub enum SpiceParseError {
     #[error("unknown device prefix '{prefix}'")]
     #[diagnostic(
         code(sindr::spice::unknown_device),
-        help("supported device prefixes: R, L, C, V, I, D, Q, M, J, E, G, F, H, K, X")
+        help("supported device prefixes: R, L, C, V, I, D, Q, M, J, B, E, G, F, H, K, X")
     )]
     UnknownDevice {
         /// The unrecognised prefix character.
@@ -63,7 +63,7 @@ pub enum SpiceParseError {
     #[error("unsupported device '{device}'")]
     #[diagnostic(
         code(sindr::spice::unsupported_device),
-        help("the parser currently supports: R, L, C, V, I, D, Q, M, J, E, G, F, H, K, X. B (behavioural) and the POLY/VALUE/TABLE/LAPLACE forms of E/G/F/H are not implemented yet.")
+        help("the parser currently supports: R, L, C, V, I, D, Q, M, J, B, E, G, F, H, K, X, with the POLY form of E/G/F/H and the VALUE form of E/G. The TABLE/LAPLACE forms are not implemented yet.")
     )]
     UnsupportedDevice {
         /// Element id that triggered the error.

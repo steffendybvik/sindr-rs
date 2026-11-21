@@ -151,7 +151,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, X, linear E/G/F/H, K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 
@@ -167,7 +167,7 @@ cargo run --example parse_netlist --features spice
 
 ### Scope & limitations
 
-sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, Monte-Carlo/pole-zero analyses, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
+sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, pole-zero analysis, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
 Where it's heading on the way to 1.0 is in [`ROADMAP.md`](./ROADMAP.md). To work on sindr itself, see [`CONTRIBUTING.md`](./CONTRIBUTING.md). AI coding agents (Claude Code, Codex, Cursor, etc.) should also read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
 
@@ -222,7 +222,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, X, linear E/G/F/H, K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -499,7 +499,12 @@ CircuitElement::Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 
 
 // Current-controlled current source: I_out = alpha × I_ctrl
 CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 }
+
+// Behavioural source (SPICE's B): a voltage or current set by an expression
+CircuitElement::Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression }
 ```
+
+A behavioural source's `expr` is `Expression::parse("v(a)*v(b)")?` and the like: `v(n)`, `v(n,m)`, `i(source)` (the branch current of a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source), `time`, arithmetic, comparisons, `c ? a : b` and ngspice's functions (`exp`, `tanh`, `limit`, `min`, `u`, …). `BehaviouralOutput::Voltage` holds `V(n+) − V(n-)` at the expression; `Current` drives it from `n+` to `n-`. Newton gets the exact Jacobian by automatic differentiation; AC linearises at the bias point. In JSON the expression is its text: `{"type": "behavioural", "output": "voltage", "expr": "v(a)*v(b)", …}`.
 
 `control_source` is the `id` of the voltage source whose branch current is sensed, positive from its `+` terminal through it to `-`, as in SPICE.
 
@@ -844,6 +849,29 @@ match solve_circuit(&circuit) {
 ```
 
 `Thermal` takes `rth_ja` (K/W), or `rth_jc` plus `rth_ca` for a part on a heatsink, an optional `cth` (J/K; without it a transient's junction follows its power with no lag), and `ambient` (K, default 300.15). With it, the element's own `temperature` field is ignored. `SimulationResult::junction_temperatures` and each `TimestepSnapshot`'s carry the result, and `Ratings::tj_max` is checked against them. When no balance exists (a junction past 1000 K, or the iteration never settles), the solve returns `SimError::ThermalRunaway`. AC, `.tf`, `.sens` and `.noise` solve the same heated bias point and linearise each device at its junction temperature. MOSFETs, JFETs, IGBTs and resistors report a junction temperature, but their models don't depend on it.
+
+### Monte Carlo and corners
+
+`sindr::variation` repeats any analysis with parts varied within their tolerances and takes your `Measurement`s on every run:
+
+```rust,ignore
+use sindr::variation::{corners, monte_carlo, Corners, MonteCarloConfig, Parameter, Tolerance};
+
+// Every resistor ±1 % (Gaussian, the band at 3σ), and C1 ±10 % uniform.
+let mut tolerances = Tolerance::on_every(&circuit, Parameter::Resistance, 0.01);
+tolerances.push(Tolerance::uniform("c1", Parameter::Capacitance, 0.10));
+
+let mc = monte_carlo(&circuit, &MonteCarloConfig::new(tolerances.clone(), 1000).with_seed(1),
+                     &[bandwidth], |c| solve_ac(c, &ac))?;
+let s = mc.stats("f3db").unwrap();          // mean, std_dev, min, max, measured, failed
+let yield_ = mc.yield_within("f3db", 1.4e3, 1.8e3);
+
+let worst = corners(&circuit, &tolerances, &Corners::All, &[bandwidth], |c| solve_ac(c, &ac))?;
+```
+
+Worst case on top of the runs: `mc.check_specs(&specs)` gives each spec's pass, fail and unmeasured counts, its yield, and the `WorstRun` nearest or furthest past a limit (with its signed margin and the tolerance values behind it). `ratings_over(&circuit, &Sampling::Corners { tolerances, which: Corners::All }, solve_op)` runs `check_ratings` on every run and reports each part and rating at its worst: value, margin, the run, its tolerance values, the time for a transient, and how many runs exceeded it.
+
+A `Tolerance` varies one component's resistance, capacitance, inductance or source value by a relative band, uniformly or Gaussian (`sigmas` standard deviations across the band, 3 by default). `corners` runs every low/high combination (up to 16 tolerances) or a `Corners::List`. Each run draws from its own seeded stream, so a seed repeats exactly, and the `parallel` feature spreads runs across threads without changing them. A run whose analysis fails is kept with its error, and counted in `failed`.
 
 ### Ratings checks
 
@@ -1239,11 +1267,11 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, M, J, X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage, behavioural (`B`) sources and the `POLY`/`VALUE`/`TABLE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs, `KP`, `VTO`, `LAMBDA`, `GAMMA`, `PHI`, `LD`, `CGSO`, `CGDO`, `CGBO` and the drain–bulk junction (`IS`, `CBD`, `PB`, `MJ`, `FC`) on level-1 MOSFETs, and `VTO`, `BETA` on JFETs. A `.model` inside a `.subckt` is local to it. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms, a MOSFET's `TOX`/Meyer capacitance or `RD`/`RS`, a JFET's `LAMBDA`, gate junction or capacitances) is rejected in strict mode and ignored with a warning in lenient mode; a MOSFET `LEVEL` other than 1 is always an error, and so is a bulk node off the source in strict mode. Vendor model libraries that rely on BSIM / Gummel-Poon / level-2–3 cards remain unreachable.
-- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, M, J, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. A MOSFET with flicker noise, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
+- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, M, J, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF` on BJTs. Anything else (temperature coefficients such as `EG`/`XTI`, BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, M, J, B, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. A MOSFET with flicker noise, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, MOSFET and JFET take level-1 `NMOS`/`PMOS` and `NJF`/`PJF` cards, and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
-- **No Verilog-A / behavioural device language.** Adding a new device means writing a Rust companion model.
+- **Behavioural sources are expressions, not a device language.** `CircuitElement::Behavioural` (SPICE's `B`) is one voltage or current set by an expression of node voltages, branch currents and time. There is no Verilog-A, no internal state or charge (`ddt`, `idt`), and no XSPICE code models; a new device with its own state means writing a Rust companion model. Steps and comparisons in an expression have zero slope, so a hard switch can stall Newton where a smooth one (`tanh`) converges.
 
 #### Analyses
 
@@ -1259,7 +1287,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.disto` / harmonic distortion | ❌ | |
 | `.pz` (pole-zero) | ❌ | |
 | `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
-| Monte Carlo / worst-case / corner analysis | ❌ | no parameter-distribution sampling |
+| Monte Carlo / worst-case / corner analysis | ✅ | `variation::monte_carlo` and `variation::corners`, over resistance, capacitance, inductance and source values (uniform or Gaussian, independent, seeded). Specs (`check_specs`) and ratings (`ratings_over`) at their worst run. No correlated tolerances, no device-model parameters, no `.mc` / `.step` cards, no derating or SOA yet |
 | `.fft` on transient output | ❌ | user-side only |
 | `.meas` (measurements) | ⚠️ | `sindr::measure`: statistics, `FIND … AT`, `WHEN`, `TRIG`/`TARG`, plus rise/fall, settling and −3 dB in the API. No `FIND … WHEN`, `DERIV` or `PARAM=`; no currents on AC results |
 | Periodic steady-state (PSS / shooting / harmonic balance) | ❌ | relevant for switching converters, RF |
@@ -1329,7 +1357,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - Need a vendor BJT / MOSFET? A level-1 MOSFET or JFET subcircuit loads as is; otherwise fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
 - Need digital control around an analog plant? Drive the analog circuit step-by-step from your own Rust loop, sampling node voltages between transient calls and updating sources / switches between them. This is not co-simulation, but it works for slow control loops.
 - Need a second pole or phase margin on an op-amp? Build it from VCVS stages and RC networks around an `OpAmp` with an `OpAmpModel`.
-- Need Monte Carlo? Loop in Rust over randomised `CircuitElement` parameter values; sindr is fast enough for thousands of solves on small circuits.
+- Need a tolerance on a device-model parameter, or correlated parts? Loop in Rust over your own variations of the `Circuit`; sindr is fast enough for thousands of solves on small circuits.
 
 ### Reporting gaps
 
@@ -1682,6 +1710,14 @@ pub struct MosfetParasiticCaps {
     /// Gate-Drain capacitance (Miller capacitance) (F). Typical: 10–100 pF.
     #[cfg_attr(feature = "serde", serde(default))]
     pub cgd: f64,
+}
+
+/// What a [`CircuitElement::Behavioural`] source's expression sets.
+pub enum BehaviouralOutput {
+    /// The voltage across the source, `n+` over `n-` (V): SPICE's `V=`.
+    Voltage,
+    /// The current through the source from `n+` to `n-` (A): SPICE's `I=`.
+    Current,
 }
 
 /// Which throw of a [`CircuitElement::SwitchSpdt`] the common terminal
@@ -2405,6 +2441,43 @@ pub enum CircuitElement {
         nodes: [String; 2],
         /// The equivalent circuit.
         params: FerriteBeadParams,
+    },
+
+    /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
+    /// voltage or current set by an [`Expression`] of node voltages,
+    /// branch currents and time.
+    ///
+    /// A voltage output holds `V(nodes[0]) − V(nodes[1])` at the
+    /// expression, and like a [`CircuitElement::VoltageSource`] has a
+    /// branch current others can read with `i(id)`. A current output
+    /// drives the expression's value through the source from `nodes[0]` to
+    /// `nodes[1]`, as a [`CircuitElement::CurrentSource`] does. Newton
+    /// stamps it with the expression's exact gradient, AC analysis
+    /// linearises it at the bias point, and `time` reads the transient's
+    /// time (0 elsewhere).
+    ///
+    /// ```
+    /// use sindr::{BehaviouralOutput, CircuitElement};
+    /// use sindr::expression::Expression;
+    ///
+    /// let multiplier = CircuitElement::Behavioural {
+    ///     id: "b1".into(),
+    ///     nodes: ["out".into(), "0".into()],
+    ///     output: BehaviouralOutput::Voltage,
+    ///     expr: Expression::parse("v(a)*v(b)")?,
+    /// };
+    /// # Ok::<(), sindr::expression::ExpressionError>(())
+    /// ```
+    #[cfg_attr(feature = "serde", serde(rename = "behavioural"))]
+    Behavioural {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[n+, n-]`.
+        nodes: [String; 2],
+        /// Whether the expression is a voltage or a current.
+        output: BehaviouralOutput,
+        /// The value, in volts or amperes.
+        expr: Expression,
     },
 }
 
@@ -3349,6 +3422,107 @@ pub fn npn_switch() -> Circuit { … }
 pub use meta::{get_examples, ExampleCircuit};
 ```
 
+## `sindr/src/expression.rs`
+
+Behavioural expressions: the right-hand side of SPICE's `B` sources,
+such as `v(a)*v(b)` or `1m*tanh(v(in,ref)/26m)`.
+
+An [`Expression`] is parsed from text once and evaluated at every
+Newton iteration, together with its exact gradient by forward-mode
+automatic differentiation, so a
+[`Behavioural`](crate::CircuitElement::Behavioural) source stamps the true
+Jacobian rather than a finite-difference guess.
+
+### Syntax
+
+| Form | Meaning |
+|---|---|
+| `v(n)`, `v(n,m)` | node voltage, or the voltage of `n` over `m` (V) |
+| `i(src)` | current through a voltage-defined element (A): an independent or behavioural voltage source, VCVS, CCVS, op-amp output or regulator |
+| `time` | simulation time (s); 0 outside a transient |
+| `pi` | π |
+| `2.5`, `1e-3`, `4.7k`, `10meg`, `26m` | numbers, with SPICE's suffixes (`t g meg k m u n p f mil`) |
+| `+ - * / ^` (or `**`) | arithmetic; `^` binds tightest and to the right, so `-2^2` is −4 |
+| `== != < <= > >=`, `&& \|\| !` | comparisons and logic, 1 for true and 0 for false |
+| `c ? a : b` | `a` where `c` is non-zero, otherwise `b` |
+
+Functions: `abs sqrt exp ln log log10 sin cos tan asin acos atan sinh
+cosh tanh` (one argument; `log` is natural, as in ngspice), `atan2 pow
+pwr min max` (two), `limit(x, lo, hi)`, and the step-like `u` (1 for
+`x > 0`), `uramp` (`max(x, 0)`), `sgn`, `floor`, `ceil`. Function and
+variable names ignore case; node and source names are kept as written.
+
+Steps, comparisons and the branches of `?:` have zero derivative, so
+Newton sees each smooth piece on its own: keep transitions smooth (with
+`tanh`, say) where convergence matters.
+
+```
+use sindr::expression::Expression;
+
+let e = Expression::parse("v(a) * v(b) + 2m")?;
+assert_eq!(e.to_string(), "v(a)*v(b)+0.002");
+assert_eq!(e.evaluate(&[3.0, 4.0]), 12.002);
+```
+
+```rust
+/// A parsed behavioural expression. See the [module docs](self) for the
+/// syntax.
+///
+/// It prints as canonical text, which parses back to an equal
+/// expression; with the `serde` feature it is serialised as that text.
+pub struct Expression {
+    root: Node,
+    variables: Vec<Variable>,
+}
+
+/// A quantity an [`Expression`] reads from the circuit.
+pub enum Variable {
+    /// `v(node)` or `v(node, reference)`: in volts.
+    Voltage {
+        /// The node.
+        node: String,
+        /// The node it is measured against; ground when `None`.
+        reference: Option<String>,
+    },
+    /// `i(source)`: the branch current of a voltage-defined element, in
+    /// amperes, flowing into its first node.
+    Current {
+        /// The element's id.
+        source: String,
+    },
+    /// `time`, in seconds.
+    Time,
+}
+
+/// Why text isn't an [`Expression`].
+pub struct ExpressionError {
+    /// What is wrong.
+    pub message: String,
+    /// Byte offset into `text` where it was noticed.
+    pub position: usize,
+    /// The text that was parsed.
+    pub text: String,
+}
+
+impl Expression {
+    /// Parses `text`. See the [module docs](self) for the syntax.
+    ///
+    /// # Errors
+    ///
+    /// [`ExpressionError`] for text that isn't an expression, an unknown
+    /// function or name, or a function given the wrong number of arguments.
+    pub fn parse(text: &str) -> Result<Expression, ExpressionError> { … }
+
+    /// The quantities the expression reads, in the order
+    /// [`evaluate`](Self::evaluate) takes their values.
+    pub fn variables(&self) -> &[Variable] { … }
+
+    /// The expression's value with each of [`variables`](Self::variables)
+    /// at the matching entry of `values`. A missing value reads as 0.
+    pub fn evaluate(&self, values: &[f64]) -> f64 { … }
+}
+```
+
 ## `sindr/src/import/bench.rs`
 
 The test bench: what a schematic leaves out, and the analysis to run.
@@ -4151,11 +4325,12 @@ hierarchy is [`SimError::Design`].
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
+| Monte Carlo and corners | [`variation::monte_carlo`], [`variation::corners`] | Any analysis repeated with parts drawn within their tolerances (uniform or Gaussian, seeded) or at every low/high corner; each [`measure::Measurement`] per run, with mean, standard deviation, min, max and yield; specs and ratings at their worst run, with the condition behind it ([`variation::ratings_over`]) |
 | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 
-Not available: distortion, pole-zero, AC sensitivity, Monte Carlo,
+Not available: distortion, pole-zero, AC sensitivity,
 periodic steady state, S-parameters, variable-order integration.
 
 #### Device models
@@ -4203,7 +4378,8 @@ keyed by the caller's component and net ids, and every
 #### SPICE input (feature `spice`)
 
 [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q,
-M, J, linear E/G/F/H, K (two coupled `L` lines) and X elements, with `[DC] v`,
+M, J, B (behavioural, also E/G `VALUE=` and E/G/F/H `POLY`), linear E/G/F/H,
+K (two coupled `L` lines) and X elements, with `[DC] v`,
 `AC mag [phase]` and a waveform on V and I lines in any order;
 `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
@@ -4213,10 +4389,18 @@ sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 `NR`, `VAF`, `KF`, `AF`; level-1 MOSFETs: `KP`, `VTO`, `LAMBDA`, `GAMMA`,
 `PHI`, `LD`, `CGSO`, `CGDO`, `CGBO` and the drain–bulk junction; JFETs:
 `VTO`, `BETA`), inside a `.subckt` or at the top level. Not read:
-`B` sources, the `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms of E/G/F/H, and
+the `TABLE`/`LAPLACE` forms of E/G/F/H, and
 couplings of more than two inductors.
 [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
-sources and `.subckt`s included.
+and behavioural sources and `.subckt`s included.
+
+#### Behavioural sources
+
+[`CircuitElement::Behavioural`] is a voltage or current set by an
+[`expression::Expression`] of node voltages, branch currents and time,
+such as `v(a)*v(b)` or `1m*tanh(v(in)/26m)`. Newton stamps its exact
+gradient (forward-mode automatic differentiation), AC linearises it at
+the bias point, and transient reads `time`.
 
 The full list of what sindr doesn't do is in
 [LIMITATIONS.md](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
@@ -4238,6 +4422,8 @@ The full list of what sindr doesn't do is in
   (voltage divider, BJT amp, RC transient, etc.) with ids and
   descriptions. The circuits themselves are always in [`examples`].
 - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
+- `parallel` — [`variation`] spreads its runs over one thread per core.
+  Off by default, and serial anyway where there are no threads (wasm).
 
 ```toml
 [dependencies]
@@ -4353,6 +4539,8 @@ pub mod error;
 pub mod import;
 
 pub mod measure;
+
+pub mod expression;
 
 pub mod mna;
 
@@ -6095,7 +6283,7 @@ pub enum SpiceParseError {
     #[error("unknown device prefix '{prefix}'")]
     #[diagnostic(
         code(sindr::spice::unknown_device),
-        help("supported device prefixes: R, L, C, V, I, D, Q, M, J, E, G, F, H, K, X")
+        help("supported device prefixes: R, L, C, V, I, D, Q, M, J, B, E, G, F, H, K, X")
     )]
     UnknownDevice {
         /// The unrecognised prefix character.
@@ -6129,7 +6317,7 @@ pub enum SpiceParseError {
     #[error("unsupported device '{device}'")]
     #[diagnostic(
         code(sindr::spice::unsupported_device),
-        help("the parser currently supports: R, L, C, V, I, D, Q, M, J, E, G, F, H, K, X. B (behavioural) and the POLY/VALUE/TABLE/LAPLACE forms of E/G/F/H are not implemented yet.")
+        help("the parser currently supports: R, L, C, V, I, D, Q, M, J, B, E, G, F, H, K, X, with the POLY form of E/G/F/H and the VALUE form of E/G. The TABLE/LAPLACE forms are not implemented yet.")
     )]
     UnsupportedDevice {
         /// Element id that triggered the error.
@@ -6418,6 +6606,7 @@ pub enum ExportError {
 /// | `Mosfet` | `M d g s s` with `W=1 L=1`, so a level-1 card's `KP`, `CGSO` and `CGDO` are sindr's values as they are. A body diode with only `IS`, `CJO`, `VJ`, `M` and `FC` is the card's drain–bulk junction; one with more is a `D<name>_body` line beside it, and the card's `IS` is 0 |
 /// | `Jfet` | `J`, with an `NJF`/`PJF` card: `VTO` the pinch-off, `BETA = idss/VTO²`, `IS=0` for sindr's ideal gate |
 /// | `Vcvs`, `Vccs`, `Ccvs`, `Cccs` | `E`, `G`, `H`, `F` |
+/// | `Behavioural` | `B n+ n- V={expr}` or `I={expr}`, its nodes and sources by their deck names |
 /// | `Transformer` | two `L` and a `K` |
 /// | `Switch`, `Pushbutton`, `Fuse` | `R` at the resistance sindr stamps |
 /// | `SwitchSpdt` | two `R`, common to each throw |
@@ -6524,7 +6713,9 @@ SPICE3 netlist parser for the sindr circuit simulator.
 Parses a practical subset of Berkeley SPICE3f5 netlists into a
 [`crate::Circuit`] plus structured analysis directives. The supported
 device set tracks what `sindr` can solve: R, L, C, V, I, D, Q (NPN/PNP),
-M (level-1 NMOS/PMOS), J (NJF/PJF), the linear controlled sources E, G, F and H, K (two coupled `L` lines,
+M (level-1 NMOS/PMOS), J (NJF/PJF), B (behavioural), the linear controlled
+sources E, G, F and H (and their `POLY` form, and the `VALUE` form of E and
+G), K (two coupled `L` lines,
 read as one [`Transformer`](crate::CircuitElement::Transformer)) and X
 (subcircuit instance). Subcircuits declared with `.subckt` /
 `.ends` become [`Block`](crate::Block)s and X lines
@@ -6693,9 +6884,30 @@ scope (the top level, or the same `.subckt` body). A `K` line replaces
 its two `L` lines, which must be in its scope, with one transformer named
 after the `K` line: primary from `lname1`, secondary from `lname2`, the
 first node of each its dot. Each `L` can be coupled once; sindr has no
-three-winding transformer. The nonlinear forms (`POLY`, `VALUE`,
-`TABLE`, `LAPLACE`) are unsupported devices: an error in strict mode, a
-warning (and the line dropped) in lenient mode.
+three-winding transformer. The nonlinear forms `TABLE` and `LAPLACE`
+are unsupported devices: an error in strict mode, a warning
+(and the line dropped) in lenient mode.
+
+### Behavioural sources
+
+| Line | Into |
+|---|---|
+| `Bxxx n+ n- V={expr}`, `Exxx n+ n- VALUE={expr}` | [`Behavioural`](crate::CircuitElement::Behavioural), a voltage |
+| `Bxxx n+ n- I={expr}`, `Gxxx n+ n- VALUE={expr}` | [`Behavioural`](crate::CircuitElement::Behavioural), a current from `n+` to `n-` |
+| `Exxx`/`Hxxx n+ n- POLY(n) …` | a behavioural voltage: the polynomial of `n` node-pair voltages (E) or `V`-line currents (H) |
+| `Gxxx`/`Fxxx n+ n- POLY(n) …` | a behavioural current, the same of voltages (G) or currents (F) |
+
+`POLY` coefficients follow SPICE2's order: by total degree, and within
+one degree over the controls in nondecreasing index order, so for two
+`p0 + p1·x1 + p2·x2 + p3·x1² + p4·x1·x2 + p5·x2² + …`. A
+one-dimensional `POLY` with one coefficient is its linear term, as in
+SPICE2 and PSpice (ngspice refuses it).
+
+The expression runs to the end of the card, braces optional, in the
+syntax of [`Expression`](crate::expression::Expression): `v(n)`,
+`v(n,m)`, `i(vname)`, `time`, arithmetic, comparisons, `?:` and
+ngspice's functions. A `.param` name inside it reads as its value. Inside
+a `.subckt` it reads that body's own nodes and `V` lines.
 
 ### Values
 
@@ -7369,6 +7581,7 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 ///    `temperature` (K) positive and finite, capacitances zero or more,
 ///    source values and controlled-source gains finite, a BJT's `bf`
 ///    positive and finite, and the device-model fields each check names
+/// 6. A behavioural source's `i(src)` names a voltage-defined element
 ///
 /// # Errors
 ///
@@ -7387,6 +7600,369 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 /// Returns [`SimError::InvalidComponent`] for a repeated id, or naming the
 /// component, field and value for any other value out of range.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> { … }
+```
+
+## `sindr/src/variation.rs`
+
+Monte Carlo and corner analysis: how a circuit's measurements spread
+when its parts vary within their tolerances.
+
+A [`Tolerance`] says how one parameter of one component varies: by how
+much, and with which [`Distribution`]. [`monte_carlo`] draws every
+tolerance at random for each of its runs; [`corners`] sets each at its
+low or high end, every combination or a chosen list. Both wrap any
+analysis, as a closure from a [`Circuit`] to a result, and take each
+[`Measurement`] on every run. A run that fails (a convergence failure,
+say) is recorded, not fatal.
+
+On top of the runs: [`VariationResult::check_specs`] judges each
+[`Spec`] on every run (yield, and the run nearest or furthest past a
+limit), and [`ratings_over`] checks every part's
+[`Ratings`](crate::Ratings) on every run, reporting each at its worst
+with the run, tolerance values and time behind it.
+
+The draws come from a seeded generator, and each run's from its own
+index, so a run repeats exactly from its seed whether runs go one after
+another or, with the `parallel` feature, across threads.
+
+```
+use sindr::measure::{Measure, Measurement, Signal, Stat};
+use sindr::variation::{monte_carlo, MonteCarloConfig, Parameter, Tolerance};
+use sindr::{solve_op, Circuit, CircuitElement};
+
+let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+    id: id.into(),
+    nodes: [a.into(), b.into()],
+    resistance: 10e3,
+};
+let divider = Circuit::new(
+    "0",
+    vec![
+        CircuitElement::VoltageSource {
+            id: "v1".into(),
+            nodes: ["in".into(), "0".into()],
+            voltage: 10.0,
+            waveform: None,
+        },
+        r("r1", "in", "out"),
+        r("r2", "out", "0"),
+    ],
+);
+// Every resistor ±1 %, 3σ Gaussian.
+let tolerances = Tolerance::on_every(&divider, Parameter::Resistance, 0.01);
+let config = MonteCarloConfig::new(tolerances, 200).with_seed(7);
+let vout = Measurement::new("vout", Measure::stat(Signal::v("out"), Stat::Avg));
+let result = monte_carlo(&divider, &config, &[vout], solve_op)?;
+let stats = result.stats("vout").unwrap();
+assert!((stats.mean - 5.0).abs() < 0.01);
+assert!(stats.min > 4.9 && stats.max < 5.1);
+```
+
+```rust
+/// Which parameter of a component a [`Tolerance`] varies.
+pub enum Parameter {
+    /// A resistor's resistance (Ω).
+    Resistance,
+    /// A capacitor's capacitance (F).
+    Capacitance,
+    /// An inductor's inductance (H).
+    Inductance,
+    /// A voltage source's DC voltage (V).
+    Voltage,
+    /// A current source's DC current (A).
+    Current,
+}
+
+/// How a [`Tolerance`]'s parameter is drawn in [`monte_carlo`].
+pub enum Distribution {
+    /// Evenly across `nominal·(1 ± relative)`.
+    Uniform,
+    /// Normal about the nominal, with the band `relative` at `sigmas`
+    /// standard deviations: a 1 % part at 3σ has σ = 0.33 %. Unclipped, so
+    /// a draw falls outside the band about 0.27 % of the time at 3σ.
+    Gaussian {
+        /// Standard deviations the band spans, above 0.
+        sigmas: f64,
+    },
+}
+
+/// How one parameter of one component varies.
+pub struct Tolerance {
+    /// The component's id, flattened (`x1.r3` inside an instance).
+    pub component: String,
+    /// Which of its parameters.
+    pub parameter: Parameter,
+    /// The band as a fraction of the nominal value, in `[0, 1)`: 0.05
+    /// for 5 %.
+    pub relative: f64,
+    /// How [`monte_carlo`] draws within it.
+    pub distribution: Distribution,
+}
+
+impl Tolerance {
+    /// `parameter` of `component` within `relative`, Gaussian at 3σ, as
+    /// a part's tolerance is usually specified.
+    pub fn new(component: impl Into<String>, parameter: Parameter, relative: f64) -> Self { … }
+
+    /// The same, drawn uniformly across the band.
+    pub fn uniform(component: impl Into<String>, parameter: Parameter, relative: f64) -> Self { … }
+
+    /// With `distribution` in place of the default.
+    pub fn with_distribution(mut self, distribution: Distribution) -> Self { … }
+
+    /// A tolerance of `relative` on `parameter` of every component of
+    /// `circuit` that has it, hierarchy included, each independent.
+    pub fn on_every(circuit: &Circuit, parameter: Parameter, relative: f64) -> Vec<Tolerance> { … }
+}
+
+/// Configuration of a [`monte_carlo`] analysis.
+pub struct MonteCarloConfig {
+    /// What varies.
+    pub tolerances: Vec<Tolerance>,
+    /// Number of runs, at least 1.
+    pub runs: usize,
+    /// Seed of the draws: the same seed gives the same runs.
+    pub seed: u64,
+}
+
+impl MonteCarloConfig {
+    /// `runs` runs over `tolerances`, with seed 0.
+    pub fn new(tolerances: Vec<Tolerance>, runs: usize) -> Self { … }
+
+    /// With `seed` in place of 0.
+    pub fn with_seed(mut self, seed: u64) -> Self { … }
+}
+
+/// Where a [`Tolerance`] sits in one corner of a [`corners`] analysis.
+pub enum Corner {
+    /// `nominal·(1 − relative)`.
+    Low,
+    /// The nominal value.
+    Nominal,
+    /// `nominal·(1 + relative)`.
+    High,
+}
+
+/// Which corners a [`corners`] analysis runs.
+pub enum Corners {
+    /// Every low/high combination: 2ⁿ runs for n tolerances, at most
+    /// [`MAX_CORNER_TOLERANCES`] of them.
+    All,
+    /// These corners, each a [`Corner`] per tolerance in order.
+    List(Vec<Vec<Corner>>),
+}
+
+/// Most tolerances [`Corners::All`] takes: 2¹⁶ = 65 536 runs.
+pub const MAX_CORNER_TOLERANCES: usize = 16;
+
+/// One run of a [`monte_carlo`] or [`corners`] analysis.
+pub struct VariationRun {
+    /// Each tolerance's parameter value in this run, in order.
+    pub values: Vec<f64>,
+    /// Each measurement, in order, or why it couldn't be taken: the
+    /// analysis failing gives every measurement its error.
+    pub measurements: Vec<Result<f64, String>>,
+}
+
+/// One measurement's spread over the runs it could be taken on.
+pub struct MeasurementStats {
+    /// The measurement's name.
+    pub name: String,
+    /// Mean over the measured runs.
+    pub mean: f64,
+    /// Sample standard deviation (n − 1); 0 for one run.
+    pub std_dev: f64,
+    /// Smallest value.
+    pub min: f64,
+    /// Largest value.
+    pub max: f64,
+    /// Runs it was taken on.
+    pub measured: usize,
+    /// Runs it couldn't be taken on.
+    pub failed: usize,
+}
+
+/// Result of a [`monte_carlo`] or [`corners`] analysis.
+pub struct VariationResult {
+    /// The tolerances, in the order each run's `values` follow.
+    pub tolerances: Vec<Tolerance>,
+    /// Every run, in order.
+    pub runs: Vec<VariationRun>,
+    /// One entry per measurement, in order. NaN statistics when no run
+    /// could take it.
+    pub stats: Vec<MeasurementStats>,
+}
+
+impl VariationResult {
+    /// The statistics of the measurement called `name`.
+    pub fn stats(&self, name: &str) -> Option<&MeasurementStats> { … }
+
+    /// The fraction of runs whose measurement `name` lies in
+    /// `[min, max]`; a run that couldn't take it fails. `None` for an
+    /// unknown name.
+    pub fn yield_within(&self, name: &str, min: f64, max: f64) -> Option<f64> { … }
+
+    /// Each of `specs` judged on every run, by the measurement of the same
+    /// name: how many runs pass, fail or couldn't be measured, the yield,
+    /// and the run that came nearest a limit or went furthest past one.
+    /// A spec whose measurement this result didn't take is all unmeasured.
+    pub fn check_specs(&self, specs: &[Spec]) -> Vec<SpecSpread> { … }
+}
+
+/// One run picked out of a variation analysis: which, and the condition
+/// behind it.
+pub struct WorstRun {
+    /// Index into the runs.
+    pub run: usize,
+    /// The value it gave.
+    pub value: f64,
+    /// Signed margin to the nearer limit, in the value's unit: negative is
+    /// outside. `None` for a spec with no limits.
+    pub margin: Option<f64>,
+    /// Each tolerance's parameter value in that run: the condition.
+    pub values: Vec<f64>,
+}
+
+/// One spec over the runs of a variation analysis.
+pub struct SpecSpread {
+    /// The spec's name (its measurement's).
+    pub name: String,
+    /// Runs within the limits.
+    pub passed: usize,
+    /// Runs outside them.
+    pub failed: usize,
+    /// Runs the measurement couldn't be taken on.
+    pub unmeasured: usize,
+    /// `passed` over every run, unmeasured ones counting as failures.
+    pub yield_fraction: f64,
+    /// The run nearest a limit, or furthest past one. `None` when no run
+    /// was measured.
+    pub worst: Option<WorstRun>,
+}
+
+/// Which runs a [`ratings_over`] analysis makes.
+pub enum Sampling {
+    /// Random draws, as [`monte_carlo`].
+    MonteCarlo(MonteCarloConfig),
+    /// Band ends, as [`corners`].
+    Corners {
+        /// What varies.
+        tolerances: Vec<Tolerance>,
+        /// Which corners.
+        which: Corners,
+    },
+}
+
+/// One part's rating at its worst over the runs of [`ratings_over`].
+pub struct WorstRating {
+    /// Component id, flattened.
+    pub part: String,
+    /// Which rating.
+    pub rating: RatingKind,
+    /// The limit; `None` when the part doesn't set it.
+    pub limit: Option<f64>,
+    /// The worst value over every run; `None` when sindr can't measure it.
+    pub worst: Option<f64>,
+    /// Margin left at the worst run, as a percentage of the limit
+    /// (negative when exceeded); `None` when unverified.
+    pub margin_percent: Option<f64>,
+    /// Exceeded if any run exceeded it, unverified if it can't be checked,
+    /// otherwise within.
+    pub status: RatingStatus,
+    /// The run with the worst value. `None` when no run gave one.
+    pub run: Option<usize>,
+    /// Each tolerance's parameter value in that run.
+    pub values: Vec<f64>,
+    /// When the worst value happened in that run (s); `None` for DC.
+    pub time: Option<f64>,
+    /// Runs in which it was exceeded.
+    pub exceeded_runs: usize,
+}
+
+/// Result of [`ratings_over`].
+pub struct RatingsSpread {
+    /// The tolerances, in the order each `values` follows.
+    pub tolerances: Vec<Tolerance>,
+    /// Number of runs made.
+    pub runs: usize,
+    /// Runs whose analysis failed, with why. Their ratings are unknown.
+    pub failed_runs: Vec<(usize, String)>,
+    /// Each part and rating at its worst, in circuit order.
+    pub checks: Vec<WorstRating>,
+}
+
+impl RatingsSpread {
+    /// Ratings exceeded in at least one run.
+    pub fn exceeded(&self) -> Vec<&WorstRating> { … }
+
+    /// `true` only when every run solved and every rating stayed within
+    /// its limit in all of them: nothing exceeded, nothing unverified.
+    pub fn is_safe(&self) -> bool { … }
+
+    /// The part and rating with the least margin left, or the most
+    /// exceeded.
+    pub fn tightest(&self) -> Option<&WorstRating> { … }
+}
+
+/// Runs `analysis` `config.runs` times, each with every tolerance drawn
+/// afresh, and takes `measurements` on each result.
+///
+/// # Errors
+///
+/// [`SimError::InvalidComponent`] for a tolerance on a component that
+/// isn't there or doesn't have its parameter, a relative band outside
+/// `[0, 1)`, a Gaussian whose `sigmas` isn't above 0, or no runs. A run
+/// that fails isn't an error: see [`VariationRun::measurements`].
+pub fn monte_carlo<R, F>(
+    circuit: &Circuit,
+    config: &MonteCarloConfig,
+    measurements: &[Measurement],
+    analysis: F,
+) -> Result<VariationResult, SimError>
+where
+    R: Measurable,
+    F: Fn(&Circuit) -> Result<R, SimError> + Sync,
+ { … }
+
+/// Runs `analysis` with each tolerance at the low or high end of its band
+/// (or nominal), for every combination or the listed ones, and takes
+/// `measurements` on each result. A tolerance's distribution doesn't
+/// matter here.
+///
+/// # Errors
+///
+/// As [`monte_carlo`], and for more than [`MAX_CORNER_TOLERANCES`]
+/// tolerances with [`Corners::All`], or a listed corner whose length isn't
+/// the number of tolerances.
+pub fn corners<R, F>(
+    circuit: &Circuit,
+    tolerances: &[Tolerance],
+    which: &Corners,
+    measurements: &[Measurement],
+    analysis: F,
+) -> Result<VariationResult, SimError>
+where
+    R: Measurable,
+    F: Fn(&Circuit) -> Result<R, SimError> + Sync,
+ { … }
+
+/// Runs `analysis` over `sampling`'s runs and checks every part against
+/// its [`Ratings`](crate::Ratings) in each, as [`check_ratings`]: each
+/// part and rating at its worst over all of them, with the run, the
+/// tolerance values and (for a transient) the time behind it.
+///
+/// # Errors
+///
+/// As [`monte_carlo`] or [`corners`] for a bad sampling. A run whose
+/// analysis fails isn't an error: see [`RatingsSpread::failed_runs`].
+pub fn ratings_over<F>(
+    circuit: &Circuit,
+    sampling: &Sampling,
+    analysis: F,
+) -> Result<RatingsSpread, SimError>
+where
+    F: Fn(&Circuit) -> Result<SimulationResult, SimError> + Sync,
+ { … }
 ```
 
 ## `sindr/src/waveform.rs`

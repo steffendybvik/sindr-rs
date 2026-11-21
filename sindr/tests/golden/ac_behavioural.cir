@@ -1,0 +1,6 @@
+ac: a B-source squarer biased at 1.5 V drives an RC low-pass: gain 2*1.5, then the pole
+VIN in 0 1.5 AC 1
+B1 sq 0 V={v(in)^2}
+R1 sq out 1k
+C1 out 0 100n
+.end

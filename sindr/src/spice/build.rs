@@ -38,8 +38,8 @@ use miette::NamedSource;
 
 use crate::spice::analysis::{AcStimulus, AcSweep, AnalysisRequest, MeasureRequest};
 use crate::spice::ast::{
-    AcSweepKind, NodeValueKind, ParamExpr, RawAnalysis, RawCrossing, RawElementBody, RawMeasure,
-    RawMeasureKind, RawModel, RawWaveform, SourceKind,
+    AcSweepKind, NodeValueKind, ParamExpr, PolyControls, RawAnalysis, RawCrossing, RawElementBody,
+    RawMeasure, RawMeasureKind, RawModel, RawWaveform, SourceKind,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::flatten::{FlatElement, Flattened, InstanceRecord};
@@ -468,6 +468,53 @@ fn build_element(
             warnings,
         ),
 
+        RawElementBody::Poly {
+            current,
+            controls,
+            coefficients,
+        } => {
+            let coefficients = coefficients
+                .iter()
+                .map(|c| eval_or_lift(c, &scope))
+                .collect::<Result<Vec<_>, _>>()?;
+            let variables: Vec<String> = match controls {
+                PolyControls::Voltages(pairs) => {
+                    pairs.iter().map(|(p, n)| format!("v({p},{n})")).collect()
+                }
+                PolyControls::Currents(sources) => {
+                    sources.iter().map(|s| format!("i({s})")).collect()
+                }
+            };
+            let text = poly_text(&variables, &coefficients);
+            let expr = crate::expression::Expression::parse(&text)
+                .map_err(|e| card_error(format!("`{}`: {e}", raw.id)))?;
+            Ok(CircuitElement::Behavioural {
+                id: raw.id.clone(),
+                nodes: two_nodes(&raw.nodes, &raw.id)?,
+                output: if *current {
+                    crate::BehaviouralOutput::Current
+                } else {
+                    crate::BehaviouralOutput::Voltage
+                },
+                expr,
+            })
+        }
+
+        RawElementBody::Behavioural { current, text } => {
+            let expr = crate::expression::Expression::parse_with(text, &|name| scope.get(name))
+                .map_err(|e| card_error(format!("`{}`: {e}", raw.id)))?;
+            Ok(CircuitElement::Behavioural {
+                id: raw.id.clone(),
+                nodes: two_nodes(&raw.nodes, &raw.id)?,
+                output: if *current {
+                    crate::BehaviouralOutput::Current
+                } else {
+                    crate::BehaviouralOutput::Voltage
+                },
+                expr,
+            })
+        }
+
         // sindr's controlled sources take SPICE's node order and current
         // direction, so the nodes go across as written.
         RawElementBody::VoltageControlled { value } => {
@@ -629,6 +676,50 @@ fn translate_waveform(
             Ok(Waveform::Pwl { points })
         }
     }
+}
+
+/// SPICE2's `POLY` polynomial of `variables` as expression text. The
+/// coefficients run by total degree, and within one degree over the
+/// variables' index combinations in nondecreasing order: for two,
+/// `p0 + p1·x1 + p2·x2 + p3·x1² + p4·x1·x2 + p5·x2² + p6·x1³ + …`. A
+/// one-dimensional polynomial with a single coefficient is its linear term,
+/// as in SPICE. Zero coefficients are left out.
+fn poly_text(variables: &[String], coefficients: &[f64]) -> String {
+    let coefficients: Vec<f64> = if variables.len() == 1 && coefficients.len() == 1 {
+        vec![0.0, coefficients[0]]
+    } else {
+        coefficients.to_vec()
+    };
+    let n = variables.len();
+    let mut terms = Vec::new();
+    // `combo` is the current term's variable indices, nondecreasing.
+    let mut combo: Vec<usize> = Vec::new();
+    for &c in &coefficients {
+        if c != 0.0 {
+            let mut term = format!("{c:e}");
+            for &k in &combo {
+                term.push('*');
+                term.push_str(&variables[k]);
+            }
+            terms.push(term);
+        }
+        // Next combination: the last index that can still grow does, and
+        // everything after it restarts at its value; past the last of a
+        // degree, the next degree starts at all zeros.
+        match (0..combo.len()).rev().find(|&i| combo[i] + 1 < n) {
+            Some(i) => {
+                let next = combo[i] + 1;
+                for slot in &mut combo[i..] {
+                    *slot = next;
+                }
+            }
+            None => combo = vec![0; combo.len() + 1],
+        }
+    }
+    if terms.is_empty() {
+        return "0".to_string();
+    }
+    terms.join("+")
 }
 
 /// A syntax error with no span of its own: the caller locates it on the card.
@@ -1469,6 +1560,27 @@ fn eval_or_lift(expr: &ParamExpr, scope: &ParamScope) -> Result<f64, SpiceParseE
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn poly_coefficients_follow_spice2s_order() {
+        let x = |n: usize| (1..=n).map(|k| format!("x{k}")).collect::<Vec<_>>();
+        // Two dimensions, to the cubic.
+        assert_eq!(
+            poly_text(&x(2), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]),
+            "1e0+2e0*x1+3e0*x2+4e0*x1*x1+5e0*x1*x2+6e0*x2*x2\
+             +7e0*x1*x1*x1+8e0*x1*x1*x2+9e0*x1*x2*x2+1e1*x2*x2*x2"
+        );
+        // Three dimensions, second degree.
+        let three = poly_text(&x(3), &[0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            three,
+            "1e0*x1*x1+2e0*x1*x2+3e0*x1*x3+4e0*x2*x2+5e0*x2*x3+6e0*x3*x3"
+        );
+        // One coefficient in one dimension is the linear term.
+        assert_eq!(poly_text(&x(1), &[3.0]), "3e0*x1");
+        assert_eq!(poly_text(&x(1), &[3.0, 0.0, -2.0]), "3e0+-2e0*x1*x1");
+        assert_eq!(poly_text(&x(2), &[0.0]), "0");
+    }
     use std::sync::Arc;
 
     use super::*;

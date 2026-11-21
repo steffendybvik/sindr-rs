@@ -39,6 +39,7 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 ///    `temperature` (K) positive and finite, capacitances zero or more,
 ///    source values and controlled-source gains finite, a BJT's `bf`
 ///    positive and finite, and the device-model fields each check names
+/// 6. A behavioural source's `i(src)` names a voltage-defined element
 ///
 /// # Errors
 ///
@@ -146,6 +147,25 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     // ------------------------------------------------------------------
     for comp in &circuit.components {
         check_values(comp)?;
+    }
+
+    // ------------------------------------------------------------------
+    // Check 6: what a behavioural source's expression reads exists
+    // ------------------------------------------------------------------
+    for comp in &circuit.components {
+        if let CircuitElement::Behavioural { id, expr, .. } = comp {
+            for variable in expr.variables() {
+                if let crate::expression::Variable::Current { source } = variable {
+                    if circuit.vsource_branch_index(source).is_none() {
+                        return Err(SimError::InvalidComponent(format!(
+                            "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
+                             element (voltage source, VCVS, CCVS, op-amp, regulator or \
+                             behavioural voltage source)"
+                        )));
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
