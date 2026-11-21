@@ -864,6 +864,8 @@ let yield_ = mc.yield_within("f3db", 1.4e3, 1.8e3);
 let worst = corners(&circuit, &tolerances, &Corners::All, &[bandwidth], |c| solve_ac(c, &ac))?;
 ```
 
+Worst case on top of the runs: `mc.check_specs(&specs)` gives each spec's pass, fail and unmeasured counts, its yield, and the `WorstRun` nearest or furthest past a limit (with its signed margin and the tolerance values behind it). `ratings_over(&circuit, &Sampling::Corners { tolerances, which: Corners::All }, solve_op)` runs `check_ratings` on every run and reports each part and rating at its worst: value, margin, the run, its tolerance values, the time for a transient, and how many runs exceeded it.
+
 A `Tolerance` varies one component's resistance, capacitance, inductance or source value by a relative band, uniformly or Gaussian (`sigmas` standard deviations across the band, 3 by default). `corners` runs every low/high combination (up to 16 tolerances) or a `Corners::List`. Each run draws from its own seeded stream, so a seed repeats exactly, and the `parallel` feature spreads runs across threads without changing them. A run whose analysis fails is kept with its error, and counted in `failed`.
 
 ### Ratings checks
@@ -1280,7 +1282,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.disto` / harmonic distortion | ❌ | |
 | `.pz` (pole-zero) | ❌ | |
 | `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
-| Monte Carlo / worst-case / corner analysis | ✅ | `variation::monte_carlo` and `variation::corners`, over resistance, capacitance, inductance and source values (uniform or Gaussian, independent, seeded). No correlated tolerances, no device-model parameters, no `.mc` / `.step` cards |
+| Monte Carlo / worst-case / corner analysis | ✅ | `variation::monte_carlo` and `variation::corners`, over resistance, capacitance, inductance and source values (uniform or Gaussian, independent, seeded). Specs (`check_specs`) and ratings (`ratings_over`) at their worst run. No correlated tolerances, no device-model parameters, no `.mc` / `.step` cards, no derating or SOA yet |
 | `.fft` on transient output | ❌ | user-side only |
 | `.meas` (measurements) | ⚠️ | `sindr::measure`: statistics, `FIND … AT`, `WHEN`, `TRIG`/`TARG`, plus rise/fall, settling and −3 dB in the API. No `FIND … WHEN`, `DERIV` or `PARAM=`; no currents on AC results |
 | Periodic steady-state (PSS / shooting / harmonic balance) | ❌ | relevant for switching converters, RF |
@@ -4172,7 +4174,7 @@ hierarchy is [`SimError::Design`].
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
-| Monte Carlo and corners | [`variation::monte_carlo`], [`variation::corners`] | Any analysis repeated with parts drawn within their tolerances (uniform or Gaussian, seeded) or at every low/high corner; each [`measure::Measurement`] per run, with mean, standard deviation, min, max and yield |
+| Monte Carlo and corners | [`variation::monte_carlo`], [`variation::corners`] | Any analysis repeated with parts drawn within their tolerances (uniform or Gaussian, seeded) or at every low/high corner; each [`measure::Measurement`] per run, with mean, standard deviation, min, max and yield; specs and ratings at their worst run, with the condition behind it ([`variation::ratings_over`]) |
 | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
@@ -7386,6 +7388,12 @@ analysis, as a closure from a [`Circuit`] to a result, and take each
 [`Measurement`] on every run. A run that fails (a convergence failure,
 say) is recorded, not fatal.
 
+On top of the runs: [`VariationResult::check_specs`] judges each
+[`Spec`] on every run (yield, and the run nearest or furthest past a
+limit), and [`ratings_over`] checks every part's
+[`Ratings`](crate::Ratings) on every run, reporting each at its worst
+with the run, tolerance values and time behind it.
+
 The draws come from a seeded generator, and each run's from its own
 index, so a run repeats exactly from its seed whether runs go one after
 another or, with the `parallel` feature, across threads.
@@ -7566,6 +7574,107 @@ impl VariationResult {
     /// `[min, max]`; a run that couldn't take it fails. `None` for an
     /// unknown name.
     pub fn yield_within(&self, name: &str, min: f64, max: f64) -> Option<f64> { … }
+
+    /// Each of `specs` judged on every run, by the measurement of the same
+    /// name: how many runs pass, fail or couldn't be measured, the yield,
+    /// and the run that came nearest a limit or went furthest past one.
+    /// A spec whose measurement this result didn't take is all unmeasured.
+    pub fn check_specs(&self, specs: &[Spec]) -> Vec<SpecSpread> { … }
+}
+
+/// One run picked out of a variation analysis: which, and the condition
+/// behind it.
+pub struct WorstRun {
+    /// Index into the runs.
+    pub run: usize,
+    /// The value it gave.
+    pub value: f64,
+    /// Signed margin to the nearer limit, in the value's unit: negative is
+    /// outside. `None` for a spec with no limits.
+    pub margin: Option<f64>,
+    /// Each tolerance's parameter value in that run: the condition.
+    pub values: Vec<f64>,
+}
+
+/// One spec over the runs of a variation analysis.
+pub struct SpecSpread {
+    /// The spec's name (its measurement's).
+    pub name: String,
+    /// Runs within the limits.
+    pub passed: usize,
+    /// Runs outside them.
+    pub failed: usize,
+    /// Runs the measurement couldn't be taken on.
+    pub unmeasured: usize,
+    /// `passed` over every run, unmeasured ones counting as failures.
+    pub yield_fraction: f64,
+    /// The run nearest a limit, or furthest past one. `None` when no run
+    /// was measured.
+    pub worst: Option<WorstRun>,
+}
+
+/// Which runs a [`ratings_over`] analysis makes.
+pub enum Sampling {
+    /// Random draws, as [`monte_carlo`].
+    MonteCarlo(MonteCarloConfig),
+    /// Band ends, as [`corners`].
+    Corners {
+        /// What varies.
+        tolerances: Vec<Tolerance>,
+        /// Which corners.
+        which: Corners,
+    },
+}
+
+/// One part's rating at its worst over the runs of [`ratings_over`].
+pub struct WorstRating {
+    /// Component id, flattened.
+    pub part: String,
+    /// Which rating.
+    pub rating: RatingKind,
+    /// The limit; `None` when the part doesn't set it.
+    pub limit: Option<f64>,
+    /// The worst value over every run; `None` when sindr can't measure it.
+    pub worst: Option<f64>,
+    /// Margin left at the worst run, as a percentage of the limit
+    /// (negative when exceeded); `None` when unverified.
+    pub margin_percent: Option<f64>,
+    /// Exceeded if any run exceeded it, unverified if it can't be checked,
+    /// otherwise within.
+    pub status: RatingStatus,
+    /// The run with the worst value. `None` when no run gave one.
+    pub run: Option<usize>,
+    /// Each tolerance's parameter value in that run.
+    pub values: Vec<f64>,
+    /// When the worst value happened in that run (s); `None` for DC.
+    pub time: Option<f64>,
+    /// Runs in which it was exceeded.
+    pub exceeded_runs: usize,
+}
+
+/// Result of [`ratings_over`].
+pub struct RatingsSpread {
+    /// The tolerances, in the order each `values` follows.
+    pub tolerances: Vec<Tolerance>,
+    /// Number of runs made.
+    pub runs: usize,
+    /// Runs whose analysis failed, with why. Their ratings are unknown.
+    pub failed_runs: Vec<(usize, String)>,
+    /// Each part and rating at its worst, in circuit order.
+    pub checks: Vec<WorstRating>,
+}
+
+impl RatingsSpread {
+    /// Ratings exceeded in at least one run.
+    pub fn exceeded(&self) -> Vec<&WorstRating> { … }
+
+    /// `true` only when every run solved and every rating stayed within
+    /// its limit in all of them: nothing exceeded, nothing unverified.
+    pub fn is_safe(&self) -> bool { … }
+
+    /// The part and rating with the least margin left, or the most
+    /// exceeded.
+    pub fn tightest(&self) -> Option<&WorstRating> { … }
 }
 
 /// Runs `analysis` `config.runs` times, each with every tolerance drawn
@@ -7608,6 +7717,24 @@ pub fn corners<R, F>(
 where
     R: Measurable,
     F: Fn(&Circuit) -> Result<R, SimError> + Sync,
+ { … }
+
+/// Runs `analysis` over `sampling`'s runs and checks every part against
+/// its [`Ratings`](crate::Ratings) in each, as [`check_ratings`]: each
+/// part and rating at its worst over all of them, with the run, the
+/// tolerance values and (for a transient) the time behind it.
+///
+/// # Errors
+///
+/// As [`monte_carlo`] or [`corners`] for a bad sampling. A run whose
+/// analysis fails isn't an error: see [`RatingsSpread::failed_runs`].
+pub fn ratings_over<F>(
+    circuit: &Circuit,
+    sampling: &Sampling,
+    analysis: F,
+) -> Result<RatingsSpread, SimError>
+where
+    F: Fn(&Circuit) -> Result<SimulationResult, SimError> + Sync,
  { … }
 ```
 

@@ -9,6 +9,12 @@
 //! [`Measurement`] on every run. A run that fails (a convergence failure,
 //! say) is recorded, not fatal.
 //!
+//! On top of the runs: [`VariationResult::check_specs`] judges each
+//! [`Spec`] on every run (yield, and the run nearest or furthest past a
+//! limit), and [`ratings_over`] checks every part's
+//! [`Ratings`](crate::Ratings) on every run, reporting each at its worst
+//! with the run, tolerance values and time behind it.
+//!
 //! The draws come from a seeded generator, and each run's from its own
 //! index, so a run repeats exactly from its seed whether runs go one after
 //! another or, with the `parallel` feature, across threads.
@@ -47,8 +53,9 @@
 //! # Ok::<(), sindr::SimError>(())
 //! ```
 
-use crate::measure::{Measurable, Measurement};
-use crate::{Circuit, CircuitElement, SimError};
+use crate::measure::{Measurable, Measurement, Spec, SpecStatus};
+use crate::ratings::{check_ratings, RatingKind, RatingStatus};
+use crate::{Circuit, CircuitElement, SimError, SimulationResult};
 
 /// Which parameter of a component a [`Tolerance`] varies.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -225,6 +232,8 @@ pub enum Corner {
 }
 
 /// Which corners a [`corners`] analysis runs.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Corners {
@@ -303,6 +312,195 @@ impl VariationResult {
             .count();
         Some(pass as f64 / self.runs.len() as f64)
     }
+
+    /// Each of `specs` judged on every run, by the measurement of the same
+    /// name: how many runs pass, fail or couldn't be measured, the yield,
+    /// and the run that came nearest a limit or went furthest past one.
+    /// A spec whose measurement this result didn't take is all unmeasured.
+    pub fn check_specs(&self, specs: &[Spec]) -> Vec<SpecSpread> {
+        specs
+            .iter()
+            .map(|spec| {
+                let name = &spec.measurement.name;
+                let k = self.stats.iter().position(|s| s.name == *name);
+                let mut spread = SpecSpread {
+                    name: name.clone(),
+                    passed: 0,
+                    failed: 0,
+                    unmeasured: 0,
+                    yield_fraction: 0.0,
+                    worst: None,
+                };
+                for (index, run) in self.runs.iter().enumerate() {
+                    let Some(Ok(value)) = k.map(|k| &run.measurements[k]) else {
+                        spread.unmeasured += 1;
+                        continue;
+                    };
+                    let (margin, status) = spec_margin(spec, *value);
+                    match status {
+                        SpecStatus::Pass => spread.passed += 1,
+                        _ => spread.failed += 1,
+                    }
+                    let nearer = spread.worst.as_ref().is_none_or(|w| {
+                        margin.unwrap_or(f64::INFINITY) < w.margin.unwrap_or(f64::INFINITY)
+                    });
+                    if nearer {
+                        spread.worst = Some(WorstRun {
+                            run: index,
+                            value: *value,
+                            margin,
+                            values: run.values.clone(),
+                        });
+                    }
+                }
+                spread.yield_fraction = spread.passed as f64 / self.runs.len().max(1) as f64;
+                spread
+            })
+            .collect()
+    }
+}
+
+/// A spec's signed margin to its nearer limit (negative outside), as
+/// [`Spec::check`] gives it, and whether the value passes.
+fn spec_margin(spec: &Spec, value: f64) -> (Option<f64>, SpecStatus) {
+    let below = spec.min.map(|m| value - m);
+    let above = spec.max.map(|m| m - value);
+    let margin = match (below, above) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    let status = if margin.is_none_or(|m| m >= 0.0) {
+        SpecStatus::Pass
+    } else {
+        SpecStatus::Fail
+    };
+    (margin, status)
+}
+
+/// One run picked out of a variation analysis: which, and the condition
+/// behind it.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct WorstRun {
+    /// Index into the runs.
+    pub run: usize,
+    /// The value it gave.
+    pub value: f64,
+    /// Signed margin to the nearer limit, in the value's unit: negative is
+    /// outside. `None` for a spec with no limits.
+    pub margin: Option<f64>,
+    /// Each tolerance's parameter value in that run: the condition.
+    pub values: Vec<f64>,
+}
+
+/// One spec over the runs of a variation analysis.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SpecSpread {
+    /// The spec's name (its measurement's).
+    pub name: String,
+    /// Runs within the limits.
+    pub passed: usize,
+    /// Runs outside them.
+    pub failed: usize,
+    /// Runs the measurement couldn't be taken on.
+    pub unmeasured: usize,
+    /// `passed` over every run, unmeasured ones counting as failures.
+    pub yield_fraction: f64,
+    /// The run nearest a limit, or furthest past one. `None` when no run
+    /// was measured.
+    pub worst: Option<WorstRun>,
+}
+
+/// Which runs a [`ratings_over`] analysis makes.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum Sampling {
+    /// Random draws, as [`monte_carlo`].
+    MonteCarlo(MonteCarloConfig),
+    /// Band ends, as [`corners`].
+    Corners {
+        /// What varies.
+        tolerances: Vec<Tolerance>,
+        /// Which corners.
+        which: Corners,
+    },
+}
+
+/// One part's rating at its worst over the runs of [`ratings_over`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct WorstRating {
+    /// Component id, flattened.
+    pub part: String,
+    /// Which rating.
+    pub rating: RatingKind,
+    /// The limit; `None` when the part doesn't set it.
+    pub limit: Option<f64>,
+    /// The worst value over every run; `None` when sindr can't measure it.
+    pub worst: Option<f64>,
+    /// Margin left at the worst run, as a percentage of the limit
+    /// (negative when exceeded); `None` when unverified.
+    pub margin_percent: Option<f64>,
+    /// Exceeded if any run exceeded it, unverified if it can't be checked,
+    /// otherwise within.
+    pub status: RatingStatus,
+    /// The run with the worst value. `None` when no run gave one.
+    pub run: Option<usize>,
+    /// Each tolerance's parameter value in that run.
+    pub values: Vec<f64>,
+    /// When the worst value happened in that run (s); `None` for DC.
+    pub time: Option<f64>,
+    /// Runs in which it was exceeded.
+    pub exceeded_runs: usize,
+}
+
+/// Result of [`ratings_over`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct RatingsSpread {
+    /// The tolerances, in the order each `values` follows.
+    pub tolerances: Vec<Tolerance>,
+    /// Number of runs made.
+    pub runs: usize,
+    /// Runs whose analysis failed, with why. Their ratings are unknown.
+    pub failed_runs: Vec<(usize, String)>,
+    /// Each part and rating at its worst, in circuit order.
+    pub checks: Vec<WorstRating>,
+}
+
+impl RatingsSpread {
+    /// Ratings exceeded in at least one run.
+    pub fn exceeded(&self) -> Vec<&WorstRating> {
+        self.checks
+            .iter()
+            .filter(|c| c.status == RatingStatus::Exceeded)
+            .collect()
+    }
+
+    /// `true` only when every run solved and every rating stayed within
+    /// its limit in all of them: nothing exceeded, nothing unverified.
+    pub fn is_safe(&self) -> bool {
+        self.failed_runs.is_empty() && self.checks.iter().all(|c| c.status == RatingStatus::Within)
+    }
+
+    /// The part and rating with the least margin left, or the most
+    /// exceeded.
+    pub fn tightest(&self) -> Option<&WorstRating> {
+        self.checks
+            .iter()
+            .filter(|c| c.margin_percent.is_some())
+            .min_by(|a, b| {
+                a.margin_percent
+                    .partial_cmp(&b.margin_percent)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
 }
 
 /// Runs `analysis` `config.runs` times, each with every tolerance drawn
@@ -324,26 +522,32 @@ where
     R: Measurable,
     F: Fn(&Circuit) -> Result<R, SimError> + Sync,
 {
+    let base = Base::new(circuit, &config.tolerances)?;
+    let plan = monte_carlo_plan(config)?;
+    let runs = run_all(plan.len(), |k| base.run(&plan[k], measurements, &analysis));
+    Ok(finish(config.tolerances.clone(), runs, measurements))
+}
+
+/// Each run's deviation of each tolerance, as fractions of its nominal.
+fn monte_carlo_plan(config: &MonteCarloConfig) -> Result<Vec<Vec<f64>>, SimError> {
     if config.runs == 0 {
         return Err(SimError::InvalidComponent(
             "Monte Carlo needs at least one run".to_string(),
         ));
     }
-    let base = Base::new(circuit, &config.tolerances)?;
-    let seed = config.seed;
-    let runs = run_all(config.runs, |k| {
-        let mut rng = SplitMix64::for_run(seed, k as u64);
-        let deviations: Vec<f64> = config
-            .tolerances
-            .iter()
-            .map(|t| match t.distribution {
-                Distribution::Uniform => t.relative * (2.0 * rng.unit() - 1.0),
-                Distribution::Gaussian { sigmas } => t.relative / sigmas * rng.normal(),
-            })
-            .collect();
-        base.run(&deviations, measurements, &analysis)
-    });
-    Ok(finish(config.tolerances.clone(), runs, measurements))
+    Ok((0..config.runs)
+        .map(|k| {
+            let mut rng = SplitMix64::for_run(config.seed, k as u64);
+            config
+                .tolerances
+                .iter()
+                .map(|t| match t.distribution {
+                    Distribution::Uniform => t.relative * (2.0 * rng.unit() - 1.0),
+                    Distribution::Gaussian { sigmas } => t.relative / sigmas * rng.normal(),
+                })
+                .collect()
+        })
+        .collect())
 }
 
 /// Runs `analysis` with each tolerance at the low or high end of its band
@@ -367,6 +571,14 @@ where
     R: Measurable,
     F: Fn(&Circuit) -> Result<R, SimError> + Sync,
 {
+    let base = Base::new(circuit, tolerances)?;
+    let plan = corner_plan(tolerances, which)?;
+    let runs = run_all(plan.len(), |k| base.run(&plan[k], measurements, &analysis));
+    Ok(finish(tolerances.to_vec(), runs, measurements))
+}
+
+/// Each corner's deviation of each tolerance.
+fn corner_plan(tolerances: &[Tolerance], which: &Corners) -> Result<Vec<Vec<f64>>, SimError> {
     let n = tolerances.len();
     let list: Vec<Vec<Corner>> = match which {
         Corners::All => {
@@ -400,20 +612,119 @@ where
             list.clone()
         }
     };
+    Ok(list
+        .iter()
+        .map(|corner| {
+            corner
+                .iter()
+                .zip(tolerances)
+                .map(|(c, t)| match c {
+                    Corner::Low => -t.relative,
+                    Corner::Nominal => 0.0,
+                    Corner::High => t.relative,
+                })
+                .collect()
+        })
+        .collect())
+}
+
+/// Runs `analysis` over `sampling`'s runs and checks every part against
+/// its [`Ratings`](crate::Ratings) in each, as [`check_ratings`]: each
+/// part and rating at its worst over all of them, with the run, the
+/// tolerance values and (for a transient) the time behind it.
+///
+/// # Errors
+///
+/// As [`monte_carlo`] or [`corners`] for a bad sampling. A run whose
+/// analysis fails isn't an error: see [`RatingsSpread::failed_runs`].
+pub fn ratings_over<F>(
+    circuit: &Circuit,
+    sampling: &Sampling,
+    analysis: F,
+) -> Result<RatingsSpread, SimError>
+where
+    F: Fn(&Circuit) -> Result<SimulationResult, SimError> + Sync,
+{
+    let (tolerances, plan) = match sampling {
+        Sampling::MonteCarlo(config) => (&config.tolerances, monte_carlo_plan(config)?),
+        Sampling::Corners { tolerances, which } => (tolerances, corner_plan(tolerances, which)?),
+    };
     let base = Base::new(circuit, tolerances)?;
-    let runs = run_all(list.len(), |k| {
-        let deviations: Vec<f64> = list[k]
-            .iter()
-            .zip(tolerances)
-            .map(|(corner, t)| match corner {
-                Corner::Low => -t.relative,
-                Corner::Nominal => 0.0,
-                Corner::High => t.relative,
-            })
-            .collect();
-        base.run(&deviations, measurements, &analysis)
+    let reports = run_all(plan.len(), |k| {
+        let (circuit, values) = base.apply(&plan[k]);
+        let report = analysis(&circuit)
+            .and_then(|result| check_ratings(&circuit, &result))
+            .map_err(|e| e.to_string());
+        (values, report)
     });
-    Ok(finish(tolerances.to_vec(), runs, measurements))
+
+    let mut failed_runs = Vec::new();
+    let mut checks: Vec<WorstRating> = Vec::new();
+    for (index, (values, report)) in reports.into_iter().enumerate() {
+        let report = match report {
+            Ok(report) => report,
+            Err(e) => {
+                failed_runs.push((index, e));
+                continue;
+            }
+        };
+        for check in report.checks {
+            let slot = match checks
+                .iter()
+                .position(|c| c.part == check.part && c.rating == check.rating)
+            {
+                Some(slot) => slot,
+                None => {
+                    checks.push(WorstRating {
+                        part: check.part.clone(),
+                        rating: check.rating,
+                        limit: check.limit,
+                        worst: None,
+                        margin_percent: None,
+                        status: RatingStatus::Unverified,
+                        run: None,
+                        values: Vec::new(),
+                        time: None,
+                        exceeded_runs: 0,
+                    });
+                    checks.len() - 1
+                }
+            };
+            let entry = &mut checks[slot];
+            if check.status == RatingStatus::Exceeded {
+                entry.exceeded_runs += 1;
+            }
+            let Some(worst) = check.worst else {
+                continue;
+            };
+            let worse = match (check.margin_percent, entry.margin_percent) {
+                (Some(new), Some(old)) => new < old,
+                _ => entry.worst.is_none_or(|old| worst.abs() > old.abs()),
+            };
+            if worse {
+                entry.worst = Some(worst);
+                entry.margin_percent = check.margin_percent;
+                entry.run = Some(index);
+                entry.values.clone_from(&values);
+                entry.time = check.time;
+            }
+        }
+    }
+    for entry in &mut checks {
+        entry.status = if entry.exceeded_runs > 0 {
+            RatingStatus::Exceeded
+        } else if entry.limit.is_some() && entry.worst.is_some() {
+            RatingStatus::Within
+        } else {
+            RatingStatus::Unverified
+        };
+    }
+    Ok(RatingsSpread {
+        tolerances: tolerances.clone(),
+        runs: plan.len(),
+        failed_runs,
+        checks,
+    })
 }
 
 /// The flattened circuit and where each tolerance's component sits in it.
@@ -462,13 +773,9 @@ impl Base {
         Ok(Base { circuit, targets })
     }
 
-    /// One run with each tolerance's parameter at `nominal·(1 + deviation)`.
-    fn run<R: Measurable>(
-        &self,
-        deviations: &[f64],
-        measurements: &[Measurement],
-        analysis: &(impl Fn(&Circuit) -> Result<R, SimError> + Sync),
-    ) -> VariationRun {
+    /// The circuit with each tolerance's parameter at
+    /// `nominal·(1 + deviation)`, and those values.
+    fn apply(&self, deviations: &[f64]) -> (Circuit, Vec<f64>) {
         let mut circuit = self.circuit.clone();
         let values: Vec<f64> = self
             .targets
@@ -480,6 +787,17 @@ impl Base {
                 value
             })
             .collect();
+        (circuit, values)
+    }
+
+    /// One run at `deviations`, measured.
+    fn run<R: Measurable>(
+        &self,
+        deviations: &[f64],
+        measurements: &[Measurement],
+        analysis: &(impl Fn(&Circuit) -> Result<R, SimError> + Sync),
+    ) -> VariationRun {
+        let (circuit, values) = self.apply(deviations);
         let measurements = match analysis(&circuit) {
             Ok(result) => measurements
                 .iter()
@@ -496,7 +814,7 @@ impl Base {
 
 /// `run(k)` for each `k` in `0..n`, in order: one thread per core with
 /// the `parallel` feature, otherwise one after another.
-fn run_all(n: usize, run: impl Fn(usize) -> VariationRun + Sync) -> Vec<VariationRun> {
+fn run_all<T: Send>(n: usize, run: impl Fn(usize) -> T + Sync) -> Vec<T> {
     #[cfg(feature = "parallel")]
     {
         let threads = std::thread::available_parallelism()
