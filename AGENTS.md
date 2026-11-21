@@ -68,7 +68,7 @@ cargo test --workspace --no-default-features  # serde/examples off (CI)
 cargo test -p sindr                           # solver crate only
 cargo test -p sindr-devices                   # device-physics crate only (includes README doctests)
 cargo run --example voltage_divider           # run a named example
-cargo run --example list_examples             # list every bundled example circuit
+cargo run --example list_examples --features examples  # list every bundled example circuit
 cargo doc --workspace --no-deps --all-features --open  # API docs (CI uses RUSTDOCFLAGS=-D warnings)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint (CI)
 cargo fmt --all                               # format
@@ -89,6 +89,7 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 - **`f64` everywhere.** No generic numeric backend, no `f32`.
 - **Serde is feature-gated** but on by default. Any new public type that is part of `Circuit` or `SimulationResult` must derive `Serialize`/`Deserialize` under `#[cfg(feature = "serde")]`. Component types use `snake_case` tags (see existing `#[serde(rename_all = "snake_case")]`).
 - **Public API stability**: the crates are at `0.1.0`, plain 0.x until 1.0. A breaking change bumps the minor version (`0.2.0`), anything else the patch (`0.1.1`). Breaking changes are allowed, but call them out in the commit message and the CHANGELOG.
+- **Room to grow**: enums that will gain variants, result structs callers only read, and analysis configs are `#[non_exhaustive]`; configs are built with `new(..)` and `with_*` setters (`AcConfig::new("V1", 1.0, 1e6, 61)`, `TfConfig::new(TfOutput::voltage("out"), "V1")`). Data structs callers fill in (`Circuit`, `DiodeModel`, `Part`, the `sindr-devices` `*Params`) stay open and are built with `..Default::default()`. A new public type follows the same split.
 - **Comments**: lean. Don't restate what well-named code already says. Do explain *why* for non-obvious numerical choices (e.g. damping factors, why `k ≤ 0.999`, why `gmin` thresholds).
 - **No GSD planning-artefact references in source.** Strip `EX-NN`, `Pitfall N`, `RESEARCH.md` / `PLAN.md` mentions. They belong in `.planning/`, not in code or commits.
 
@@ -138,7 +139,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Judge a design with specs, not by eye.** `check_specs(&result, &[Spec::new(Measurement::new("vout", Measure::stat(Signal::v("out"), Stat::Final))).between(4.9, 5.1)])` gives each spec's value, pass/fail and margin; attach `check_ratings` with `SpecReport::with_ratings`. `SpecStatus::Unmeasured` (an unknown node, a level never crossed) is never a pass: read its `reason`. Node and component names in a parsed SPICE deck are lowercase.
 - **`ConvergenceFailed { iterations, max_step_volts, node, components, at }`**: `node` is where the circuit won't settle (the largest final Newton step), `components` what's on it, `at` the `SolvePoint` (operating point, DC or temperature sweep point, transient time); the message names all three. Usually a nonlinear element with no DC path to ground, or component values orders of magnitude outside typical ranges. `max_step_volts` is the max Newton step (not a KCL residual). The solver already retries with gmin stepping (`SolverOptions::gmin_steps`, `1e-2` → `1e-10` then none) and then source stepping before giving up; `SimulationResult::convergence_aid` says which one a solve needed. If neither rescues it, perturb the circuit, give a starting guess in `SolverOptions::nodeset`, or raise `max_iterations`, and run it through a `Solver` — don't blindly retry.
 
-When in doubt, run `cargo run --example list_examples` and copy the closest existing example; the bundled circuits are known-good.
+When in doubt, run `cargo run --example list_examples --features examples` and copy the closest existing example; the bundled circuits are known-good.
 
 ## Things NOT to do
 

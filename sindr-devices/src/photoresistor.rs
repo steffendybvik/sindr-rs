@@ -4,6 +4,9 @@
 //! matching real LDR behaviour (resistance halves roughly every decade of lux).
 
 /// Photoresistor parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[derive(Debug, Clone)]
 pub struct PhotoresistorParams {
     /// Resistance in darkness (Ω). Default: 1 MΩ.

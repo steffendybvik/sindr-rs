@@ -54,6 +54,7 @@ impl NodeMap {
     ///
     /// The ground node is filtered out; remaining nodes are assigned
     /// sequential indices starting from 0.
+    #[cfg(test)]
     pub fn from_nodes(nodes: &[String], ground: &str) -> Self {
         let mut map = HashMap::new();
         let mut reverse = Vec::new();

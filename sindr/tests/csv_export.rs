@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::{
     dc_sweep, solve_transient, temperature_sweep, Circuit, CircuitElement, TransientConfig,
 };
@@ -110,19 +110,7 @@ fn transient_round_trips() {
 
 #[test]
 fn ac_round_trips() {
-    let ac = solve_ac(
-        &rc(),
-        &AcConfig {
-            f_start: 10.0,
-            f_stop: 1e5,
-            num_points: 13,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        },
-    )
-    .unwrap();
+    let ac = solve_ac(&rc(), &AcConfig::new("V1", 10.0, 1e5, 13)).unwrap();
     let (header, rows) = read(&ac.to_csv());
     assert_eq!(header[0], "frequency");
     let f: Vec<f64> = column(&header, &rows, "frequency").collect();

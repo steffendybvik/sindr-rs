@@ -52,15 +52,7 @@ fn assert_ac_matches_dc(name: &str, circuit: &Circuit, biases: &[f64]) {
     const H: f64 = 1e-5;
     for &v0 in biases {
         let at = with_input(circuit, v0);
-        let config = AcConfig {
-            f_start: 1e3,
-            f_stop: 1e3,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("V1", 1e3, 1e3, 1).with_spacing(FrequencySpacing::Linear);
         let ac = solve_ac(&at, &config).unwrap_or_else(|e| panic!("{name} at {v0} V: {e}"));
         let ac = &ac.points[0].node_voltages;
         let up = solve_circuit(&with_input(circuit, v0 + H))

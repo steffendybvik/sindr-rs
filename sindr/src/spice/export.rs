@@ -16,6 +16,7 @@ const FUSE_R_INTACT: f64 = 0.001;
 
 /// Why [`to_netlist`] couldn't write a circuit.
 #[derive(Debug, Clone, PartialEq, Error)]
+#[non_exhaustive]
 pub enum ExportError {
     /// The element has no SPICE equivalent that sindr can express.
     #[error("`{id}` can't be written as SPICE: {reason}")]

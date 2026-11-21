@@ -27,8 +27,6 @@
 //! Integrated noise assumes each PSD follows a power law between points, as
 //! ngspice does.
 
-use std::collections::HashMap;
-
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -51,8 +49,10 @@ const T_NOISE: f64 = 300.15;
 
 /// Noise analysis configuration: SPICE's
 /// `.noise V(output[,reference]) input_source {dec|lin} points f_start f_stop`.
+/// Build one with [`NoiseConfig::new`] and its `with_*` setters.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct NoiseConfig {
     /// The output node.
     pub output: String,
@@ -68,6 +68,53 @@ pub struct NoiseConfig {
     pub num_points: usize,
     /// Frequency spacing; logarithmic is `num_points` in total.
     pub spacing: FrequencySpacing,
+}
+
+impl NoiseConfig {
+    /// Noise at node `output` against ground, referred back to the
+    /// independent source `input_source`, at `num_points` frequencies from
+    /// `f_start` to `f_stop` (Hz), both included. Spacing defaults to
+    /// [`FrequencySpacing::Logarithmic`].
+    ///
+    /// ```
+    /// use sindr::ac_analysis::FrequencySpacing;
+    /// use sindr::NoiseConfig;
+    ///
+    /// // SPICE `.noise v(out,ref) V1 lin 100 1k 100k`.
+    /// let config = NoiseConfig::new("out", "V1", 1e3, 1e5, 100)
+    ///     .with_reference("ref")
+    ///     .with_spacing(FrequencySpacing::Linear);
+    /// assert_eq!(config.reference.as_deref(), Some("ref"));
+    /// ```
+    pub fn new(
+        output: impl Into<String>,
+        input_source: impl Into<String>,
+        f_start: f64,
+        f_stop: f64,
+        num_points: usize,
+    ) -> Self {
+        Self {
+            output: output.into(),
+            reference: None,
+            input_source: input_source.into(),
+            f_start,
+            f_stop,
+            num_points,
+            spacing: FrequencySpacing::Logarithmic,
+        }
+    }
+
+    /// Measure the output against node `reference` instead of ground.
+    pub fn with_reference(mut self, reference: impl Into<String>) -> Self {
+        self.reference = Some(reference.into());
+        self
+    }
+
+    /// Space the frequencies by `spacing` instead of logarithmically.
+    pub fn with_spacing(mut self, spacing: FrequencySpacing) -> Self {
+        self.spacing = spacing;
+        self
+    }
 }
 
 /// The physical mechanism behind a noise source.
@@ -86,6 +133,7 @@ pub enum NoiseKind {
 /// One noise source in the circuit.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct NoiseSource {
     /// Component id (flattened).
     pub component: String,
@@ -99,6 +147,7 @@ pub struct NoiseSource {
 /// Noise at one frequency.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct NoisePoint {
     /// Frequency (Hz).
     pub frequency: f64,
@@ -130,6 +179,7 @@ impl NoisePoint {
 /// Result of a noise analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct NoiseResult {
     /// Every noise source, in the order of [`NoisePoint::contributions`].
     pub sources: Vec<NoiseSource>,
@@ -172,7 +222,6 @@ struct Generator {
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement};
-/// use sindr::ac_analysis::FrequencySpacing;
 /// use sindr::noise::{solve_noise, NoiseConfig};
 ///
 /// // A 1 kΩ / 1 µF low-pass: the output noise integrates to √(kT/C).
@@ -181,43 +230,13 @@ struct Generator {
 ///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
 ///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
 /// ]);
-/// let noise = solve_noise(&circuit, &NoiseConfig {
-///     output: "out".into(),
-///     reference: None,
-///     input_source: "V1".into(),
-///     f_start: 0.01,
-///     f_stop: 1e7,
-///     num_points: 91,
-///     spacing: FrequencySpacing::Logarithmic,
-/// })?;
+/// let noise = solve_noise(&circuit, &NoiseConfig::new("out", "V1", 0.01, 1e7, 91))?;
 /// let kt_over_c = (1.380649e-23 * 300.15 / 1e-6_f64).sqrt();
 /// assert!((noise.total_output_noise / kt_over_c - 1.0).abs() < 0.01);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 pub fn solve_noise(circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResult, SimError> {
     solve_noise_with(circuit, config, &crate::SolverOptions::default())
-}
-
-/// [`solve_noise`], seeding the bias point's Newton–Raphson solve as
-/// `.nodeset` does.
-///
-/// # Errors
-///
-/// As [`solve_noise`].
-#[deprecated(
-    since = "0.1.0",
-    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).noise(..)`"
-)]
-pub fn solve_noise_with_initial_voltages(
-    circuit: &Circuit,
-    config: &NoiseConfig,
-    initial_voltages: &HashMap<String, f64>,
-) -> Result<NoiseResult, SimError> {
-    solve_noise_with(
-        circuit,
-        config,
-        &crate::SolverOptions::default().with_nodeset(initial_voltages.clone()),
-    )
 }
 
 /// [`solve_noise`] with `opts`.
@@ -230,15 +249,13 @@ pub(crate) fn solve_noise_with(
     let circuit: &Circuit = &flat;
     let invalid = |msg: String| SimError::InvalidComponent(format!("noise: {msg}"));
 
-    let ac = AcConfig {
-        f_start: config.f_start,
-        f_stop: config.f_stop,
-        num_points: config.num_points,
-        spacing: config.spacing,
-        source_id: config.input_source.clone(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let ac = AcConfig::new(
+        config.input_source.clone(),
+        config.f_start,
+        config.f_stop,
+        config.num_points,
+    )
+    .with_spacing(config.spacing);
     validate_config(&ac)?;
     if config.f_start <= 0.0 {
         return Err(invalid(format!(

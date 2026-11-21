@@ -122,15 +122,7 @@ fn ac_impedance(element: CircuitElement, f: f64) -> num_complex::Complex64 {
     );
     let ac = solve_ac(
         &circuit,
-        &AcConfig {
-            f_start: f,
-            f_stop: f,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "v1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        },
+        &AcConfig::new("v1", f, f, 1).with_spacing(FrequencySpacing::Linear),
     )
     .unwrap();
     let out = ac.points[0].node_voltages["out"];

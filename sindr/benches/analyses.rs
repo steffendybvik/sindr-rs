@@ -5,7 +5,7 @@
 //!     cargo bench -p sindr --bench analyses
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::noise::{solve_noise, NoiseConfig};
 use sindr::{
     check_ratings, dc_sweep, solve_circuit, solve_sensitivity, solve_tf, temperature_sweep,
@@ -108,15 +108,7 @@ fn bjt_stage() -> Circuit {
 }
 
 fn ac_config(points: usize) -> AcConfig {
-    AcConfig {
-        f_start: 10.0,
-        f_stop: 100e6,
-        num_points: points,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    }
+    AcConfig::new("V1", 10.0, 100e6, points)
 }
 
 fn v_out(node: String) -> TfOutput {
@@ -169,10 +161,7 @@ fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("tf/stages");
     for stages in [10, 100, 1_000] {
         let circuit = rc_ladder(stages);
-        let config = TfConfig {
-            output: v_out(format!("n{stages}")),
-            input_source: "V1".into(),
-        };
+        let config = TfConfig::new(v_out(format!("n{stages}")), "V1");
         group.bench_with_input(BenchmarkId::from_parameter(stages), &stages, |b, _| {
             b.iter(|| solve_tf(&circuit, &config).unwrap())
         });
@@ -182,9 +171,7 @@ fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("sensitivity/stages");
     for stages in [10, 100, 1_000] {
         let circuit = diode_chain(stages);
-        let config = SensConfig {
-            output: v_out(format!("n{stages}")),
-        };
+        let config = SensConfig::new(v_out(format!("n{stages}")));
         group.bench_with_input(BenchmarkId::from_parameter(stages), &stages, |b, _| {
             b.iter(|| solve_sensitivity(&circuit, &config).unwrap())
         });
@@ -195,15 +182,7 @@ fn bench(c: &mut Criterion) {
     // transistor noise sources.
     let mut group = c.benchmark_group("noise_bjt/points");
     for points in [10, 100, 1_000] {
-        let config = NoiseConfig {
-            output: "c".into(),
-            reference: None,
-            input_source: "VIN".into(),
-            f_start: 1.0,
-            f_stop: 10e6,
-            num_points: points,
-            spacing: FrequencySpacing::Logarithmic,
-        };
+        let config = NoiseConfig::new("c", "VIN", 1.0, 10e6, points);
         group.bench_with_input(BenchmarkId::from_parameter(points), &points, |b, _| {
             b.iter(|| solve_noise(&stage, &config).unwrap())
         });

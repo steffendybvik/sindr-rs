@@ -20,12 +20,12 @@ use std::path::PathBuf;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::measure::Signal;
 use sindr::noise::{solve_noise, NoiseConfig};
 use sindr::transfer_function::TfOutput;
 use sindr::{
-    check_ratings, check_specs, dc_sweep, get_examples, solve_circuit, solve_sensitivity, solve_tf,
+    check_ratings, check_specs, dc_sweep, solve_circuit, solve_sensitivity, solve_tf,
     solve_transient, temperature_sweep, Block, Circuit, CircuitElement, Instance, Measure,
     Measurement, Part, Ratings, SensConfig, Spec, TfConfig, TransientConfig,
 };
@@ -69,9 +69,10 @@ fn snapshot(name: &str, json: &Value) {
     );
 }
 
+#[cfg(feature = "examples")]
 #[test]
 fn every_example_circuit() {
-    let examples = get_examples();
+    let examples = sindr::get_examples();
     assert!(examples.len() > 10);
     for example in examples {
         let json = round_trip(&example.id, &example.circuit);
@@ -259,38 +260,19 @@ fn every_result_type() {
     let tran = solve_transient(&c, &TransientConfig::new(1e-3, 1e-5)).unwrap();
     round_trip("transient", &tran);
 
-    let ac = AcConfig {
-        f_start: 10.0,
-        f_stop: 1e6,
-        num_points: 11,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let ac = AcConfig::new("V1", 10.0, 1e6, 11);
     round_trip("ac config", &ac);
     round_trip("ac", &solve_ac(&c, &ac).unwrap());
 
-    let noise = NoiseConfig {
-        output: "a".into(),
-        reference: None,
-        input_source: "V1".into(),
-        f_start: 10.0,
-        f_stop: 1e6,
-        num_points: 11,
-        spacing: FrequencySpacing::Logarithmic,
-    };
+    let noise = NoiseConfig::new("a", "V1", 10.0, 1e6, 11);
     round_trip("noise config", &noise);
     round_trip("noise", &solve_noise(&c, &noise).unwrap());
 
-    let tf = TfConfig {
-        output: v_a.clone(),
-        input_source: "V1".into(),
-    };
+    let tf = TfConfig::new(v_a.clone(), "V1");
     round_trip("tf config", &tf);
     round_trip("tf", &solve_tf(&c, &tf).unwrap());
 
-    let sens = SensConfig { output: v_a };
+    let sens = SensConfig::new(v_a);
     round_trip("sens config", &sens);
     round_trip("sens", &solve_sensitivity(&c, &sens).unwrap());
 

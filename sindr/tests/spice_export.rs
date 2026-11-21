@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use sindr::spice::{parse_str, to_netlist, ExportError};
 use sindr::{
-    get_examples, solve_circuit, BjtKind, BjtModel, Circuit, CircuitElement, DiodeModel,
-    SimulationResult, Waveform,
+    solve_circuit, BjtKind, BjtModel, Circuit, CircuitElement, DiodeModel, SimulationResult,
+    Waveform,
 };
 
 /// Node voltages keyed as the deck names them: lowercase, ground as `0`.
@@ -45,6 +45,7 @@ fn assert_same_solution(name: &str, circuit: &Circuit, a: &SimulationResult, b: 
 }
 
 /// Whether sindr's parser reads every element line of `deck`.
+#[cfg(feature = "examples")]
 fn parser_reads(deck: &str) -> bool {
     deck.lines().skip(1).all(|l| {
         l.starts_with('.')
@@ -55,10 +56,11 @@ fn parser_reads(deck: &str) -> bool {
     })
 }
 
+#[cfg(feature = "examples")]
 #[test]
 fn examples_round_trip() {
     let mut round_tripped = Vec::new();
-    for example in get_examples() {
+    for example in sindr::get_examples() {
         let Ok(original) = solve_circuit(&example.circuit) else {
             continue;
         };

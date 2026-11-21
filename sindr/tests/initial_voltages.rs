@@ -1,5 +1,6 @@
-//! Integration tests for `solve_circuit_with_initial_voltages` — sindr's
-//! `.NODESET` equivalent. These tests run against the public API only.
+//! Integration tests for seeding Newton with a `Solver` whose
+//! `SolverOptions::nodeset` holds node voltages — sindr's `.NODESET`
+//! equivalent. These tests run against the public API only.
 
 use std::collections::HashMap;
 

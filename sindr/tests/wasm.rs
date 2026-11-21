@@ -9,7 +9,7 @@
 //! with `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner`.
 #![cfg(target_arch = "wasm32")]
 
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::{solve_circuit, solve_transient, Circuit, CircuitElement, TransientConfig};
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -51,19 +51,7 @@ fn operating_point_ac_and_transient() {
     let a = op.node_voltages["a"];
     assert!((0.5..0.8).contains(&a), "diode drop {a}");
 
-    let ac = solve_ac(
-        &c,
-        &AcConfig {
-            f_start: 10.0,
-            f_stop: 1e6,
-            num_points: 11,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        },
-    )
-    .unwrap();
+    let ac = solve_ac(&c, &AcConfig::new("V1", 10.0, 1e6, 11)).unwrap();
     assert_eq!(ac.points.len(), 11);
 
     let tran = solve_transient(&c, &TransientConfig::new(1e-3, 1e-5)).unwrap();

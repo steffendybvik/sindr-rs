@@ -175,6 +175,7 @@ pub enum RatingStatus {
 /// One part checked against one rating.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct RatingCheck {
     /// Component id, flattened (`X1.Q1`).
     pub part: String,
@@ -197,6 +198,7 @@ pub struct RatingCheck {
 /// Every rating checked on every part, in circuit order.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct RatingsReport {
     /// One entry per part and rating.
     pub checks: Vec<RatingCheck>,

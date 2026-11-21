@@ -679,15 +679,10 @@ Small-signal frequency response around the DC operating point. Nonlinear devices
 # let mut circuit = Circuit::default();
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 
-let config = AcConfig {
-    f_start: 1.0,
-    f_stop: 100_000.0,
-    num_points: 51,
-    spacing: FrequencySpacing::Logarithmic, // or Linear
-    source_id: "V1".into(),                 // voltage source that carries the AC stimulus
-    ac_magnitude: 1.0,
-    ac_phase_deg: 0.0,
-};
+// 51 points from 1 Hz to 100 kHz, driving V1 (the voltage source that
+// carries the AC stimulus) with 1 V at 0°.
+let config = AcConfig::new("V1", 1.0, 100_000.0, 51)
+    .with_spacing(FrequencySpacing::Logarithmic); // the default; or Linear
 let result = solve_ac(&circuit, &config)?;
 
 let gain = result.gain_curve("n_out");   // (Hz, dB)
@@ -706,10 +701,8 @@ SPICE's `.tf`: the small-signal DC gain from an input source to an output, the r
 # let mut circuit = Circuit::default();
 use sindr::{solve_tf, TfConfig, TfOutput};
 
-let config = TfConfig {
-    output: TfOutput::Voltage { node: "out".into(), reference: None }, // or TfOutput::Current { source_id }
-    input_source: "V1".into(),                                         // a voltage or current source
-};
+// Output V(out), or TfOutput::current("Vsense"); input a voltage or current source.
+let config = TfConfig::new(TfOutput::voltage("out"), "V1");
 let tf = solve_tf(&circuit, &config)?;
 println!("{} V/V, Rin {} Ω, Rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -726,9 +719,7 @@ SPICE's `.sens`: the derivative of one DC output with respect to each component 
 # let mut circuit = Circuit::default();
 use sindr::{solve_sensitivity, SensConfig, TfOutput};
 
-let config = SensConfig {
-    output: TfOutput::Voltage { node: "out".into(), reference: None }, // or TfOutput::Current { source_id }
-};
+let config = SensConfig::new(TfOutput::voltage("out")); // or TfOutput::current("Vsense")
 let sens = solve_sensitivity(&circuit, &config)?;
 
 for e in &sens.entries {
@@ -747,17 +738,9 @@ SPICE's `.noise`: thermal noise of resistances and FET channels, shot noise of j
 # use sindr::*;
 # let mut circuit = Circuit::default();
 use sindr::{solve_noise, NoiseConfig};
-use sindr::ac_analysis::FrequencySpacing;
 
-let noise = solve_noise(&circuit, &NoiseConfig {
-    output: "out".into(),
-    reference: None,
-    input_source: "V1".into(),
-    f_start: 10.0,
-    f_stop: 100e3,
-    num_points: 41,
-    spacing: FrequencySpacing::Logarithmic,
-})?;
+// V(out) referred to V1, 41 log-spaced points from 10 Hz to 100 kHz.
+let noise = solve_noise(&circuit, &NoiseConfig::new("out", "V1", 10.0, 100e3, 41))?;
 
 println!("{:.2} µV rms at the output", noise.total_output_noise * 1e6);
 for (source, total) in noise.sources.iter().zip(&noise.source_totals) {
@@ -991,7 +974,7 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
 | `import_netlist` | Importing a schematic netlist with a test bench |
 | `parse_netlist` | SPICE input (`--features spice`) |
-| `list_examples`, `run_example` | The built-in named circuits |
+| `list_examples`, `run_example` | The built-in named circuits (`--features examples`) |
 
 ### Error handling
 
@@ -1376,7 +1359,8 @@ pub enum FrequencySpacing {
     Linear,
 }
 
-/// AC analysis configuration.
+/// AC analysis configuration. Build one with [`AcConfig::new`] and its
+/// `with_*` setters.
 pub struct AcConfig {
     /// Start frequency (Hz).
     pub f_start: f64,
@@ -1397,6 +1381,37 @@ pub struct AcConfig {
     /// phase relative to the source.
     #[cfg_attr(feature = "serde", serde(default))]
     pub ac_phase_deg: f64,
+}
+
+impl AcConfig {
+    /// Sweep `num_points` frequencies from `f_start` to `f_stop` (Hz), both
+    /// included, driving the voltage source `source_id`. Spacing defaults
+    /// to [`FrequencySpacing::Logarithmic`], the source's AC magnitude to
+    /// 1 V and its phase to 0°, so node voltages read as gain relative to
+    /// the source.
+    ///
+    /// ```
+    /// use sindr::ac_analysis::{AcConfig, FrequencySpacing};
+    ///
+    /// // SPICE `.ac lin 101 1k 2k` on `V1 in 0 AC 2 90`.
+    /// let config = AcConfig::new("V1", 1e3, 2e3, 101)
+    ///     .with_spacing(FrequencySpacing::Linear)
+    ///     .with_magnitude(2.0)
+    ///     .with_phase_deg(90.0);
+    /// assert_eq!(config.num_points, 101);
+    /// ```
+    pub fn new(source_id: impl Into<String>, f_start: f64, f_stop: f64, num_points: usize) -> Self { … }
+
+    /// Space the frequencies by `spacing` instead of logarithmically.
+    pub fn with_spacing(mut self, spacing: FrequencySpacing) -> Self { … }
+
+    /// Drive the source with an AC amplitude of `magnitude` volts (linear,
+    /// not dB) instead of 1 V.
+    pub fn with_magnitude(mut self, magnitude: f64) -> Self { … }
+
+    /// Give the source an AC phase of `phase_deg` degrees instead of 0°, as
+    /// SPICE's `AC mag phase`.
+    pub fn with_phase_deg(mut self, phase_deg: f64) -> Self { … }
 }
 
 /// Result at a single frequency point.
@@ -1474,7 +1489,7 @@ impl AcResult {
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement};
-/// use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+/// use sindr::ac_analysis::{solve_ac, AcConfig};
 ///
 /// // Simple RC low-pass: V1 -> R1 -> n_out -> C1 -> gnd
 /// let circuit = Circuit {
@@ -1500,15 +1515,8 @@ impl AcResult {
 ///     ..Default::default()
 /// };
 ///
-/// let config = AcConfig {
-///     f_start: 1.0,
-///     f_stop: 100_000.0,
-///     num_points: 11,
-///     spacing: FrequencySpacing::Logarithmic,
-///     source_id: "V1".into(),
-///     ac_magnitude: 1.0,
-///     ac_phase_deg: 0.0,
-/// };
+/// // 11 points from 1 Hz to 100 kHz, log-spaced, 1 V on V1.
+/// let config = AcConfig::new("V1", 1.0, 100_000.0, 11);
 ///
 /// let result = solve_ac(&circuit, &config).unwrap();
 /// assert_eq!(result.points.len(), 11);
@@ -1518,12 +1526,6 @@ impl AcResult {
 /// let phase = result.phase_curve("n_out");
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> { … }
-
-pub fn solve_ac_with_initial_voltages(
-    circuit: &Circuit,
-    config: &AcConfig,
-    initial_voltages: &HashMap<String, f64>,
-) -> Result<AcResult, SimError> { … }
 ```
 
 ## `sindr/src/circuit.rs`
@@ -1543,6 +1545,9 @@ documented per variant.
 
 ```rust
 /// BJT parasitic capacitances. All values in Farads. Default 0.0 disables each cap.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct BjtParasiticCaps {
     /// Base-Emitter junction capacitance (F). Typical: 5–50 pF.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -1559,6 +1564,9 @@ pub struct BjtParasiticCaps {
 ///
 /// The default is sindr's built-in silicon diode. With serde, a missing field
 /// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct DiodeModel {
     /// Saturation current IS (A), positive. Default 1e-14.
     pub is: f64,
@@ -1603,6 +1611,9 @@ impl DiodeModel {
 ///
 /// The default is sindr's built-in transistor. With serde, a missing field
 /// takes its default.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct BjtModel {
     /// Transport saturation current IS (A), positive. Default 1e-14.
     pub is: f64,
@@ -1641,6 +1652,9 @@ pub struct BjtModel {
 /// (0 V) at t = 0.
 ///
 /// [`solve_circuit`]: https://docs.rs/sindr/latest/sindr/fn.solve_circuit.html
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct OpAmpModel {
     /// Open-loop DC gain (V/V), positive. Default 1e5 (100 dB).
     pub gain: f64,
@@ -1659,6 +1673,9 @@ pub struct OpAmpModel {
 }
 
 /// Optional gate capacitances of a MOSFET, for transient and AC.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct MosfetParasiticCaps {
     /// Gate-Source capacitance (F). Typical: 100–500 pF for power MOSFETs.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -2453,6 +2470,9 @@ impl CircuitElement {
 /// );
 /// assert!(circuit.is_flat());
 /// ```
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct Circuit {
     /// Top-level components. Order has no semantic meaning.
     pub components: Vec<CircuitElement>,
@@ -2540,19 +2560,21 @@ has it. Lines end in `\n`.
 impl TransientData {
     /// The waveforms as CSV: `time` (s), then `v(<node>)` (V) and
     /// `i(<id>)` (A, each component's `current_through`), one row per
-    /// timestep. See the [module docs](crate::csv) for the layout.
+    /// timestep. See [CSV export](crate#csv-export) for the layout.
     pub fn to_csv(&self) -> String { … }
 }
 
 impl DcSweepResult {
     /// The sweep as CSV: the swept source's value, in a column named after
-    /// it, then `v(<node>)` (V) and `i(<id>)` (A), one row per point.
+    /// it, then `v(<node>)` (V) and `i(<id>)` (A), one row per point. See
+    /// [CSV export](crate#csv-export) for the layout.
     pub fn to_csv(&self) -> String { … }
 }
 
 impl TempSweepResult {
     /// The sweep as CSV: `temperature` (K), then `v(<node>)` (V) and
-    /// `i(<id>)` (A), one row per point.
+    /// `i(<id>)` (A), one row per point. See [CSV export](crate#csv-export)
+    /// for the layout.
     pub fn to_csv(&self) -> String { … }
 }
 
@@ -2561,6 +2583,7 @@ impl AcResult {
     /// `re(v(<node>))` and `im(v(<node>))` (V, for the source's
     /// [`ac_magnitude`](crate::ac_analysis::AcConfig::ac_magnitude)), one
     /// row per frequency. Magnitude and phase follow from the two parts.
+    /// See [CSV export](crate#csv-export) for the layout.
     pub fn to_csv(&self) -> String { … }
 }
 ```
@@ -2849,6 +2872,9 @@ assert_eq!(flat.components[2].nodes(), ["mid", "0"]);
 pub const PATH_SEPARATOR: char = '.';
 
 /// A reusable block definition: what `.subckt` is in SPICE.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct Block {
     /// Port nets, in the order [`Instance::nodes`] binds them.
     pub ports: Vec<String>,
@@ -2891,6 +2917,9 @@ impl Instance {
 
 /// Part data for a component or instance: what a schematic or BOM needs.
 /// The simulator ignores it.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct Part {
     /// Reference designator (`"R1"`). `None` means the element id is the
     /// reference.
@@ -2929,6 +2958,9 @@ pub struct Part {
 ///
 /// Rθ is [`rth_jc`](Self::rth_jc) + [`rth_ca`](Self::rth_ca) when both are
 /// set (a part on a heatsink), otherwise [`rth_ja`](Self::rth_ja).
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct Thermal {
     /// Junction to ambient (K/W), the datasheet's Rθja for the part on its
     /// own.
@@ -2968,6 +3000,9 @@ impl Thermal {
 /// a part needs but doesn't have is reported as unverified, never as a
 /// pass. Which ratings a component needs depends on its kind; see
 /// `sindr::ratings`.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct Ratings {
     /// Power dissipation (W).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -3604,6 +3639,9 @@ pub use bench:: { … }
 pub use value::parse_value;
 
 /// A schematic's components and the nets joining them.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct Netlist {
     /// The components, in any order.
     pub components: Vec<Component>,
@@ -4062,9 +4100,11 @@ picks the right path automatically:
 
 Device physics (diode, BJT, MOSFET, IGBT, JFET, varactor companion models)
 live in the companion crate
-[`sindr-devices`](https://crates.io/crates/sindr-devices). `sindr`
-re-exports the few enums you'll typically need ([`BjtKind`],
-[`MosfetKind`], [`JfetKind`], etc.).
+[`sindr-devices`](https://crates.io/crates/sindr-devices), re-exported
+whole as [`devices`], so `sindr::devices::mosfet::MosfetParams` and
+`sindr::devices::inductor::InductorSaturation` need no second
+dependency. The few enums you'll typically need ([`BjtKind`],
+[`MosfetKind`], [`JfetKind`], etc.) are also at the root.
 
 ### Quick start
 
@@ -4190,16 +4230,16 @@ The full list of what sindr doesn't do is in
 
 - `serde` *(default)* — `Serialize`/`Deserialize` impls on the public
   types.
-- `examples` *(default, implies `serde`)* — exposes [`get_examples`] and
-  the built-in named circuits (voltage divider, BJT amp, RC transient,
-  etc.).
+- `examples` — exposes [`get_examples`]: the built-in named circuits
+  (voltage divider, BJT amp, RC transient, etc.) with ids and
+  descriptions. The circuits themselves are always in [`examples`].
 - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
 
 ```toml
 [dependencies]
 sindr = "0.1"
 
-# No serde, no built-in examples:
+# No serde:
 sindr = { version = "0.1", default-features = false }
 ```
 
@@ -4248,6 +4288,20 @@ assert!(first.node_voltages["out"] < 1.0);
 assert!((last.node_voltages["out"] - 5.0).abs() < 0.1);
 ```
 
+### CSV export
+
+[`TransientData::to_csv`], [`AcResult::to_csv`],
+[`DcSweepResult::to_csv`] and [`TempSweepResult::to_csv`] write one row
+per point: the scale (time, frequency, swept value or temperature)
+first, then a column per node voltage, `v(<node>)` with nodes in name
+order, then for real-valued results a column per component current,
+`i(<id>)`, in circuit order. AC writes each node voltage as two columns,
+`re(v(<node>))` and `im(v(<node>))`.
+
+Numbers are written so they read back as the same `f64`. A value missing
+from a row is an empty field. Names that need it are quoted as RFC 4180
+has it. Lines end in `\n`.
+
 ### SPICE netlist input
 
 Parsing SPICE3 `.cir` decks into a [`Circuit`] lives behind the optional
@@ -4285,8 +4339,6 @@ pub use examples::{get_examples, ExampleCircuit};
 pub mod ac_analysis;
 
 pub mod circuit;
-
-pub mod csv;
 
 pub mod dc_sweep;
 
@@ -4432,8 +4484,9 @@ impl Signal {
     pub fn phase(mut self) -> Self { … }
 }
 
-/// A result a [`Measurement`] can be taken on.
-pub trait Measurable {
+/// A result a [`Measurement`] can be taken on: one of the results in the
+/// [module docs](self). Sealed: it can't be implemented outside sindr.
+pub trait Measurable: sealed::Sealed {
     /// The signal's samples as `(x, y)` pairs, in ascending x.
     ///
     /// # Errors
@@ -4753,6 +4806,7 @@ ngspice does.
 ```rust
 /// Noise analysis configuration: SPICE's
 /// `.noise V(output[,reference]) input_source {dec|lin} points f_start f_stop`.
+/// Build one with [`NoiseConfig::new`] and its `with_*` setters.
 pub struct NoiseConfig {
     /// The output node.
     pub output: String,
@@ -4768,6 +4822,37 @@ pub struct NoiseConfig {
     pub num_points: usize,
     /// Frequency spacing; logarithmic is `num_points` in total.
     pub spacing: FrequencySpacing,
+}
+
+impl NoiseConfig {
+    /// Noise at node `output` against ground, referred back to the
+    /// independent source `input_source`, at `num_points` frequencies from
+    /// `f_start` to `f_stop` (Hz), both included. Spacing defaults to
+    /// [`FrequencySpacing::Logarithmic`].
+    ///
+    /// ```
+    /// use sindr::ac_analysis::FrequencySpacing;
+    /// use sindr::NoiseConfig;
+    ///
+    /// // SPICE `.noise v(out,ref) V1 lin 100 1k 100k`.
+    /// let config = NoiseConfig::new("out", "V1", 1e3, 1e5, 100)
+    ///     .with_reference("ref")
+    ///     .with_spacing(FrequencySpacing::Linear);
+    /// assert_eq!(config.reference.as_deref(), Some("ref"));
+    /// ```
+    pub fn new(
+        output: impl Into<String>,
+        input_source: impl Into<String>,
+        f_start: f64,
+        f_stop: f64,
+        num_points: usize,
+    ) -> Self { … }
+
+    /// Measure the output against node `reference` instead of ground.
+    pub fn with_reference(mut self, reference: impl Into<String>) -> Self { … }
+
+    /// Space the frequencies by `spacing` instead of logarithmically.
+    pub fn with_spacing(mut self, spacing: FrequencySpacing) -> Self { … }
 }
 
 /// The physical mechanism behind a noise source.
@@ -4849,7 +4934,6 @@ pub struct NoiseResult {
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement};
-/// use sindr::ac_analysis::FrequencySpacing;
 /// use sindr::noise::{solve_noise, NoiseConfig};
 ///
 /// // A 1 kΩ / 1 µF low-pass: the output noise integrates to √(kT/C).
@@ -4858,26 +4942,12 @@ pub struct NoiseResult {
 ///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
 ///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
 /// ]);
-/// let noise = solve_noise(&circuit, &NoiseConfig {
-///     output: "out".into(),
-///     reference: None,
-///     input_source: "V1".into(),
-///     f_start: 0.01,
-///     f_stop: 1e7,
-///     num_points: 91,
-///     spacing: FrequencySpacing::Logarithmic,
-/// })?;
+/// let noise = solve_noise(&circuit, &NoiseConfig::new("out", "V1", 0.01, 1e7, 91))?;
 /// let kt_over_c = (1.380649e-23 * 300.15 / 1e-6_f64).sqrt();
 /// assert!((noise.total_output_noise / kt_over_c - 1.0).abs() < 0.01);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 pub fn solve_noise(circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResult, SimError> { … }
-
-pub fn solve_noise_with_initial_voltages(
-    circuit: &Circuit,
-    config: &NoiseConfig,
-    initial_voltages: &HashMap<String, f64>,
-) -> Result<NoiseResult, SimError> { … }
 ```
 
 ## `sindr/src/ratings.rs`
@@ -5304,17 +5374,6 @@ pub enum ConvergenceAid {
     /// Every independent source ramped from near zero up to its full value.
     SourceStepping,
 }
-
-/// Extract simulation results from the MNA solution vector.
-///
-/// Builds node voltages, branch currents (for voltage sources), and
-/// per-component V/I/P using passive sign convention.
-pub fn extract_results(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    solution: &DVector<f64>,
-    num_nodes: usize,
-) -> SimulationResult { … }
 ```
 
 ## `sindr/src/sensitivity.rs`
@@ -5328,10 +5387,23 @@ as `dy/dp = λᵀ(∂b/∂p − (∂A/∂p)·x)`, so the cost doesn't grow with 
 number of parameters.
 
 ```rust
-/// Sensitivity-analysis configuration.
+/// Sensitivity-analysis configuration. Build one with [`SensConfig::new`].
 pub struct SensConfig {
     /// The output whose sensitivities are wanted.
     pub output: TfOutput,
+}
+
+impl SensConfig {
+    /// The sensitivities of `output`, as SPICE's `.sens output`.
+    ///
+    /// ```
+    /// use sindr::{SensConfig, TfOutput};
+    ///
+    /// // SPICE `.sens i(Vsense)`.
+    /// let config = SensConfig::new(TfOutput::current("Vsense"));
+    /// assert_eq!(config.output, TfOutput::Current { source_id: "Vsense".into() });
+    /// ```
+    pub fn new(output: TfOutput) -> Self { … }
 }
 
 /// Which parameter of a component a [`SensEntry`] is for.
@@ -5422,9 +5494,7 @@ impl SensResult {
 ///     ..Default::default()
 /// };
 ///
-/// let config = SensConfig {
-///     output: TfOutput::Voltage { node: "out".into(), reference: None },
-/// };
+/// let config = SensConfig::new(TfOutput::voltage("out"));
 /// let sens = solve_sensitivity(&circuit, &config)?;
 ///
 /// assert!((sens.get("V1").unwrap().sensitivity - 0.75).abs() < 1e-12);
@@ -5433,12 +5503,6 @@ impl SensResult {
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensResult, SimError> { … }
-
-pub fn solve_sensitivity_with_initial_voltages(
-    circuit: &Circuit,
-    config: &SensConfig,
-    initial_voltages: &HashMap<String, f64>,
-) -> Result<SensResult, SimError> { … }
 ```
 
 ## `sindr/src/solver.rs`
@@ -6548,6 +6612,8 @@ for analysis in &netlist.analyses {
             let tf = sindr::solve_tf(&netlist.circuit, &analysis.tf_config().unwrap())?;
             println!("tf: gain {}, rin {} Ω, rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
         }
+        // `AnalysisRequest` is non-exhaustive: later releases add analyses.
+        other => println!("not run here: {other:?}"),
     }
 }
 ```
@@ -7108,12 +7174,48 @@ pub enum TfOutput {
     },
 }
 
-/// Transfer-function analysis configuration.
+impl TfOutput {
+    /// `V(node)`: the voltage of `node` against ground.
+    ///
+    /// ```
+    /// use sindr::TfOutput;
+    ///
+    /// assert_eq!(
+    ///     TfOutput::voltage("out"),
+    ///     TfOutput::Voltage { node: "out".into(), reference: None },
+    /// );
+    /// ```
+    pub fn voltage(node: impl Into<String>) -> Self { … }
+
+    /// `V(node,reference)`: the voltage of `node` against `reference`.
+    pub fn voltage_between(node: impl Into<String>, reference: impl Into<String>) -> Self { … }
+
+    /// `I(source_id)`: the current through the independent voltage source
+    /// `source_id`.
+    pub fn current(source_id: impl Into<String>) -> Self { … }
+}
+
+/// Transfer-function analysis configuration. Build one with
+/// [`TfConfig::new`].
 pub struct TfConfig {
     /// The output the gain is measured at.
     pub output: TfOutput,
     /// Id of the input: an independent voltage or current source.
     pub input_source: String,
+}
+
+impl TfConfig {
+    /// The transfer function from the independent source `input_source` to
+    /// `output`, as SPICE's `.tf output input_source`.
+    ///
+    /// ```
+    /// use sindr::{TfConfig, TfOutput};
+    ///
+    /// // SPICE `.tf v(out) V1`.
+    /// let config = TfConfig::new(TfOutput::voltage("out"), "V1");
+    /// assert_eq!(config.input_source, "V1");
+    /// ```
+    pub fn new(output: TfOutput, input_source: impl Into<String>) -> Self { … }
 }
 
 /// Result of a transfer-function analysis.
@@ -7191,10 +7293,7 @@ pub struct TfResult {
 ///     ..Default::default()
 /// };
 ///
-/// let config = TfConfig {
-///     output: TfOutput::Voltage { node: "out".into(), reference: None },
-///     input_source: "V1".into(),
-/// };
+/// let config = TfConfig::new(TfOutput::voltage("out"), "V1");
 /// let tf = solve_tf(&circuit, &config)?;
 /// assert!((tf.gain - 0.75).abs() < 1e-9);
 /// assert!((tf.input_resistance - 4_000.0).abs() < 1e-6);
@@ -7202,12 +7301,6 @@ pub struct TfResult {
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimError> { … }
-
-pub fn solve_tf_with_initial_voltages(
-    circuit: &Circuit,
-    config: &TfConfig,
-    initial_voltages: &HashMap<String, f64>,
-) -> Result<TfResult, SimError> { … }
 ```
 
 ## `sindr/src/validation.rs`
@@ -7813,6 +7906,9 @@ Full IGBT models (IGBTv3) have 20+ parameters — out of scope.
 
 ```rust
 /// IGBT parameters (simplified model).
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct IgbtParams {
     /// Gate threshold voltage (V). Typical: 4.0–6.0 V.
     pub vth: f64,
@@ -8142,6 +8238,9 @@ impl MosfetRegion {
 }
 
 /// MOSFET device parameters (Level 1 Shichman-Hodges).
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct MosfetParams {
     /// Transconductance parameter (A/V^2). SPICE KP parameter.
     pub kp: f64,
@@ -8238,6 +8337,9 @@ With irradiance, produces reverse photocurrent that can drive loads.
 
 ```rust
 /// Photodiode parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct PhotodiodeParams {
     /// Dark saturation current (A).
     pub is: f64,
@@ -8277,6 +8379,9 @@ matching real LDR behaviour (resistance halves roughly every decade of lux).
 
 ```rust
 /// Photoresistor parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct PhotoresistorParams {
     /// Resistance in darkness (Ω). Default: 1 MΩ.
     pub r_dark: f64,
@@ -8318,6 +8423,9 @@ characteristic mirrored through the ground pin, so `Vin`, `Vout` and
 ```rust
 /// Regulator parameters. [`Default`] is ideal: no dropout, no quiescent
 /// current, no limit, perfect regulation, but never more out than in.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct RegulatorParams {
     /// Dropout voltage at no load (V): the least `Vin − Vout` it regulates
     /// with.
@@ -8424,6 +8532,9 @@ voltage (~0.3V vs ~0.6V silicon). Reuses diode_companion().
 
 ```rust
 /// Schottky diode parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct SchottkyParams {
     /// Saturation current (A). Higher than silicon due to lower barrier.
     pub is: f64,
@@ -8455,6 +8566,9 @@ circuit voltages. No NR iteration needed.
 
 ```rust
 /// NTC thermistor parameters (Beta model).
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct ThermistorParams {
     /// Resistance at reference temperature T0 (Ω).
     pub r0: f64,
@@ -8489,6 +8603,9 @@ In AC analysis it is the capacitance at the DC bias point.
 
 ```rust
 /// Varactor diode parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct VaractorParams {
     /// Zero-bias junction capacitance (F). Typical: 10e-12 (10 pF).
     pub cj0: f64,
@@ -8532,6 +8649,9 @@ Reverse breakdown: linearised clamp at -Vz.
 
 ```rust
 /// Zener diode parameters.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 pub struct ZenerParams {
     /// Breakdown voltage (V), positive: 5.1 for a BZX55C5V1.
     pub vz: f64,
@@ -8594,21 +8714,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## `sindr/examples/bode_plot.rs`
 
 ```rust
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::examples;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit = examples::rc_lowpass_filter();
 
-    let config = AcConfig {
-        f_start: 10.0,
-        f_stop: 100_000.0,
-        num_points: 50,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let config = AcConfig::new("V1", 10.0, 100_000.0, 50);
 
     let result = solve_ac(&circuit, &config)?;
 
@@ -8931,6 +9043,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tf.gain, tf.input_resistance, tf.output_resistance
                 );
             }
+            // Analyses added in later releases.
+            other => println!("not run here: {other:?}"),
         }
     }
 
@@ -9022,12 +9136,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit = examples::npn_common_emitter();
 
     // Which part moves the collector voltage most?
-    let config = SensConfig {
-        output: TfOutput::Voltage {
-            node: "collector".into(),
-            reference: None,
-        },
-    };
+    let config = SensConfig::new(TfOutput::voltage("collector"));
     let sens = solve_sensitivity(&circuit, &config)?;
 
     println!("=== NPN Common Emitter — .sens V(collector) ===");
@@ -9112,13 +9221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // How much supply ripple reaches the collector, what the supply sees,
     // and how stiff the collector node is.
-    let config = TfConfig {
-        output: TfOutput::Voltage {
-            node: "collector".into(),
-            reference: None,
-        },
-        input_source: "Vcc".into(),
-    };
+    let config = TfConfig::new(TfOutput::voltage("collector"), "Vcc");
     let tf = solve_tf(&circuit, &config)?;
 
     println!("=== NPN Common Emitter — .tf V(collector) Vcc ===");
@@ -9210,7 +9313,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::spice::{parse_file, parse_str};
 use sindr::{solve_circuit, solve_transient, Circuit, CircuitElement};
 
@@ -9358,15 +9461,7 @@ fn per_call(s: &Settings, dir: &Path, startup: Duration) {
     println!("## Time per call (golden decks)\n");
     println!("| Case | sindr in-process | ngspice -b | ngspice minus startup | vs spawn |");
     println!("|---|---:|---:|---:|---:|");
-    let ac = AcConfig {
-        f_start: 100.0,
-        f_stop: 100e3,
-        num_points: 61,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "v1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let ac = AcConfig::new("v1", 100.0, 100e3, 61);
     let cases: [(&str, &str, &str); 4] = [
         ("op_diode_series", "op", "op"),
         ("op_bjt_ce", "op", "op"),

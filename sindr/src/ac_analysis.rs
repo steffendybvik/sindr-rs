@@ -26,6 +26,7 @@ use crate::node_map::NodeMap;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FrequencySpacing {
     /// Logarithmic spacing: `num_points` in total, evenly spaced in
     /// log10(f) from `f_start` to `f_stop`. Not points per decade.
@@ -34,9 +35,11 @@ pub enum FrequencySpacing {
     Linear,
 }
 
-/// AC analysis configuration.
+/// AC analysis configuration. Build one with [`AcConfig::new`] and its
+/// `with_*` setters.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct AcConfig {
     /// Start frequency (Hz).
     pub f_start: f64,
@@ -59,9 +62,60 @@ pub struct AcConfig {
     pub ac_phase_deg: f64,
 }
 
+impl AcConfig {
+    /// Sweep `num_points` frequencies from `f_start` to `f_stop` (Hz), both
+    /// included, driving the voltage source `source_id`. Spacing defaults
+    /// to [`FrequencySpacing::Logarithmic`], the source's AC magnitude to
+    /// 1 V and its phase to 0°, so node voltages read as gain relative to
+    /// the source.
+    ///
+    /// ```
+    /// use sindr::ac_analysis::{AcConfig, FrequencySpacing};
+    ///
+    /// // SPICE `.ac lin 101 1k 2k` on `V1 in 0 AC 2 90`.
+    /// let config = AcConfig::new("V1", 1e3, 2e3, 101)
+    ///     .with_spacing(FrequencySpacing::Linear)
+    ///     .with_magnitude(2.0)
+    ///     .with_phase_deg(90.0);
+    /// assert_eq!(config.num_points, 101);
+    /// ```
+    pub fn new(source_id: impl Into<String>, f_start: f64, f_stop: f64, num_points: usize) -> Self {
+        Self {
+            f_start,
+            f_stop,
+            num_points,
+            spacing: FrequencySpacing::Logarithmic,
+            source_id: source_id.into(),
+            ac_magnitude: 1.0,
+            ac_phase_deg: 0.0,
+        }
+    }
+
+    /// Space the frequencies by `spacing` instead of logarithmically.
+    pub fn with_spacing(mut self, spacing: FrequencySpacing) -> Self {
+        self.spacing = spacing;
+        self
+    }
+
+    /// Drive the source with an AC amplitude of `magnitude` volts (linear,
+    /// not dB) instead of 1 V.
+    pub fn with_magnitude(mut self, magnitude: f64) -> Self {
+        self.ac_magnitude = magnitude;
+        self
+    }
+
+    /// Give the source an AC phase of `phase_deg` degrees instead of 0°, as
+    /// SPICE's `AC mag phase`.
+    pub fn with_phase_deg(mut self, phase_deg: f64) -> Self {
+        self.ac_phase_deg = phase_deg;
+        self
+    }
+}
+
 /// Result at a single frequency point.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AcPoint {
     /// Frequency of this point (Hz).
     pub frequency: f64,
@@ -94,6 +148,7 @@ impl AcPoint {
 /// Complete AC analysis result.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AcResult {
     /// Result points, one per swept frequency.
     pub points: Vec<AcPoint>,
@@ -1137,7 +1192,7 @@ pub(crate) fn small_signal_system(
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement};
-/// use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+/// use sindr::ac_analysis::{solve_ac, AcConfig};
 ///
 /// // Simple RC low-pass: V1 -> R1 -> n_out -> C1 -> gnd
 /// let circuit = Circuit {
@@ -1163,15 +1218,8 @@ pub(crate) fn small_signal_system(
 ///     ..Default::default()
 /// };
 ///
-/// let config = AcConfig {
-///     f_start: 1.0,
-///     f_stop: 100_000.0,
-///     num_points: 11,
-///     spacing: FrequencySpacing::Logarithmic,
-///     source_id: "V1".into(),
-///     ac_magnitude: 1.0,
-///     ac_phase_deg: 0.0,
-/// };
+/// // 11 points from 1 Hz to 100 kHz, log-spaced, 1 V on V1.
+/// let config = AcConfig::new("V1", 1.0, 100_000.0, 11);
 ///
 /// let result = solve_ac(&circuit, &config).unwrap();
 /// assert_eq!(result.points.len(), 11);
@@ -1182,30 +1230,6 @@ pub(crate) fn small_signal_system(
 /// ```
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
     solve_ac_with(circuit, config, &crate::SolverOptions::default())
-}
-
-/// Like [`solve_ac`], seeding the Newton–Raphson solve for the DC bias
-/// point with node voltages (V) keyed by node name, as SPICE's `.nodeset`.
-/// Useful when the bias point is hard to find or not unique. Unknown node
-/// names are ignored.
-///
-/// # Errors
-///
-/// As [`solve_ac`].
-#[deprecated(
-    since = "0.1.0",
-    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).ac(..)`"
-)]
-pub fn solve_ac_with_initial_voltages(
-    circuit: &Circuit,
-    config: &AcConfig,
-    initial_voltages: &HashMap<String, f64>,
-) -> Result<AcResult, SimError> {
-    solve_ac_with(
-        circuit,
-        config,
-        &crate::SolverOptions::default().with_nodeset(initial_voltages.clone()),
-    )
 }
 
 /// [`solve_ac`] with `opts`.
@@ -1278,6 +1302,27 @@ mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
 
+    #[test]
+    fn config_defaults_and_setters() {
+        let config = AcConfig::new("V1", 1.0, 1e6, 61);
+        assert_eq!(config.source_id, "V1");
+        assert_eq!(
+            (config.f_start, config.f_stop, config.num_points),
+            (1.0, 1e6, 61)
+        );
+        assert_eq!(config.spacing, FrequencySpacing::Logarithmic);
+        assert_eq!(config.ac_magnitude, 1.0);
+        assert_eq!(config.ac_phase_deg, 0.0);
+
+        let config = config
+            .with_spacing(FrequencySpacing::Linear)
+            .with_magnitude(2.5)
+            .with_phase_deg(-90.0);
+        assert_eq!(config.spacing, FrequencySpacing::Linear);
+        assert_eq!(config.ac_magnitude, 2.5);
+        assert_eq!(config.ac_phase_deg, -90.0);
+    }
+
     /// RC lowpass: R=1k, C=1uF. Corner freq = 1/(2*pi*R*C) ~ 159.15 Hz.
     /// At corner: gain = -3dB, phase = -45 degrees.
     #[test]
@@ -1305,15 +1350,7 @@ mod tests {
             ..Default::default()
         };
 
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 100_000.0,
-            num_points: 100,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("V1", 1.0, 100_000.0, 100);
 
         let result = solve_ac(&circuit, &config).unwrap();
         let gain_curve = result.gain_curve("n2");
@@ -1376,15 +1413,7 @@ mod tests {
             ..Default::default()
         };
 
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 10.0,
-            num_points: 5,
-            spacing: FrequencySpacing::Linear,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("V1", 1.0, 10.0, 5).with_spacing(FrequencySpacing::Linear);
 
         let result = solve_ac(&circuit, &config).unwrap();
         let gain_curve = result.gain_curve("n2");
@@ -1419,15 +1448,7 @@ mod tests {
             ..Default::default()
         };
 
-        let config = AcConfig {
-            f_start: 10_000.0,
-            f_stop: 100_000.0,
-            num_points: 3,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("V1", 10_000.0, 100_000.0, 3);
 
         let result = solve_ac(&circuit, &config).unwrap();
         let gain_curve = result.gain_curve("n2");
@@ -1441,15 +1462,7 @@ mod tests {
 
     #[test]
     fn frequency_generation_logarithmic() {
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 1000.0,
-            num_points: 4,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("V1", 1.0, 1000.0, 4);
         let freqs = generate_frequencies(&config);
         assert_eq!(freqs.len(), 4);
         assert_abs_diff_eq!(freqs[0], 1.0, epsilon = 1e-10);
@@ -1460,15 +1473,7 @@ mod tests {
 
     #[test]
     fn frequency_generation_linear() {
-        let config = AcConfig {
-            f_start: 100.0,
-            f_stop: 400.0,
-            num_points: 4,
-            spacing: FrequencySpacing::Linear,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("V1", 100.0, 400.0, 4).with_spacing(FrequencySpacing::Linear);
         let freqs = generate_frequencies(&config);
         assert_eq!(freqs.len(), 4);
         assert_abs_diff_eq!(freqs[0], 100.0, epsilon = 1e-10);
@@ -1540,15 +1545,7 @@ mod tests {
         let h = 1e-3;
         let slope = (vc_dc(vin + h) - vc_dc(vin - h)) / (2.0 * h);
 
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 1.0,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("VIN", 1.0, 1.0, 1).with_spacing(FrequencySpacing::Linear);
         let result = solve_ac(&bjt_stage(kind, vin, temperature), &config).unwrap();
         let gain = result.points[0].node_voltages["c"];
 
@@ -1603,15 +1600,7 @@ mod tests {
         let v_dc = |v: f64| crate::solve_circuit(&build(v)).unwrap().node_voltages[node];
         let h = 1e-3;
         let slope = (v_dc(vin + h) - v_dc(vin - h)) / (2.0 * h);
-        let config = AcConfig {
-            f_start: 1.0,
-            f_stop: 1.0,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("VIN", 1.0, 1.0, 1).with_spacing(FrequencySpacing::Linear);
         let gain = solve_ac(&build(vin), &config).unwrap().points[0].node_voltages[node];
         let tol = 1e-3 * slope.abs() + 1e-5;
         assert!(
@@ -1717,15 +1706,7 @@ mod tests {
 
     /// The AC response at one frequency of `VIN` into `circuit`.
     fn ac_at(circuit: &Circuit, f: f64) -> HashMap<String, Complex64> {
-        let config = AcConfig {
-            f_start: f,
-            f_stop: f,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("VIN", f, f, 1).with_spacing(FrequencySpacing::Linear);
         solve_ac(circuit, &config)
             .unwrap()
             .points
@@ -1781,15 +1762,7 @@ mod tests {
                 saturation: None,
             },
         ]);
-        let config = AcConfig {
-            f_start: 0.0,
-            f_stop: f_c,
-            num_points: 2,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("VIN", 0.0, f_c, 2).with_spacing(FrequencySpacing::Linear);
         let points = solve_ac(&circuit, &config).unwrap().points;
         assert_eq!(points[0].frequency, 0.0);
         // 1 kΩ against the 1e12 S short.
@@ -1849,15 +1822,7 @@ mod tests {
                 params,
             },
         ]);
-        let config = AcConfig {
-            f_start: f_c,
-            f_stop: f_c,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("VIN", f_c, f_c, 1).with_spacing(FrequencySpacing::Linear);
         let v = solve_ac(&circuit, &config).unwrap().points[0].node_voltages["out"];
         assert!(
             (v.norm() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-8,
@@ -1927,15 +1892,7 @@ mod tests {
         // AC biases there too: the mid-band gain is −gm·RC at that Ic.
         let ic = (10.0 - plain.node_voltages["c"]) / 1_000.0;
         let gm = ic / sindr_devices::diode::V_T;
-        let config = AcConfig {
-            f_start: 10e3,
-            f_stop: 10e3,
-            num_points: 1,
-            spacing: FrequencySpacing::Linear,
-            source_id: "VIN".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        };
+        let config = AcConfig::new("VIN", 10e3, 10e3, 1).with_spacing(FrequencySpacing::Linear);
         let gain = solve_ac(&stage(true), &config).unwrap().points[0].node_voltages["c"];
         assert!(
             (gain.norm() - gm * 1_000.0).abs() < 2e-2 * gm * 1_000.0,

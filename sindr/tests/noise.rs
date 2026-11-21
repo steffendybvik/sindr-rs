@@ -46,15 +46,7 @@ fn close(x: f64, want: f64, rel: f64) -> bool {
 }
 
 fn config(output: &str, input: &str, f: (f64, f64), points: usize) -> NoiseConfig {
-    NoiseConfig {
-        output: output.into(),
-        reference: None,
-        input_source: input.into(),
-        f_start: f.0,
-        f_stop: f.1,
-        num_points: points,
-        spacing: FrequencySpacing::Logarithmic,
-    }
+    NoiseConfig::new(output, input, f.0, f.1, points)
 }
 
 /// 5 V through 10 kΩ into a diode whose card has flicker noise.
@@ -502,4 +494,23 @@ fn mosfet_flicker_parameters_are_validated() {
         let err = sindr::solve_circuit(&with(kf, af)).unwrap_err().to_string();
         assert!(err.contains(field), "{err}");
     }
+}
+
+#[test]
+fn config_defaults_and_setters() {
+    let config = NoiseConfig::new("out", "V1", 10.0, 1e5, 41);
+    assert_eq!(config.output, "out");
+    assert_eq!(config.input_source, "V1");
+    assert_eq!(
+        (config.f_start, config.f_stop, config.num_points),
+        (10.0, 1e5, 41)
+    );
+    assert_eq!(config.reference, None);
+    assert_eq!(config.spacing, FrequencySpacing::Logarithmic);
+
+    let config = config
+        .with_reference("ref")
+        .with_spacing(FrequencySpacing::Linear);
+    assert_eq!(config.reference.as_deref(), Some("ref"));
+    assert_eq!(config.spacing, FrequencySpacing::Linear);
 }

@@ -5,13 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // How much supply ripple reaches the collector, what the supply sees,
     // and how stiff the collector node is.
-    let config = TfConfig {
-        output: TfOutput::Voltage {
-            node: "collector".into(),
-            reference: None,
-        },
-        input_source: "Vcc".into(),
-    };
+    let config = TfConfig::new(TfOutput::voltage("collector"), "Vcc");
     let tf = solve_tf(&circuit, &config)?;
 
     println!("=== NPN Common Emitter — .tf V(collector) Vcc ===");

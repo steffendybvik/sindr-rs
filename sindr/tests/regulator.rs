@@ -227,15 +227,7 @@ fn input_ripple_reaches_the_output_through_line_regulation() {
         let c = regulator(vin, 5.0, RegulatorParams::lm7805(), load_r(10.0));
         let ac = solve_ac(
             &c,
-            &AcConfig {
-                f_start: 100.0,
-                f_stop: 100.0,
-                num_points: 1,
-                spacing: FrequencySpacing::Linear,
-                source_id: "VIN".into(),
-                ac_magnitude: 1.0,
-                ac_phase_deg: 0.0,
-            },
+            &AcConfig::new("VIN", 100.0, 100.0, 1).with_spacing(FrequencySpacing::Linear),
         )
         .unwrap();
         ac.points[0].node_voltages["out"].norm()

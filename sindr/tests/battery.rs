@@ -2,7 +2,7 @@
 //! `v = OCV(SoC) − R0·i − v1`, `C1·dv1/dt = i − v1/R1`,
 //! `dSoC/dt = −i/(3600·capacity)`.
 
-use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::{
     solve_circuit, solve_transient, validate_circuit, Circuit, CircuitElement, SimError,
     SimulationResult, TransientConfig, TransientStart,
@@ -171,19 +171,7 @@ fn ac_impedance_is_r0_plus_r1_parallel_c1() {
             battery(params, 1.0),
         ],
     );
-    let result = solve_ac(
-        &circuit,
-        &AcConfig {
-            f_start: 1.0,
-            f_stop: 1e4,
-            num_points: 9,
-            spacing: FrequencySpacing::Logarithmic,
-            source_id: "V1".into(),
-            ac_magnitude: 1.0,
-            ac_phase_deg: 0.0,
-        },
-    )
-    .expect("solves");
+    let result = solve_ac(&circuit, &AcConfig::new("V1", 1.0, 1e4, 9)).expect("solves");
     for point in &result.points {
         let w = 2.0 * std::f64::consts::PI * point.frequency;
         let z = num_complex::Complex64::new(0.5, 0.0)

@@ -4,8 +4,6 @@
 //! gain from an input source to an output, the resistance the input source
 //! sees, and the resistance at the output.
 
-use std::collections::HashMap;
-
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -20,6 +18,7 @@ use crate::node_map::NodeMap;
 /// What a transfer function is measured at.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum TfOutput {
     /// `V(node[,reference])`: the voltage of `node` against `reference`,
     /// or against ground when `reference` is `None`.
@@ -37,14 +36,70 @@ pub enum TfOutput {
     },
 }
 
-/// Transfer-function analysis configuration.
+impl TfOutput {
+    /// `V(node)`: the voltage of `node` against ground.
+    ///
+    /// ```
+    /// use sindr::TfOutput;
+    ///
+    /// assert_eq!(
+    ///     TfOutput::voltage("out"),
+    ///     TfOutput::Voltage { node: "out".into(), reference: None },
+    /// );
+    /// ```
+    pub fn voltage(node: impl Into<String>) -> Self {
+        TfOutput::Voltage {
+            node: node.into(),
+            reference: None,
+        }
+    }
+
+    /// `V(node,reference)`: the voltage of `node` against `reference`.
+    pub fn voltage_between(node: impl Into<String>, reference: impl Into<String>) -> Self {
+        TfOutput::Voltage {
+            node: node.into(),
+            reference: Some(reference.into()),
+        }
+    }
+
+    /// `I(source_id)`: the current through the independent voltage source
+    /// `source_id`.
+    pub fn current(source_id: impl Into<String>) -> Self {
+        TfOutput::Current {
+            source_id: source_id.into(),
+        }
+    }
+}
+
+/// Transfer-function analysis configuration. Build one with
+/// [`TfConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct TfConfig {
     /// The output the gain is measured at.
     pub output: TfOutput,
     /// Id of the input: an independent voltage or current source.
     pub input_source: String,
+}
+
+impl TfConfig {
+    /// The transfer function from the independent source `input_source` to
+    /// `output`, as SPICE's `.tf output input_source`.
+    ///
+    /// ```
+    /// use sindr::{TfConfig, TfOutput};
+    ///
+    /// // SPICE `.tf v(out) V1`.
+    /// let config = TfConfig::new(TfOutput::voltage("out"), "V1");
+    /// assert_eq!(config.input_source, "V1");
+    /// ```
+    pub fn new(output: TfOutput, input_source: impl Into<String>) -> Self {
+        Self {
+            output,
+            input_source: input_source.into(),
+        }
+    }
 }
 
 /// Result of a transfer-function analysis.
@@ -53,6 +108,7 @@ pub struct TfConfig {
 /// out, A/A for a current in and out, Ω or S for a mix.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct TfResult {
     /// Small-signal DC gain: d(output)/d(input).
     pub gain: f64,
@@ -124,10 +180,7 @@ pub struct TfResult {
 ///     ..Default::default()
 /// };
 ///
-/// let config = TfConfig {
-///     output: TfOutput::Voltage { node: "out".into(), reference: None },
-///     input_source: "V1".into(),
-/// };
+/// let config = TfConfig::new(TfOutput::voltage("out"), "V1");
 /// let tf = solve_tf(&circuit, &config)?;
 /// assert!((tf.gain - 0.75).abs() < 1e-9);
 /// assert!((tf.input_resistance - 4_000.0).abs() < 1e-6);
@@ -138,29 +191,6 @@ pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimErr
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     solve_tf_with(circuit, config, &crate::SolverOptions::default())
-}
-
-/// Like [`solve_tf`], seeding the Newton–Raphson solve for the DC bias
-/// point with node voltages (V) keyed by node name, as SPICE's `.nodeset`.
-/// Unknown node names are ignored.
-///
-/// # Errors
-///
-/// As [`solve_tf`].
-#[deprecated(
-    since = "0.1.0",
-    note = "use `Solver::new(SolverOptions::default().with_nodeset(..)).tf(..)`"
-)]
-pub fn solve_tf_with_initial_voltages(
-    circuit: &Circuit,
-    config: &TfConfig,
-    initial_voltages: &HashMap<String, f64>,
-) -> Result<TfResult, SimError> {
-    solve_tf_with(
-        circuit,
-        config,
-        &crate::SolverOptions::default().with_nodeset(initial_voltages.clone()),
-    )
 }
 
 /// [`solve_tf`] with `opts`.

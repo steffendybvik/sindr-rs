@@ -40,7 +40,7 @@ fn v_out(node: &str) -> TfOutput {
 }
 
 fn sens(circuit: &Circuit, output: TfOutput) -> SensResult {
-    solve_sensitivity(circuit, &SensConfig { output }).unwrap()
+    solve_sensitivity(circuit, &SensConfig::new(output)).unwrap()
 }
 
 fn of(result: &SensResult, id: &str) -> f64 {
@@ -378,7 +378,18 @@ fn bad_output_is_an_error() {
             source_id: "R1".into(),
         },
     ] {
-        let err = solve_sensitivity(&c, &SensConfig { output });
+        let err = solve_sensitivity(&c, &SensConfig::new(output));
         assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
     }
+}
+
+#[test]
+fn config_constructor() {
+    let config = sindr::SensConfig::new(TfOutput::current("V1"));
+    assert_eq!(
+        config.output,
+        TfOutput::Current {
+            source_id: "V1".into()
+        }
+    );
 }

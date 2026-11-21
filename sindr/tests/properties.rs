@@ -194,11 +194,7 @@ proptest! {
             elements.push(CircuitElement::Resistor {
                 id: "RLOAD".into(), nodes: [to.into(), "0".into()], resistance: 50.0,
             });
-            let config = AcConfig {
-                f_start: f, f_stop: f, num_points: 1,
-                spacing: FrequencySpacing::Linear,
-                source_id: "V1".into(), ac_magnitude: 1.0, ac_phase_deg: 0.0,
-            };
+            let config = AcConfig::new("V1", f, f, 1).with_spacing(FrequencySpacing::Linear);
             solve_ac(&circuit(elements), &config).unwrap().points[0].node_voltages[to]
         };
         let (ab, ba) = (drive(&a, &b), drive(&b, &a));

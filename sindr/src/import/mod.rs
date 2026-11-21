@@ -76,6 +76,9 @@ use sindr_devices::regulator::RegulatorParams;
 use sindr_devices::varactor::VaractorParams;
 
 /// A schematic's components and the nets joining them.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Netlist {
@@ -170,6 +173,7 @@ impl Component {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(untagged))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Value {
     /// A number in SI base units (Ω, F, H, V, A, Hz, K).
     Number(f64),
@@ -208,6 +212,7 @@ impl From<String> for Value {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Model {
     /// For a diode (`.model D`).
     Diode(DiodeModel),
@@ -283,6 +288,7 @@ impl Model {
 #[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(missing_docs)]
+#[non_exhaustive]
 pub enum ComponentKind {
     Resistor,
     Capacitor,
@@ -712,6 +718,7 @@ pub enum ImportError {
 /// A [`Circuit`] built from a [`Netlist`], with the map from the caller's
 /// net ids to its node names.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ImportedCircuit {
     /// The circuit. Element ids are component and bench ids; node names
     /// are net ids.

@@ -5,9 +5,8 @@ use std::collections::HashMap;
 
 use sindr::dc_sweep::DcSweepAxis;
 use sindr::{
-    solve_circuit, solve_transient, BjtKind, Circuit, CircuitElement, ConvergenceAid,
-    FrequencySpacing, NoiseConfig, SensConfig, SimError, SolvePoint, Solver, SolverOptions,
-    TfConfig, TfOutput, TransientConfig,
+    solve_circuit, solve_transient, BjtKind, Circuit, CircuitElement, ConvergenceAid, NoiseConfig,
+    SensConfig, SimError, SolvePoint, Solver, SolverOptions, TfConfig, TfOutput, TransientConfig,
 };
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
@@ -188,15 +187,7 @@ fn source_stepping_can_be_turned_off() {
 #[test]
 fn nodeset_seeds_the_ac_bias_point() {
     let c = diode_circuit();
-    let config = sindr::AcConfig {
-        f_start: 10.0,
-        f_stop: 1e3,
-        num_points: 3,
-        spacing: sindr::FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let config = sindr::AcConfig::new("V1", 10.0, 1e3, 3);
     let mut seed = HashMap::new();
     seed.insert("a".to_string(), 0.65);
     let plain = sindr::solve_ac(&c, &config).unwrap();
@@ -284,63 +275,62 @@ fn bad_options_are_rejected() {
     }
 }
 
-#[allow(deprecated)]
 #[test]
-fn deprecated_seeded_functions_still_work() {
+fn nodeset_seeds_every_analysis_to_the_same_answer() {
+    // The diode circuit has one bias point, so a seeded solver lands where
+    // the plain free functions do, to within Newton's tolerance.
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-5 * a.abs().max(b.abs()) + 1e-12;
     let mut seed = HashMap::new();
     seed.insert("a".to_string(), 0.7);
-    let old = sindr::solve_circuit_with_initial_voltages(&diode_circuit(), &seed).unwrap();
-    let solver = Solver::new(SolverOptions::default().with_nodeset(seed.clone()));
-    let new = solver.circuit(&diode_circuit()).unwrap();
-    assert_eq!(old.node_voltages, new.node_voltages);
-
-    // The small-signal ones: the same answer as the solver with that nodeset.
+    let solver = Solver::new(SolverOptions::default().with_nodeset(seed));
     let c = diode_circuit();
-    let out = TfOutput::Voltage {
-        node: "a".into(),
-        reference: None,
-    };
-    let tf = TfConfig {
-        output: out.clone(),
-        input_source: "V1".into(),
-    };
-    assert_eq!(
-        sindr::transfer_function::solve_tf_with_initial_voltages(&c, &tf, &seed).unwrap(),
-        solver.tf(&c, &tf).unwrap()
+    let plain = sindr::solve_circuit(&c).unwrap();
+    let seeded = solver.circuit(&c).unwrap();
+    for (node, v) in &plain.node_voltages {
+        assert!(close(seeded.node_voltages[node], *v), "{node}");
+    }
+
+    let out = TfOutput::voltage("a");
+    let tf = TfConfig::new(out.clone(), "V1");
+    let (plain, seeded) = (
+        sindr::solve_tf(&c, &tf).unwrap(),
+        solver.tf(&c, &tf).unwrap(),
     );
-    let sens = SensConfig { output: out };
-    assert_eq!(
-        sindr::sensitivity::solve_sensitivity_with_initial_voltages(&c, &sens, &seed).unwrap(),
-        solver.sensitivity(&c, &sens).unwrap()
+    assert!(close(plain.gain, seeded.gain));
+    assert!(close(plain.input_resistance, seeded.input_resistance));
+    assert!(close(plain.output_resistance, seeded.output_resistance));
+
+    let sens = SensConfig::new(out);
+    let (plain, seeded) = (
+        sindr::solve_sensitivity(&c, &sens).unwrap(),
+        solver.sensitivity(&c, &sens).unwrap(),
     );
-    let noise = NoiseConfig {
-        output: "a".into(),
-        reference: None,
-        input_source: "V1".into(),
-        f_start: 10.0,
-        f_stop: 1e3,
-        num_points: 3,
-        spacing: FrequencySpacing::Logarithmic,
-    };
-    assert_eq!(
-        sindr::noise::solve_noise_with_initial_voltages(&c, &noise, &seed).unwrap(),
-        solver.noise(&c, &noise).unwrap()
+    assert_eq!(plain.entries.len(), seeded.entries.len());
+    for (p, s) in plain.entries.iter().zip(&seeded.entries) {
+        assert_eq!(p.component_id, s.component_id);
+        assert!(close(p.sensitivity, s.sensitivity));
+    }
+
+    let noise = NoiseConfig::new("a", "V1", 10.0, 1e3, 3);
+    let (plain, seeded) = (
+        sindr::solve_noise(&c, &noise).unwrap(),
+        solver.noise(&c, &noise).unwrap(),
     );
-    let ac = sindr::AcConfig {
-        f_start: 10.0,
-        f_stop: 1e3,
-        num_points: 3,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
-    let (old, new) = (
-        sindr::ac_analysis::solve_ac_with_initial_voltages(&c, &ac, &seed).unwrap(),
+    for (p, s) in plain.points.iter().zip(&seeded.points) {
+        assert!(close(p.output_psd, s.output_psd));
+    }
+
+    let ac = sindr::AcConfig::new("V1", 10.0, 1e3, 3);
+    let (plain, seeded) = (
+        sindr::solve_ac(&c, &ac).unwrap(),
         solver.ac(&c, &ac).unwrap(),
     );
-    assert_eq!(old.gain_curve("a"), new.gain_curve("a"));
-    assert_eq!(old.phase_curve("a"), new.phase_curve("a"));
+    for ((_, p), (_, s)) in plain.gain_curve("a").iter().zip(seeded.gain_curve("a")) {
+        assert!(close(*p, s));
+    }
+    for ((_, p), (_, s)) in plain.phase_curve("a").iter().zip(seeded.phase_curve("a")) {
+        assert!(close(*p, s));
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -411,28 +401,9 @@ fn every_analysis(solver: &Solver, c: &Circuit) -> Vec<(&'static str, Result<(),
         node: "a".into(),
         reference: None,
     };
-    let tf = TfConfig {
-        output: out.clone(),
-        input_source: "V1".into(),
-    };
-    let noise = NoiseConfig {
-        output: "a".into(),
-        reference: None,
-        input_source: "V1".into(),
-        f_start: 10.0,
-        f_stop: 1e3,
-        num_points: 3,
-        spacing: FrequencySpacing::Logarithmic,
-    };
-    let ac = sindr::AcConfig {
-        f_start: 10.0,
-        f_stop: 1e3,
-        num_points: 3,
-        spacing: FrequencySpacing::Logarithmic,
-        source_id: "V1".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let tf = TfConfig::new(out.clone(), "V1");
+    let noise = NoiseConfig::new("a", "V1", 10.0, 1e3, 3);
+    let ac = sindr::AcConfig::new("V1", 10.0, 1e3, 3);
     let inner = DcSweepAxis::new("V1", 5.0, 5.001, 2);
     let outer = DcSweepAxis::new("V2", 1.0, 1.001, 2);
     vec![
@@ -442,7 +413,7 @@ fn every_analysis(solver: &Solver, c: &Circuit) -> Vec<(&'static str, Result<(),
         ("tf", solver.tf(c, &tf).map(drop)),
         (
             "sensitivity",
-            solver.sensitivity(c, &SensConfig { output: out }).map(drop),
+            solver.sensitivity(c, &SensConfig::new(out)).map(drop),
         ),
         (
             "dc_sweep",

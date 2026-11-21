@@ -201,15 +201,7 @@ fn ac_bias_point_takes_a_nodeset() {
         ],
         ..Default::default()
     };
-    let config = AcConfig {
-        f_start: 1e3,
-        f_stop: 1e3,
-        num_points: 1,
-        spacing: FrequencySpacing::Linear,
-        source_id: "VIN".into(),
-        ac_magnitude: 1.0,
-        ac_phase_deg: 0.0,
-    };
+    let config = AcConfig::new("VIN", 1e3, 1e3, 1).with_spacing(FrequencySpacing::Linear);
     let plain = solve_ac(&stage, &config).unwrap().points[0].node_voltages["c"];
     let seed = HashMap::from([("c".to_string(), 5.0)]);
     let seeded = sindr::Solver::new(sindr::SolverOptions::default().with_nodeset(seed.clone()))
