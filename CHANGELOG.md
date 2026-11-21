@@ -9,11 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `solve_op` and `Solver::op`: the DC operating point as SPICE's `.op`
+  solves it, with capacitors open, inductors shorted and each source at
+  its t = 0 value. A deck's `.op` maps onto it.
 - The SPICE parser reads linear `E`, `G`, `F` and `H` lines into
   `Vcvs`, `Vccs`, `Cccs` and `Ccvs`, and a `K` line with its two `L`
   lines into one `Transformer`. Every deck `to_netlist` writes now parses
   back, and so do vendor decks with linear controlled sources. The
   `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms are unsupported devices.
+
+### Fixed
+
+- `dc_sweep` and `dc_sweep_nested` solve each point as an operating point
+  (capacitors open, inductors shorted), as SPICE's `.dc` does. Before, a
+  circuit with a capacitor, inductor or waveform source ran a transient
+  at every point and reported its 5 τ end state. A swept source's own
+  waveform is ignored.
+- AC, `.tf`, `.sens` and `.noise` bias a source with a waveform at its
+  t = 0 value, as SPICE does, where they took its DC offset alone.
 
 ## [0.1.0] - 2026-11-20
 

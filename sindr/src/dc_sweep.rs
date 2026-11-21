@@ -197,31 +197,47 @@ impl DcSweepAxis {
     }
 }
 
-/// `circuit` with source `id` set to `value` (V or A).
+/// `circuit` with source `id` set to `value` (V or A), its waveform
+/// dropped: a swept source is its sweep value alone, as in SPICE.
 fn set_source(circuit: &mut Circuit, id: &str, value: f64) {
     for component in &mut circuit.components {
         match component {
             CircuitElement::VoltageSource {
-                id: cid, voltage, ..
-            } if cid == id => *voltage = value,
+                id: cid,
+                voltage,
+                waveform,
+                ..
+            } if cid == id => {
+                *voltage = value;
+                *waveform = None;
+            }
             CircuitElement::CurrentSource {
-                id: cid, current, ..
-            } if cid == id => *current = value,
+                id: cid,
+                current,
+                waveform,
+                ..
+            } if cid == id => {
+                *current = value;
+                *waveform = None;
+            }
             _ => {}
         }
     }
 }
 
-/// One curve along `axis` of flat `circuit`. Each point's Newton–Raphson
-/// starts from the previous point's node voltages, the first from `seed`
-/// when there is one, else from `opts.nodeset`.
+/// One curve along `axis` of flat, validated `circuit`, each point an
+/// operating point as SPICE's `.dc` solves it: on the
+/// [`dc_equivalent`](crate::dc_equivalent), capacitors open and inductors
+/// shorted. Each point's Newton–Raphson starts from the previous point's
+/// node voltages, the first from `seed` when there is one, else from
+/// `opts.nodeset`.
 fn sweep_curve(
     circuit: &Circuit,
     axis: &DcSweepAxis,
     seed: Option<&HashMap<String, f64>>,
     opts: &SolverOptions,
 ) -> Result<DcSweepResult, SimError> {
-    let mut work = circuit.clone();
+    let mut work = crate::dc_equivalent(circuit);
     let mut points: Vec<DcSweepPoint> = Vec::with_capacity(axis.num_points);
     let mut point_opts = opts.clone();
     if let Some(seed) = seed {
@@ -235,12 +251,16 @@ fn sweep_curve(
                 .nodeset
                 .clone_from(&previous.result.node_voltages);
         }
-        let result = crate::solve_circuit_with(&work, &point_opts).map_err(|e| {
-            e.at(crate::SolvePoint::DcSweep {
-                source: axis.source_id.clone(),
-                value: sweep_value,
-            })
-        })?;
+        let mut result =
+            crate::solve_dc_heated(&work, |dc| crate::solve_dc_circuit(dc, &point_opts)).map_err(
+                |e| {
+                    e.at(crate::SolvePoint::DcSweep {
+                        source: axis.source_id.clone(),
+                        value: sweep_value,
+                    })
+                },
+            )?;
+        crate::strip_secondary_windings(&mut result);
         points.push(DcSweepPoint {
             sweep_value,
             result,
@@ -348,6 +368,7 @@ pub(crate) fn dc_sweep_with(
         ));
     }
     axis.check(circuit, 2)?;
+    crate::validation::validate_circuit(circuit)?;
     let mut sweep = sweep_curve(circuit, &axis, None, opts)?;
     for point in &mut sweep.points {
         crate::composite::fold(original, &mut point.result);
@@ -462,6 +483,7 @@ pub(crate) fn dc_sweep_nested_with(
     }
     let total = inner.num_points.saturating_mul(outer.num_points);
     crate::validation::check_sweep_points("DC sweep", "inner × outer points", total)?;
+    crate::validation::validate_circuit(circuit)?;
 
     let mut work = circuit.clone();
     let mut curves: Vec<NestedDcSweepCurve> = Vec::with_capacity(outer.num_points);
