@@ -525,6 +525,50 @@ pub(crate) fn regulator_piece_at(
     regulator_piece(&params, voltage, vin, iout)
 }
 
+/// `true` when every regulator in `circuit` is on the same piece of its
+/// characteristic, and of its quiescent-current ramp, at `v_new` as at
+/// `v_prev`, the iterate it was stamped from.
+///
+/// The characteristic is piecewise linear, so a Newton step that lands on
+/// another piece can be within the node tolerance (about 1 mV on a 1 V
+/// node) and still be the solution of the wrong piece. Leaving the 0 V
+/// floor, that stale millivolt across a large output capacitor becomes a
+/// current spike on the next short step.
+pub(crate) fn regulator_pieces_settled(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    num_nodes: usize,
+    v_prev: &DVector<f64>,
+    v_new: &DVector<f64>,
+) -> bool {
+    let mut branch = num_nodes;
+    for component in &circuit.components {
+        if let CircuitElement::VoltageRegulator {
+            nodes,
+            voltage,
+            model,
+            ..
+        } = component
+        {
+            let at = |x: &DVector<f64>| {
+                let piece = regulator_piece_at(node_map, nodes, *voltage, model, branch, Some(x));
+                let ramp = model
+                    .as_ref()
+                    .zip(regulator_state(node_map, nodes, branch, Some(x)))
+                    .map(|(params, (vin, _, _))| {
+                        sindr_devices::regulator::regulator_quiescent(params, *voltage, vin)
+                    });
+                (piece, ramp)
+            };
+            if at(v_prev) != at(v_new) {
+                return false;
+            }
+        }
+        branch += component.branch_slots();
+    }
+    true
+}
+
 /// Stamp a linear regulator `[in, out, gnd]` on the piece of its
 /// characteristic the previous iterate `v_prev` is on.
 ///

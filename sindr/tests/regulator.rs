@@ -397,3 +397,67 @@ fn unpowered_negative_regulator_outputs_nothing() {
         );
     }
 }
+
+/// Leaving the 0 V floor on a ramped input, an output capacitor draws
+/// C·dV/dt. Newton must not settle on the floor piece once the solution
+/// is past the corner: within the node tolerance the output lags by a
+/// millivolt, then catches up in one short step, a spike up to the
+/// current limit. Here a 7805 ramps the input of an AMS1117.
+#[test]
+fn ramped_start_up_leaves_the_floor_without_a_current_spike() {
+    let c = Circuit::new(
+        "0",
+        vec![
+            CircuitElement::VoltageSource {
+                id: "VIN".into(),
+                nodes: ["in".into(), "0".into()],
+                voltage: 0.0,
+                waveform: Some(sindr::Waveform::Pwl {
+                    points: vec![(0.0, 0.0), (1e-3, 12.0)],
+                }),
+            },
+            CircuitElement::VoltageRegulator {
+                id: "U1".into(),
+                nodes: ["in".into(), "mid".into(), "0".into()],
+                voltage: 5.0,
+                model: Some(RegulatorParams::lm7805()),
+            },
+            CircuitElement::Capacitor {
+                id: "CMID".into(),
+                nodes: ["mid".into(), "0".into()],
+                capacitance: 10e-6,
+            },
+            CircuitElement::VoltageRegulator {
+                id: "U2".into(),
+                nodes: ["mid".into(), "out".into(), "0".into()],
+                voltage: 3.3,
+                model: Some(RegulatorParams::ams1117()),
+            },
+            CircuitElement::Capacitor {
+                id: "COUT".into(),
+                nodes: ["out".into(), "0".into()],
+                capacitance: 22e-6,
+            },
+            load_r(6.6),
+        ],
+    );
+    let tran = sindr::solve_transient(&c, &sindr::TransientConfig::new(1e-3, 5e-6))
+        .unwrap()
+        .transient
+        .unwrap();
+    let inrush = 22e-6 * 12.0 / 1e-3;
+    let peak = tran
+        .timesteps
+        .iter()
+        .map(|s| {
+            s.component_results
+                .iter()
+                .find(|r| r.id == "COUT")
+                .unwrap()
+                .current_through
+        })
+        .fold(f64::MIN, f64::max);
+    // Gear-2 still overshoots one step at the corner in dV/dt, by about
+    // 30 %; the stale piece gave the full 1.1 A limit.
+    assert!(peak > 0.9 * inrush && peak < 1.35 * inrush, "peak {peak} A");
+}

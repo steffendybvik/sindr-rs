@@ -384,7 +384,10 @@ fn nr_inner(
             );
         }
 
-        if !igbt_limited && converged(&v_prev, &v_limited, num_nodes, &diode_info, opts) {
+        if !igbt_limited
+            && converged(&v_prev, &v_limited, num_nodes, &diode_info, opts)
+            && stamp::regulator_pieces_settled(circuit, node_map, num_nodes, &v_prev, &v_limited)
+        {
             stamp::behavioural_finite_at(circuit, node_map, &v_limited, 0.0)?;
             let result = results::extract_results(circuit, node_map, &v_limited, num_nodes);
             return Ok((result, v_limited));
