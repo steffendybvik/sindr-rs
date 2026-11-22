@@ -1,6 +1,6 @@
 [package]
 name = "sindr-devices"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version = "1.89"
 description = "Device physics for the sindr circuit simulator: diode family, LED, BJT, MOSFET, JFET, IGBT, varactor, thermistor, photoresistor, regulator, battery and saturating inductor models, with no solver."

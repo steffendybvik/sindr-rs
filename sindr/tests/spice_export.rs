@@ -199,6 +199,8 @@ fn models_round_trip() {
         rs: 0.568,
         kf: 1e-16,
         af: 1.2,
+        eg: 0.69,
+        xti: 2.0,
         ..DiodeModel::default()
     };
     let bjt = BjtModel {
@@ -209,6 +211,8 @@ fn models_round_trip() {
         vaf: 74.03,
         kf: 3e-15,
         af: 1.1,
+        eg: 1.12,
+        xti: 3.5,
     };
     let circuit = Circuit {
         ground_node: "gnd".into(),
@@ -630,7 +634,11 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
             id: "M1".into(),
             nodes: three("a", "b", "0"),
             kind: sindr::MosfetKind::Nmos,
-            params: MosfetParams::default_nmos(),
+            // A level-1 card's flicker noise needs a gate oxide.
+            params: MosfetParams {
+                kf: 1e-25,
+                ..MosfetParams::default_nmos()
+            },
             parasitic_caps: None,
             body_diode: None,
         },
@@ -639,7 +647,9 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
             nodes: three("a", "b", "0"),
             kind: sindr::JfetKind::NChannel,
             idss: 10e-3,
-            vp: -2.0,
+            // SPICE's N-channel VTO is below 0.
+            vp: 2.0,
+            parasitic_caps: None,
         },
         CircuitElement::Igbt {
             id: "Z1".into(),

@@ -433,6 +433,7 @@ fn transistors() {
                     kind,
                     idss: 10e-3,
                     vp,
+                    parasitic_caps: None,
                 },
             ],
         );

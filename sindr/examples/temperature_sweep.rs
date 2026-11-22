@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "{:>6.1}\t{:.4}",
             point.temperature_kelvin - 273.15,
-            point.result.node_voltages["out"]
+            point.result.voltage("out").unwrap_or(f64::NAN)
         );
     }
 

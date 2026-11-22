@@ -18,6 +18,7 @@ use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 use std::collections::BTreeMap;
 
 use crate::design::{Block, Instance, Part};
+use crate::expression::Expression;
 use crate::waveform::Waveform;
 
 /// BJT parasitic capacitances. All values in Farads. Default 0.0 disables each cap.
@@ -38,7 +39,8 @@ pub struct BjtParasiticCaps {
 /// Parameters of a [`CircuitElement::Diode`], as a SPICE `.model D` card
 /// gives them: Shockley (IS, N, RS), charge storage (CJO, VJ, M, FC, TT) and
 /// reverse breakdown (BV, IBV). Values are at the nominal 27 °C; the
-/// element's `temperature` scales `is` from there, and only `is`.
+/// element's `temperature` scales `is` from there with `eg` and `xti`, as
+/// SPICE's `IS(T)` does, and only `is`.
 ///
 /// The default is sindr's built-in silicon diode. With serde, a missing field
 /// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
@@ -77,6 +79,12 @@ pub struct DiodeModel {
     pub kf: f64,
     /// Flicker-noise exponent AF, positive. Default 1.
     pub af: f64,
+    /// Bandgap EG (eV), positive: how fast `is` rises with temperature.
+    /// Default 1.11, silicon; a Schottky junction is about 0.69.
+    pub eg: f64,
+    /// Saturation-current temperature exponent XTI, zero or positive.
+    /// Default 3, a pn junction; a Schottky junction is 2.
+    pub xti: f64,
 }
 
 impl Default for DiodeModel {
@@ -94,6 +102,8 @@ impl Default for DiodeModel {
             ibv: 1e-3,
             kf: 0.0,
             af: 1.0,
+            eg: 1.11,
+            xti: 3.0,
         }
     }
 }
@@ -109,7 +119,7 @@ impl DiodeModel {
 /// Ebers–Moll parameters of a [`CircuitElement::Bjt`], as a SPICE
 /// `.model NPN`/`PNP` card gives them. The forward gain is the element's own
 /// `bf`. Values are at the nominal 27 °C; the element's `temperature` scales
-/// `is` from there.
+/// `is` from there with `eg` and `xti`, as SPICE's `IS(T)` does.
 ///
 /// The default is sindr's built-in transistor. With serde, a missing field
 /// takes its default.
@@ -138,6 +148,12 @@ pub struct BjtModel {
     pub kf: f64,
     /// Flicker-noise exponent AF, positive. Default 1.
     pub af: f64,
+    /// Bandgap EG (eV), positive: how fast `is` rises with temperature.
+    /// Default 1.11, silicon.
+    pub eg: f64,
+    /// Saturation-current temperature exponent XTI, zero or positive.
+    /// Default 3.
+    pub xti: f64,
 }
 
 impl Default for BjtModel {
@@ -150,6 +166,8 @@ impl Default for BjtModel {
             vaf: 0.0,
             kf: 0.0,
             af: 1.0,
+            eg: 1.11,
+            xti: 3.0,
         }
     }
 }
@@ -220,6 +238,73 @@ pub struct MosfetParasiticCaps {
     /// Gate-Drain capacitance (Miller capacitance) (F). Typical: 10–100 pF.
     #[cfg_attr(feature = "serde", serde(default))]
     pub cgd: f64,
+}
+
+/// Gate capacitances of a [`CircuitElement::Jfet`], for transient and AC, as
+/// a SPICE `.model NJF`/`PJF` card's `CGS`, `CGD`, `PB`, `M` and `FC` give
+/// them.
+///
+/// Each gate junction is a depletion capacitance
+/// `C = C0 / (1 − v/PB)^M` at junction voltage `v` (`vgs` and `vgd` for an
+/// N-channel part, their negatives for a P-channel one), continued linearly
+/// above `FC·PB` so it stays finite in forward bias, as SPICE's junction
+/// charge. Transient integrates the charge, so it is conserved; AC uses the
+/// capacitance at the bias point. Values are at the nominal 27 °C.
+///
+/// The default is no capacitance with SPICE's `PB = 1`, `M = 0.5` and
+/// `FC = 0.5`. With serde, a missing field takes its default.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JfetParasiticCaps {
+    /// Zero-bias gate–source capacitance CGS (F), zero or positive. Default 0.
+    pub cgs: f64,
+    /// Zero-bias gate–drain capacitance CGD (F), zero or positive; the
+    /// Miller capacitance of a common-source stage. Default 0.
+    pub cgd: f64,
+    /// Gate junction potential PB (V), positive. Default 1.
+    pub pb: f64,
+    /// Grading coefficient M, in `[0, 0.9]`. Default 0.5 (an abrupt
+    /// junction, the only value ngspice's JFET has).
+    pub m: f64,
+    /// Forward-bias depletion coefficient FC, in `[0, 0.95]`: above `FC·PB`
+    /// the capacitance is continued linearly. Default 0.5.
+    pub fc: f64,
+}
+
+impl Default for JfetParasiticCaps {
+    fn default() -> Self {
+        Self {
+            cgs: 0.0,
+            cgd: 0.0,
+            pb: 1.0,
+            m: 0.5,
+            fc: 0.5,
+        }
+    }
+}
+
+impl JfetParasiticCaps {
+    /// Whether either gate junction has a capacitance, which makes the
+    /// circuit reactive.
+    pub fn stores_charge(&self) -> bool {
+        self.cgs > 0.0 || self.cgd > 0.0
+    }
+}
+
+/// What a [`CircuitElement::Behavioural`] source's expression sets.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BehaviouralOutput {
+    /// The voltage across the source, `n+` over `n-` (V): SPICE's `V=`.
+    Voltage,
+    /// The current through the source from `n+` to `n-` (A): SPICE's `I=`.
+    Current,
 }
 
 /// Which throw of a [`CircuitElement::SwitchSpdt`] the common terminal
@@ -487,7 +572,10 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
-        /// Emission colour (e.g. `"red"`, `"blue"`); sets the forward voltage drop.
+        /// Emission colour, any case: `"red"`, `"orange"`, `"amber"`,
+        /// `"yellow"`, `"green"`, `"blue"` or `"white"`
+        /// ([`led::COLORS`](sindr_devices::led::COLORS)); sets the forward
+        /// voltage drop. Any other name is red.
         color: String,
         /// Junction temperature (K), positive and finite. Default 300.15 K.
         /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
@@ -575,6 +663,13 @@ pub enum CircuitElement {
         /// Pinch-off voltage (V, negative for N-channel, e.g. -2.0).
         #[cfg_attr(feature = "serde", serde(default = "default_jfet_vp"))]
         vp: f64,
+        /// Optional gate capacitances (CGS, CGD as SPICE junctions). None =
+        /// no capacitance (default).
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        parasitic_caps: Option<JfetParasiticCaps>,
     },
 
     /// Voltage-Controlled Voltage Source: V_out = mu * V_control.
@@ -861,6 +956,15 @@ pub enum CircuitElement {
     /// In transient: coupled-inductor companion with 2 branch current unknowns,
     /// each winding `V = L·dI/dt` plus the mutual term. The windings start at
     /// 0 A; an initial current on a transformer is rejected.
+    ///
+    /// With `saturation`, the core is modelled as a leakage inductance
+    /// `(1 − k)·L` on each winding and a magnetising inductance `k·L1` on the
+    /// primary carrying the shared core flux, driven by the magnetising
+    /// current `i1 + n·i2` (n = √(L2/L1), the turns ratio). That branch
+    /// saturates as a saturating [`Inductor`](Self::Inductor) does, so a
+    /// winding driven past its volt-second rating, or with a DC bias, draws
+    /// a magnetising current that climbs once the core saturates. Without
+    /// it the pair is linear and identical to the coupled inductors above.
     #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
     Transformer {
         /// Unique component identifier.
@@ -874,6 +978,14 @@ pub enum CircuitElement {
         /// Coupling coefficient (unitless) in `[0, 0.999]`. Default 0.999 (near-ideal).
         #[cfg_attr(feature = "serde", serde(default = "default_coupling"))]
         k: f64, // Coupling coefficient [0, 0.999]. Default 0.999 (near-ideal).
+        /// Core saturation, on the magnetising branch: `i_sat` is the
+        /// magnetising current referred to the primary, and `l_sat` at
+        /// most the magnetising inductance `k·l1`. `None` is a linear core.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        saturation: Option<sindr_devices::inductor::InductorSaturation>,
     },
 
     /// Fuse between two nodes.
@@ -972,6 +1084,43 @@ pub enum CircuitElement {
         /// The equivalent circuit.
         params: FerriteBeadParams,
     },
+
+    /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
+    /// voltage or current set by an [`Expression`] of node voltages,
+    /// branch currents and time.
+    ///
+    /// A voltage output holds `V(nodes[0]) − V(nodes[1])` at the
+    /// expression, and like a [`CircuitElement::VoltageSource`] has a
+    /// branch current others can read with `i(id)`. A current output
+    /// drives the expression's value through the source from `nodes[0]` to
+    /// `nodes[1]`, as a [`CircuitElement::CurrentSource`] does. Newton
+    /// stamps it with the expression's exact gradient, AC analysis
+    /// linearises it at the bias point, and `time` reads the transient's
+    /// time (0 elsewhere).
+    ///
+    /// ```
+    /// use sindr::{BehaviouralOutput, CircuitElement};
+    /// use sindr::expression::Expression;
+    ///
+    /// let multiplier = CircuitElement::Behavioural {
+    ///     id: "b1".into(),
+    ///     nodes: ["out".into(), "0".into()],
+    ///     output: BehaviouralOutput::Voltage,
+    ///     expr: Expression::parse("v(a)*v(b)")?,
+    /// };
+    /// # Ok::<(), sindr::expression::ExpressionError>(())
+    /// ```
+    #[cfg_attr(feature = "serde", serde(rename = "behavioural"))]
+    Behavioural {
+        /// Unique component identifier.
+        id: String,
+        /// Terminals `[n+, n-]`.
+        nodes: [String; 2],
+        /// Whether the expression is a voltage or a current.
+        output: BehaviouralOutput,
+        /// The value, in volts or amperes.
+        expr: Expression,
+    },
 }
 
 #[cfg(feature = "serde")]
@@ -1064,6 +1213,7 @@ impl CircuitElement {
             CircuitElement::SwitchSpdt { nodes, .. } => nodes,
             CircuitElement::Crystal { nodes, .. } => nodes,
             CircuitElement::FerriteBead { nodes, .. } => nodes,
+            CircuitElement::Behavioural { nodes, .. } => nodes,
         }
     }
 
@@ -1086,6 +1236,15 @@ impl CircuitElement {
             }
             CircuitElement::Ccvs { nodes, .. } => vec![&nodes[0], &nodes[1]],
             CircuitElement::Cccs { nodes, .. } => vec![&nodes[0], &nodes[1]],
+            CircuitElement::Behavioural { nodes, expr, .. } => {
+                let mut all: Vec<&String> = nodes.iter().collect();
+                for node in expr.nodes() {
+                    if !all.contains(&node) {
+                        all.push(node);
+                    }
+                }
+                all
+            }
             _ => self.nodes().iter().collect(),
         }
     }
@@ -1127,6 +1286,7 @@ impl CircuitElement {
             CircuitElement::SwitchSpdt { id, .. } => id,
             CircuitElement::Crystal { id, .. } => id,
             CircuitElement::FerriteBead { id, .. } => id,
+            CircuitElement::Behavioural { id, .. } => id,
         }
     }
 
@@ -1137,7 +1297,11 @@ impl CircuitElement {
     pub fn branch_slots(&self) -> usize {
         match self {
             CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. } => 2,
-            CircuitElement::VoltageSource { .. }
+            CircuitElement::Behavioural {
+                output: BehaviouralOutput::Voltage,
+                ..
+            }
+            | CircuitElement::VoltageSource { .. }
             | CircuitElement::Vcvs { .. }
             | CircuitElement::Ccvs { .. }
             | CircuitElement::OpAmp { .. }
@@ -1184,6 +1348,7 @@ impl CircuitElement {
             CircuitElement::SwitchSpdt { nodes, .. } => nodes,
             CircuitElement::Crystal { nodes, .. } => nodes,
             CircuitElement::FerriteBead { nodes, .. } => nodes,
+            CircuitElement::Behavioural { nodes, .. } => nodes,
         }
     }
 
@@ -1224,6 +1389,7 @@ impl CircuitElement {
             CircuitElement::SwitchSpdt { id, .. } => id,
             CircuitElement::Crystal { id, .. } => id,
             CircuitElement::FerriteBead { id, .. } => id,
+            CircuitElement::Behavioural { id, .. } => id,
         }
     }
 
@@ -1241,6 +1407,15 @@ impl CircuitElement {
         match self {
             CircuitElement::Ccvs { control_source, .. }
             | CircuitElement::Cccs { control_source, .. } => Some(control_source),
+            _ => None,
+        }
+    }
+
+    /// The expression of a behavioural source, for renaming the nodes and
+    /// sources it reads.
+    pub(crate) fn expression_mut(&mut self) -> Option<&mut Expression> {
+        match self {
+            CircuitElement::Behavioural { expr, .. } => Some(expr),
             _ => None,
         }
     }
@@ -1374,6 +1549,10 @@ impl Circuit {
                         saturation: Some(_),
                         ..
                     }
+                    | CircuitElement::Transformer {
+                        saturation: Some(_),
+                        ..
+                    }
                     | CircuitElement::Diode { .. }
                     | CircuitElement::Led { .. }
                     | CircuitElement::Bjt { .. }
@@ -1384,6 +1563,7 @@ impl Circuit {
                     | CircuitElement::Photodiode { .. }
                     | CircuitElement::Igbt { .. }
                     | CircuitElement::Jfet { .. }
+                    | CircuitElement::Behavioural { .. }
                     | CircuitElement::VoltageRegulator { .. } // Thermistor is passive (temperature-dependent resistance, no NR)
                                                               // Varactor is passive in DC (open circuit), no NR needed
             )
@@ -1391,7 +1571,7 @@ impl Circuit {
     }
 
     /// Returns true if the circuit contains any reactive elements (Capacitor, Inductor, or
-    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET with non-zero parasitic caps,
+    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET/JFET with non-zero parasitic caps,
     /// or a diode whose model stores charge).
     pub fn has_reactive_elements(&self) -> bool {
         self.components.iter().any(|c| match c {
@@ -1412,6 +1592,10 @@ impl Circuit {
             CircuitElement::Diode {
                 model: Some(model), ..
             } => model.stores_charge(),
+            CircuitElement::Jfet {
+                parasitic_caps: Some(caps),
+                ..
+            } => caps.stores_charge(),
             _ => false,
         })
     }
@@ -1433,7 +1617,10 @@ impl Circuit {
             let slots = component.branch_slots();
             let has_current = matches!(
                 component,
-                CircuitElement::VoltageSource { .. }
+                CircuitElement::Behavioural {
+                    output: BehaviouralOutput::Voltage,
+                    ..
+                } | CircuitElement::VoltageSource { .. }
                     | CircuitElement::Vcvs { .. }
                     | CircuitElement::Ccvs { .. }
                     | CircuitElement::OpAmp { .. }
@@ -1939,6 +2126,7 @@ mod tests {
                 kind: JfetKind::NChannel,
                 idss: 1e-3,
                 vp: -2.0,
+                parasitic_caps: None,
             },
             CircuitElement::Vcvs {
                 id: "E".into(),
@@ -2038,6 +2226,7 @@ mod tests {
                 l1: 1.0,
                 l2: 1.0,
                 k: 0.99,
+                saturation: None,
             },
             CircuitElement::Fuse {
                 id: "FU".into(),
@@ -2129,6 +2318,7 @@ mod tests {
                     l1: 1.0,
                     l2: 1.0,
                     k: 0.99,
+                    saturation: None,
                 },
                 v("V2"),
             ],
@@ -2139,6 +2329,26 @@ mod tests {
         // A transformer's winding currents aren't a source's current.
         assert_eq!(circuit.vsource_branch_index("T1"), None);
         assert_eq!(circuit.vsource_branch_index("V9"), None);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn jfet_gate_caps_left_out_of_json_take_spice_defaults() {
+        let json = r#"{"type": "jfet", "id": "J1", "nodes": ["g", "d", "s"],
+                       "kind": "pchannel", "parasitic_caps": {"cgs": 5e-12}}"#;
+        let CircuitElement::Jfet { parasitic_caps, .. } = serde_json::from_str(json).unwrap()
+        else {
+            panic!("not a JFET");
+        };
+        assert_eq!(
+            parasitic_caps,
+            Some(JfetParasiticCaps {
+                cgs: 5e-12,
+                ..Default::default()
+            })
+        );
+        let caps = parasitic_caps.unwrap();
+        assert_eq!((caps.cgd, caps.pb, caps.m, caps.fc), (0.0, 1.0, 0.5, 0.5));
     }
 
     #[cfg(feature = "serde")]
@@ -2169,6 +2379,7 @@ mod tests {
                 l1: 1e-3,
                 l2: 4e-3,
                 k: 0.999,
+                saturation: None,
             },
             CircuitElement::Fuse {
                 id: "F1".into(),
@@ -2182,6 +2393,7 @@ mod tests {
                 kind: JfetKind::NChannel,
                 idss: 10e-3,
                 vp: -2.0,
+                parasitic_caps: None,
             },
             // No flicker noise unless asked: kf 0, af 1.
             CircuitElement::Mosfet {

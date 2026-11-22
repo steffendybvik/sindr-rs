@@ -36,7 +36,7 @@ use crate::dc_sweep::{DcSweepAxis, DcSweepResult, NestedDcSweepResult};
 use crate::error::SimError;
 use crate::noise::{NoiseConfig, NoiseResult};
 use crate::results::SimulationResult;
-use crate::sensitivity::{SensConfig, SensResult};
+use crate::sensitivity::{AcSensConfig, AcSensResult, SensConfig, SensResult};
 use crate::temp_sweep::TempSweepResult;
 use crate::transfer_function::{TfConfig, TfResult};
 use crate::transient::TransientConfig;
@@ -246,6 +246,35 @@ impl Solver {
         crate::transfer_function::solve_tf_with(circuit, config, &self.options)
     }
 
+    /// As [`solve_pz`](crate::solve_pz).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_pz`](crate::solve_pz), and [`SolverOptions::validate`].
+    pub fn pz(
+        &self,
+        circuit: &Circuit,
+        config: &crate::PzConfig,
+    ) -> Result<crate::PzResult, SimError> {
+        self.options.validate()?;
+        crate::pole_zero::solve_pz_with(circuit, config, &self.options)
+    }
+
+    /// As [`solve_loop_gain`](crate::solve_loop_gain).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_loop_gain`](crate::solve_loop_gain), and
+    /// [`SolverOptions::validate`].
+    pub fn loop_gain(
+        &self,
+        circuit: &Circuit,
+        config: &crate::LoopGainConfig,
+    ) -> Result<crate::LoopGainResult, SimError> {
+        self.options.validate()?;
+        crate::loop_gain::solve_loop_gain_with(circuit, config, &self.options)
+    }
+
     /// As [`solve_sensitivity`](crate::solve_sensitivity).
     ///
     /// # Errors
@@ -259,6 +288,21 @@ impl Solver {
     ) -> Result<SensResult, SimError> {
         self.options.validate()?;
         crate::sensitivity::solve_sensitivity_with(circuit, config, &self.options)
+    }
+
+    /// As [`solve_ac_sensitivity`](crate::solve_ac_sensitivity).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_ac_sensitivity`](crate::solve_ac_sensitivity), and
+    /// [`SolverOptions::validate`].
+    pub fn ac_sensitivity(
+        &self,
+        circuit: &Circuit,
+        config: &AcSensConfig,
+    ) -> Result<AcSensResult, SimError> {
+        self.options.validate()?;
+        crate::sensitivity::ac::solve_ac_sensitivity_with(circuit, config, &self.options)
     }
 
     /// As [`dc_sweep`](fn@crate::dc_sweep). The nodeset seeds the first point.

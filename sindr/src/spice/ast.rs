@@ -88,6 +88,34 @@ pub(crate) enum RawElementBody {
         model: String,
         substrate: Option<String>,
     },
+    /// M — `nd ng ns nb model [name=value ...] [flag ...]`: the four
+    /// nodes in SPICE order, the `.model` it references, instance
+    /// parameters (`W`, `L`, `M`, …) and bare flags (`OFF`).
+    Mosfet {
+        model: String,
+        params: Vec<(String, ParamExpr)>,
+        flags: Vec<String>,
+    },
+    /// J — `nd ng ns model [area] [flag ...]`: the three nodes in SPICE
+    /// order, the `.model` it references, the optional area factor and
+    /// bare flags (`OFF`).
+    Jfet {
+        model: String,
+        area: Option<ParamExpr>,
+        flags: Vec<String>,
+    },
+    /// B — `n+ n- V=expr` or `I=expr`, and E / G — `n+ n- VALUE=expr`:
+    /// an expression of node voltages, branch currents and time, its
+    /// braces removed, as a voltage (B `V=`, E) or a current (B `I=`, G).
+    Behavioural { current: bool, text: String },
+    /// E / G / F / H — `n+ n- POLY(n) controls… coefficients…`: SPICE2's
+    /// polynomial of `n` controlling voltages (node pairs, E/G) or
+    /// currents (`V` lines, F/H), as a voltage (E, H) or a current (G, F).
+    Poly {
+        current: bool,
+        controls: PolyControls,
+        coefficients: Vec<ParamExpr>,
+    },
     /// E / G — `n+ n- nc+ nc- value`: the four nodes, output pair first.
     VoltageControlled { value: ParamExpr },
     /// F / H — `n+ n- vname value`: the two output nodes and the voltage
@@ -104,6 +132,15 @@ pub(crate) enum RawElementBody {
         name: String,
         params: Vec<(String, ParamExpr)>,
     },
+}
+
+/// What a `POLY` source's polynomial is of.
+#[derive(Debug, Clone)]
+pub(crate) enum PolyControls {
+    /// E / G: `(nc+, nc-)` per dimension.
+    Voltages(Vec<(String, String)>),
+    /// F / H: a `V` line per dimension.
+    Currents(Vec<String>),
 }
 
 /// `AC [mag [phase]]` on a V/I line. A bare `AC` is magnitude 1 at 0°, as
@@ -184,6 +221,19 @@ pub(crate) enum RawAnalysis {
     },
     Sens {
         output: crate::TfOutput,
+    },
+    /// `.sens output ac <sweep> points fstart fstop`.
+    SensAc {
+        output: crate::TfOutput,
+        sweep: AcSweepKind,
+        points: ParamExpr,
+        fstart: ParamExpr,
+        fstop: ParamExpr,
+    },
+    Pz {
+        nodes: [String; 4],
+        transfer: crate::PzTransfer,
+        find: crate::PzFind,
     },
     Noise {
         node: String,

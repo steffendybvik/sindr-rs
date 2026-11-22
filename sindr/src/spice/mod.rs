@@ -3,7 +3,9 @@
 //! Parses a practical subset of Berkeley SPICE3f5 netlists into a
 //! [`crate::Circuit`] plus structured analysis directives. The supported
 //! device set tracks what `sindr` can solve: R, L, C, V, I, D, Q (NPN/PNP),
-//! the linear controlled sources E, G, F and H, K (two coupled `L` lines,
+//! M (level-1 NMOS/PMOS), J (NJF/PJF), B (behavioural), the linear controlled
+//! sources E, G, F and H (and their `POLY` form, and the `VALUE` form of E and
+//! G), K (two coupled `L` lines,
 //! read as one [`Transformer`](crate::CircuitElement::Transformer)) and X
 //! (subcircuit instance). Subcircuits declared with `.subckt` /
 //! `.ends` become [`Block`](crate::Block)s and X lines
@@ -22,7 +24,7 @@
 //! analyses with them.
 //!
 //! Enable the optional `spice` feature to pull this module in
-//! (`sindr = { version = "0.1", features = ["spice"] }`); it is off by
+//! (`sindr = { version = "0.2", features = ["spice"] }`); it is off by
 //! default so the parser dependencies stay out of the baseline build.
 //!
 //! # Quick start
@@ -54,7 +56,7 @@
 //! let netlist = parse_file("amp.cir")?;
 //! println!("parsed `{}` ({} components)", netlist.title, netlist.circuit.components.len());
 //!
-//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf` / `.sens` / `.noise`
+//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf` / `.sens` / `.noise` / `.pz`
 //! // directives, in source order. The parser does not run them — you do.
 //! for analysis in &netlist.analyses {
 //!     match analysis {
@@ -99,6 +101,10 @@
 //!             let tf = sindr::solve_tf(&netlist.circuit, &analysis.tf_config().unwrap())?;
 //!             println!("tf: gain {}, rin {} Ω, rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
 //!         }
+//!         AnalysisRequest::Pz { .. } => {
+//!             let pz = sindr::solve_pz(&netlist.circuit, &analysis.pz_config().unwrap())?;
+//!             println!("pz: {} poles, {} zeros", pz.poles.len(), pz.zeros.len());
+//!         }
 //!         // `AnalysisRequest` is non-exhaustive: later releases add analyses.
 //!         other => println!("not run here: {other:?}"),
 //!     }
@@ -115,11 +121,52 @@
 //! | `D` | `IS`, `N`, `RS`, `CJO` (or `CJ0`, `CJ`), `VJ` (or `PB`), `M` (or `MJ`), `FC`, `TT`, `BV`, `IBV`, `KF`, `AF` | [`DiodeModel`](crate::DiodeModel) |
 //! | `NPN`, `PNP` | `BF` | the element's `bf` |
 //! | `NPN`, `PNP` | `IS`, `BR`, `NF`, `NR`, `VAF` (or `VA`), `KF`, `AF` | [`BjtModel`](crate::BjtModel) |
+//! | `NMOS`, `PMOS` | `LEVEL` (1 only), `KP`, `VTO`, `LAMBDA`, `GAMMA`, `PHI`, `LD` | [`MosfetParams`](crate::devices::mosfet::MosfetParams) |
+//! | `NMOS`, `PMOS` | `CGSO`, `CGDO`, `CGBO` | [`MosfetParasiticCaps`](crate::circuit::MosfetParasiticCaps) |
+//! | `NMOS`, `PMOS` | `IS`, `CBD`, `PB`, `MJ`, `FC` (the drain–bulk junction) | the element's `body_diode` |
+//! | `NJF`, `PJF` | `VTO`, `BETA` | the element's `idss` and `vp` |
+//! | `NJF`, `PJF` | `CGS`, `CGD`, `PB` (or `VJ`), `M`, `FC` | [`JfetParasiticCaps`](crate::circuit::JfetParasiticCaps) |
+//!
+//! A `.model` inside a `.subckt` belongs to that subcircuit: its elements
+//! use it ahead of a top-level card of the same name, and nothing outside
+//! sees it, as vendor model files expect.
+//!
+//! # MOSFETs and JFETs
+//!
+//! `Mxxx nd ng ns nb model [W=] [L=] [M=]` is SPICE's level 1 with
+//! ngspice's defaults (`W` = `L` = 100 µm, `KP` = 2e-5 A/V², `IS` =
+//! 1e-14 A):
+//!
+//! * `kp = KP·W/(L − 2·LD)·M`; `VTO`, `LAMBDA`, `GAMMA` and `PHI` as written.
+//! * The gate capacitances are SPICE's overlap ones, `CGSO·W + CGBO·(L − 2·LD)`
+//!   and `CGDO·W`, times `M`: the bulk is the source, so gate–bulk is
+//!   gate–source.
+//! * The drain–bulk junction becomes the body diode. `IS=0` with no `CBD`
+//!   leaves none.
+//!
+//! sindr's MOSFET ties its body to its source, so a bulk node other than
+//! the source is an error in strict mode and a warning in lenient mode.
+//! `LEVEL` other than 1 is always an error: another level is a different
+//! model. `AD`, `AS`, `PD`, `PS`, `NRD` and `NRS` only scale parameters
+//! sindr refuses, so they are dropped. `TOX` (which turns on SPICE's Meyer
+//! gate capacitance), `RD`/`RS` above 0, `KF`, the `OFF` flag and other
+//! instance parameters are unsupported.
+//!
+//! `Jxxx nd ng ns model [area]` gives `idss = BETA·VTO²·area` and a
+//! pinch-off of `VTO` (default −2 V), signed as
+//! [`JfetKind`](crate::JfetKind) expects. `CGS·area` and `CGD·area` are
+//! the gate junction capacitances, graded by `PB`, `M` and `FC` (ngspice
+//! ignores `M` and grades at 0.5). sindr's gate junction conducts no
+//! current and its JFET has no channel-length modulation or series
+//! resistance, so `IS`, `LAMBDA`, `RD` and `RS` are read only at 0.
 //!
 //! sindr's BJT is Ebers–Moll, so its Early effect isn't SPICE's
 //! Gummel–Poon base charge: with `VAF` set, results differ slightly from
-//! SPICE's. Any other parameter (`EG`, `XTI`, `CJE`, `VAR`, `IKF`, …) is an
-//! error in strict mode and a warning per card in lenient mode, naming them.
+//! SPICE's. Diode and BJT `EG` and `XTI` set how `IS` follows
+//! temperature, as SPICE's `IS(T)`; `TNOM` is read only at 27 °C, the
+//! temperature sindr's values are at. Any other parameter (`CJE`, `VAR`,
+//! `IKF`, …) is an error in strict mode and a warning per card in lenient
+//! mode, naming them.
 //! Part annotations that don't affect the simulation (`MFG`, `TYPE`,
 //! `VCEO`, `ICRATING`, `IAVE`, `VPK`) are dropped without a word.
 //!
@@ -139,9 +186,30 @@
 //! its two `L` lines, which must be in its scope, with one transformer named
 //! after the `K` line: primary from `lname1`, secondary from `lname2`, the
 //! first node of each its dot. Each `L` can be coupled once; sindr has no
-//! three-winding transformer. The nonlinear forms (`POLY`, `VALUE`,
-//! `TABLE`, `LAPLACE`) are unsupported devices: an error in strict mode, a
-//! warning (and the line dropped) in lenient mode.
+//! three-winding transformer. The nonlinear forms `TABLE` and `LAPLACE`
+//! are unsupported devices: an error in strict mode, a warning
+//! (and the line dropped) in lenient mode.
+//!
+//! # Behavioural sources
+//!
+//! | Line | Into |
+//! |---|---|
+//! | `Bxxx n+ n- V={expr}`, `Exxx n+ n- VALUE={expr}` | [`Behavioural`](crate::CircuitElement::Behavioural), a voltage |
+//! | `Bxxx n+ n- I={expr}`, `Gxxx n+ n- VALUE={expr}` | [`Behavioural`](crate::CircuitElement::Behavioural), a current from `n+` to `n-` |
+//! | `Exxx`/`Hxxx n+ n- POLY(n) …` | a behavioural voltage: the polynomial of `n` node-pair voltages (E) or `V`-line currents (H) |
+//! | `Gxxx`/`Fxxx n+ n- POLY(n) …` | a behavioural current, the same of voltages (G) or currents (F) |
+//!
+//! `POLY` coefficients follow SPICE2's order: by total degree, and within
+//! one degree over the controls in nondecreasing index order, so for two
+//! `p0 + p1·x1 + p2·x2 + p3·x1² + p4·x1·x2 + p5·x2² + …`. A
+//! one-dimensional `POLY` with one coefficient is its linear term, as in
+//! SPICE2 (ngspice refuses it).
+//!
+//! The expression runs to the end of the card, braces optional, in the
+//! syntax of [`Expression`](crate::expression::Expression): `v(n)`,
+//! `v(n,m)`, `i(vname)`, `time`, arithmetic, comparisons, `?:` and
+//! ngspice's functions. A `.param` name inside it reads as its value. Inside
+//! a `.subckt` it reads that body's own nodes and `V` lines.
 //!
 //! # Values
 //!
@@ -359,8 +427,47 @@ impl ParsedNetlist {
     /// sindr's AC analysis drives a single voltage source.
     pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> {
         let sweep = self.analyses.iter().find_map(|a| a.ac_config(""))?;
-        let invalid = |msg: String| crate::SimError::InvalidComponent(format!(".ac: {msg}"));
-        Some(match self.ac_stimuli.as_slice() {
+        Some(self.with_ac_stimulus(".ac", sweep))
+    }
+
+    /// The [`AcSensConfig`](crate::AcSensConfig) for the deck's first
+    /// `.sens ... ac`, its stimulus the source whose line carries an `AC`
+    /// spec, as [`ac_config`](Self::ac_config) has it. `None` without one.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    /// use sindr::SensParameter;
+    ///
+    /// let deck = "* rc\nV1 in 0 dc 0 ac 1\nR1 in out 1k\nC1 out 0 1u\n\
+    ///             .sens v(out) ac dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.ac_sens_config().unwrap()?;
+    /// let sens = sindr::solve_ac_sensitivity(&netlist.circuit, &config)?;
+    /// // Well below the pole, V(out) hardly depends on R1 or C1.
+    /// let r1 = sens.points[0].get_parameter("r1", SensParameter::Resistance).unwrap();
+    /// assert!(r1.per_percent.norm() < 1e-4);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The inner `Result` is as for [`ac_config`](Self::ac_config).
+    pub fn ac_sens_config(&self) -> Option<Result<crate::AcSensConfig, crate::SimError>> {
+        let config = self.analyses.iter().find_map(|a| a.ac_sens_config(""))?;
+        Some(
+            self.with_ac_stimulus(".sens ac", config.ac)
+                .map(|ac| crate::AcSensConfig::new(config.output, ac)),
+        )
+    }
+
+    /// `sweep` driving the one source whose line carries an `AC` spec.
+    fn with_ac_stimulus(
+        &self,
+        card: &str,
+        sweep: crate::ac_analysis::AcConfig,
+    ) -> Result<crate::ac_analysis::AcConfig, crate::SimError> {
+        let invalid = |msg: String| crate::SimError::InvalidComponent(format!("{card}: {msg}"));
+        match self.ac_stimuli.as_slice() {
             [] => Err(invalid("no V line carries an `AC` spec to drive".into())),
             [one] if one.current => Err(invalid(format!(
                 "`{}` is a current source; AC analysis drives a voltage source",
@@ -379,7 +486,7 @@ impl ParsedNetlist {
                     .collect::<Vec<_>>()
                     .join(", ")
             ))),
-        })
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "sindr"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version = "1.89"
 description = "Embeddable circuit simulator checked against ngspice: operating point, transient, AC, noise, DC and temperature sweeps, .tf, .sens, ratings and spec checks, SPICE import and export. Native and wasm32."
@@ -35,6 +35,9 @@ examples = []
 # SPICE3 netlist parsing (`sindr::spice`). Off by default to keep the
 # baseline dependency tree lean.
 spice = ["dep:winnow", "dep:miette"]
+# Monte Carlo and corner runs across threads (`sindr::variation`). Off by
+# default: wasm32 has no threads.
+parallel = []
 # Unstable, not covered by semver: exposes the MNA matrix for sindr's own
 # `mna_solve` bench.
 internals = []

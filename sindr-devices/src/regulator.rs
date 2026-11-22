@@ -51,8 +51,8 @@ pub struct RegulatorParams {
 }
 
 impl RegulatorParams {
-    /// An LM7805-class 5 V regulator, from the ST L78 and Fairchild LM78xx
-    /// datasheets at 25 °C: 2 V dropout (typical, 1 A), 4.3 mA quiescent
+    /// An LM7805-class 5 V regulator, from typical 78xx datasheets at
+    /// 25 °C: 2 V dropout (typical, 1 A), 4.3 mA quiescent
     /// (typical), 2.2 A peak current, line regulation 3 mV over 7–25 V
     /// (typical), load regulation 100 mV over 5 mA–1.5 A (maximum; no
     /// typical is given). Short-circuit foldback (0.23 A at 35 V in) is not
@@ -172,6 +172,34 @@ pub fn regulator_piece(
         }
     }
     piece
+}
+
+/// Where a regulator set to `voltage` changes piece, as signed distances
+/// at input `vin` and output current `iout` (from the ground pin): leaving
+/// regulation, reaching the 0 V floor, the current limit, and the two ends
+/// of the quiescent-current ramp. [`regulator_piece`] and
+/// [`regulator_quiescent`] switch only where one of these changes sign.
+/// Each is linear in `vin` and `iout`, so a straight step between two
+/// operating points crosses each at most once. An edge the parameters
+/// don't have (no current limit) is `+∞`.
+pub fn regulator_edges(params: &RegulatorParams, voltage: f64, vin: f64, iout: f64) -> [f64; 5] {
+    if voltage < 0.0 {
+        return regulator_edges(params, -voltage, -vin, -iout);
+    }
+    let regulating = voltage + params.line_regulation * (vin - (voltage + params.dropout))
+        - params.output_resistance * iout;
+    let dropout = vin - params.dropout - params.dropout_resistance * iout;
+    let limit = params
+        .current_limit
+        .filter(|l| *l > 0.0)
+        .map_or(f64::INFINITY, |l| iout - l);
+    [
+        dropout - regulating,
+        vin - params.dropout,
+        limit,
+        vin,
+        vin - params.dropout.max(0.1),
+    ]
 }
 
 /// The quiescent current a regulator set to `voltage` draws from its input

@@ -30,6 +30,7 @@
 //! | [`thermistor`] | NTC thermistor | Beta model `R(T) = R₀·exp(β·(1/T − 1/T₀))` |
 //! | [`photodiode`] | Photodiode | Diode + photocurrent offset |
 //! | [`photoresistor`] | Photoresistor (LDR) | Light-level-dependent resistance |
+//! | [`datasheet`] | Datasheet figures | Min/typ/max figures at test conditions that `from_datasheet` constructors fit models to |
 //! | [`regulator`] | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation, positive or negative; LM7805 and AMS1117 presets |
 //!
 //! # Quick example
@@ -68,6 +69,7 @@
 
 pub mod battery;
 pub mod bjt;
+pub mod datasheet;
 pub mod diode;
 pub mod igbt;
 pub mod inductor;

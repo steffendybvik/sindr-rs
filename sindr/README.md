@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain with stability margins, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -10,19 +10,19 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 
 ```toml
 [dependencies]
-sindr = "0.1"
+sindr = "0.2"
 ```
 
 Serde support is on by default. To disable:
 
 ```toml
-sindr = { version = "0.1", default-features = false }
+sindr = { version = "0.2", default-features = false }
 ```
 
 To parse SPICE netlists, enable the optional `spice` feature (off by default):
 
 ```toml
-sindr = { version = "0.1", features = ["spice"] }
+sindr = { version = "0.2", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -30,7 +30,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, linear E/G/F/H, K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -69,9 +69,8 @@ let circuit = Circuit {
 
 let result = solve_circuit(&circuit)?;
 
-println!("n2 = {:.3} V", result.node_voltages["n2"]);  // 6.667 V
-println!("R1 current = {:.3} mA", result.component_results
-    .iter().find(|c| c.id == "R1").unwrap().current_through * 1000.0);
+println!("n2 = {:.3} V", result.voltage("n2").unwrap());           // 6.667 V
+println!("R1 current = {:.3} mA", result.current("R1").unwrap() * 1e3); // 3.333 mA
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -173,7 +172,7 @@ Both, and the SPDT switch, are solved as those networks: results and ratings com
 
 ```rust,ignore
 CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
-CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"green"|"blue"|"yellow"|"white"
+CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
 CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage at 5 mA
 CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
@@ -231,14 +230,17 @@ CircuitElement::Jfet {
     kind: JfetKind, // JfetKind::NChannel or JfetKind::PChannel
     idss: f64,      // drain saturation current at Vgs = 0 (A)
     vp: f64,        // pinch-off voltage (V), negative for N-channel
+    parasitic_caps: Option<JfetParasiticCaps>, // { cgs, cgd, pb, m, fc } gate junctions; None = disabled
 }
 ```
 
+A JFET's `parasitic_caps` are SPICE's gate junctions: CGS and CGD at zero bias, each `C0/(1 − v/PB)^M` at its junction voltage and continued linearly above `FC·PB`, with SPICE's defaults `PB = 1`, `M = 0.5`, `FC = 0.5`. Transient integrates their charge; AC and noise take the capacitance at the bias point.
+
 A MOSFET's `body_diode` is a SPICE diode card (`DiodeModel`) from source to drain for NMOS, drain to source for PMOS. It conducts when a bridge or inductive load pulls the drain past the source with the channel off. Every analysis solves it as a `Diode` named `<id>.body`, which is where its current shows in the results; `bv` on it sets the part's avalanche voltage.
 
-`BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps` and `MosfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
+`BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
-When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC. This automatically triggers transient analysis.
+When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC; a JFET's CGS/CGD as charge companions, with per-junction charge state. This automatically triggers transient analysis.
 
 **NPN common-emitter example:**
 
@@ -273,7 +275,7 @@ let circuit = Circuit {
 
 let result = solve_circuit(&circuit)?;
 
-let q1 = result.bjt_results.iter().find(|b| b.id == "Q1").unwrap();
+let q1 = result.bjt("Q1").unwrap();
 println!("Vbe = {:.3} V, Vce = {:.3} V, Ic = {:.3} mA, region = {}",
     q1.vbe, q1.vce, q1.ic * 1000.0, q1.region);
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -307,7 +309,12 @@ CircuitElement::Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 
 
 // Current-controlled current source: I_out = alpha × I_ctrl
 CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 }
+
+// Behavioural source (SPICE's B): a voltage or current set by an expression
+CircuitElement::Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression }
 ```
+
+A behavioural source's `expr` is `Expression::parse("v(a)*v(b)")?` and the like: `v(n)`, `v(n,m)`, `i(source)` (the branch current of a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source), `time`, arithmetic, comparisons, `c ? a : b` and ngspice's functions (`exp`, `tanh`, `limit`, `min`, `u`, …). `BehaviouralOutput::Voltage` holds `V(n+) − V(n-)` at the expression; `Current` drives it from `n+` to `n-`. Newton gets the exact Jacobian by automatic differentiation; AC linearises at the bias point. In JSON the expression is its text: `{"type": "behavioural", "output": "voltage", "expr": "v(a)*v(b)", …}`.
 
 `control_source` is the `id` of the voltage source whose branch current is sensed, positive from its `+` terminal through it to `-`, as in SPICE.
 
@@ -403,7 +410,36 @@ assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
 
 ## Reading results
 
-`solve_circuit` returns `Result<SimulationResult, SimError>`.
+`solve_circuit` returns `Result<SimulationResult, SimError>`. Read it by name:
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+let result = solve_circuit(&circuit)?;
+
+let vout = result.voltage("out");            // Option<f64>; ground reads Some(0.0)
+let i_r1 = result.current("R1");             // its current_through, A
+let r1 = result.component("R1");             // Option<&ComponentResult>: V, I, P
+let i_v1 = result.branch_current("V1");      // MNA branch current, negative when sourcing
+let q1 = result.bjt("Q1");                   // also mosfet(..), op_amp(..), relay(..)
+
+// Inside a block instance or a SPICE subcircuit, by instance path.
+let v_sw = result.instance("X1").instance("X2").voltage("sw"); // node X1.X2.sw
+let i_l = result.instance("X1.X2").current("L1");               // component X1.X2.L1
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Every accessor returns `None` for a name the result doesn't have. Names are exact: a parsed SPICE deck's are lowercase (`instance("x1")`). Inside an instance only its own nets and components get the path; a port is the net it's bound to outside, and ground and globals keep their names, so read those on the parent. `InstanceResult::name("sw")` gives the flat name (`"X1.X2.sw"`) for the AC, sweep and transient accessors below.
+
+| Result | By name |
+|--------|---------|
+| `TimestepSnapshot` | `voltage(node)`, `current(id)`, `component(id)` |
+| `TransientData` | `node_voltage_curve(node)` and `component_current_curve(id)` as `(t, value)`; `voltage_at(node, t)`, `current_at(id, t)`, interpolated |
+| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, ref)` |
+| `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°) as `(Hz, value)` |
+| `DcSweepResult`, `TempSweepResult` | `node_voltage_curve(node)`, `component_current_curve(id)` as `(sweep value, value)`; each point's `result` has the accessors above |
+
+The fields behind them stay public:
 
 ```rust,ignore
 pub struct SimulationResult {
@@ -517,7 +553,7 @@ println!("{} V/V, Rin {} Ω, Rout {} Ω", tf.gain, tf.input_resistance, tf.outpu
 
 The input resistance is infinite when the input source draws no small-signal current. Every other independent source is zeroed for the output resistance. A current output (`I(Vx)`) runs from the source's `nodes[0]` through it to `nodes[1]`, as SPICE's.
 
-## DC sensitivity
+## Sensitivity
 
 SPICE's `.sens`: the derivative of one DC output with respect to each component parameter, at the operating point. One adjoint solve covers them all, however many there are.
 
@@ -535,7 +571,25 @@ for e in &sens.entries {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Entries cover resistance, voltage and current source values, VCVS gain and VCCS gm. Other components get no entry: device-model parameters, CCVS and CCCS gains, capacitors and inductors. There is no AC sensitivity.
+Entries cover resistance, voltage and current source values, the gains of all four controlled sources (VCVS, VCCS, CCVS, CCCS), and device-model parameters: a diode's IS, N and RS, a BJT's BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA. A device has an entry per parameter; `sens.get_parameter("D1", SensParameter::SaturationCurrent)` picks one. Each is the total derivative, the operating point moving with the parameter. Capacitors, inductors and the other devices (LED, Zener, Schottky, photodiode, JFET, IGBT) get no entry.
+
+`.sens v(out) ac dec 10 1 1meg` is the AC form: at each frequency, the derivative of the output phasor with respect to R, C, L, the controlled-source gains, the stimulus's AC magnitude and the same device parameters, plus a diode's CJO and TT. One adjoint solve per frequency. As in ngspice, the DC operating point is held fixed: a device parameter's entry is its effect on that device's small-signal conductances and capacitances, not through a shift of the bias, so a source's DC value has no AC entry.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+use sindr::ac_analysis::AcConfig;
+use sindr::{solve_ac_sensitivity, AcSensConfig, SensParameter, TfOutput};
+
+let config = AcSensConfig::new(TfOutput::voltage("out"), AcConfig::new("V1", 10.0, 1e6, 51));
+let sens = solve_ac_sensitivity(&circuit, &config)?;
+for (f, s) in sens.curve("C1", SensParameter::Capacitance) {
+    println!("{f} Hz: dV(out)/dC1 = {s}");
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+For a deck, `ParsedNetlist::ac_sens_config()` builds the `AcSensConfig` from the `.sens ... ac` card and the `AC` spec on the source line.
 
 ## Noise
 
@@ -557,6 +611,44 @@ for (source, total) in noise.sources.iter().zip(&noise.source_totals) {
 ```
 
 Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C. Sources, controlled sources, op-amps, comparators, regulators and a diode's series resistance are noiseless.
+
+## Pole-zero
+
+SPICE's `.pz`: the poles and zeros of the transfer function from an input node pair to an output node pair, at the DC operating point. A voltage gain's poles are those of the circuit with the input shorted (by the voltage source already across it, or one the analysis adds); a transimpedance drives a current into the input pair, left open.
+
+```rust,no_run
+# use sindr::*;
+# let mut circuit = Circuit::default();
+use sindr::{solve_pz, PzConfig, PzFind};
+
+// SPICE `.pz in 0 out 0 vol pz`; PzConfig::transimpedance for `cur`.
+let pz = solve_pz(&circuit, &PzConfig::voltage_gain("in", "0", "out", "0"))?;
+for p in &pz.poles {
+    println!("pole {:.4e} {:+.4e}j rad/s", p.re, p.im);
+}
+println!("stable: {}", pz.is_stable());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Roots are in rad/s, finite ones only, sorted by magnitude. They are the generalised eigenvalues of the linearised `G + sC` pencil (and of its bordered form for the zeros): sindr deflates the infinite ones exactly, by orthogonal reductions, then runs QZ, so a well-separated root is accurate to about 1e-12 relative and a repeated one to about √ε. `with_find(PzFind::Poles)` or `PzFind::Zeros` skips the other half. A transimpedance into a pair a voltage source shorts has no response, and is an error.
+
+## Loop gain and stability margins
+
+The loop gain of a feedback loop at a break point, by Tian's double injection: a voltage and a current injected at a probe, a 0 V voltage source in series with the loop with its `nodes[1]` on the driving side (the amplifier output) and `nodes[0]` on the driven side (the feedback network). The loop isn't cut, so both sides keep their loading, and the result is exact for loops that pass signal both ways through the probe.
+
+```rust,no_run
+# use sindr::*;
+# let mut circuit = Circuit::default();
+use sindr::{solve_loop_gain, LoopGainConfig};
+
+// Vprobe: nodes ["fb_in", "out"], 0 V. 801 log-spaced points, 1 Hz to 100 MHz.
+let lg = solve_loop_gain(&circuit, &LoopGainConfig::new("Vprobe", 1.0, 100e6, 801))?;
+println!("crossover {:?} Hz", lg.gain_crossovers);
+println!("phase margin {:?}°, gain margin {:?} dB", lg.phase_margin_deg, lg.gain_margin_db);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`T` is the return ratio, positive at low frequency for negative feedback. Each point has `gain` (complex), `gain_db()` and the phase unwrapped along the sweep, so the sweep must be dense enough that the phase moves less than 180° between points. Crossovers are refined by bisection on `T` itself, so the margins don't depend on the grid. The phase margin is the smallest over every 0 dB crossing, the gain margin the smallest over every −180° crossing; each is `None` when there is no crossing in the sweep.
 
 ## DC sweep
 
@@ -609,7 +701,7 @@ use sindr::{Circuit, temperature_sweep, TempSweepResult};
 let result = temperature_sweep(&circuit, 250.0, 350.0, 11)?; // 250 K → 350 K, 11 points
 
 for point in &result.points {
-    let ic = point.result.bjt_results.iter().find(|b| b.id == "Q1").map_or(0.0, |b| b.ic);
+    let ic = point.result.bjt("Q1").map_or(0.0, |b| b.ic);
     println!("T = {:.1} K, Ic = {:.3} mA", point.temperature_kelvin, ic * 1000.0);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -652,6 +744,29 @@ match solve_circuit(&circuit) {
 ```
 
 `Thermal` takes `rth_ja` (K/W), or `rth_jc` plus `rth_ca` for a part on a heatsink, an optional `cth` (J/K; without it a transient's junction follows its power with no lag), and `ambient` (K, default 300.15). With it, the element's own `temperature` field is ignored. `SimulationResult::junction_temperatures` and each `TimestepSnapshot`'s carry the result, and `Ratings::tj_max` is checked against them. When no balance exists (a junction past 1000 K, or the iteration never settles), the solve returns `SimError::ThermalRunaway`. AC, `.tf`, `.sens` and `.noise` solve the same heated bias point and linearise each device at its junction temperature. MOSFETs, JFETs, IGBTs and resistors report a junction temperature, but their models don't depend on it.
+
+## Monte Carlo and corners
+
+`sindr::variation` repeats any analysis with parts varied within their tolerances and takes your `Measurement`s on every run:
+
+```rust,ignore
+use sindr::variation::{corners, monte_carlo, Corners, MonteCarloConfig, Parameter, Tolerance};
+
+// Every resistor ±1 % (Gaussian, the band at 3σ), and C1 ±10 % uniform.
+let mut tolerances = Tolerance::on_every(&circuit, Parameter::Resistance, 0.01);
+tolerances.push(Tolerance::uniform("c1", Parameter::Capacitance, 0.10));
+
+let mc = monte_carlo(&circuit, &MonteCarloConfig::new(tolerances.clone(), 1000).with_seed(1),
+                     &[bandwidth], |c| solve_ac(c, &ac))?;
+let s = mc.stats("f3db").unwrap();          // mean, std_dev, min, max, measured, failed
+let yield_ = mc.yield_within("f3db", 1.4e3, 1.8e3);
+
+let worst = corners(&circuit, &tolerances, &Corners::All, &[bandwidth], |c| solve_ac(c, &ac))?;
+```
+
+Worst case on top of the runs: `mc.check_specs(&specs)` gives each spec's pass, fail and unmeasured counts, its yield, and the `WorstRun` nearest or furthest past a limit (with its signed margin and the tolerance values behind it). `ratings_over(&circuit, &Sampling::Corners { tolerances, which: Corners::All }, solve_op)` runs `check_ratings` on every run and reports each part and rating at its worst: value, margin, the run, its tolerance values, the time for a transient, and how many runs exceeded it.
+
+A `Tolerance` varies one component's resistance, capacitance, inductance or source value by a relative band, uniformly or Gaussian (`sigmas` standard deviations across the band, 3 by default). `corners` runs every low/high combination (up to 16 tolerances) or a `Corners::List`. Each run draws from its own seeded stream, so a seed repeats exactly, and the `parallel` feature spreads runs across threads without changing them. A run whose analysis fails is kept with its error, and counted in `failed`.
 
 ## Ratings checks
 
@@ -754,15 +869,38 @@ let bench = Bench::new("gnd")
     .with_source(BenchSource::voltage("supply", "vin", 5.0))
     .with_analysis(Analysis::OperatingPoint);
 let Simulation::OperatingPoint(op) = simulate(&netlist, &bench).unwrap().result else { unreachable!() };
-println!("vout = {:.3} V", op.node_voltages["vout"]);
+println!("vout = {:.3} V", op.voltage("vout").unwrap());
 ```
 
 - **Ids carry through.** Element ids are your component ids and node names your net ids, so results land on your parts. Every `ImportError` names the component, net or bench item: an unknown kind, a terminal the kind doesn't have, a terminal on two nets or on none, a value that isn't one.
-- **Terminals by name, never pin number:** `anode`/`cathode` (or `A`/`K`), `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out`, case ignored. Unpolarised two-terminal parts also take `1` and `2`. `ComponentKind::terminals` lists each kind's names. A MOSFET's `body` must sit on its source's net; an op-amp's `V+`/`V-` pins set its rails from the bench supplies on those nets.
-- **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
-- **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals.
+- **Terminals by name, never pin number:** `anode`/`cathode` (or `A`/`K`), `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out` (or `Non-inverting`, `Inverting`, `Output`, `Positive supply`, `Negative supply`), case ignored and `-`, `_` and spaces alike. Unpolarised two-terminal parts also take `1` and `2`. `ComponentKind::terminals` lists each kind's names. A MOSFET's `body` must sit on its source's net; an op-amp's `V+`/`V-` pins set its rails from the bench supplies on those nets.
+- **Netlists as an editor exports them.** `ComponentKind::from_name` reads symbol ids (`resistor-iec`, `capacitor-polarized`, `op-amp`, `push-button`, `switch-spst`, `test-point`, `header-4`). When nets name terminals by id and the names sit in a table on each component, pass the table with `ImportOptions::with_terminal_names` to `Netlist::to_circuit_with` or `import::simulate_with`: a named terminal matches by its name, an unnamed one by its id, so pin `1` of an LED still needs its `Anode` name.
+- **Dual and quad op-amps and comparators.** `dual_op_amp`, `quad_op_amp`, `dual_comparator` and `quad_comparator` (or `op-amp-dual` and the like) are one package whose units share its `V+`/`V-` pins. Each unit becomes its own element, `<id>.a`, `<id>.b` …, with terminals tagged by unit as datasheets write them: `1IN+`, `IN1-`, `INA+`, `-IN B`, `OUT A`, `2OUT`. A spare unit with nothing connected adds no element.
+- **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently.
+- **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
+- **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
+- **Bench loads** are resistors, capacitors and inductors, plus `LoadKind::CurrentSink` (a constant current drawn from `a` into `b`, such as an IC's supply current; for one that changes with time, use a current `BenchSource` with a waveform) and `LoadKind::TimedSwitch`, which is closed through `on_resistance` until `at` and then open at `off_resistance`, or open then closed with `starts_closed: false`. `LoadKind::released_at(1e-6, 25.0)` is an open-drain output holding a bus line low and letting go at 1 µs, for its rise time through the pull-ups and bus capacitance. The operating point, DC sweeps and AC see it at t = 0; a transient lands a step on `at`, which still sees the old state, as a waveform's jump does.
 - **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
+
+### What sindr reads from part data
+
+An editor's parts library knows more about a part than its value: a datasheet's forward voltage, gain, threshold. Export those as parameters and sindr fits its models to them; leave them out and sindr uses its default model for the kind, and says so.
+
+| Kind | Reads | Fitted |
+|---|---|---|
+| `led` | `color`/`colour` (`red`, `orange`, `amber`, `yellow`, `green`, `blue`, `white`, any case), or a colour word in the value (`Amber`, `LED red 3mm`) | the colour's preset (≈ 1.8–3.2 V at 20 mA) |
+| `led` | `vf` (V) at `if` (A), optionally `vf2` at `if2` | a diode through that point (N = 2), with Vf falling 2 mV/K |
+| `diode` | `vf` (V) at `if` (A), optionally `vf2` at `if2` | IS (N = 1), or IS and N through both points |
+| `zener_diode` | `vz` (V) or the value, at `iz` (A) | breakdown so that it carries `iz` at `vz` |
+| `npn`, `pnp` | `hfe` (ratio) at `hfe_ic` (A); `vce_sat` (V) at `vce_sat_ic` and `vce_sat_ib` (A) | `bf` = hFE; BR through Vce(sat) |
+| `nmos`, `pmos` | `vth` (V) at `vth_id` (A); `rds_on` (Ω) at `rds_on_vgs` (V), optionally at `rds_on_id` (A) | Level-1 KP and VTO through both |
+
+- **Min, typ and max.** Each figure (`vf`, `vf2`, `vz`, `hfe`, `vce_sat`, `vth`, `rds_on`) also takes `_min`, `_typ` and `_max` (`hfe_min`, `vce_sat_max`). A fit uses the typical value, else the middle of min and max, else whichever is given. Test conditions (`if`, `iz`, `vth_id` …) are exact.
+- **Units an editor's library has.** Numbers are in base units (V, A, Ω, a plain ratio), as numbers, text (`"20 mA"`, `"0.2 V"`) or typed quantities: `Value::Quantity` holds the number, its `Unit` (`Ohm`, `F`, `H`, `V`, `A`, `W`, `Hz`, `s`, `m`, `K`, `1`) and the text shown, `{"value": 0.02, "unit": "A", "text": "20 mA"}` in JSON. A quantity in the wrong unit for its parameter is an error.
+- **Nothing falls back silently.** `ImportedCircuit::models` records each component's `ModelSource` (model, value, params, datasheet or default), and `ImportedCircuit::warnings` has a warning for every component that got the default: a transistor whose value is only a part number (`PMBT3904`, bf = 100), an LED with no colour (red), a diode with no `vf`. Warnings don't stop the import.
+- **Spaces don't merge.** `parse_value` keeps a number and a unit apart when a space is between them: `"300 K"` is 300 kelvin and `"0.01 1"` the ratio 0.01, while `300K` is still 300 k as a schematic writes it.
+- The constructors are public: `DiodeModel::from_datasheet`, `DiodeModel::led_from_datasheet`, `DiodeModel::zener_from_datasheet`, `BjtModel::from_datasheet` and `MosfetParams::from_datasheet`, with the figures in `sindr::datasheet`.
 
 ## Examples
 
@@ -822,7 +960,7 @@ pub enum SimError {
 | Reactive elements (C, L, Varactor, Transformer, parasitic caps, a diode whose model sets `cjo` or `tt`) or waveform sources | Transient (Gear-2 by default) |
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
-The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
+The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried. One that fails even at a millionth of `tstep` is a regenerative edge with nothing to slow it (a multivibrator's or Schmitt trigger's, transistors without junction capacitance): the node voltages jump while the capacitors hold theirs, and the stepper follows the jump by pseudo-transient continuation, then restarts the integration after it. `stats.jumped_steps` counts those.
 
 ## Performance
 

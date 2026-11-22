@@ -14,12 +14,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stride = (steps.len() / 25).max(1);
     for (i, snap) in steps.iter().enumerate() {
         if i % stride == 0 {
-            let v_out = snap.node_voltages.get("n2").copied().unwrap_or(0.0);
+            let v_out = snap.voltage("n2").unwrap_or(0.0);
             println!("{:.6}\t{:.4}", snap.time, v_out);
         }
     }
     if let Some(last) = steps.last() {
-        let v_out = last.node_voltages.get("n2").copied().unwrap_or(0.0);
+        let v_out = last.voltage("n2").unwrap_or(0.0);
         println!("{:.6}\t{:.4}", last.time, v_out);
     }
 

@@ -300,6 +300,7 @@ fn transient_ignores_component_order() {
             l1: 10e-3,
             l2: 10e-3,
             k: 0.99,
+            saturation: None,
         },
         CircuitElement::Diode {
             id: "D1".into(),

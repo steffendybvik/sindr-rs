@@ -20,7 +20,7 @@ A circuit simulator you embed in Rust: build a circuit as a typed value, solve i
 
 ```toml
 [dependencies]
-sindr = "0.1"
+sindr = "0.2"
 ```
 
 How much current does a red LED draw from 5 V through 220 Ω?
@@ -35,7 +35,7 @@ fn main() -> Result<(), sindr::SimError> {
         CircuitElement::Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 },
     ]);
     let result = solve_circuit(&circuit)?;
-    let led = result.component_results.iter().find(|c| c.id == "D1").unwrap();
+    let led = result.component("D1").expect("D1 is in the circuit");
     println!("{:.1} mA, {:.1} mW", led.current_through * 1e3, led.power * 1e3);
     Ok(())
 }
@@ -47,7 +47,7 @@ More in [`sindr/examples/`](./sindr/examples): RC transient, BJT amplifier, Bode
 
 | Crate | Purpose |
 |-------|---------|
-| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.meas`, ratings checks, SPICE front end |
+| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.pz`, loop gain, `.meas`, ratings checks, SPICE front end |
 | [`sindr-devices`](./sindr-devices) | Device physics: diode family, BJT, MOSFET, JFET, IGBT, varactor, thermistor and photoresistor models |
 
 `sindr` depends on `sindr-devices`. The split lets you use the device-physics models with your own solver, without the `nalgebra` linear-algebra stack.
@@ -61,13 +61,14 @@ Each analysis is checked against [ngspice](https://ngspice.sourceforge.io/) 47 o
 <!-- accuracy:start -->
 | Analysis | Cases | Worst relative error | Worst other |
 |---|---|---|---|
-| Operating point | 18 | 7e-6 | — |
-| DC sweep | 6 | 4e-5 | — |
-| Temperature sweep | 1 | 6e-7 | — |
-| AC | 12 | 3e-6 | 1e-4° phase |
+| Operating point | 22 | 7e-6 | — |
+| DC sweep | 8 | 4e-5 | — |
+| Temperature sweep | 4 | 8e-7 | — |
+| AC | 15 | 3e-6 | 1e-4° phase |
 | Diode charge (AC) | 2 | 2e-4 | — |
 | Noise | 4 | 7e-7 | — |
-| Transient | 10 | — | 2.6 % of full scale |
+| Pole-zero | 2 | 1e-9 | — |
+| Transient | 12 | 3e-4 | 2.6 % of full scale |
 <!-- accuracy:end -->
 
 The transient's worst is a switching BJT's collector on a 3 µs edge, where a 0.4 mV base error becomes 2.6 % of the current; its other cases stay under 0.15 %. Every case, and the tolerance its test holds it to, is in [`docs/ACCURACY.md`](./docs/ACCURACY.md); how the cases are built is in [`sindr/tests/golden/README.md`](./sindr/tests/golden/README.md). Both tables come from the test suite (`scripts/accuracy_table.py`).
@@ -124,7 +125,7 @@ a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics
 | Main input | `Circuit` values or JSON; a SPICE3 subset (feature `spice`) | SPICE netlists in its own dialect |
 | WebAssembly, no C library | Yes | Usually not |
 | Ratings, self-heating, pass/fail specs | Built in | Scripted by hand, if at all |
-| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens`, `.noise`, `.meas` | Those and more: pole-zero, AC sensitivity, Fourier, distortion |
+| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens` (DC and AC), `.noise`, `.pz`, loop gain, `.meas` | Those and more: Fourier, distortion |
 | Device models | Shockley diode, Ebers–Moll BJT, MOSFET Level 1, JFET, IGBT, op-amp macromodel, and part-level elements (LED, regulator, relay, battery …) | **Far more:** Gummel–Poon, BSIM, transmission lines, behavioural and code models |
 | SPICE dialect coverage | A practical subset | Full |
 
@@ -136,7 +137,7 @@ A SPICE3 netlist parser ships inside `sindr` behind the optional, default-off `s
 
 ```toml
 [dependencies]
-sindr = { version = "0.1", features = ["spice"] }
+sindr = { version = "0.2", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -144,7 +145,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, X, linear E/G/F/H, K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 
@@ -156,11 +157,11 @@ cargo run --example parse_netlist --features spice
 
 ## Status
 
-`0.1.0`, [published on crates.io](https://crates.io/crates/sindr). Until 1.0, a breaking change bumps the minor version (`0.2.0`) and anything else the patch (`0.1.1`), so `sindr = "0.1"` never breaks on `cargo update`. The road to 1.0 is in [`ROADMAP.md`](./ROADMAP.md).
+`0.2.0`, [published on crates.io](https://crates.io/crates/sindr). Until 1.0, a breaking change bumps the minor version (`0.3.0`) and anything else the patch (`0.2.1`), so `sindr = "0.2"` never breaks on `cargo update`. The road to 1.0 is in [`ROADMAP.md`](./ROADMAP.md).
 
 ## Scope & limitations
 
-sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, Monte-Carlo/pole-zero analyses, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
+sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, pole-zero analysis, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
 Where it's heading on the way to 1.0 is in [`ROADMAP.md`](./ROADMAP.md). To work on sindr itself, see [`CONTRIBUTING.md`](./CONTRIBUTING.md). AI coding agents (Claude Code, Codex, Cursor, etc.) should also read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
 

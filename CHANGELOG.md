@@ -7,6 +7,251 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-22
+
+### Added
+
+- Results are read by name: `SimulationResult::voltage`, `current`,
+  `branch_current` and `component`, and `bjt`, `mosfet`, `op_amp` and
+  `relay` for device results, each `None` for a name the result doesn't
+  have. Ground reads `0.0`. `TimestepSnapshot` has `voltage`, `current`
+  and `component`.
+- `SimulationResult::instance("X1")` reads inside a block instance or
+  SPICE subcircuit by its instance path: `instance("X1").voltage("sw")`
+  is node `X1.sw`. `instance` chains (`instance("X1").instance("X2")`)
+  or takes a nested path (`"X1.X2"`); `InstanceResult::name` gives the
+  flat name for the curve accessors.
+- `TransientData::node_voltage_curve` and `component_current_curve`
+  give a waveform as `(t, value)` pairs, and `voltage_at` and
+  `current_at` a value at any time, interpolated between steps.
+- `AcPoint::voltage` and `magnitude`, and `AcResult::node_voltage_curve`
+  (complex) and `magnitude_curve`, next to the existing gain and phase
+  helpers.
+- `TempSweepResult::node_voltage_curve` and `component_current_curve`,
+  as `DcSweepResult` has.
+- The SPICE parser reads `M` and `J` lines with level-1 `NMOS`/`PMOS`
+  and `NJF`/`PJF` cards. `kp` is `KP·W/(L − 2·LD)·M`, the overlap
+  capacitances become the gate caps, and the drain–bulk junction becomes
+  the body diode. `idss` is `BETA·VTO²·area`. A `LEVEL` other than 1 is
+  an error. A bulk node off the source, and parameters sindr's FETs don't
+  have, are errors in strict mode and warnings in lenient mode.
+- `to_netlist` writes MOSFETs and JFETs, and they parse back to the same
+  circuit. A body diode SPICE's junction can't hold goes out as its own
+  `D` line.
+- `DiodeModel` and `BjtModel` have `eg` and `xti`: the bandgap and
+  exponent `IS` follows temperature with, as SPICE's `IS(T)`. They
+  default to silicon's 1.11 eV and 3, so circuits that leave them out
+  are unchanged. The SPICE parser reads `EG` and `XTI` on any diode or
+  BJT card, a Schottky's `EG=0.69 XTI=2` included, and `to_netlist`
+  writes them when they aren't the defaults. `TNOM=27` parses in strict
+  mode too; another `TNOM` is an error there.
+- A `.model` inside a `.subckt` is read, local to that subcircuit, so
+  vendor model files that keep their cards inside the subcircuit load.
+  Before, it was ignored with a warning.
+- `CircuitElement::Behavioural`: SPICE's `B` source, a voltage or
+  current set by an `Expression` of node voltages (`v(n)`, `v(n,m)`),
+  branch currents (`i(src)`), `time`, arithmetic, comparisons, `?:` and
+  ngspice's functions. Newton stamps its exact Jacobian by forward-mode
+  automatic differentiation, AC linearises it at the bias point, and
+  transient reads `time`. In JSON the expression is its text.
+- An expression that overflows or leaves its domain on the way to the
+  answer (`exp` of the whole supply on the first step, `ln` of a node
+  that starts at 0 V) no longer ends the solve. Newton shortens the step,
+  gmin and source stepping or a shorter transient step take over, and
+  the answer is checked for finite values before it's returned.
+  `SimError::NotFinite` names the source, its expression and what it
+  read, when it can't be got past.
+- `sindr::expression`: `Expression::parse`, `variables` and `evaluate`.
+- The SPICE parser reads `B` lines and the `VALUE` form of `E`/`G` into
+  behavioural sources, with `.param` names resolved inside the
+  expression. `to_netlist` writes them back as `B` lines.
+- The `POLY(n)` form of `E`, `G`, `F` and `H` is read too, as a
+  behavioural source holding SPICE2's polynomial of `n` controlling
+  voltages or currents.
+- `sindr::variation`: Monte Carlo (`monte_carlo`) and corner (`corners`)
+  analysis around any analysis. A `Tolerance` varies a resistance,
+  capacitance, inductance or source value uniformly or Gaussian, from a
+  seeded generator so runs repeat. Results give each run's values and
+  measurements, and each measurement's mean, standard deviation, min, max
+  and yield. A run that fails is recorded, not fatal. The `parallel`
+  feature spreads runs across threads.
+- Worst case over tolerances: `VariationResult::check_specs` judges each
+  spec on every run, and `ratings_over` checks every part's ratings on
+  every run of a Monte Carlo or corner `Sampling`. Each reports its worst
+  run with the tolerance values behind it.
+- `CircuitElement::Transformer` takes an optional `saturation`, on a
+  magnetising branch: leakage `(1 − k)·L` on each winding and `k·L1` on
+  the primary carrying the shared core flux. A transformer driven past
+  its volt-second rating, or with a DC bias as in a forward or flyback
+  converter, now draws a magnetising current that climbs once the core
+  saturates. AC and noise use the incremental inductance at the DC
+  bias. Without it, the transformer is the same linear coupled pair.
+- `sindr::import` takes a netlist as an editor exports it.
+  `ComponentKind::from_name` reads symbol ids, ignoring case and treating
+  `-`, `_` and spaces alike, with aliases such as `resistor-iec`,
+  `op-amp`, `push-button`, `switch-spst` and `header-<n>`; terminal names
+  match the same way, and an op-amp also takes `Non-inverting`,
+  `Inverting`, `Output`, `Positive supply` and `Negative supply`.
+  `ImportOptions::with_terminal_names` passes each component's
+  terminal-name table to `Netlist::to_circuit_with` and
+  `import::simulate_with`, so nets may name terminals by id; a bare pin
+  number still never picks a polarised terminal.
+- `ComponentKind::BlackBox` for parts sindr can't simulate, such as ICs:
+  no element, but its terminals stay bench attach points.
+  `UnknownKinds::BlackBox` imports unknown kinds that way instead of
+  refusing them, which stays the default. `ImportedCircuit::black_boxes`
+  lists every black box with the nets it's on.
+- `ComponentKind::DualOpAmp`, `QuadOpAmp`, `DualComparator` and
+  `QuadComparator`: one package whose two or four units share its supply
+  pins. Each unit imports as its own element, `<id>.a`, `<id>.b` …, with
+  terminals tagged by unit as datasheets write them (`1IN+`, `IN1-`,
+  `INA+`, `-IN B`, `OUT A`, `2OUT`). A spare unit with nothing connected
+  adds no element. `ComponentKind::units` gives a package's unit kind and
+  count.
+- `ComponentKind::Crystal` and `ComponentKind::FerriteBead` import as
+  `CircuitElement::Crystal` and `CircuitElement::FerriteBead`, from a
+  frequency, ESR and shunt capacitance, or an impedance at 100 MHz and a
+  DC resistance.
+- JFET gate capacitances: `CircuitElement::Jfet` has an optional
+  `parasitic_caps` (`JfetParasiticCaps`), SPICE's gate junctions `CGS` and
+  `CGD` graded by `PB`, `M` and `FC`. Transient integrates their charge,
+  and AC and noise use the capacitance at the bias point. The SPICE parser
+  reads `CGS`, `CGD` (times the area factor), `PB`, `M` and `FC` from an
+  `NJF`/`PJF` card, and `to_netlist` writes them back. Checked against
+  ngspice on a common-source stage's Miller pole (`ac_jfet_caps`).
+- AC sensitivity: `solve_ac_sensitivity` (and `Solver::ac_sensitivity`)
+  gives, at each frequency of an `AcConfig`, the derivative of a
+  small-signal output phasor with respect to R, C, L, the controlled
+  sources' gains, the stimulus's AC magnitude and device-model
+  parameters, from one adjoint solve per frequency. As in ngspice, the DC
+  operating point is held fixed. The SPICE parser reads `.sens v(out) ac
+  dec 10 1 1meg` into `AnalysisRequest::SensAc`, and
+  `ParsedNetlist::ac_sens_config` drives it from the deck's `AC` spec.
+- `.sens` reports device-model parameters: a diode's IS, N and RS, a
+  BJT's BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA (in
+  AC a diode's CJO and TT as well), from analytic derivatives, IS's
+  temperature scaling included. CCVS transresistance and CCCS current
+  gain get entries too. `SensResult::get_parameter` picks one parameter
+  of a device out. Checked against central differences of full re-solves
+  and against ngspice.
+- `sindr-devices`: `diode_derivatives`, `bjt_derivatives` and
+  `mosfet_derivatives` give the exact derivatives of each model's
+  currents and conductances with respect to its parameters, and
+  `JunctionCharge::depletion_capacitance_slope` the slope of the
+  depletion capacitance.
+- Pole-zero analysis, SPICE's `.pz`: `solve_pz` with a `PzConfig` gives
+  the poles and zeros (rad/s) of the voltage gain or transimpedance from
+  one node pair to another, as the generalised eigenvalues of the
+  linearised `G + sC` pencil. Infinite eigenvalues are deflated exactly
+  before QZ, so a capacitor across a source or an inductor in series with
+  a current source leaves no spurious roots. The SPICE parser reads
+  `.pz in in_ref out out_ref vol|cur pol|zer|pz` into
+  `AnalysisRequest::Pz`, and `pz_config()` turns it into a `PzConfig`.
+- Loop gain at a break point: `solve_loop_gain` with a `LoopGainConfig`
+  naming a 0 V probe source in series with the loop gives the loop gain
+  `T` over frequency by Tian's double injection, exact for loops that
+  carry signal both ways through the probe, with the gain and phase
+  crossovers and the phase and gain margins, each refined by bisection.
+- `Solver::pz` and `Solver::loop_gain` run them with solver options.
+- Two bench loads. `LoadKind::CurrentSink { amps }` draws a constant
+  current from one attach point to the other (ground by default), such as
+  an IC's supply current. `LoadKind::TimedSwitch` is closed through
+  `on_resistance` until `at` and then open at `off_resistance` (its
+  leakage), or the reverse with `starts_closed: false`: an open-drain
+  line held low and released, for a bus's rise time. The operating point,
+  DC sweeps and AC take it at t = 0, and a transient lands a step on
+  `at`. `LoadKind::current_sink`, `released_at`, `closed_at` and
+  `with_off_resistance` build them; in JSON they are
+  `{"current_sink": {"amps": 0.005}}` and `{"timed_switch":
+  {"on_resistance": 25, "at": 1e-6}}`, the off resistance defaulting to
+  1 GΩ and `starts_closed` to true.
+- A transient lands a step on every time a behavioural source compares
+  `time` with a constant (`time < 1u`), as it does on a waveform's
+  corners.
+- A reference-design test suite, `sindr/tests/reference_linear_supply.rs`:
+  a 7805 from 12 V feeding an AMS1117-3.3 at 500 mA, with datasheet
+  ratings and thermal paths on every part. It checks dissipation and
+  junction temperature against hand calculations, start-up inrush, and
+  that sindr flags each broken variant: no heatsink, the AMS1117 on 12 V,
+  a 6 V input, and missing capacitors.
+- `sindr::import` builds models from part data and says when it
+  couldn't. `ImportedCircuit::models` records each component's
+  `ModelSource` (its model, value, parameters, datasheet figures, or
+  sindr's default), and `ImportedCircuit::warnings` carries an
+  `ImportWarning` for every component that got the default, such as a
+  transistor whose value is only a part number. Warnings don't stop the
+  import.
+- Datasheet constructors: `DiodeModel::from_datasheet` (Vf at If, or two
+  points), `DiodeModel::led_from_datasheet`,
+  `DiodeModel::zener_from_datasheet` (Vz at Iz), `BjtModel::from_datasheet`
+  (hFE, and Vce(sat) at Ic/Ib) and `MosfetParams::from_datasheet` (Vth at
+  Id, Rds(on) at Vgs). Figures are `DatasheetValue`s with optional min,
+  typ and max, in `sindr::datasheet` (and `sindr_devices::datasheet`).
+  `sindr::import` reads them from parameters: `vf`/`if`, `vz`/`iz`,
+  `hfe`, `vce_sat`, `vth`, `rds_on` and their test conditions, each figure
+  also as `_min`, `_typ` and `_max`.
+- LEDs read their colour in any case, from `color`, `colour` or a colour
+  word in the value text (`"Amber"`, `"LED red 3mm"`). Amber (2.05 V at
+  20 mA) and orange (2.0 V) join the colours, through
+  `sindr_devices::led::COLORS`, `forward_voltage_of` and `color_in`; an
+  LED element's `color` takes them too.
+- `import::Value::Quantity`: a typed quantity as a parts library stores
+  it, a number in base units with its `Unit` and the text shown. Its unit
+  is checked against the parameter's.
+- `sindr_devices::regulator::regulator_edges`: the signed distances from
+  a regulator's operating point to the edges between the pieces of its
+  characteristic.
+- `TransientStats::jumped_steps` counts the regenerative edges a
+  transient jumped (see Fixed).
+
+### Changed
+
+- **Breaking:** `CircuitElement::Transformer` has a `saturation` field,
+  so a literal needs `saturation: None`. With serde a missing field is
+  `None`.
+- **Breaking:** `DiodeModel` and `BjtModel` gained fields, so a struct
+  literal that names every field needs `eg` and `xti` too. One that ends
+  in `..Default::default()` is unaffected.
+- **Breaking:** `CircuitElement::Jfet` has a `parasitic_caps` field, so
+  a literal needs `parasitic_caps: None`. With serde a missing field is
+  `None`.
+- `import::parse_value` reads a unit after a space as a unit: `"2 m"`
+  is now 2 metres, not 2 milli. `"2m"` is still 2 milli.
+
+### Fixed
+
+- The `led-circuit` example (`examples::led_circuit()`) is a red `Led`
+  (`LED1`), not a fixed 2 V source (`V_LED`). Swept with `dc_sweep`, the
+  stand-in conducted backwards below 2 V (6 mA at 0 V); the LED blocks
+  until its forward voltage and draws about 20 mA at 9 V. "(Simplified)"
+  is gone from its name.
+- Newton no longer settles on a stale piece of a `VoltageRegulator`'s
+  characteristic. A step within the node tolerance could stop on the
+  piece the previous iterate was on, so a regulator leaving its 0 V floor
+  on a ramped input lagged by a millivolt and caught up in one short
+  step: a spike up to the current limit into its output capacitor (1.1 A
+  instead of 0.26 A for 22 µF at 12 V/ms), which `check_ratings` then
+  reported. A solve now converges only once every regulator is on the
+  same piece, and the same quiescent-current ramp, as the iterate it was
+  stamped from.
+- `import::parse_value` no longer runs a number and a unit together
+  across a space: `"0.01 1"` (a ratio) is 0.01, not 0.011, and `"300 K"`
+  is 300 kelvin, not 300 k. `300K` is still 300 k.
+- An LED whose colour was capitalised (`"Green"`) or amber came out red.
+- A linear regulator fed through an inductor or an LC input filter now
+  simulates in transient, from switch-on and on a hot-plugged input.
+  Newton failed to converge at the first step, because each step crossed
+  every edge of the regulator's piecewise characteristic at once; a step
+  now moves a regulator one piece at a time.
+- A two-transistor LED flasher, and other regenerative circuits whose
+  transistors have no junction capacitance, run their transient through
+  every switching edge instead of stopping with `ConvergenceFailed`. A
+  step that fails at the shortest length follows the jump by
+  pseudo-transient continuation and ends on a plain solve, so the answer
+  has nothing added. Junction limiting no longer moves a node a voltage
+  source holds, which kept an LED off the supply rail at switch-on. The
+  flasher's period matches ngspice to 0.006 % (`tran_flasher`).
+
 ## [0.1.0] - 2026-11-21
 
 The first plain release. Versions are now `0.x` with no prereleases: a
@@ -874,7 +1119,8 @@ staged as `0.1.0-alpha.8`.
   semiconductor models (diode, BJT, MOSFET, JFET, IGBT, varactor, zener,
   Schottky, LED, photodiode, photoresistor, thermistor).
 
-[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.7...v0.1.0
 [0.1.0-alpha.7]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.6...v0.1.0-alpha.7
 [0.1.0-alpha.6]: https://github.com/steffendybvik/sindr-rs/releases/tag/v0.1.0-alpha.6

@@ -345,6 +345,7 @@ fn jfet_self_bias(kind: sindr::JfetKind) -> Circuit {
                 kind,
                 idss: 10e-3,
                 vp,
+                parasitic_caps: None,
             },
         ],
         ..Default::default()

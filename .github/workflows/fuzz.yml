@@ -10,7 +10,7 @@ env:
 
 jobs:
   parse:
-    name: fuzz SPICE parser
+    name: fuzz SPICE and expression parsers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -23,6 +23,13 @@ jobs:
           cp seeds/parse/* corpus/parse/
           cargo +nightly fuzz run parse corpus/parse -- \
             -dict=spice.dict -max_total_time=600 -max_len=4096
+      - name: Run the expression parser for five minutes
+        working-directory: fuzz
+        run: |
+          mkdir -p corpus/expression
+          cp seeds/expression/* corpus/expression/
+          cargo +nightly fuzz run expression corpus/expression -- \
+            -max_total_time=300 -max_len=1024
       - name: Keep the crashing input
         if: failure()
         uses: actions/upload-artifact@v4

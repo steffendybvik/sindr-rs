@@ -32,9 +32,9 @@ use winnow::token::{one_of, take_while};
 use winnow::{ModalResult, Parser};
 
 use crate::spice::ast::{
-    AcSweepKind, BinOp, NodeValueKind, ParamExpr, RawAcSpec, RawAnalysis, RawCard, RawCrossing,
-    RawElement, RawElementBody, RawMeasure, RawMeasureKind, RawModel, RawSubckt, RawWaveform,
-    SourceKind, Span,
+    AcSweepKind, BinOp, NodeValueKind, ParamExpr, PolyControls, RawAcSpec, RawAnalysis, RawCard,
+    RawCrossing, RawElement, RawElementBody, RawMeasure, RawMeasureKind, RawModel, RawSubckt,
+    RawWaveform, SourceKind, Span,
 };
 use crate::spice::error::SpiceParseError;
 use crate::spice::preprocess::{LogicalLine, Preprocessed};
@@ -389,7 +389,8 @@ fn parse_coupling(input: &mut Input<'_>) -> ModalResult<RawElement> {
 }
 
 /// The nonlinear forms of `E`/`G`/`F`/`H` (`POLY`, `VALUE`, `TABLE`,
-/// `LAPLACE`), which sindr doesn't model.
+/// `LAPLACE`). sindr reads `POLY`, and `VALUE` on `E` and `G`, as
+/// behavioural sources and doesn't model the rest.
 fn behavioural_form(line: &str) -> Option<&'static str> {
     line.split(|c: char| c.is_whitespace() || c == '=' || c == '(' || c == '{')
         .skip(1)
@@ -400,6 +401,114 @@ fn behavioural_form(line: &str) -> Option<&'static str> {
             "laplace" => Some("LAPLACE"),
             _ => None,
         })
+}
+
+/// Parse a behavioural source: `B<id> n+ n- V=expr` / `I=expr`, or
+/// `E<id>`/`G<id> n+ n- VALUE=expr` (`value` is `true`). The expression
+/// runs to the end of the card, braces optional.
+fn parse_behavioural(input: &mut Input<'_>, value: bool) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    ws(input)?;
+    let (n_pos, _) = node_name(input)?;
+    ws(input)?;
+    let (n_neg, _) = node_name(input)?;
+    ws(input)?;
+    let rest: &str = winnow::token::rest.parse_next(input)?;
+    let (key, text) = rest
+        .split_once('=')
+        .ok_or_else(|| ErrMode::from_input(input))?;
+    let current = match (key.trim(), value) {
+        ("v", false) => false,
+        ("i", false) => true,
+        ("value", true) => prefix == 'g',
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    let text: String = text.chars().filter(|c| !matches!(c, '{' | '}')).collect();
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawElement {
+        id,
+        prefix,
+        nodes: vec![n_pos, n_neg],
+        body: RawElementBody::Behavioural { current, text },
+        span: Span {
+            start: id_span.start,
+            end: id_span.end,
+            file: Arc::from(""),
+            src: Arc::default(),
+        },
+    })
+}
+
+/// Skips whitespace and the `(`, `)` and `,` that some decks put around
+/// and between `POLY` controls and coefficients.
+fn poly_separators(input: &mut Input<'_>) -> ModalResult<()> {
+    loop {
+        ws(input)?;
+        if opt(one_of(['(', ')', ','])).parse_next(input)?.is_none() {
+            return Ok(());
+        }
+    }
+}
+
+/// Parse `E`/`G`/`F`/`H` `POLY`: `<id> n+ n- POLY(n) controls… coefficients…`,
+/// where the controls are `n` node pairs (E, G) or `n` `V` line names
+/// (F, H).
+fn parse_poly(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let nodes = nodes_n(input, 2)?;
+    ws(input)?;
+    keyword("poly").parse_next(input)?;
+    ws(input)?;
+    '('.parse_next(input)?;
+    ws(input)?;
+    let dims: &str = take_while(1.., |c: char| c.is_ascii_digit()).parse_next(input)?;
+    let dims: usize = dims.parse().map_err(|_| ErrMode::from_input(input))?;
+    ws(input)?;
+    ')'.parse_next(input)?;
+    if dims == 0 || dims > 16 {
+        return Err(ErrMode::from_input(input));
+    }
+    let controls = if matches!(prefix, 'e' | 'g') {
+        let mut pairs = Vec::with_capacity(dims);
+        for _ in 0..dims {
+            poly_separators(input)?;
+            let (p, _) = node_name(input)?;
+            poly_separators(input)?;
+            let (n, _) = node_name(input)?;
+            pairs.push((p, n));
+        }
+        PolyControls::Voltages(pairs)
+    } else {
+        let mut sources = Vec::with_capacity(dims);
+        for _ in 0..dims {
+            poly_separators(input)?;
+            sources.push(node_name(input)?.0);
+        }
+        PolyControls::Currents(sources)
+    };
+    let mut coefficients = Vec::new();
+    let mut end = id_span.end;
+    loop {
+        poly_separators(input)?;
+        if input.is_empty() {
+            break;
+        }
+        let (value, span) = value_expr(input)?;
+        coefficients.push(value);
+        end = span.end;
+    }
+    if coefficients.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    let body = RawElementBody::Poly {
+        current: matches!(prefix, 'g' | 'f'),
+        controls,
+        coefficients,
+    };
+    Ok(element_line(id, prefix, id_span, nodes, body, end))
 }
 
 /// Parse `R / L / C` passive: `<id> n+ n- <value>`.
@@ -644,6 +753,90 @@ fn parse_bjt(input: &mut Input<'_>) -> ModalResult<RawElement> {
             src: Arc::default(),
         },
     })
+}
+
+/// Parse `M` MOSFET: `<id> nd ng ns nb <model> [name=val ...] [flag ...]`.
+/// **Node order is preserved as parsed (drain, gate, source, bulk).** The
+/// lowering pass reorders to sindr's `[gate, drain, source]` and checks the
+/// bulk.
+fn parse_mosfet(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let mut nodes = Vec::with_capacity(4);
+    for _ in 0..4 {
+        ws(input)?;
+        nodes.push(node_name(input)?.0);
+    }
+    ws(input)?;
+    let (model, _) = node_name(input)?;
+    let (params, flags) = instance_tail(input)?;
+    Ok(RawElement {
+        id,
+        prefix,
+        nodes,
+        body: RawElementBody::Mosfet {
+            model,
+            params,
+            flags,
+        },
+        span: Span {
+            start: id_span.start,
+            end: id_span.end,
+            file: Arc::from(""),
+            src: Arc::default(),
+        },
+    })
+}
+
+/// Parse `J` JFET: `<id> nd ng ns <model> [area] [flag ...]`. **Node order
+/// is preserved as parsed (drain, gate, source).**
+fn parse_jfet(input: &mut Input<'_>) -> ModalResult<RawElement> {
+    let (id, prefix, id_span) = element_id(input)?;
+    let mut nodes = Vec::with_capacity(3);
+    for _ in 0..3 {
+        ws(input)?;
+        nodes.push(node_name(input)?.0);
+    }
+    ws(input)?;
+    let (model, _) = node_name(input)?;
+    ws(input)?;
+    let area = opt(value_expr).parse_next(input)?.map(|(e, _)| e);
+    let (params, flags) = instance_tail(input)?;
+    if !params.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawElement {
+        id,
+        prefix,
+        nodes,
+        body: RawElementBody::Jfet { model, area, flags },
+        span: Span {
+            start: id_span.start,
+            end: id_span.end,
+            file: Arc::from(""),
+            src: Arc::default(),
+        },
+    })
+}
+
+/// The rest of a device line after its model name: `name=val` pairs and
+/// bare flags, in any order, to the end of the line.
+#[allow(clippy::type_complexity)]
+fn instance_tail(input: &mut Input<'_>) -> ModalResult<(Vec<(String, ParamExpr)>, Vec<String>)> {
+    let mut params = Vec::new();
+    let mut flags = Vec::new();
+    loop {
+        ws(input)?;
+        if input.is_empty() {
+            return Ok((params, flags));
+        }
+        let cp = input.checkpoint();
+        if let Ok(pair) = param_assign.parse_next(input) {
+            params.push(pair);
+            continue;
+        }
+        input.reset(&cp);
+        flags.push(node_name(input)?.0);
+    }
 }
 
 /// Parse `X` subckt instance: `<id> [nodes...] <subckt_name> [name=val ...]`.
@@ -993,16 +1186,48 @@ fn output_variable(input: &mut Input<'_>) -> ModalResult<crate::TfOutput> {
     .parse_next(input)
 }
 
-/// Parse `.sens v(node[,ref])` or `.sens i(vsource)`.
+/// Parse `.sens v(node[,ref])` or `.sens i(vsource)`, either followed by
+/// `ac <sweep> points fstart fstop` for AC sensitivity.
 fn parse_card_sens(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
     let output = output_variable(input)?;
+    ws(input)?;
+    if input.is_empty() {
+        return Ok(RawCard::Analysis(
+            RawAnalysis::Sens { output },
+            Span::detached(),
+        ));
+    }
+    let (ac, _) = ident(input)?;
+    if ac != "ac" {
+        return Err(ErrMode::from_input(input));
+    }
+    ws(input)?;
+    let (sweep_kw, _) = ident(input)?;
+    let sweep = match sweep_kw.as_str() {
+        "dec" => AcSweepKind::Dec,
+        "oct" => AcSweepKind::Oct,
+        "lin" => AcSweepKind::Lin,
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    ws(input)?;
+    let (points, _) = value_expr(input)?;
+    ws(input)?;
+    let (fstart, _) = value_expr(input)?;
+    ws(input)?;
+    let (fstop, _) = value_expr(input)?;
     ws(input)?;
     if !input.is_empty() {
         return Err(ErrMode::from_input(input));
     }
     Ok(RawCard::Analysis(
-        RawAnalysis::Sens { output },
+        RawAnalysis::SensAc {
+            output,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        },
         Span::detached(),
     ))
 }
@@ -1068,6 +1293,40 @@ fn parse_card_noise(input: &mut Input<'_>) -> ModalResult<RawCard> {
             points,
             fstart,
             fstop,
+        },
+        Span::detached(),
+    ))
+}
+
+/// Parse `.pz in in_ref out out_ref vol|cur pol|zer|pz`.
+fn parse_card_pz(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    let mut nodes: [String; 4] = Default::default();
+    for node in &mut nodes {
+        ws(input)?;
+        *node = node_name(input)?.0;
+    }
+    ws(input)?;
+    let transfer = match ident(input)?.0.as_str() {
+        "vol" => crate::PzTransfer::VoltageGain,
+        "cur" => crate::PzTransfer::Transimpedance,
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    ws(input)?;
+    let find = match ident(input)?.0.as_str() {
+        "pol" => crate::PzFind::Poles,
+        "zer" => crate::PzFind::Zeros,
+        "pz" => crate::PzFind::Both,
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawCard::Analysis(
+        RawAnalysis::Pz {
+            nodes,
+            transfer,
+            find,
         },
         Span::detached(),
     ))
@@ -1403,6 +1662,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "tf" => parse_card_tf(&mut input),
             "sens" => parse_card_sens(&mut input),
             "noise" => parse_card_noise(&mut input),
+            "pz" => parse_card_pz(&mut input),
             "meas" | "measure" => {
                 return parse_card_meas(&trimmed[1 + kind_span.end..]).map_err(|message| {
                     LocalError::Syntax {
@@ -1458,7 +1718,26 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             'q' => parse_bjt(&mut input),
             'x' => parse_subckt_instance(&mut input),
             'e' | 'g' | 'f' | 'h' => {
-                if let Some(form) = behavioural_form(trimmed) {
+                let form = behavioural_form(trimmed);
+                if form == Some("POLY") {
+                    let parsed = parse_poly(&mut input);
+                    return parsed
+                        .map(RawCard::Element)
+                        .map_err(|_| LocalError::Syntax {
+                            message: format!("malformed `{prefix}` POLY element"),
+                            span: 0..trimmed.len(),
+                        });
+                }
+                if form == Some("VALUE") && matches!(prefix, 'e' | 'g') {
+                    let parsed = parse_behavioural(&mut input, true);
+                    return parsed
+                        .map(RawCard::Element)
+                        .map_err(|_| LocalError::Syntax {
+                            message: format!("malformed `{prefix}` element"),
+                            span: 0..trimmed.len(),
+                        });
+                }
+                if let Some(form) = form {
                     return Err(LocalError::UnsupportedDevice {
                         device: format!(
                             "{form} form of a controlled source ({})",
@@ -1474,24 +1753,9 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
                 }
             }
             'k' => parse_coupling(&mut input),
-            'm' => {
-                return Err(LocalError::UnsupportedDevice {
-                    device: "MOSFET (M)".to_string(),
-                    span: 0..1,
-                });
-            }
-            'j' => {
-                return Err(LocalError::UnsupportedDevice {
-                    device: "JFET (J)".to_string(),
-                    span: 0..1,
-                });
-            }
-            'b' => {
-                return Err(LocalError::UnsupportedDevice {
-                    device: "behavioural source (B)".to_string(),
-                    span: 0..1,
-                });
-            }
+            'm' => parse_mosfet(&mut input),
+            'j' => parse_jfet(&mut input),
+            'b' => parse_behavioural(&mut input, false),
             's' => {
                 return Err(LocalError::UnsupportedDevice {
                     device: format!("device prefix '{prefix}'"),
@@ -1990,14 +2254,66 @@ mod tests {
     }
 
     #[test]
-    fn elements_unsupported_mosfet() {
-        let result = parse_one_card_local("m1 d g s mosmod");
-        match result {
-            Err(LocalError::UnsupportedDevice { device, .. }) => {
-                assert!(device.contains("MOSFET"), "device = {device:?}");
+    fn elements_mosfet_keeps_spice_order_params_and_flags() {
+        let card = parse_one_card_local("m1 d g s b 2n7002 w=20u l=2u off m=2").unwrap();
+        let RawCard::Element(el) = card else { panic!() };
+        assert_eq!(el.prefix, 'm');
+        assert_eq!(el.nodes, ["d", "g", "s", "b"]);
+        match el.body {
+            RawElementBody::Mosfet {
+                model,
+                params,
+                flags,
+            } => {
+                assert_eq!(model, "2n7002");
+                let names: Vec<_> = params.iter().map(|(k, _)| k.as_str()).collect();
+                assert_eq!(names, ["w", "l", "m"]);
+                assert!((must_num(&params[0].1) - 20e-6).abs() < 1e-15);
+                assert_eq!(flags, ["off"]);
             }
-            other => panic!("expected UnsupportedDevice(MOSFET), got {other:?}"),
+            other => panic!("got {other:?}"),
         }
+    }
+
+    #[test]
+    fn elements_mosfet_needs_four_nodes_and_a_model() {
+        assert!(matches!(
+            parse_one_card_local("m1 d g s mosmod"),
+            Err(LocalError::Syntax { .. })
+        ));
+    }
+
+    #[test]
+    fn elements_jfet_with_and_without_area() {
+        let RawCard::Element(el) = parse_one_card_local("j1 d g s jmod").unwrap() else {
+            panic!()
+        };
+        assert_eq!(el.nodes, ["d", "g", "s"]);
+        match el.body {
+            RawElementBody::Jfet { model, area, flags } => {
+                assert_eq!(model, "jmod");
+                assert!(area.is_none() && flags.is_empty());
+            }
+            other => panic!("got {other:?}"),
+        }
+        let RawCard::Element(el) = parse_one_card_local("j2 d g s jmod 2.5 off").unwrap() else {
+            panic!()
+        };
+        match el.body {
+            RawElementBody::Jfet { area, flags, .. } => {
+                assert!((must_num(&area.unwrap()) - 2.5).abs() < 1e-12);
+                assert_eq!(flags, ["off"]);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn elements_jfet_refuses_named_parameters() {
+        assert!(matches!(
+            parse_one_card_local("j1 d g s jmod area=2"),
+            Err(LocalError::Syntax { .. })
+        ));
     }
 
     #[test]

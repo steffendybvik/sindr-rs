@@ -9,7 +9,7 @@ architecture, how to add a circuit element or device model, and conventions.
 - **MSRV is Rust 1.89** (`rust-version` in both crate manifests). CI tests on
   1.89 and on stable, so don't use std or language features newer than 1.89.
 - **Raise the MSRV only in a minor release** (0.x → 0.x+1 before 1.0), with
-  a CHANGELOG line, never in a patch: `sindr = "0.1"` users get patches
+  a line in its release notes, never in a patch: `sindr = "0.1"` users get patches
   through `cargo update` and mustn't need a newer compiler for them.
 - **Dependencies** must be licensed compatibly with MIT OR Apache-2.0 and free
   of security advisories: CI runs `cargo deny check` against `deny.toml`. To
@@ -131,12 +131,17 @@ The two crates share one version. A bump touches:
 Work for an upcoming release goes to a staging branch named after it (for
 example `v0.1.0`) that already carries the bump. Branch from it and open
 PRs into it. CI runs on those PRs, but the version-bump check only runs on the
-staging branch's own PR into `main` when the release ships. Add CHANGELOG
-entries under the staging version's section, and don't bump versions in
-feature PRs.
+staging branch's own PR into `main` when the release ships. Don't bump
+versions in feature PRs.
 
-Write CHANGELOG entries in the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-style under `Added` / `Changed` / `Fixed` / `Removed`, and call out breaking
+Feature and fix PRs don't edit `CHANGELOG.md`. Every open PR adding lines to
+the same section conflicts with every other one, so the CHANGELOG is written
+once, in the release PR, from the merged PRs' descriptions. Say in the PR
+description what a user needs to know, and mark a breaking change with a
+`> [!CAUTION]` block saying what to change in calling code.
+
+The release PR writes the CHANGELOG in the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+style under `Added` / `Changed` / `Fixed` / `Removed`, calling out breaking
 API changes.
 
 ## Documentation and releases
@@ -151,8 +156,8 @@ checklist.
 - One commit per logical change. Subject: `type(scope): what changed`,
   lowercase and imperative, with no trailing period.
 - Breaking public-API changes are allowed before 1.0, but say so in the
-  commit body and the CHANGELOG, and the release they go into bumps the
-  minor version.
+  commit body and the PR description, and the release they go into bumps
+  the minor version.
 
 ## License
 

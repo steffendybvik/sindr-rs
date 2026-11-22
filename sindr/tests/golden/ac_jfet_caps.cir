@@ -1,0 +1,9 @@
+ac: N-channel JFET common-source from a 10k source, Miller pole of bias-dependent CGS and CGD
+VDD vdd 0 12
+VIN in 0 -1
+RSIG in g 10k
+RD vdd d 1k
+J1 d g 0 jn
+* sindr: IDSS = 10 mA, Vp = -2 V; gate junctions CGS = 10 pF, CGD = 2 pF at zero bias, graded at M = 0.5 (ngspice's only value)
+.model jn NJF(VTO=-2 BETA=2.5m LAMBDA=0 CGS=10p CGD=2p PB=0.8 FC=0.5)
+.end

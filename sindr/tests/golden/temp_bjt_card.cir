@@ -1,0 +1,7 @@
+temp: a BJT card with its own EG and XTI, biased by a base resistor
+VCC vcc 0 5
+RB vcc b 430k
+RC vcc c 1k
+Q1 c b 0 qx
+.model qx NPN(IS=5e-15 BF=150 EG=1.16 XTI=4)
+.end

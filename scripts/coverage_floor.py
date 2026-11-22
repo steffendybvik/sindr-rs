@@ -18,6 +18,7 @@ import sys
 FLOORS = {
     "sindr-devices/src/battery.rs": 96.5,  # 98.06% when set
     "sindr-devices/src/bjt.rs": 98.5,  # 100.00% when set
+    "sindr-devices/src/datasheet.rs": 89.5,  # 91.43% when set
     "sindr-devices/src/diode.rs": 98.0,  # 99.79% when set
     "sindr-devices/src/igbt.rs": 98.5,  # 100.00% when set
     "sindr-devices/src/inductor.rs": 97.0,  # 98.70% when set
@@ -36,25 +37,31 @@ FLOORS = {
     "sindr/src/circuit.rs": 97.5,  # 99.29% when set
     "sindr/src/composite.rs": 98.0,  # 99.50% when set
     "sindr/src/csv.rs": 98.5,  # 100.00% when set
+    "sindr/src/datasheet.rs": 92.0,  # 93.83% when set
     "sindr/src/dc_sweep.rs": 98.5,  # 100.00% when set
     "sindr/src/design.rs": 98.0,  # 99.72% when set
     "sindr/src/device_params.rs": 98.5,  # 100.00% when set
     "sindr/src/error.rs": 97.5,  # 99.07% when set
     "sindr/src/examples.rs": 98.0,  # 99.80% when set
+    "sindr/src/expression.rs": 95.5,  # 97.44% when set
     "sindr/src/import/bench.rs": 98.5,  # 100.00% when set
     "sindr/src/import/mod.rs": 98.0,  # 99.68% when set
     "sindr/src/import/value.rs": 97.5,  # 99.28% when set
     "sindr/src/integration.rs": 98.5,  # 100.00% when set
     "sindr/src/lib.rs": 95.5,  # 97.20% when set
+    "sindr/src/loop_gain.rs": 88.5,  # 90.45% when set
     "sindr/src/measure.rs": 97.5,  # 99.17% when set
     "sindr/src/mna.rs": 97.0,  # 98.78% when set
     "sindr/src/newton_raphson.rs": 96.5,  # 98.17% when set
     "sindr/src/node_map.rs": 98.5,  # 100.00% when set
     "sindr/src/noise.rs": 97.5,  # 99.22% when set
     "sindr/src/op_amp.rs": 96.5,  # 98.35% when set
+    "sindr/src/pole_zero.rs": 90.5,  # 92.04% when set
     "sindr/src/ratings.rs": 97.5,  # 99.43% when set
     "sindr/src/results.rs": 91.5,  # 93.49% when set
     "sindr/src/sensitivity.rs": 95.5,  # 97.22% when set
+    "sindr/src/sensitivity/ac.rs": 92.5,  # 94.24% when set
+    "sindr/src/sensitivity/device.rs": 97.0,  # 98.87% when set
     "sindr/src/solver.rs": 98.5,  # 100.00% when set
     "sindr/src/spice/analysis.rs": 98.0,  # 99.79% when set
     "sindr/src/spice/ast.rs": 98.5,  # 100.00% when set
@@ -74,6 +81,7 @@ FLOORS = {
     "sindr/src/transfer_function.rs": 94.5,  # 96.32% when set
     "sindr/src/transient.rs": 97.5,  # 99.06% when set
     "sindr/src/validation.rs": 96.5,  # 98.29% when set
+    "sindr/src/variation.rs": 95.5,  # 97.27% when set
     "sindr/src/waveform.rs": 97.0,  # 98.88% when set
     "TOTAL": 96.5,  # 98.12% when set
 }

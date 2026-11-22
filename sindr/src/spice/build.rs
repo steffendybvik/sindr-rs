@@ -30,15 +30,18 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::circuit::{BjtModel, BjtParasiticCaps, DiodeModel};
+use crate::circuit::{
+    BjtModel, BjtParasiticCaps, DiodeModel, JfetParasiticCaps, MosfetParasiticCaps,
+};
 use crate::design::{Block, Instance};
-use crate::{BjtKind, Circuit, CircuitElement, Waveform};
+use crate::devices::mosfet::MosfetParams;
+use crate::{BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind, Waveform};
 use miette::NamedSource;
 
 use crate::spice::analysis::{AcStimulus, AcSweep, AnalysisRequest, MeasureRequest};
 use crate::spice::ast::{
-    AcSweepKind, NodeValueKind, ParamExpr, RawAnalysis, RawCrossing, RawElementBody, RawMeasure,
-    RawMeasureKind, RawModel, RawWaveform, SourceKind,
+    AcSweepKind, NodeValueKind, ParamExpr, PolyControls, RawAnalysis, RawCrossing, RawElementBody,
+    RawMeasure, RawMeasureKind, RawModel, RawWaveform, SourceKind,
 };
 use crate::spice::error::{ParseWarning, SpiceParseError};
 use crate::spice::flatten::{FlatElement, Flattened, InstanceRecord};
@@ -239,6 +242,7 @@ fn couple(
         l1,
         l2,
         k,
+        saturation: None,
     };
     let (first, last) = (i1.min(i2), i1.max(i2));
     elements.remove(last);
@@ -349,7 +353,7 @@ fn build_element(
                     bad_span: span_of(raw),
                 });
             }
-            let params = model_params(m, DIODE_KEYS, &scope, strict, warnings)?;
+            let params = model_params(m, DIODE_KEYS, JUNCTION_NEUTRAL, &scope, strict, warnings)?;
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
             let model = (!params.is_empty()).then(|| {
                 let mut model = DiodeModel::default();
@@ -366,6 +370,8 @@ fn build_element(
                         "bv" => model.bv = Some(value),
                         "kf" => model.kf = value,
                         "af" => model.af = value,
+                        "eg" => model.eg = value,
+                        "xti" => model.xti = value,
                         _ => model.ibv = value,
                     }
                 }
@@ -420,7 +426,7 @@ fn build_element(
                 /* collector */ raw.nodes[0].clone(),
                 /* emitter */ raw.nodes[2].clone(),
             ];
-            let params = model_params(m, BJT_KEYS, &scope, strict, warnings)?;
+            let params = model_params(m, BJT_KEYS, JUNCTION_NEUTRAL, &scope, strict, warnings)?;
             let mut bf = 100.0;
             let mut model = None::<BjtModel>;
             for (key, value) in params {
@@ -436,6 +442,8 @@ fn build_element(
                     "nr" => model.nr = value,
                     "kf" => model.kf = value,
                     "af" => model.af = value,
+                    "eg" => model.eg = value,
+                    "xti" => model.xti = value,
                     _ => model.vaf = value,
                 }
             }
@@ -447,6 +455,70 @@ fn build_element(
                 temperature: 300.15,
                 parasitic_caps: None::<BjtParasiticCaps>,
                 model,
+            })
+        }
+
+        RawElementBody::Mosfet {
+            model,
+            params,
+            flags,
+        } => build_mosfet(raw, model, params, flags, models, &scope, strict, warnings),
+
+        RawElementBody::Jfet { model, area, flags } => build_jfet(
+            raw,
+            model,
+            area.as_ref(),
+            flags,
+            models,
+            &scope,
+            strict,
+            warnings,
+        ),
+
+        RawElementBody::Poly {
+            current,
+            controls,
+            coefficients,
+        } => {
+            let coefficients = coefficients
+                .iter()
+                .map(|c| eval_or_lift(c, &scope))
+                .collect::<Result<Vec<_>, _>>()?;
+            let variables: Vec<String> = match controls {
+                PolyControls::Voltages(pairs) => {
+                    pairs.iter().map(|(p, n)| format!("v({p},{n})")).collect()
+                }
+                PolyControls::Currents(sources) => {
+                    sources.iter().map(|s| format!("i({s})")).collect()
+                }
+            };
+            let text = poly_text(&variables, &coefficients);
+            let expr = crate::expression::Expression::parse(&text)
+                .map_err(|e| card_error(format!("`{}`: {e}", raw.id)))?;
+            Ok(CircuitElement::Behavioural {
+                id: raw.id.clone(),
+                nodes: two_nodes(&raw.nodes, &raw.id)?,
+                output: if *current {
+                    crate::BehaviouralOutput::Current
+                } else {
+                    crate::BehaviouralOutput::Voltage
+                },
+                expr,
+            })
+        }
+
+        RawElementBody::Behavioural { current, text } => {
+            let expr = crate::expression::Expression::parse_with(text, &|name| scope.get(name))
+                .map_err(|e| card_error(format!("`{}`: {e}", raw.id)))?;
+            Ok(CircuitElement::Behavioural {
+                id: raw.id.clone(),
+                nodes: two_nodes(&raw.nodes, &raw.id)?,
+                output: if *current {
+                    crate::BehaviouralOutput::Current
+                } else {
+                    crate::BehaviouralOutput::Voltage
+                },
+                expr,
             })
         }
 
@@ -613,10 +685,54 @@ fn translate_waveform(
     }
 }
 
+/// SPICE2's `POLY` polynomial of `variables` as expression text. The
+/// coefficients run by total degree, and within one degree over the
+/// variables' index combinations in nondecreasing order: for two,
+/// `p0 + p1·x1 + p2·x2 + p3·x1² + p4·x1·x2 + p5·x2² + p6·x1³ + …`. A
+/// one-dimensional polynomial with a single coefficient is its linear term,
+/// as in SPICE. Zero coefficients are left out.
+fn poly_text(variables: &[String], coefficients: &[f64]) -> String {
+    let coefficients: Vec<f64> = if variables.len() == 1 && coefficients.len() == 1 {
+        vec![0.0, coefficients[0]]
+    } else {
+        coefficients.to_vec()
+    };
+    let n = variables.len();
+    let mut terms = Vec::new();
+    // `combo` is the current term's variable indices, nondecreasing.
+    let mut combo: Vec<usize> = Vec::new();
+    for &c in &coefficients {
+        if c != 0.0 {
+            let mut term = format!("{c:e}");
+            for &k in &combo {
+                term.push('*');
+                term.push_str(&variables[k]);
+            }
+            terms.push(term);
+        }
+        // Next combination: the last index that can still grow does, and
+        // everything after it restarts at its value; past the last of a
+        // degree, the next degree starts at all zeros.
+        match (0..combo.len()).rev().find(|&i| combo[i] + 1 < n) {
+            Some(i) => {
+                let next = combo[i] + 1;
+                for slot in &mut combo[i..] {
+                    *slot = next;
+                }
+            }
+            None => combo = vec![0; combo.len() + 1],
+        }
+    }
+    if terms.is_empty() {
+        return "0".to_string();
+    }
+    terms.join("+")
+}
+
 /// A syntax error with no span of its own: the caller locates it on the card.
 /// `.model D` parameters sindr's diode uses.
 const DIODE_KEYS: &[&str] = &[
-    "is", "n", "rs", "cjo", "vj", "m", "fc", "tt", "bv", "ibv", "kf", "af",
+    "is", "n", "rs", "cjo", "vj", "m", "fc", "tt", "bv", "ibv", "kf", "af", "eg", "xti",
 ];
 
 /// SPICE's alternative names for `.model` parameters, and the name sindr
@@ -629,8 +745,319 @@ const KEY_ALIASES: &[(&str, &str)] = &[
     ("mj", "m"),
 ];
 
+/// Diode and BJT card parameters sindr has no field for, read only at the
+/// value it assumes: `TNOM`, the temperature a card's values are at, of
+/// 27 °C.
+const JUNCTION_NEUTRAL: &[(&str, f64)] = &[("tnom", 27.0)];
+
 /// `.model NPN`/`PNP` parameters sindr's Ebers–Moll transistor uses.
-const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf", "kf", "af"];
+const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf", "kf", "af", "eg", "xti"];
+
+/// `.model NMOS`/`PMOS` parameters sindr's level-1 MOSFET uses. `vj` and
+/// `m` are `PB` and `MJ` under [`KEY_ALIASES`]; `cbs` is the source–bulk
+/// junction, shorted with the bulk tied to the source.
+const MOSFET_KEYS: &[&str] = &[
+    "level", "kp", "vto", "lambda", "gamma", "phi", "ld", "cgso", "cgdo", "cgbo", "is", "cbd",
+    "cbs", "vj", "m", "fc", "rd", "rs",
+];
+
+/// `.model NJF`/`PJF` parameters sindr's JFET uses. `vj` is `PB` under
+/// [`KEY_ALIASES`]. `is`, `lambda`, `rd`, `rs` and `b` are read only at the
+/// value that leaves SPICE's model the same as sindr's.
+const JFET_KEYS: &[&str] = &[
+    "vto", "beta", "is", "lambda", "rd", "rs", "cgs", "cgd", "vj", "m", "fc", "b",
+];
+
+/// MOSFET card parameters sindr's model has no field for, read only at the
+/// value that switches them off in SPICE.
+const MOSFET_NEUTRAL: &[(&str, f64)] = &[("rd", 0.0), ("rs", 0.0)];
+
+/// The same for a JFET card.
+const JFET_NEUTRAL: &[(&str, f64)] = &[
+    ("is", 0.0),
+    ("lambda", 0.0),
+    ("rd", 0.0),
+    ("rs", 0.0),
+    ("b", 1.0),
+];
+
+/// M-line geometry that only scales parameters sindr rejects (`JS`, `CJ`,
+/// `CJSW`, `RSH`), so dropping it changes nothing.
+const MOSFET_GEOMETRY: &[&str] = &["ad", "as", "pd", "ps", "nrd", "nrs"];
+
+/// Something on a device line sindr can't honour: an error in strict mode,
+/// otherwise a warning, once per message.
+fn unsupported(
+    message: String,
+    file: &str,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<(), SpiceParseError> {
+    if strict {
+        return Err(card_error(message));
+    }
+    let message = format!("{message}; ignored");
+    if !warnings.iter().any(|w| w.message == message) {
+        warnings.push(ParseWarning {
+            message,
+            span: None,
+            file: Some(file.to_string()),
+        });
+    }
+    Ok(())
+}
+
+/// The model card of a FET line, checked against the kinds it may be.
+fn fet_model<'a>(
+    raw: &crate::spice::ast::RawElement,
+    model: &str,
+    models: &'a HashMap<String, RawModel>,
+    kinds: [&str; 2],
+) -> Result<(&'a RawModel, bool), SpiceParseError> {
+    let m = lookup_model(model, models, raw)?;
+    let kind = m.kind.to_ascii_lowercase();
+    if kind != kinds[0] && kind != kinds[1] {
+        return Err(SpiceParseError::UnsupportedModelType {
+            kind: m.kind.clone(),
+            name: m.name.clone(),
+            src: NamedSource::new(&*raw.span.file, String::new()),
+            bad_span: span_of(raw),
+        });
+    }
+    Ok((m, kind == kinds[1]))
+}
+
+/// A card's parameters as a map, with each `neutral` key checked.
+fn fet_params(
+    m: &RawModel,
+    known: &[&'static str],
+    neutral: &[(&str, f64)],
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<HashMap<&'static str, f64>, SpiceParseError> {
+    let params: HashMap<_, _> = model_params(m, known, &[], scope, strict, warnings)?
+        .into_iter()
+        .collect();
+    for (key, neutral) in neutral {
+        if let Some(value) = params.get(key).filter(|v| **v != *neutral) {
+            unsupported(
+                format!(
+                    "`.model {}` {}={value}: sindr's {} model has no {}",
+                    m.name,
+                    key.to_ascii_uppercase(),
+                    m.kind.to_ascii_uppercase(),
+                    key.to_ascii_uppercase()
+                ),
+                &m.span.file,
+                strict,
+                warnings,
+            )?;
+        }
+    }
+    Ok(params)
+}
+
+/// Bare flags on a FET line (`OFF`) have no meaning to sindr.
+fn fet_flags(
+    raw: &crate::spice::ast::RawElement,
+    flags: &[String],
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<(), SpiceParseError> {
+    for flag in flags {
+        unsupported(
+            format!(
+                "`{}`: `{}` not supported",
+                raw.id,
+                flag.to_ascii_uppercase()
+            ),
+            &raw.span.file,
+            strict,
+            warnings,
+        )?;
+    }
+    Ok(())
+}
+
+/// Lower an `M` line onto sindr's three-terminal level-1 MOSFET, as SPICE
+/// level 1 with ngspice's defaults (`W = L = 100 µm`, `KP = 2e-5`):
+///
+/// * `kp = KP·W/(L − 2·LD)·M`; `VTO`, `LAMBDA`, `GAMMA`, `PHI` as written.
+/// * `CGSO·W + CGBO·(L − 2·LD)` and `CGDO·W`, times `M`, are the fixed gate
+///   capacitances (the bulk is the source, so gate–bulk is gate–source).
+/// * The drain–bulk junction (`IS`, default 1e-14 A, `CBD`, `PB`, `MJ`,
+///   `FC`, times `M`) is the body diode.
+///
+/// A `LEVEL` other than 1 is an error. A bulk node other than the source
+/// and any other card parameter are errors in strict mode and warnings
+/// otherwise.
+#[allow(clippy::too_many_arguments)]
+fn build_mosfet(
+    raw: &crate::spice::ast::RawElement,
+    model: &str,
+    instance: &[(String, ParamExpr)],
+    flags: &[String],
+    models: &HashMap<String, RawModel>,
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<CircuitElement, SpiceParseError> {
+    let (m, pmos) = fet_model(raw, model, models, ["nmos", "pmos"])?;
+    let card = fet_params(m, MOSFET_KEYS, MOSFET_NEUTRAL, scope, strict, warnings)?;
+    let get = |key: &str, default: f64| card.get(key).copied().unwrap_or(default);
+    let file = &*raw.span.file;
+    // Another level is a different model, not a parameter to drop: read as
+    // level 1 it would solve to the wrong answer, so even lenient mode
+    // refuses it.
+    let level = get("level", 1.0);
+    if level != 1.0 {
+        return Err(card_error(format!(
+            "`.model {}` LEVEL={level}: sindr's MOSFET is level 1",
+            m.name
+        )));
+    }
+    let [d, g, s, b]: [String; 4] = raw.nodes.clone().try_into().map_err(|_| {
+        card_error(format!(
+            "`{}` needs four nodes: drain gate source bulk",
+            raw.id
+        ))
+    })?;
+    if b != s {
+        unsupported(
+            format!(
+                "`{}` bulk `{b}` isn't its source `{s}`: sindr's MOSFET ties the body to the source",
+                raw.id
+            ),
+            file,
+            strict,
+            warnings,
+        )?;
+    }
+    fet_flags(raw, flags, strict, warnings)?;
+
+    let (mut w, mut l, mut mult) = (100e-6, 100e-6, 1.0);
+    for (key, expr) in instance {
+        let value = eval_or_lift(expr, scope)?;
+        match key.to_ascii_lowercase().as_str() {
+            "w" => w = value,
+            "l" => l = value,
+            "m" => mult = value,
+            other if MOSFET_GEOMETRY.contains(&other) => {}
+            other => unsupported(
+                format!(
+                    "`{}`: instance parameter `{}` not supported",
+                    raw.id,
+                    other.to_ascii_uppercase()
+                ),
+                file,
+                strict,
+                warnings,
+            )?,
+        }
+    }
+    let l_eff = l - 2.0 * get("ld", 0.0);
+    if !(w > 0.0 && l_eff > 0.0 && mult > 0.0) {
+        return Err(card_error(format!(
+            "`{}` needs W, L − 2·LD and M above 0 (W={w}, L−2·LD={l_eff}, M={mult})",
+            raw.id
+        )));
+    }
+
+    let params = MosfetParams {
+        kp: get("kp", 2e-5) * w / l_eff * mult,
+        vto: get("vto", 0.0),
+        lambda: get("lambda", 0.0),
+        gamma: get("gamma", 0.0),
+        phi: get("phi", 0.6),
+        ..MosfetParams::default()
+    };
+    let cgs = (get("cgso", 0.0) * w + get("cgbo", 0.0) * l_eff) * mult;
+    let cgd = get("cgdo", 0.0) * w * mult;
+    let parasitic_caps = (cgs > 0.0 || cgd > 0.0).then_some(MosfetParasiticCaps { cgs, cgd });
+    let is = get("is", 1e-14) * mult;
+    let cbd = get("cbd", 0.0) * mult;
+    let body_diode = (is > 0.0 || cbd > 0.0).then(|| DiodeModel {
+        is,
+        cjo: cbd,
+        vj: get("vj", 0.8),
+        m: get("m", 0.5),
+        fc: get("fc", 0.5),
+        ..DiodeModel::default()
+    });
+    Ok(CircuitElement::Mosfet {
+        id: raw.id.clone(),
+        nodes: [g, d, s],
+        kind: if pmos {
+            MosfetKind::Pmos
+        } else {
+            MosfetKind::Nmos
+        },
+        params,
+        parasitic_caps,
+        body_diode,
+    })
+}
+
+/// Lower a `J` line onto sindr's JFET: `idss = BETA·VTO²·area`, and the
+/// pinch-off `vp` is `VTO` (default −2 V), signed as sindr's
+/// [`JfetKind`] expects (negative for N-channel, positive for P-channel).
+/// `CGS·area` and `CGD·area` with `PB`, `M` and `FC` are the gate
+/// capacitances. sindr's JFET has no gate junction current, channel-length
+/// modulation or series resistance, so a card that sets them is refused in
+/// strict mode.
+#[allow(clippy::too_many_arguments)]
+fn build_jfet(
+    raw: &crate::spice::ast::RawElement,
+    model: &str,
+    area: Option<&ParamExpr>,
+    flags: &[String],
+    models: &HashMap<String, RawModel>,
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<CircuitElement, SpiceParseError> {
+    let (m, pjf) = fet_model(raw, model, models, ["njf", "pjf"])?;
+    let card = fet_params(m, JFET_KEYS, JFET_NEUTRAL, scope, strict, warnings)?;
+    fet_flags(raw, flags, strict, warnings)?;
+    let [d, g, s]: [String; 3] =
+        raw.nodes.clone().try_into().map_err(|_| {
+            card_error(format!("`{}` needs three nodes: drain gate source", raw.id))
+        })?;
+    let vto = card.get("vto").copied().unwrap_or(-2.0);
+    let beta = card.get("beta").copied().unwrap_or(1e-4);
+    let area = area
+        .map(|a| eval_or_lift(a, scope))
+        .transpose()?
+        .unwrap_or(1.0);
+    if !(vto < 0.0 && beta > 0.0 && area > 0.0) {
+        return Err(card_error(format!(
+            "`{}` needs VTO below 0 and BETA and area above 0 (VTO={vto}, BETA={beta}, area={area})",
+            raw.id
+        )));
+    }
+    let get = |key: &str, default: f64| card.get(key).copied().unwrap_or(default);
+    let defaults = JfetParasiticCaps::default();
+    let caps = JfetParasiticCaps {
+        cgs: get("cgs", 0.0) * area,
+        cgd: get("cgd", 0.0) * area,
+        pb: get("vj", defaults.pb),
+        m: get("m", defaults.m),
+        fc: get("fc", defaults.fc),
+    };
+    Ok(CircuitElement::Jfet {
+        id: raw.id.clone(),
+        nodes: [g, d, s],
+        kind: if pjf {
+            JfetKind::PChannel
+        } else {
+            JfetKind::NChannel
+        },
+        idss: beta * vto * vto * area,
+        vp: if pjf { -vto } else { vto },
+        parasitic_caps: caps.stores_charge().then_some(caps),
+    })
+}
 
 /// `.model` parameters that describe the part rather than its behaviour
 /// (vendor model libraries add them). They are dropped without a word,
@@ -646,18 +1073,28 @@ const ANNOTATION_KEYS: &[&str] = &["mfg", "type", "vceo", "icrating", "iave", "v
 fn model_params(
     m: &RawModel,
     known: &[&'static str],
+    neutral: &[(&str, f64)],
     scope: &ParamScope,
     strict: bool,
     warnings: &mut Vec<ParseWarning>,
 ) -> Result<Vec<(&'static str, f64)>, SpiceParseError> {
     let mut params = Vec::new();
     let mut ignored = Vec::new();
+    let mut off_neutral = false;
     for (key, expr) in &m.params {
         let lower = key.to_ascii_lowercase();
         let lower = KEY_ALIASES
             .iter()
             .find(|(alias, _)| *alias == lower)
             .map_or(lower, |(_, name)| name.to_string());
+        if let Some((_, at)) = neutral.iter().find(|(k, _)| *k == lower) {
+            let value = eval_or_lift(expr, scope)?;
+            if (value - at).abs() > 1e-9 * at.abs() {
+                ignored.push(format!("{}={value}", key.to_ascii_uppercase()));
+                off_neutral = true;
+            }
+            continue;
+        }
         match known.iter().find(|k| **k == lower) {
             Some(k) => params.push((*k, eval_or_lift(expr, scope)?)),
             None if ANNOTATION_KEYS.contains(&lower.as_str()) => {}
@@ -673,13 +1110,18 @@ fn model_params(
         if ignored.len() == 1 { "" } else { "s" },
         ignored.join(", ")
     );
+    let hint = if off_neutral {
+        "; its values are at TNOM=27"
+    } else {
+        ""
+    };
     if strict {
         return Err(card_error(format!(
-            "{what} not supported by sindr's {} model",
+            "{what} not supported by sindr's {} model{hint}",
             m.kind.to_ascii_uppercase()
         )));
     }
-    let message = format!("{what} ignored (sindr's model doesn't use them)");
+    let message = format!("{what} ignored (sindr's model doesn't use them{hint})");
     if !warnings.iter().any(|w| w.message == message) {
         warnings.push(ParseWarning {
             message,
@@ -1004,6 +1446,48 @@ fn build_analysis(
         RawAnalysis::Sens { output } => Ok(AnalysisRequest::Sens {
             output: output.clone(),
         }),
+        RawAnalysis::SensAc {
+            output,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        } => {
+            // The same sweep checks as `.ac`.
+            let sweep = RawAnalysis::Ac {
+                sweep: *sweep,
+                points: points.clone(),
+                fstart: fstart.clone(),
+                fstop: fstop.clone(),
+            };
+            match build_analysis(&sweep, scope)? {
+                AnalysisRequest::Ac {
+                    sweep,
+                    points,
+                    fstart,
+                    fstop,
+                } => Ok(AnalysisRequest::SensAc {
+                    output: output.clone(),
+                    sweep,
+                    points,
+                    fstart,
+                    fstop,
+                }),
+                _ => Err(card_error("`.sens ... ac`: not an AC sweep".into())),
+            }
+        }
+        RawAnalysis::Pz {
+            nodes,
+            transfer,
+            find,
+        } => Ok(AnalysisRequest::Pz {
+            input: nodes[0].clone(),
+            input_reference: nodes[1].clone(),
+            output: nodes[2].clone(),
+            output_reference: nodes[3].clone(),
+            transfer: *transfer,
+            find: *find,
+        }),
         RawAnalysis::Tf { output, input } => Ok(AnalysisRequest::Tf {
             output: output.clone(),
             input: input.clone(),
@@ -1156,6 +1640,27 @@ fn eval_or_lift(expr: &ParamExpr, scope: &ParamScope) -> Result<f64, SpiceParseE
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn poly_coefficients_follow_spice2s_order() {
+        let x = |n: usize| (1..=n).map(|k| format!("x{k}")).collect::<Vec<_>>();
+        // Two dimensions, to the cubic.
+        assert_eq!(
+            poly_text(&x(2), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]),
+            "1e0+2e0*x1+3e0*x2+4e0*x1*x1+5e0*x1*x2+6e0*x2*x2\
+             +7e0*x1*x1*x1+8e0*x1*x1*x2+9e0*x1*x2*x2+1e1*x2*x2*x2"
+        );
+        // Three dimensions, second degree.
+        let three = poly_text(&x(3), &[0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            three,
+            "1e0*x1*x1+2e0*x1*x2+3e0*x1*x3+4e0*x2*x2+5e0*x2*x3+6e0*x3*x3"
+        );
+        // One coefficient in one dimension is the linear term.
+        assert_eq!(poly_text(&x(1), &[3.0]), "3e0*x1");
+        assert_eq!(poly_text(&x(1), &[3.0, 0.0, -2.0]), "3e0+-2e0*x1*x1");
+        assert_eq!(poly_text(&x(2), &[0.0]), "0");
+    }
     use std::sync::Arc;
 
     use super::*;
@@ -1880,12 +2385,12 @@ mod tests {
     fn unused_parameters_are_an_error_in_strict_mode() {
         for (kind, element) in [("D", diode_card("D1", "m")), ("NPN", bjt_card("m"))] {
             let cards = vec![
-                model_card("m", kind, &[("IS", 1e-14), ("XTI", 3.0), ("VAR", 10.0)]),
+                model_card("m", kind, &[("IS", 1e-14), ("TNOM", 25.0), ("VAR", 10.0)]),
                 element,
             ];
             let err = build_from_cards(cards).unwrap_err().to_string();
             assert!(
-                err.contains("XTI, VAR") && err.contains("m"),
+                err.contains("TNOM=25, VAR") && err.contains("m") && err.contains("TNOM=27"),
                 "{kind}: {err}"
             );
         }
@@ -1894,7 +2399,7 @@ mod tests {
     #[test]
     fn unused_parameters_warn_once_per_card_in_lenient_mode() {
         let cards = vec![
-            model_card("m", "D", &[("IS", 1e-12), ("EG", 0.69), ("XTI", 2.0)]),
+            model_card("m", "D", &[("IS", 1e-12), ("TNOM", 25.0), ("VAR", 2.0)]),
             diode_card("D1", "m"),
             diode_card("D2", "m"),
         ];
@@ -1904,7 +2409,10 @@ mod tests {
             .filter(|w| w.message.contains(".model m"))
             .collect();
         assert_eq!(about_card.len(), 1, "{warnings:?}");
-        assert!(about_card[0].message.contains("EG, XTI"), "{warnings:?}");
+        assert!(
+            about_card[0].message.contains("TNOM=25, VAR"),
+            "{warnings:?}"
+        );
         // What is used still applies.
         assert!(matches!(
             &netlist.circuit.components[1],

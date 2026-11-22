@@ -3,7 +3,7 @@
 //! These are returned in [`crate::spice::ParsedNetlist::analyses`]. They map 1-to-1
 //! onto the analyses that `sindr` knows how to run.
 
-/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`).
+/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum AnalysisRequest {
@@ -73,6 +73,20 @@ pub enum AnalysisRequest {
         /// The output whose sensitivities are wanted.
         output: crate::TfOutput,
     },
+    /// `.sens v(node[,ref]) ac <sweep> points fstart fstop` or `.sens
+    /// i(vsource) ac ...` — AC sensitivity. The sweep is checked as `.ac`'s.
+    SensAc {
+        /// The output whose sensitivities are wanted.
+        output: crate::TfOutput,
+        /// Sweep style (decade / octave / linear).
+        sweep: AcSweep,
+        /// Points per decade or octave, or the total for linear.
+        points: usize,
+        /// Start frequency in Hz.
+        fstart: f64,
+        /// Stop frequency in Hz.
+        fstop: f64,
+    },
     /// `.noise v(node[,ref]) source <sweep> points fstart fstop` — noise
     /// analysis. The parser checks `points` as `.ac` does, and that
     /// `fstart` is above 0.
@@ -91,6 +105,22 @@ pub enum AnalysisRequest {
         fstart: f64,
         /// Stop frequency in Hz.
         fstop: f64,
+    },
+    /// `.pz in in_ref out out_ref vol|cur pol|zer|pz` — pole-zero analysis
+    /// of the transfer function from the input pair to the output pair.
+    Pz {
+        /// Positive input node.
+        input: String,
+        /// Negative input node.
+        input_reference: String,
+        /// Positive output node.
+        output: String,
+        /// Negative output node.
+        output_reference: String,
+        /// `vol` (voltage gain) or `cur` (transimpedance).
+        transfer: crate::PzTransfer,
+        /// `pol`, `zer` or `pz`.
+        find: crate::PzFind,
     },
 }
 
@@ -390,6 +420,49 @@ impl AnalysisRequest {
         })
     }
 
+    /// The [`PzConfig`](crate::PzConfig) for a `.pz` request, to pass to
+    /// [`solve_pz`](crate::solve_pz); `None` for any other analysis.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 0\nR1 in out 1k\nC1 out 0 1u\n.pz in 0 out 0 vol pz\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].pz_config().unwrap();
+    /// let pz = sindr::solve_pz(&netlist.circuit, &config)?;
+    /// // One pole at −1/RC.
+    /// assert!((pz.poles[0].re + 1_000.0).abs() < 1e-9);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn pz_config(&self) -> Option<crate::PzConfig> {
+        let AnalysisRequest::Pz {
+            input,
+            input_reference,
+            output,
+            output_reference,
+            transfer,
+            find,
+        } = self
+        else {
+            return None;
+        };
+        let config = match transfer {
+            crate::PzTransfer::Transimpedance => crate::PzConfig::transimpedance(
+                input.as_str(),
+                input_reference.as_str(),
+                output.as_str(),
+                output_reference.as_str(),
+            ),
+            _ => crate::PzConfig::voltage_gain(
+                input.as_str(),
+                input_reference.as_str(),
+                output.as_str(),
+                output_reference.as_str(),
+            ),
+        };
+        Some(config.with_find(*find))
+    }
+
     /// The [`SensConfig`](crate::SensConfig) for a `.sens` request, to pass
     /// to [`solve_sensitivity`](crate::solve_sensitivity); `None` for any
     /// other analysis.
@@ -409,6 +482,34 @@ impl AnalysisRequest {
             AnalysisRequest::Sens { output } => Some(crate::SensConfig::new(output.clone())),
             _ => None,
         }
+    }
+
+    /// The [`AcSensConfig`](crate::AcSensConfig) for a `.sens ... ac`
+    /// request, with the AC stimulus on `source_id` at 1 V and 0°, to pass to
+    /// [`solve_ac_sensitivity`](crate::solve_ac_sensitivity); `None` for any
+    /// other analysis. The frequencies are those of the same `.ac` card
+    /// ([`ac_config`](Self::ac_config)).
+    /// [`ParsedNetlist::ac_sens_config`](crate::spice::ParsedNetlist::ac_sens_config)
+    /// takes the stimulus from the deck's `AC` spec instead.
+    pub fn ac_sens_config(&self, source_id: &str) -> Option<crate::AcSensConfig> {
+        let AnalysisRequest::SensAc {
+            output,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        } = self
+        else {
+            return None;
+        };
+        let sweep = AnalysisRequest::Ac {
+            sweep: *sweep,
+            points: *points,
+            fstart: *fstart,
+            fstop: *fstop,
+        };
+        let ac = sweep.ac_config(source_id)?;
+        Some(crate::AcSensConfig::new(output.clone(), ac))
     }
 }
 
@@ -692,9 +793,49 @@ mod tests {
     }
 
     #[test]
+    fn ac_sens_card() {
+        use crate::TfOutput;
+        let got = analyses(".sens v(out,in) ac dec 10 1 1meg\n.sens i(v1) ac lin 3 10 30");
+        assert_eq!(
+            got[0],
+            AnalysisRequest::SensAc {
+                output: TfOutput::Voltage {
+                    node: "out".into(),
+                    reference: Some("in".into())
+                },
+                sweep: AcSweep::Dec,
+                points: 10,
+                fstart: 1.0,
+                fstop: 1e6,
+            }
+        );
+        assert!(got[0].sens_config().is_none());
+        let config = got[0].ac_sens_config("v1").unwrap();
+        assert_eq!(
+            (config.ac.num_points, config.ac.source_id.as_str()),
+            (61, "v1")
+        );
+        let config = got[1].ac_sens_config("v1").unwrap();
+        assert_eq!(config.output, TfOutput::current("v1"));
+        assert_eq!(
+            (config.ac.f_start, config.ac.f_stop, config.ac.num_points),
+            (10.0, 30.0, 3)
+        );
+    }
+
+    #[test]
     fn malformed_sens_is_an_error() {
-        // AC sensitivity's form isn't supported, so it must not parse as DC.
-        for card in [".sens", ".sens in", ".sens v(in) ac dec 10 1 1k"] {
+        for card in [
+            ".sens",
+            ".sens in",
+            ".sens v(in) dc",
+            ".sens v(in) ac",
+            ".sens v(in) ac log 10 1 1k",
+            ".sens v(in) ac dec 10 1",
+            ".sens v(in) ac dec 0 1 1k",
+            ".sens v(in) ac dec 10 1k 1",
+            ".sens v(in) ac dec 10 1 1k extra",
+        ] {
             let deck = format!("* sens\nV1 in 0 1\nR1 in 0 1k\n{card}\n.end\n");
             assert!(parse_str(&deck).is_err(), "{card}");
         }
@@ -899,7 +1040,7 @@ mod tests {
     fn directives_keep_source_order() {
         let kinds: Vec<&str> = analyses(
             ".ac lin 2 1 2\n.sens v(in)\n.op\n.noise v(in) v1 lin 2 1 2\n.tran 1u 1m\n\
-             .tf v(in) v1\n.dc V1 0 1 1",
+             .tf v(in) v1\n.pz in 0 in 0 vol pz\n.dc V1 0 1 1",
         )
         .iter()
         .map(|a| match a {
@@ -909,10 +1050,15 @@ mod tests {
             AnalysisRequest::Ac { .. } => "ac",
             AnalysisRequest::Tf { .. } => "tf",
             AnalysisRequest::Sens { .. } => "sens",
+            AnalysisRequest::SensAc { .. } => "sens ac",
             AnalysisRequest::Noise { .. } => "noise",
+            AnalysisRequest::Pz { .. } => "pz",
         })
         .collect();
-        assert_eq!(kinds, ["ac", "sens", "op", "noise", "tran", "tf", "dc"]);
+        assert_eq!(
+            kinds,
+            ["ac", "sens", "op", "noise", "tran", "tf", "pz", "dc"]
+        );
     }
 
     #[test]

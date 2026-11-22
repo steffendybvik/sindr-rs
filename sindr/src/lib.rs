@@ -19,8 +19,10 @@
 //!   `.noise`) via [`solve_noise`].
 //! - **Transfer function** — DC small-signal gain, input and output
 //!   resistance (SPICE's `.tf`) via [`solve_tf`].
-//! - **DC sensitivity** — derivative of an output with respect to each
-//!   component parameter (SPICE's `.sens`) via [`solve_sensitivity`].
+//! - **Sensitivity** — derivative of a DC output with respect to each
+//!   component and device-model parameter (SPICE's `.sens`) via
+//!   [`solve_sensitivity`], and of a small-signal output at each frequency
+//!   (`.sens ... ac`) via [`solve_ac_sensitivity`].
 //! - **DC sweep** — operating point at each value of a swept voltage or current source,
 //!   via [`fn@dc_sweep`].
 //! - **Temperature sweep** — operating-point sweep over junction temperature
@@ -47,7 +49,7 @@
 //!     CircuitElement::Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 },
 //! ]);
 //! let result = solve_circuit(&circuit)?;
-//! let led = result.component_results.iter().find(|c| c.id == "D1").unwrap();
+//! let led = result.component("D1").expect("D1 is in the circuit");
 //! println!("{:.1} mA, {:.1} mW", led.current_through * 1e3, led.power * 1e3);
 //!
 //! // About 1.8 V across the LED leaves about 3.2 V across R1.
@@ -75,17 +77,19 @@
 //! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
-//! | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
+//! | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS, VCCS, CCVS and CCCS gains, and diode (IS, N, RS), BJT (BF, IS, BR, NF, NR, VAF) and MOSFET (KP, VTO, LAMBDA) model parameters |
+//! | AC sensitivity (`.sens ... ac`) | [`solve_ac_sensitivity`] | One adjoint solve per frequency: d(output phasor)/d(parameter) for R, C, L, the four controlled-source gains, the stimulus's AC magnitude and the device-model parameters (diode CJO and TT too), with the bias point held fixed, as in ngspice |
 //! | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
 //! | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`); each point an operating point as [`solve_op`] solves it |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
 //! | Self-heating | [`solve_circuit`], [`solve_transient`] | A part with [`Thermal`] data heats by its dissipation; DC iterates to a balance, transient carries a thermal RC. The small-signal analyses linearise at the heated bias point. Results in `junction_temperatures`; no balance is [`SimError::ThermalRunaway`] |
+//! | Monte Carlo and corners | [`variation::monte_carlo`], [`variation::corners`] | Any analysis repeated with parts drawn within their tolerances (uniform or Gaussian, seeded) or at every low/high corner; each [`measure::Measurement`] per run, with mean, standard deviation, min, max and yield; specs and ratings at their worst run, with the condition behind it ([`variation::ratings_over`]) |
 //! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 //! | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 //!
-//! Not available: distortion, pole-zero, AC sensitivity, Monte Carlo,
+//! Not available: distortion, pole-zero,
 //! periodic steady state, S-parameters, variable-order integration.
 //!
 //! ## Device models
@@ -96,12 +100,12 @@
 //! | Zener | A SPICE diode with breakdown `BV = vz` at 5 mA and RS = 1 Ω |
 //! | BJT (NPN/PNP) | Ebers–Moll with Early voltage; not Gummel–Poon |
 //! | MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges), body tied to source, SPICE-signed VTO (negative for an enhancement PMOS); no BSIM |
-//! | JFET (N/P) | Shichman–Hodges square law |
+//! | JFET (N/P) | Shichman–Hodges square law; optional CGS/CGD as SPICE gate junctions (transient charge, AC at the bias point) |
 //! | IGBT | MOSFET-like gate control, square-law collector current |
 //! | Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
 //! | Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
 //! | Comparator | Gain 1e5, output clamped to its rails; no GBW, slew rate or hysteresis |
-//! | Transformer | Linear coupled inductors |
+//! | Transformer | Coupled inductors; optional saturating core |
 //! | Battery | Open-circuit voltage by state of charge behind R0 and an optional R1‖C1; state of charge falls with charge drawn ([`battery::BatteryParams`]; Li-ion and CR2032 presets) |
 //! | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
 //! | Crystal | Butterworth–Van Dyke: `Rm`–`Lm`–`Cm` beside `C0` ([`CrystalParams`]) |
@@ -129,22 +133,36 @@
 //! loads, the analysis), and [`import::simulate`] runs it. Results are
 //! keyed by the caller's component and net ids, and every
 //! [`import::ImportError`] names the part, net or bench item at fault.
+//! Symbol ids (`resistor-iec`, `op-amp`) name kinds, a component's
+//! terminal-name table comes in through [`import::ImportOptions`], and
+//! parts sindr can't simulate import as listed black boxes.
 //!
 //! ## SPICE input (feature `spice`)
 //!
 //! [`spice`] reads a SPICE3 subset into a [`Circuit`]: R, L, C, V, I, D, Q,
-//! linear E/G/F/H, K (two coupled `L` lines) and X elements, with `[DC] v`,
+//! M, J, B (behavioural, also E/G `VALUE=` and E/G/F/H `POLY`), linear E/G/F/H,
+//! K (two coupled `L` lines) and X elements, with `[DC] v`,
 //! `AC mag [phase]` and a waveform on V and I lines in any order;
 //! `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 //! `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
 //! `.ac`, `.tf`, `.sens`, `.noise` and `.tran`. `.model` cards fill in what
 //! sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 //! `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
-//! `NR`, `VAF`, `KF`, `AF`). Not read: MOSFET (M) and JFET (J) elements,
-//! `B` sources, the `POLY`/`VALUE`/`TABLE`/`LAPLACE` forms of E/G/F/H, and
+//! `NR`, `VAF`, `KF`, `AF`; level-1 MOSFETs: `KP`, `VTO`, `LAMBDA`, `GAMMA`,
+//! `PHI`, `LD`, `CGSO`, `CGDO`, `CGBO` and the drain–bulk junction; JFETs:
+//! `VTO`, `BETA`, `CGS`, `CGD`, `PB`, `M`, `FC`), inside a `.subckt` or at the top level. Not read:
+//! the `TABLE`/`LAPLACE` forms of E/G/F/H, and
 //! couplings of more than two inductors.
 //! [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled
-//! sources and `.subckt`s included.
+//! and behavioural sources and `.subckt`s included.
+//!
+//! ## Behavioural sources
+//!
+//! [`CircuitElement::Behavioural`] is a voltage or current set by an
+//! [`expression::Expression`] of node voltages, branch currents and time,
+//! such as `v(a)*v(b)` or `1m*tanh(v(in)/26m)`. Newton stamps its exact
+//! gradient (forward-mode automatic differentiation), AC linearises it at
+//! the bias point, and transient reads `time`.
 //!
 //! The full list of what sindr doesn't do is in
 //! [LIMITATIONS.md](https://github.com/steffendybvik/sindr-rs/blob/main/LIMITATIONS.md).
@@ -166,13 +184,15 @@
 //!   (voltage divider, BJT amp, RC transient, etc.) with ids and
 //!   descriptions. The circuits themselves are always in [`examples`].
 //! - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
+//! - `parallel` — [`variation`] spreads its runs over one thread per core.
+//!   Off by default, and serial anyway where there are no threads (wasm).
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = "0.1"
+//! sindr = "0.2"
 //!
 //! # No serde:
-//! sindr = { version = "0.1", default-features = false }
+//! sindr = { version = "0.2", default-features = false }
 //! ```
 //!
 //! # Transient results
@@ -216,8 +236,8 @@
 //! // The capacitor charges from 0 V towards 5 V.
 //! let first = &tran.timesteps[0];
 //! let last = tran.timesteps.last().unwrap();
-//! assert!(first.node_voltages["out"] < 1.0);
-//! assert!((last.node_voltages["out"] - 5.0).abs() < 0.1);
+//! assert!(first.voltage("out").unwrap() < 1.0);
+//! assert!((last.voltage("out").unwrap() - 5.0).abs() < 0.1);
 //! ```
 //!
 //! # CSV export
@@ -242,7 +262,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = { version = "0.1", features = ["spice"] }
+//! sindr = { version = "0.2", features = ["spice"] }
 //! ```
 //!
 //! (`no_run`: it reads `amp.cir`, which doesn't exist where doctests run.)
@@ -285,15 +305,18 @@ mod battery_state;
 pub mod circuit;
 mod composite;
 mod csv;
+pub mod datasheet;
 pub mod dc_sweep;
 pub mod design;
 mod device_params;
 pub mod error;
 pub mod import;
 mod integration;
+pub mod loop_gain;
 pub mod measure;
 // The matrix type is public only for sindr's own `mna_solve` bench, behind
 // the unstable `internals` feature.
+pub mod expression;
 #[cfg(feature = "internals")]
 #[doc(hidden)]
 pub mod mna;
@@ -303,6 +326,7 @@ mod newton_raphson;
 mod node_map;
 pub mod noise;
 mod op_amp;
+pub mod pole_zero;
 pub mod ratings;
 pub mod results;
 pub mod sensitivity;
@@ -318,24 +342,30 @@ mod thermal;
 pub mod transfer_function;
 mod transient;
 pub mod validation;
+pub mod variation;
 pub mod waveform;
 
 pub use ac_analysis::{solve_ac, AcConfig, AcPoint, AcResult, FrequencySpacing};
 pub use circuit::{
-    BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel, FerriteBeadParams, OpAmpModel,
-    SpdtPosition,
+    BehaviouralOutput, BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel,
+    FerriteBeadParams, OpAmpModel, SpdtPosition,
 };
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::{SimError, SolvePoint};
+pub use loop_gain::{solve_loop_gain, LoopGainConfig, LoopGainPoint, LoopGainResult};
 pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
 pub use noise::{solve_noise, NoiseConfig, NoiseResult};
+pub use pole_zero::{solve_pz, PzConfig, PzFind, PzResult, PzTransfer};
 pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 pub use results::{
-    BjtResult, ComponentResult, ConvergenceAid, MosfetResult, OpAmpResult, RelayResult,
-    SimulationResult, TimestepSnapshot, TransientData, TransientStats,
+    BjtResult, ComponentResult, ConvergenceAid, InstanceResult, MosfetResult, OpAmpResult,
+    RelayResult, SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
-pub use sensitivity::{solve_sensitivity, SensConfig, SensEntry, SensParameter, SensResult};
+pub use sensitivity::{
+    solve_ac_sensitivity, solve_sensitivity, AcSensConfig, AcSensEntry, AcSensPoint, AcSensResult,
+    SensConfig, SensEntry, SensParameter, SensResult,
+};
 pub use solver::{Solver, SolverOptions};
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
 pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
@@ -530,8 +560,8 @@ fn auto_transient_config(
 ///
 /// let result = solve_circuit(&circuit).unwrap();
 /// // I = V/R = 5 mA flowing through R1
-/// let r1 = result.component_results.iter().find(|c| c.id == "R1").unwrap();
-/// assert!((r1.current_through.abs() - 0.005).abs() < 1e-9);
+/// let i_r1 = result.current("R1").unwrap();
+/// assert!((i_r1.abs() - 0.005).abs() < 1e-9);
 /// ```
 pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     solve_circuit_with(circuit, &SolverOptions::default())
@@ -618,8 +648,8 @@ fn solve_circuit_parts(
 ///     ..Default::default()
 /// };
 /// let op = solve_op(&circuit)?;
-/// assert_eq!(op.node_voltages["mid"], 1.0);
-/// assert!((op.branch_currents["L1"] - 1e-3).abs() < 1e-12);
+/// assert_eq!(op.voltage("mid"), Some(1.0));
+/// assert!((op.branch_current("L1").unwrap() - 1e-3).abs() < 1e-12);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 ///

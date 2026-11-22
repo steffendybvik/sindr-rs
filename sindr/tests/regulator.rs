@@ -397,3 +397,310 @@ fn unpowered_negative_regulator_outputs_nothing() {
         );
     }
 }
+
+/// Leaving the 0 V floor on a ramped input, an output capacitor draws
+/// C·dV/dt. Newton must not settle on the floor piece once the solution
+/// is past the corner: within the node tolerance the output lags by a
+/// millivolt, then catches up in one short step, a spike up to the
+/// current limit. Here a 7805 ramps the input of an AMS1117.
+#[test]
+fn ramped_start_up_leaves_the_floor_without_a_current_spike() {
+    let c = Circuit::new(
+        "0",
+        vec![
+            CircuitElement::VoltageSource {
+                id: "VIN".into(),
+                nodes: ["in".into(), "0".into()],
+                voltage: 0.0,
+                waveform: Some(sindr::Waveform::Pwl {
+                    points: vec![(0.0, 0.0), (1e-3, 12.0)],
+                }),
+            },
+            CircuitElement::VoltageRegulator {
+                id: "U1".into(),
+                nodes: ["in".into(), "mid".into(), "0".into()],
+                voltage: 5.0,
+                model: Some(RegulatorParams::lm7805()),
+            },
+            CircuitElement::Capacitor {
+                id: "CMID".into(),
+                nodes: ["mid".into(), "0".into()],
+                capacitance: 10e-6,
+            },
+            CircuitElement::VoltageRegulator {
+                id: "U2".into(),
+                nodes: ["mid".into(), "out".into(), "0".into()],
+                voltage: 3.3,
+                model: Some(RegulatorParams::ams1117()),
+            },
+            CircuitElement::Capacitor {
+                id: "COUT".into(),
+                nodes: ["out".into(), "0".into()],
+                capacitance: 22e-6,
+            },
+            load_r(6.6),
+        ],
+    );
+    let tran = sindr::solve_transient(&c, &sindr::TransientConfig::new(1e-3, 5e-6))
+        .unwrap()
+        .transient
+        .unwrap();
+    let inrush = 22e-6 * 12.0 / 1e-3;
+    let peak = tran
+        .timesteps
+        .iter()
+        .map(|s| {
+            s.component_results
+                .iter()
+                .find(|r| r.id == "COUT")
+                .unwrap()
+                .current_through
+        })
+        .fold(f64::MIN, f64::max);
+    // Gear-2 still overshoots one step at the corner in dV/dt, by about
+    // 30 %; the stale piece gave the full 1.1 A limit.
+    assert!(peak > 0.9 * inrush && peak < 1.35 * inrush, "peak {peak} A");
+}
+
+/// `src` → `RS` (if any) → `L1` → node `a` → optional `CIN` → 7805 → `RL`.
+fn fed_through_an_inductor(
+    src: CircuitElement,
+    rs: Option<f64>,
+    l: f64,
+    cin: Option<f64>,
+    voltage: f64,
+) -> Circuit {
+    let mut parts = vec![src];
+    let l_from = match rs {
+        Some(ohms) => {
+            parts.push(CircuitElement::Resistor {
+                id: "RS".into(),
+                nodes: ["in".into(), "s".into()],
+                resistance: ohms,
+            });
+            "s"
+        }
+        None => "in",
+    };
+    parts.push(CircuitElement::Inductor {
+        id: "L1".into(),
+        nodes: [l_from.into(), "a".into()],
+        inductance: l,
+        saturation: None,
+    });
+    if let Some(farads) = cin {
+        parts.push(CircuitElement::Capacitor {
+            id: "CIN".into(),
+            nodes: ["a".into(), "0".into()],
+            capacitance: farads,
+        });
+    }
+    parts.push(CircuitElement::VoltageRegulator {
+        id: "U1".into(),
+        nodes: ["a".into(), "out".into(), "0".into()],
+        voltage,
+        model: Some(RegulatorParams::lm7805()),
+    });
+    parts.push(load_r(10.0));
+    Circuit::new("0", parts)
+}
+
+fn vsrc(voltage: f64, waveform: Option<sindr::Waveform>) -> CircuitElement {
+    CircuitElement::VoltageSource {
+        id: "V1".into(),
+        nodes: ["in".into(), "0".into()],
+        voltage,
+        waveform,
+    }
+}
+
+fn current_of(step: &sindr::TimestepSnapshot, id: &str) -> f64 {
+    step.component_results
+        .iter()
+        .find(|c| c.id == id)
+        .unwrap()
+        .current_through
+}
+
+/// Switched on at t = 0 the inductor carries nothing, so the regulator's
+/// input, held by little more than the inductor's `h/L`, has to fall to
+/// where the regulator draws only that. Newton used to jump every piece of
+/// the characteristic at once there and never settle.
+#[test]
+fn switched_on_through_an_inductor_settles_on_the_operating_point() {
+    for voltage in [5.0f64, -5.0] {
+        let c = fed_through_an_inductor(
+            vsrc(12.0 * voltage.signum(), None),
+            None,
+            1e-6,
+            None,
+            voltage,
+        );
+        let op = sindr::solve_op(&c).unwrap();
+        let op_out = op.node_voltages["out"];
+        assert!((op_out.abs() - 4.968).abs() < 1e-3, "{op_out}");
+
+        // `solve_circuit` takes the transient path because of L1.
+        let r = solve_circuit(&c).unwrap();
+        assert!((vout(&r) - op_out).abs() < 1e-6, "{}", vout(&r));
+
+        let tran = sindr::solve_transient(&c, &sindr::TransientConfig::new(2e-3, 1e-5))
+            .unwrap()
+            .transient
+            .unwrap();
+        let last = tran.timesteps.last().unwrap();
+        assert!((last.node_voltages["out"] - op_out).abs() < 1e-6);
+        // The input carries the load plus the quiescent current.
+        let expected = op_out / 10.0 + 4.3e-3 * voltage.signum();
+        let i_l = current_of(last, "L1");
+        assert!((i_l - expected).abs() < 1e-6, "{i_l} vs {expected}");
+        // L/R is 0.1 µs in dropout; the current rises to the load's and
+        // stops there, bar the integrator's overshoot at the corner.
+        for step in &tran.timesteps {
+            let i = current_of(step, "L1").abs();
+            assert!(
+                i <= expected.abs() * (1.0 + 1e-3),
+                "t = {}: {i} A",
+                step.time
+            );
+        }
+    }
+}
+
+/// An LC input filter (10 µH, 100 µF; 0.5 Ω source resistance damps it)
+/// ahead of a 7805 into 10 Ω, switched on at t = 0. The filter capacitor
+/// takes the inrush, the regulator never more than its load, and the
+/// charge adds up.
+#[test]
+fn lc_input_filter_charges_and_settles() {
+    let c = fed_through_an_inductor(vsrc(12.0, None), Some(0.5), 10e-6, Some(100e-6), 5.0);
+    let op = sindr::solve_op(&c).unwrap();
+    let tran = sindr::solve_transient(&c, &sindr::TransientConfig::new(2e-3, 1e-6))
+        .unwrap()
+        .transient
+        .unwrap();
+    let last = tran.timesteps.last().unwrap();
+    for node in ["a", "out"] {
+        let (v, want) = (last.node_voltages[node], op.node_voltages[node]);
+        assert!((v - want).abs() < 1e-3, "{node}: {v} vs {want}");
+    }
+    // 12 V less the 0.5 Ω drop at the load plus quiescent current.
+    assert!((op.node_voltages["a"] - (12.0 - 0.5 * 0.5011)).abs() < 1e-3);
+
+    let mut q_l = 0.0;
+    let mut q_c = 0.0;
+    let mut q_u = 0.0;
+    let mut prev: Option<&sindr::TimestepSnapshot> = None;
+    for step in &tran.timesteps {
+        let out = step.node_voltages["out"];
+        // No spike past the set voltage or into the current limit.
+        assert!(out < 5.0 + 1e-3, "t = {}: {out} V", step.time);
+        assert!(current_of(step, "U1") <= 2.2, "t = {}", step.time);
+        if let Some(p) = prev {
+            let dt = step.time - p.time;
+            let avg = |id: &str| 0.5 * (current_of(step, id) + current_of(p, id));
+            q_l += avg("L1") * dt;
+            q_c += avg("CIN") * dt;
+            q_u += avg("U1") * dt;
+        }
+        prev = Some(step);
+    }
+    // What the capacitor took is what it holds.
+    let held = 100e-6 * last.node_voltages["a"];
+    assert!((q_c - held).abs() < 1e-3 * held, "{q_c} vs {held}");
+    // The inductor's charge went to the capacitor, the load and the
+    // quiescent current (on from just after switch-on).
+    let q_rest = q_l - q_c;
+    let q_reg = q_u + 4.3e-3 * last.time;
+    assert!((q_rest - q_reg).abs() < 1e-2 * q_reg, "{q_rest} vs {q_reg}");
+}
+
+/// A 1 ms input ramp through 1 µH: the output follows the input 2 V down
+/// out of dropout, then regulates, with the inductor carrying only what the
+/// regulator draws.
+#[test]
+fn ramped_input_through_an_inductor_tracks_dropout() {
+    let ramp = sindr::Waveform::Pwl {
+        points: vec![(0.0, 0.0), (1e-3, 12.0)],
+    };
+    let c = fed_through_an_inductor(vsrc(0.0, Some(ramp)), None, 1e-6, None, 5.0);
+    let tran = sindr::solve_transient(&c, &sindr::TransientConfig::new(2e-3, 1e-5))
+        .unwrap()
+        .transient
+        .unwrap();
+    for step in &tran.timesteps {
+        let (a, out) = (step.node_voltages["a"], step.node_voltages["out"]);
+        // In dropout the input draws 0.1 S × 12 V/ms: L·dI/dt is 1.2 mV.
+        assert!(
+            (a - step.node_voltages["in"]).abs() < 2e-3,
+            "t = {}: {a} vs {}",
+            step.time,
+            step.node_voltages["in"]
+        );
+        let want = (a - 2.0).clamp(0.0, 4.968);
+        assert!(
+            (out - want).abs() < 5e-3,
+            "t = {}: {out} vs {want}",
+            step.time
+        );
+        let i_l = current_of(step, "L1");
+        assert!(i_l < 0.502, "t = {}: {i_l} A", step.time);
+    }
+    let out = tran.timesteps.last().unwrap().node_voltages["out"];
+    assert!((out - 4.968).abs() < 1e-3, "{out}");
+}
+
+fn hot_plug() -> sindr::Waveform {
+    sindr::Waveform::Pwl {
+        points: vec![(0.0, 0.0), (1e-3, 0.0), (1e-3 + 1e-9, 12.0)],
+    }
+}
+
+/// A 7805 behind a bare 1 µH hot-plugged: 0 V for 1 ms, then 12 V in 1 ns.
+/// At the plug the inductor carries nothing, as at switch-on.
+#[test]
+fn hot_plugged_through_an_inductor_settles() {
+    let c = fed_through_an_inductor(vsrc(0.0, Some(hot_plug())), None, 1e-6, None, 5.0);
+    let tran = sindr::solve_transient(&c, &sindr::TransientConfig::new(2e-3, 1e-5))
+        .unwrap()
+        .transient
+        .unwrap();
+    for step in &tran.timesteps {
+        let out = step.node_voltages["out"];
+        assert!(out < 5.0 + 1e-3, "t = {}: {out} V", step.time);
+        assert!(current_of(step, "L1") < 0.502, "t = {}", step.time);
+    }
+    let last = tran.timesteps.last().unwrap();
+    assert!((last.node_voltages["out"] - 4.968).abs() < 1e-3);
+    assert!((current_of(last, "L1") - 0.5011).abs() < 1e-3);
+}
+
+/// The LC-filtered 7805 hot-plugged the same way.
+#[test]
+fn hot_plugged_lc_filtered_input_settles() {
+    let plug = hot_plug();
+    let c = fed_through_an_inductor(vsrc(0.0, Some(plug)), Some(0.5), 10e-6, Some(100e-6), 5.0);
+    let tran = sindr::solve_transient(&c, &sindr::TransientConfig::new(3e-3, 1e-6))
+        .unwrap()
+        .transient
+        .unwrap();
+    let mut peak_in = 0.0f64;
+    for step in &tran.timesteps {
+        let out = step.node_voltages["out"];
+        if step.time < 1e-3 {
+            assert!(
+                out.abs() < 1e-9,
+                "t = {}: {out} V before the plug",
+                step.time
+            );
+        }
+        assert!(out < 5.0 + 1e-3, "t = {}: {out} V", step.time);
+        assert!(current_of(step, "U1") <= 2.2, "t = {}", step.time);
+        peak_in = peak_in.max(step.node_voltages["a"]);
+    }
+    // ζ ≈ 0.8: the filter overshoots 12 V by a few per cent at most.
+    assert!(peak_in < 12.5, "{peak_in} V");
+    let last = tran.timesteps.last().unwrap();
+    assert!((last.node_voltages["out"] - 4.968).abs() < 1e-3);
+    assert!((current_of(last, "L1") - 0.5011).abs() < 1e-3);
+}

@@ -76,7 +76,7 @@ cargo bench -p sindr --features spice --bench transient --bench newton --bench a
 python3 scripts/gen_llms_full.py              # regenerate llms-full.txt (CI checks it)
 ```
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the version-bump and CHANGELOG rule CI enforces on PRs.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the version-bump rule CI enforces on release PRs, and why feature PRs leave the CHANGELOG alone.
 
 Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integration tests live in `sindr/tests/` (the SPICE end-to-end suite is gated on the `spice` feature).
 
@@ -88,7 +88,7 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 - **Errors flow through `SimError`** (see `sindr/src/error.rs`). When adding a new failure mode, prefer extending the enum over `String` errors.
 - **`f64` everywhere.** No generic numeric backend, no `f32`.
 - **Serde is feature-gated** but on by default. Any new public type that is part of `Circuit` or `SimulationResult` must derive `Serialize`/`Deserialize` under `#[cfg(feature = "serde")]`. Component types use `snake_case` tags (see existing `#[serde(rename_all = "snake_case")]`).
-- **Public API stability**: the crates are at `0.1.0`, plain 0.x until 1.0. A breaking change bumps the minor version (`0.2.0`), anything else the patch (`0.1.1`). Breaking changes are allowed, but call them out in the commit message and the CHANGELOG.
+- **Public API stability**: the crates are at `0.2.0`, plain 0.x until 1.0. A breaking change bumps the minor version (`0.2.0`), anything else the patch (`0.1.1`). Breaking changes are allowed, but call them out in the commit message and the PR description. Feature PRs don't edit `CHANGELOG.md`; the release PR writes it.
 - **Room to grow**: enums that will gain variants, result structs callers only read, and analysis configs are `#[non_exhaustive]`; configs are built with `new(..)` and `with_*` setters (`AcConfig::new("V1", 1.0, 1e6, 61)`, `TfConfig::new(TfOutput::voltage("out"), "V1")`). Data structs callers fill in (`Circuit`, `DiodeModel`, `Part`, the `sindr-devices` `*Params`) stay open and are built with `..Default::default()`. A new public type follows the same split.
 - **Comments**: lean. Don't restate what well-named code already says. Do explain *why* for non-obvious numerical choices (e.g. damping factors, why `k ≤ 0.999`, why `gmin` thresholds).
 - **No GSD planning-artefact references in source.** Strip `EX-NN`, `Pitfall N`, `RESEARCH.md` / `PLAN.md` mentions. They belong in `.planning/`, not in code or commits.

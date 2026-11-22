@@ -8,6 +8,8 @@
 //! to its source (Vbs = 0), so the body effect never applies there; the
 //! model keeps it for callers that drive the body separately.
 
+use crate::datasheet::{positive, DatasheetError, MosfetDatasheet};
+
 /// MOSFET type (NMOS or PMOS).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -137,6 +139,101 @@ impl MosfetParams {
     }
 }
 
+impl MosfetParams {
+    /// Level-1 parameters fitted to a datasheet's threshold and
+    /// on-resistance: KP and VTO are solved so that the drain current at
+    /// `Vgs = Vds = vth` is `vth_id`, and the drain–source resistance at
+    /// `Vgs = rds_on_vgs` is `rds_on` (at `rds_on_id` when given, else at a
+    /// vanishing drain current). LAMBDA, GAMMA and PHI keep the
+    /// [`default_nmos`](Self::default_nmos) / [`default_pmos`](Self::default_pmos)
+    /// values; VTO is signed for `kind`, as SPICE signs it.
+    ///
+    /// ```
+    /// use sindr_devices::datasheet::MosfetDatasheet;
+    /// use sindr_devices::mosfet::{MosfetKind, MosfetParams};
+    ///
+    /// // A small-signal NMOS: Vgs(th) 2.1 V at 250 µA, 1.2 Ω at 10 V.
+    /// let ds = MosfetDatasheet::new(2.1, 250e-6, 1.2, 10.0);
+    /// let p = MosfetParams::from_datasheet(MosfetKind::Nmos, &ds).unwrap();
+    /// assert!(p.vto > 0.0 && p.vto < 2.1);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`DatasheetError`] when a figure is missing or not positive, when
+    /// `rds_on_vgs` isn't above the threshold, or when no Level-1 device
+    /// meets both figures (an `rds_on_id` so high that the part leaves the
+    /// triode region).
+    pub fn from_datasheet(kind: MosfetKind, ds: &MosfetDatasheet) -> Result<Self, DatasheetError> {
+        let vth = ds.vth.require("vth")?.abs();
+        let id_th = positive("vth_id", ds.vth_id.abs())?;
+        let rds = positive("rds_on", ds.rds_on.require("rds_on")?.abs())?;
+        let vgs_on = positive("rds_on_vgs", ds.rds_on_vgs.abs())?;
+        let id_on = ds
+            .rds_on_id
+            .map(|i| positive("rds_on_id", i.abs()))
+            .transpose()?;
+        let d = vgs_on - vth;
+        if d <= 0.0 || d.is_nan() {
+            return Err(DatasheetError::Invalid {
+                figure: "rds_on_vgs",
+                reason: "must be above the threshold voltage",
+            });
+        }
+        let base = Self::default_nmos();
+        let vds_on = id_on.map(|i| i * rds);
+        // `a` is the overdrive at `vgs_on`; VTO = vgs_on − a. KP follows
+        // from the on-resistance, then `a` is solved so the threshold
+        // point carries `id_th`.
+        let params_at = |a: f64| -> Self {
+            let kp = match (id_on, vds_on) {
+                (Some(i), Some(v)) => i / ((a * v - 0.5 * v * v) * (1.0 + base.lambda * v)),
+                _ => 1.0 / (rds * a),
+            };
+            Self {
+                kp,
+                vto: vgs_on - a,
+                ..base.clone()
+            }
+        };
+        let excess = |a: f64| mosfet_companion(vth, vth, 0.0, &params_at(a)).id - id_th;
+
+        let mut lo = d.max(vds_on.unwrap_or(0.0)) * (1.0 + 1e-12) + 1e-12;
+        if excess(lo) >= 0.0 {
+            return Err(DatasheetError::Invalid {
+                figure: "rds_on",
+                reason: "can't be met with this threshold by a Level-1 MOSFET",
+            });
+        }
+        let mut hi = 2.0 * lo + 1.0;
+        while excess(hi) < 0.0 {
+            hi *= 2.0;
+            if hi > 1e6 {
+                return Err(DatasheetError::Invalid {
+                    figure: "vth_id",
+                    reason: "can't be met with this on-resistance by a Level-1 MOSFET",
+                });
+            }
+        }
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if excess(mid) < 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let fitted = params_at(0.5 * (lo + hi));
+        Ok(match kind {
+            MosfetKind::Nmos => fitted,
+            MosfetKind::Pmos => Self {
+                vto: -fitted.vto,
+                ..fitted
+            },
+        })
+    }
+}
+
 impl Default for MosfetParams {
     fn default() -> Self {
         Self::default_nmos()
@@ -251,6 +348,91 @@ pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> 
             gmb,
             region: MosfetRegion::Saturation,
             vth,
+        }
+    }
+}
+
+/// The derivatives of a MOSFET's drain current, transconductance and output
+/// conductance with respect to one parameter, at fixed terminal voltages, in
+/// the N-channel frame of [`mosfet_companion`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct MosfetDerivative {
+    /// ∂Id/∂p: drain current (A) per unit of the parameter.
+    pub id: f64,
+    /// ∂gm/∂p (S) per unit of the parameter.
+    pub gm: f64,
+    /// ∂gds/∂p (S) per unit of the parameter.
+    pub gds: f64,
+}
+
+/// [`MosfetDerivative`]s with respect to `kp`, `vto` and `lambda`, from
+/// [`mosfet_derivatives`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct MosfetDerivatives {
+    /// With respect to `kp` (per A/V²).
+    pub kp: MosfetDerivative,
+    /// With respect to `vto` (per V) as `params` has it: in the N-channel
+    /// frame, so a PMOS caller negates it for its SPICE-signed VTO.
+    pub vto: MosfetDerivative,
+    /// With respect to `lambda` (per 1/V).
+    pub lambda: MosfetDerivative,
+}
+
+/// The exact derivatives of [`mosfet_companion`]'s `id`, `gm` and `gds` at
+/// `vgs`, `vds`, `vbs` (V, N-channel frame) with respect to `kp`, `vto` and
+/// `lambda`, for sensitivity analysis. All zero in cutoff.
+pub fn mosfet_derivatives(
+    vgs: f64,
+    vds: f64,
+    vbs: f64,
+    params: &MosfetParams,
+) -> MosfetDerivatives {
+    let vov = vgs - threshold_voltage(vbs, params);
+    let (kp, lambda) = (params.kp, params.lambda);
+    let clm = 1.0 + lambda * vds;
+    if vov <= 0.0 {
+        return MosfetDerivatives::default();
+    }
+    if vds < vov {
+        // Id = KP·(vov·vds − vds²/2)·(1 + λ·vds); ∂vov/∂VTO = −1.
+        let shape = vov * vds - vds * vds / 2.0;
+        MosfetDerivatives {
+            kp: MosfetDerivative {
+                id: shape * clm,
+                gm: vds * clm,
+                gds: (vov - vds) * clm + shape * lambda,
+            },
+            vto: MosfetDerivative {
+                id: -kp * vds * clm,
+                gm: 0.0,
+                gds: -kp * clm - kp * vds * lambda,
+            },
+            lambda: MosfetDerivative {
+                id: kp * shape * vds,
+                gm: kp * vds * vds,
+                gds: kp * (vov - vds) * vds + kp * shape,
+            },
+        }
+    } else {
+        // Id = (KP/2)·vov²·(1 + λ·vds).
+        MosfetDerivatives {
+            kp: MosfetDerivative {
+                id: vov * vov / 2.0 * clm,
+                gm: vov * clm,
+                gds: vov * vov / 2.0 * lambda,
+            },
+            vto: MosfetDerivative {
+                id: -kp * vov * clm,
+                gm: -kp * clm,
+                gds: -kp * vov * lambda,
+            },
+            lambda: MosfetDerivative {
+                id: kp / 2.0 * vov * vov * vds,
+                gm: kp * vov * vds,
+                gds: kp / 2.0 * vov * vov,
+            },
         }
     }
 }
@@ -409,5 +591,93 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn mosfet_derivatives_match_central_differences() {
+        let params = MosfetParams {
+            kp: 3e-4,
+            vto: 0.9,
+            lambda: 0.03,
+            ..MosfetParams::default_nmos()
+        };
+        type Set = fn(&mut MosfetParams, f64);
+        type Pick = fn(&MosfetDerivatives) -> MosfetDerivative;
+        let cases: [(Set, Pick, f64); 3] = [
+            (|p, x| p.kp = x, |d| d.kp, params.kp),
+            (|p, x| p.vto = x, |d| d.vto, params.vto),
+            (|p, x| p.lambda = x, |d| d.lambda, params.lambda),
+        ];
+        // Saturation, triode, and cutoff.
+        for (vgs, vds) in [(2.0, 3.0), (2.5, 0.4), (0.5, 2.0)] {
+            let d = mosfet_derivatives(vgs, vds, 0.0, &params);
+            for (set, pick, x) in cases {
+                let h = x * 1e-6;
+                let at = |x: f64| {
+                    let mut p = params.clone();
+                    set(&mut p, x);
+                    let c = mosfet_companion(vgs, vds, 0.0, &p);
+                    [c.id, c.gm, c.gds]
+                };
+                let (hi, lo) = (at(x + h), at(x - h));
+                let want = pick(&d);
+                for (k, got) in [want.id, want.gm, want.gds].into_iter().enumerate() {
+                    let fd = (hi[k] - lo[k]) / (2.0 * h);
+                    assert_relative_eq!(got, fd, max_relative = 1e-6, epsilon = 1e-12);
+                }
+            }
+        }
+    }
+
+    /// The fitted part reproduces both datasheet figures to 1e-6 relative.
+    #[test]
+    fn from_datasheet_meets_threshold_and_on_resistance() {
+        for (kind, sign) in [(MosfetKind::Nmos, 1.0), (MosfetKind::Pmos, -1.0)] {
+            for id_on in [None, Some(0.5)] {
+                let mut ds = MosfetDatasheet::new(sign * 2.1, 250e-6, 0.28, sign * 10.0);
+                ds.rds_on_id = id_on;
+                let p = MosfetParams::from_datasheet(kind, &ds).unwrap();
+                let n = p.in_nmos_frame(kind);
+                let at_th = mosfet_companion(2.1, 2.1, 0.0, &n).id;
+                assert_relative_eq!(at_th, 250e-6, max_relative = 1e-6);
+                let rds = match id_on {
+                    Some(i) => (i * 0.28) / mosfet_companion(10.0, i * 0.28, 0.0, &n).id,
+                    None => 1.0 / mosfet_companion(10.0, 0.0, 0.0, &n).gds,
+                };
+                assert_relative_eq!(rds, 0.28, max_relative = 1e-6);
+                assert_eq!(p.vto.signum(), sign);
+            }
+        }
+    }
+
+    #[test]
+    fn from_datasheet_refuses_rds_on_below_threshold() {
+        let ds = MosfetDatasheet::new(2.0, 250e-6, 1.0, 1.5);
+        assert!(MosfetParams::from_datasheet(MosfetKind::Nmos, &ds).is_err());
+        let empty = MosfetDatasheet::default();
+        assert!(MosfetParams::from_datasheet(MosfetKind::Nmos, &empty).is_err());
+    }
+
+    /// Each figure that can't be fitted is named in the error.
+    #[test]
+    fn from_datasheet_names_the_figure_it_cant_meet() {
+        let figure = |ds: &MosfetDatasheet| match MosfetParams::from_datasheet(MosfetKind::Nmos, ds)
+        {
+            Err(DatasheetError::Invalid { figure, .. }) => figure,
+            other => panic!("expected an invalid figure, got {other:?}"),
+        };
+        // A test current that isn't positive.
+        let ds = MosfetDatasheet::new(2.0, 250e-6, 1.0, 10.0).with_rds_on_id(0.0);
+        assert_eq!(figure(&ds), "rds_on_id");
+        assert_eq!(figure(&MosfetDatasheet::new(2.0, 0.0, 1.0, 10.0)), "vth_id");
+        // 1 Ω at 1 A is 1 V across the part, more than the 0.5 V overdrive
+        // at 2.5 V: the triode fit needs VTO below 1.5 V, which already
+        // carries far more than 250 µA at the 2 V threshold.
+        let ds = MosfetDatasheet::new(2.0, 250e-6, 1.0, 2.5).with_rds_on_id(1.0);
+        assert_eq!(figure(&ds), "rds_on");
+        // At Vgs = Vds = 2 V a 1 Ω part carries at most about 2 V / 1 Ω
+        // however low VTO goes, so 100 A at threshold can't be met.
+        let ds = MosfetDatasheet::new(2.0, 100.0, 1.0, 10.0);
+        assert_eq!(figure(&ds), "vth_id");
     }
 }

@@ -1,11 +1,11 @@
 //! Transient paths of particular devices and of the stepper's Newton loop:
-//! a MOSFET's gate capacitance, a relay coil starting at its DC current,
-//! and a step whose Newton iteration fails.
+//! a MOSFET's and a JFET's gate capacitance, a relay coil starting at its
+//! DC current, and a step whose Newton iteration fails.
 
-use sindr::circuit::MosfetParasiticCaps;
+use sindr::circuit::{JfetParasiticCaps, MosfetParasiticCaps};
 use sindr::{
-    solve_transient, Circuit, CircuitElement, MosfetKind, SimError, SolvePoint, Solver,
-    SolverOptions, TransientConfig, TransientStart,
+    solve_transient, Circuit, CircuitElement, JfetKind, MosfetKind, SimError, SolvePoint, Solver,
+    SolverOptions, TransientConfig, TransientStart, Waveform,
 };
 use sindr_devices::mosfet::MosfetParams;
 
@@ -89,6 +89,129 @@ fn mosfet_gate_starts_settled_at_the_operating_point() {
     for s in &tran.timesteps {
         let got = s.node_voltages["g"];
         assert!((got - 3.0).abs() < 1e-7, "V(g) = {got} at t = {}", s.time);
+    }
+}
+
+/// A common-source JFET (IDSS = 10 mA, |Vp| = 2 V, RD = 1 kΩ) whose gate is
+/// driven through 100 kΩ from `vg` volts, stepping by `step` volts at 1 µs
+/// when `step` isn't zero. The P-channel part is the N-channel one mirrored.
+fn jfet_gate_rc(kind: JfetKind, vg: f64, step: f64, caps: JfetParasiticCaps) -> Circuit {
+    let sign = match kind {
+        JfetKind::NChannel => 1.0,
+        JfetKind::PChannel => -1.0,
+    };
+    let source = CircuitElement::VoltageSource {
+        id: "VG".into(),
+        nodes: ["in".into(), "0".into()],
+        // The waveform rides on `voltage`, so that is 0 when there is one.
+        voltage: if step == 0.0 { sign * vg } else { 0.0 },
+        waveform: (step != 0.0).then_some(Waveform::Pulse {
+            v1: sign * vg,
+            v2: sign * (vg + step),
+            delay: 1e-6,
+            rise_time: 1e-9,
+            fall_time: 1e-9,
+            pulse_width: 1.0,
+            period: 0.0,
+        }),
+    };
+    Circuit::new(
+        "0",
+        vec![
+            source,
+            r("RG", "in", "g", 100e3),
+            v("VDD", "vdd", sign * 12.0),
+            r("RD", "vdd", "d", 1e3),
+            CircuitElement::Jfet {
+                id: "J1".into(),
+                nodes: ["g".into(), "d".into(), "0".into()],
+                kind,
+                idss: 10e-3,
+                vp: -sign * 2.0,
+                parasitic_caps: Some(caps),
+            },
+        ],
+    )
+}
+
+/// A 10 mV gate step charges CGS and the Miller-multiplied CGD through RG:
+/// τ = RG·(CGS + CGD·(1 + gm·RD)). With M = 0 the junctions are constant
+/// 10 pF and 2 pF; gm = 2·IDSS/|Vp|·(1 − Vgs/Vp) ≈ 5.03 mS about −0.995 V,
+/// so τ ≈ 100 kΩ · 22.1 pF = 2.21 µs, against 1 µs from CGS alone and
+/// 1.2 µs without the Miller gain.
+#[test]
+fn jfet_gate_step_charges_cgs_and_the_miller_cgd() {
+    let caps = JfetParasiticCaps {
+        cgs: 10e-12,
+        cgd: 2e-12,
+        m: 0.0,
+        ..Default::default()
+    };
+    let gm = 2.0 * 10e-3 / 2.0 * (1.0 - 0.995 / 2.0);
+    let tau = 100e3 * (10e-12 + 2e-12 * (1.0 + gm * 1e3));
+    for kind in [JfetKind::NChannel, JfetKind::PChannel] {
+        let sign = if kind == JfetKind::NChannel {
+            1.0
+        } else {
+            -1.0
+        };
+        let config = TransientConfig::new(1e-6 + 5.0 * tau, tau / 200.0)
+            .with_start(TransientStart::OperatingPoint)
+            .with_fixed_step();
+        let tran = solve_transient(&jfet_gate_rc(kind, -1.0, 0.01, caps), &config)
+            .unwrap()
+            .transient
+            .unwrap();
+        // Where the gate first passes 1 − 1/e of the step, past the delay.
+        let level = sign * (-1.0 + 0.01 * (1.0 - (-1.0f64).exp()));
+        let crossed = tran
+            .timesteps
+            .windows(2)
+            .find(|w| {
+                w[0].time >= 1e-6
+                    && (w[0].node_voltages["g"] - level) * (w[1].node_voltages["g"] - level) <= 0.0
+            })
+            .expect("the gate reaches 63 % of its step");
+        let (t0, t1) = (crossed[0].time, crossed[1].time);
+        let (v0, v1) = (crossed[0].node_voltages["g"], crossed[1].node_voltages["g"]);
+        let t = t0 + (level - v0) / (v1 - v0) * (t1 - t0) - 1e-6;
+        assert!(
+            (t - tau).abs() < 0.01 * tau,
+            "{kind:?}: the gate took {t} s to 63 %, want τ = {tau} s"
+        );
+    }
+}
+
+/// Started at its operating point, a reverse-biased gate with graded (M =
+/// 0.5) junctions stays put: each junction's charge history starts at its
+/// bias charge, not at zero.
+#[test]
+fn jfet_gate_junctions_start_settled_at_the_operating_point() {
+    let caps = JfetParasiticCaps {
+        cgs: 10e-12,
+        cgd: 2e-12,
+        pb: 0.8,
+        ..Default::default()
+    };
+    for kind in [JfetKind::NChannel, JfetKind::PChannel] {
+        let config = TransientConfig::new(10e-6, 0.1e-6).with_start(TransientStart::OperatingPoint);
+        let tran = solve_transient(&jfet_gate_rc(kind, -1.0, 0.0, caps), &config)
+            .unwrap()
+            .transient
+            .unwrap();
+        let sign = if kind == JfetKind::NChannel {
+            1.0
+        } else {
+            -1.0
+        };
+        for s in &tran.timesteps {
+            let got = s.node_voltages["g"];
+            assert!(
+                (got + sign).abs() < 1e-6,
+                "{kind:?}: V(g) = {got} at t = {}",
+                s.time
+            );
+        }
     }
 }
 

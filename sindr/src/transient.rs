@@ -9,6 +9,7 @@ use nalgebra::DVector;
 
 use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::inductor;
+use sindr_devices::jfet::JfetKind;
 use sindr_devices::mosfet::MosfetKind;
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -355,13 +356,24 @@ fn stamp_circuit_transient(
             }
             // JFET — nonlinear companion in NR transient loop
             CircuitElement::Jfet {
+                id,
                 nodes,
                 kind,
                 idss,
                 vp,
-                ..
+                parasitic_caps,
             } => {
                 stamp_jfet_companion(system, node_map, nodes, *kind, *idss, *vp, v_prev);
+                if let Some(pc) = parasitic_caps {
+                    for (junction, c0, a, b) in jfet_junctions(nodes, pc) {
+                        let v =
+                            node_voltage(&a, node_map, v_prev) - node_voltage(&b, node_map, v_prev);
+                        let (q, c) = jfet_gate_charge(v, *kind, pc, c0);
+                        let history = parasitic_history(parasitic, id, junction);
+                        let (g, i_hist) = integ.charge(q, c, v, &history);
+                        stamp_companion(system, node_map, &[a, b], g, i_hist);
+                    }
+                }
             }
             CircuitElement::Vcvs {
                 nodes,
@@ -404,6 +416,18 @@ fn stamp_circuit_transient(
                 if let Some(cb) = ctrl_branch {
                     stamp_cccs(system, node_map, nodes, *alpha, num_nodes + cb);
                 }
+            }
+            CircuitElement::Behavioural {
+                id,
+                nodes,
+                output,
+                expr,
+            } => {
+                let branch = num_nodes + vsource_index;
+                crate::stamp::stamp_behavioural(
+                    system, circuit, node_map, id, nodes, *output, expr, v_prev, t, branch,
+                )?;
+                vsource_index += component.branch_slots();
             }
             CircuitElement::Pushbutton { nodes, closed, .. } => {
                 let resistance = if *closed {
@@ -535,15 +559,28 @@ fn stamp_circuit_transient(
                 stamp_igbt_companion(system, node_map, nodes, v_prev, params);
             }
             CircuitElement::Transformer {
-                nodes, l1, l2, k, ..
+                nodes,
+                l1,
+                l2,
+                k,
+                saturation,
+                ..
             } => {
-                let (z, rhs) = integ.coupled(
-                    transformer_inductances(*l1, *l2, *k),
-                    [&inds[ind_index], &inds[ind_index + 1]],
-                );
-                ind_index += 2;
                 let k1 = num_nodes + vsource_index;
                 let k2 = num_nodes + vsource_index + 1;
+                let h = [&inds[ind_index], &inds[ind_index + 1]];
+                let (z, rhs) = match saturation {
+                    None => integ.coupled(transformer_inductances(*l1, *l2, *k), h),
+                    // Its histories hold fluxes. Linearised at the Newton
+                    // iterate's winding currents.
+                    Some(sat) => {
+                        let at = |k: usize| v_prev.get(k).copied().unwrap_or(0.0);
+                        let i = [at(k1), at(k2)];
+                        let (lambda, l) = transformer_flux(*l1, *l2, *k, sat, i);
+                        integ.coupled_nonlinear(l, lambda, i, h)
+                    }
+                };
+                ind_index += 2;
                 vsource_index += 2;
                 stamp_transformer_companion(system, node_map, nodes, z, rhs, k1, k2);
             }
@@ -833,6 +870,25 @@ fn extract_timestep_results(
                     power: (id_current * vds_phys).abs(),
                 });
             }
+            CircuitElement::Behavioural {
+                id,
+                nodes,
+                output,
+                expr,
+            } => {
+                component_results.push(crate::results::behavioural_result(
+                    circuit,
+                    node_map,
+                    solution,
+                    source_time,
+                    id,
+                    nodes,
+                    *output,
+                    expr,
+                    num_nodes + vsource_index,
+                ));
+                vsource_index += component.branch_slots();
+            }
             CircuitElement::Vcvs { id, nodes, .. } | CircuitElement::Ccvs { id, nodes, .. } => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
@@ -1082,7 +1138,12 @@ fn extract_timestep_results(
                     power: (comp.ids * vce).abs(),
                 });
             }
-            CircuitElement::Transformer { id, nodes, .. } => {
+            CircuitElement::Transformer {
+                id,
+                nodes,
+                saturation,
+                ..
+            } => {
                 // Primary winding voltages and currents
                 let v_p1 = node_voltage(&nodes[0], node_map, solution);
                 let v_q1 = node_voltage(&nodes[1], node_map, solution);
@@ -1096,8 +1157,16 @@ fn extract_timestep_results(
                 vsource_index += 2;
                 // Winding rate is the branch-convention voltage (see
                 // Integrator::coupled).
-                new_inds.push(inds_prev[ind_index].push(i1_now, v_primary));
-                new_inds.push(inds_prev[ind_index + 1].push(i2_now, v_secondary));
+                // A saturating core's histories hold fluxes.
+                let (x1, x2) = match saturation {
+                    None => (i1_now, i2_now),
+                    Some(_) => (
+                        integ.flux(v_primary, &inds_prev[ind_index]),
+                        integ.flux(v_secondary, &inds_prev[ind_index + 1]),
+                    ),
+                };
+                new_inds.push(inds_prev[ind_index].push(x1, v_primary));
+                new_inds.push(inds_prev[ind_index + 1].push(x2, v_secondary));
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: v_primary,
@@ -1128,6 +1197,7 @@ fn extract_timestep_results(
                 kind,
                 idss,
                 vp,
+                ..
             } => {
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
@@ -1631,8 +1701,10 @@ impl TransientConfig {
 /// devices is solved by Newton–Raphson, warm-started from the previous step.
 /// Steps are at most `tstep` (or `tmax`, if smaller), shortened where the
 /// truncation error is too large (unless `config.adaptive` is off), cut to
-/// land on every source-waveform breakpoint, and halved and retried when
-/// Newton fails. [`SimulationResult::transient`] holds one snapshot per step,
+/// land on every source-waveform breakpoint and every time a behavioural
+/// source compares `time` with a constant (`time < 1u`), and halved and
+/// retried when Newton fails. [`SimulationResult::transient`] holds one
+/// snapshot per step,
 /// the last at `tstop`; the other fields hold the final instant.
 ///
 /// # Errors
@@ -1646,7 +1718,8 @@ impl TransientConfig {
 /// or isn't finite, any
 /// validation error from [`validate_circuit`](crate::validate_circuit),
 /// [`SimError::ConvergenceFailed`] if Newton–Raphson fails even at a step a
-/// million times smaller than `tstep`, and [`SimError::SingularMatrix`] or
+/// million times smaller than `tstep` ([`SimError::NotFinite`] when a
+/// behavioural expression overflows there), and [`SimError::SingularMatrix`] or
 /// [`SimError::InvalidSolution`] if a step can't be solved.
 ///
 /// # Example
@@ -1726,7 +1799,8 @@ pub(crate) fn run_transient(
 ) -> Result<SimulationResult, SimError> {
     let tstop = config.tstop;
     let h_max = config.step();
-    // Newton failures halve the step down to this before giving up.
+    // Newton failures halve the step down to this, then try
+    // pseudo-transient continuation before giving up.
     let h_min = h_max * 1e-6;
 
     check_initial_conditions(circuit, node_map, config)?;
@@ -1769,9 +1843,28 @@ pub(crate) fn run_transient(
             CircuitElement::Relay { id, inductance, .. } if *inductance > 0.0 => {
                 inds.push(current(id));
             }
-            CircuitElement::Transformer { id, .. } => {
-                inds.push(current(id)); // primary
-                inds.push(current(&secondary_winding(id))); // secondary
+            CircuitElement::Transformer {
+                id,
+                l1,
+                l2,
+                k,
+                saturation,
+                ..
+            } => {
+                let (primary, secondary) = (current(id), current(&secondary_winding(id)));
+                match saturation {
+                    None => {
+                        inds.push(primary);
+                        inds.push(secondary);
+                    }
+                    // A saturating core's histories hold fluxes.
+                    Some(sat) => {
+                        let i = [primary.x1, secondary.x1];
+                        let (lambda, _) = transformer_flux(*l1, *l2, *k, sat, i);
+                        inds.push(History::at(lambda[0]));
+                        inds.push(History::at(lambda[1]));
+                    }
+                }
             }
             CircuitElement::Bjt {
                 id,
@@ -1791,6 +1884,18 @@ pub(crate) fn run_transient(
             } => {
                 for (junction, _, a, b) in mosfet_parasitics(nodes, pc) {
                     parasitic.insert(format!("{id}-{junction}"), across(&a, &b));
+                }
+            }
+            CircuitElement::Jfet {
+                id,
+                nodes,
+                kind,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (junction, c0, a, b) in jfet_junctions(nodes, pc) {
+                    let (q, _) = jfet_gate_charge(ic(&a) - ic(&b), *kind, pc, c0);
+                    parasitic.insert(format!("{id}-{junction}"), History::at(q));
                 }
             }
             CircuitElement::Diode {
@@ -1948,22 +2053,38 @@ pub(crate) fn run_transient(
             }
             None => (&fixed_step, circuit),
         };
+        // Whether this step jumped an edge (pseudo-transient continuation).
+        let mut jumped = false;
         let next = match step.solve(&integ, t_src, &caps, &inds, &parasitic, &solution) {
             Ok(next) => next,
-            Err(e @ SimError::ConvergenceFailed { .. }) => {
+            Err(e) if e.is_retryable() && dt / 2.0 >= h_min => {
                 stats.newton_rejections += 1;
                 h = dt / 2.0;
-                if h < h_min {
-                    return Err(e);
-                }
                 continue;
+            }
+            // Even the shortest step fails: a regenerative edge the node
+            // voltages jump across while the capacitors hold theirs. Follow
+            // the jump in a pseudo time instead.
+            Err(e) if e.is_retryable() => {
+                match step
+                    .solve_by_pseudo_transient(&integ, t_src, &caps, &inds, &parasitic, &solution)
+                {
+                    Ok(next) => {
+                        stats.jumped_steps += 1;
+                        jumped = true;
+                        next
+                    }
+                    Err(_) => return Err(e),
+                }
             }
             Err(e) => return Err(e),
         };
 
         // Accept or reject by local truncation error, and size the next step.
+        // A jump over an edge has no truncation error to speak of: it is
+        // already as short as a step gets.
         let mut grow = 2.0;
-        if config.adaptive {
+        if config.adaptive && !jumped {
             if let Some(ratio) = lte_ratio(&integ, &recent, t_next, &next, num_nodes, opts) {
                 let k = f64::from(integ.order + 1);
                 let factor = 0.9 * ratio.powf(-1.0 / k);
@@ -2011,9 +2132,10 @@ pub(crate) fn run_transient(
             (base * 2.0).min(h_max)
         };
 
-        if on_bp {
-            // A corner in a source: the history before it doesn't predict
-            // what follows, so restart with a short backward-Euler step.
+        if on_bp || jumped {
+            // A corner in a source, or a jump over an edge: the history
+            // before it doesn't predict what follows, so restart with a
+            // short backward-Euler step.
             h_prev = None;
             recent.clear();
             if config.adaptive {
@@ -2202,6 +2324,22 @@ fn operating_point_start(
 /// is short.
 const RESTART_FRACTION: f64 = 100.0;
 
+/// Pseudo-steps [`StepSolver::solve_by_pseudo_transient`] takes at most.
+/// An edge takes about a hundred.
+const PSEUDO_TRANSIENT_STEPS: usize = 2000;
+
+/// A pseudo-step that moves no node by this much (V) has settled, so the
+/// next one can be longer.
+const PSEUDO_TRANSIENT_SETTLED: f64 = 1e-3;
+
+/// Below this conductance (S) the pseudo-time term is negligible against
+/// the circuit's own conductances, and plain Newton takes over.
+const PSEUDO_TRANSIENT_GMIN: f64 = 1e-9;
+
+/// Above this conductance (S) a pseudo-step Newton still can't take means
+/// the step has no solution near where the circuit is.
+const PSEUDO_TRANSIENT_GMAX: f64 = 1e8;
+
 /// Rejects an initial condition that would otherwise be ignored or surface
 /// later as a bare `InvalidSolution`: a node or inductor id the circuit
 /// doesn't have, a non-finite value, a nonzero ground voltage, or a current
@@ -2270,6 +2408,7 @@ fn check_initial_conditions(
 }
 
 /// Every waveform breakpoint of the circuit's sources in `(0, tstop)`,
+/// and every time a behavioural source compares `time` with a constant,
 /// sorted and without near-duplicates.
 ///
 /// A source with more than
@@ -2278,6 +2417,14 @@ fn check_initial_conditions(
 fn waveform_breakpoints(circuit: &Circuit, tstop: f64) -> Result<Vec<f64>, SimError> {
     let mut all = Vec::new();
     for c in &circuit.components {
+        if let CircuitElement::Behavioural { expr, .. } = c {
+            all.extend(
+                expr.time_breakpoints()
+                    .into_iter()
+                    .filter(|t| *t > 0.0 && *t < tstop),
+            );
+            continue;
+        }
         let (CircuitElement::VoltageSource {
             id,
             waveform: Some(w),
@@ -2396,6 +2543,87 @@ impl<'a> StepSolver<'a> {
         parasitic: &HashMap<String, History>,
         start: &DVector<f64>,
     ) -> Result<DVector<f64>, SimError> {
+        self.newton(integ, t, caps, inds, parasitic, start, None)
+    }
+
+    /// [`solve`](Self::solve) by pseudo-transient continuation, for a step
+    /// plain Newton can't take at any length.
+    ///
+    /// That is a regenerative edge with nothing to slow it down (a
+    /// multivibrator's or a Schmitt trigger's, with no junction charge in
+    /// the transistors): the solution the circuit was on folds away, and
+    /// the one after the edge is far from it, out of Newton's reach. Here
+    /// each node gets a conductance `g` to where the last pseudo-step left
+    /// it, as if it had a capacitor to ground stepped by `C/g` in a pseudo
+    /// time. Each pseudo-step then has a solution close to the last, so the
+    /// node voltages follow the edge as a real circuit's would, held up
+    /// only by capacitance, until they settle past it. A pseudo-step Newton
+    /// can't take is retried with a larger `g` (a shorter pseudo-step); one
+    /// that barely moves the nodes lengthens the next. Once `g` is
+    /// negligible, plain Newton from there gives the answer: the step's own,
+    /// with nothing added.
+    fn solve_by_pseudo_transient(
+        &self,
+        integ: &Integrator,
+        t: f64,
+        caps: &[History],
+        inds: &[History],
+        parasitic: &HashMap<String, History>,
+        start: &DVector<f64>,
+    ) -> Result<DVector<f64>, SimError> {
+        let mut anchor = start.clone();
+        // 1 S is about a transistor's transconductance at tens of mA: the
+        // first pseudo-steps are short against the edge.
+        let mut g = 1.0;
+        let mut last_err = None;
+        for _ in 0..PSEUDO_TRANSIENT_STEPS {
+            match self.newton(integ, t, caps, inds, parasitic, &anchor, Some((g, &anchor))) {
+                Ok(v) => {
+                    let (moved, _) = newton_raphson::max_node_step(&anchor, &v, self.num_nodes);
+                    anchor = v;
+                    if moved >= PSEUDO_TRANSIENT_SETTLED {
+                        continue;
+                    }
+                    g /= 4.0;
+                    if g >= PSEUDO_TRANSIENT_GMIN {
+                        continue;
+                    }
+                    match self.newton(integ, t, caps, inds, parasitic, &anchor, None) {
+                        Ok(v) => return Ok(v),
+                        Err(e) if e.is_retryable() => {
+                            // Not settled after all: keep going from a
+                            // small conductance.
+                            g = PSEUDO_TRANSIENT_GMIN * 1e3;
+                            last_err = Some(e);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(e) if e.is_retryable() && g < PSEUDO_TRANSIENT_GMAX => {
+                    g *= 8.0;
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or(SimError::InvalidSolution))
+    }
+
+    /// Newton–Raphson for the step, from `start`. With `pseudo` as
+    /// `(g, anchor)`, every node also has `g` siemens to its voltage in
+    /// `anchor`: a pseudo-step of
+    /// [`solve_by_pseudo_transient`](Self::solve_by_pseudo_transient).
+    #[allow(clippy::too_many_arguments)]
+    fn newton(
+        &self,
+        integ: &Integrator,
+        t: f64,
+        caps: &[History],
+        inds: &[History],
+        parasitic: &HashMap<String, History>,
+        start: &DVector<f64>,
+        pseudo: Option<(f64, &DVector<f64>)>,
+    ) -> Result<DVector<f64>, SimError> {
         let stamp = |v_prev: &DVector<f64>| -> Result<MnaSystem, SimError> {
             let mut system = MnaSystem::new(self.num_nodes, self.num_vsources);
             stamp_circuit_transient(
@@ -2421,14 +2649,28 @@ impl<'a> StepSolver<'a> {
         for _ in 0..self.opts.max_iterations {
             let mut system = stamp(&v_prev)?;
             newton_raphson::add_gmin_shunts(&mut system, self.num_nodes);
+            if let Some((g, anchor)) = pseudo {
+                for i in 0..self.num_nodes {
+                    system.a[(i, i)] += g;
+                    system.b[i] += g * anchor[i];
+                }
+            }
             let v_new = system.solve()?;
 
             let mut v_limited =
                 newton_raphson::apply_voltage_limiting(&v_new, &v_prev, &self.diode_info);
             let igbt_limited =
                 newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &self.igbt_info);
+            let regulator_limited = crate::stamp::limit_regulator_step(
+                self.circuit,
+                self.node_map,
+                self.num_nodes,
+                &v_prev,
+                &mut v_limited,
+            );
 
             if !igbt_limited
+                && !regulator_limited
                 && newton_raphson::converged(
                     &v_prev,
                     &v_limited,
@@ -2436,7 +2678,15 @@ impl<'a> StepSolver<'a> {
                     &self.diode_info,
                     self.opts,
                 )
+                && crate::stamp::regulator_pieces_settled(
+                    self.circuit,
+                    self.node_map,
+                    self.num_nodes,
+                    &v_prev,
+                    &v_limited,
+                )
             {
+                crate::stamp::behavioural_finite_at(self.circuit, self.node_map, &v_limited, t)?;
                 return Ok(v_limited);
             }
             last_step = newton_raphson::max_node_step(&v_prev, &v_limited, self.num_nodes);
@@ -2502,6 +2752,24 @@ fn update_parasitic_histories(
             }
             continue;
         }
+        if let CircuitElement::Jfet {
+            id,
+            nodes,
+            kind,
+            parasitic_caps: Some(pc),
+            ..
+        } = component
+        {
+            for (junction, c0, a, b) in jfet_junctions(nodes, pc) {
+                let (q, _) = jfet_gate_charge(v(&a) - v(&b), *kind, pc, c0);
+                let history = parasitic_history(parasitic, id, junction);
+                parasitic.insert(
+                    format!("{id}-{junction}"),
+                    history.push(q, integ.charge_current(q, &history)),
+                );
+            }
+            continue;
+        }
         let (id, caps) = match component {
             CircuitElement::Bjt {
                 id,
@@ -2555,6 +2823,46 @@ pub(crate) fn mosfet_parasitics(
         .collect()
 }
 
+/// A JFET's gate junctions as `(junction, zero-bias C, terminal, terminal)`:
+/// gate–source and gate–drain, each only if its capacitance is > 0. Their
+/// histories hold charges (C), not voltages.
+pub(crate) fn jfet_junctions(
+    nodes: &[String; 3],
+    pc: &crate::circuit::JfetParasiticCaps,
+) -> Vec<(&'static str, f64, String, String)> {
+    let [g, d, s] = nodes.clone();
+    [("gs", pc.cgs, g.clone(), s), ("gd", pc.cgd, g, d)]
+        .into_iter()
+        .filter(|j| j.1 > 0.0)
+        .collect()
+}
+
+/// Charge (C) on a JFET gate junction of zero-bias capacitance `c0` (F),
+/// gate side positive, and its capacitance (F) at `v` (V), gate minus the
+/// other terminal. A P-channel
+/// part's gate junction points the other way, so its junction voltage and
+/// charge are the negatives; the capacitance is the same.
+pub(crate) fn jfet_gate_charge(
+    v: f64,
+    kind: JfetKind,
+    pc: &crate::circuit::JfetParasiticCaps,
+    c0: f64,
+) -> (f64, f64) {
+    let charge = sindr_devices::diode::JunctionCharge {
+        cjo: c0,
+        vj: pc.pb,
+        m: pc.m,
+        fc: pc.fc,
+        tt: 0.0,
+    };
+    let sign = match kind {
+        JfetKind::NChannel => 1.0,
+        JfetKind::PChannel => -1.0,
+    };
+    let (q, c) = charge.charge(sign * v, 0.0, 0.0);
+    (sign * q, c)
+}
+
 /// The history of component `id`'s parasitic capacitor at `junction`
 /// (uncharged before its first step).
 fn parasitic_history(parasitic: &HashMap<String, History>, id: &str, junction: &str) -> History {
@@ -2598,6 +2906,37 @@ const OP_AMP_STAGE: &str = "stage";
 fn transformer_inductances(l1: f64, l2: f64, k: f64) -> [[f64; 2]; 2] {
     let m = k * (l1 * l2).sqrt();
     [[l1, m], [m, l2]]
+}
+
+/// Winding fluxes (Wb) and incremental inductance matrix `dλ/di` (H) of a
+/// transformer with a saturating core, at winding currents `i` (A).
+///
+/// Each winding has leakage `(1 − k)·L`; the magnetising inductance `k·L1`
+/// on the primary carries `im = i1 + n·i2`, n = √(L2/L1), and saturates as
+/// `sat`. Its flux links the primary once and the secondary n times:
+/// `λ1 = (1 − k)·L1·i1 + λm(im)`, `λ2 = (1 − k)·L2·i2 + n·λm(im)`. With a
+/// linear λm = k·L1·im these are the coupled inductors of
+/// [`transformer_inductances`].
+pub(crate) fn transformer_flux(
+    l1: f64,
+    l2: f64,
+    k: f64,
+    sat: &inductor::InductorSaturation,
+    i: [f64; 2],
+) -> ([f64; 2], [[f64; 2]; 2]) {
+    let n = (l2 / l1).sqrt();
+    let lm = k * l1;
+    let im = i[0] + n * i[1];
+    let flux_m = inductor::flux(im, lm, sat);
+    let lm_inc = inductor::incremental_inductance(im, lm, sat);
+    let (ll1, ll2) = ((1.0 - k) * l1, (1.0 - k) * l2);
+    (
+        [ll1 * i[0] + flux_m, ll2 * i[1] + n * flux_m],
+        [
+            [ll1 + lm_inc, n * lm_inc],
+            [n * lm_inc, ll2 + n * n * lm_inc],
+        ],
+    )
 }
 
 /// Stamp a companion branch between `nodes`: conductance `g` plus the
@@ -3053,6 +3392,7 @@ mod tests {
                     l1: 1e-3, // 1 mH primary
                     l2: 4e-3, // 4 mH secondary (n = sqrt(4/1) = 2)
                     k: 0.999, // near-ideal coupling
+                    saturation: None,
                 },
                 // Secondary load: 1 kOhm
                 CircuitElement::Resistor {

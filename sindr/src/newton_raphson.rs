@@ -43,7 +43,9 @@ use crate::stamp;
 /// # Errors
 ///
 /// [`SimError::ConvergenceFailed`] if plain Newton–Raphson, gmin stepping
-/// and source stepping all fail, plus any stamping or solve error.
+/// and source stepping all fail, or [`SimError::NotFinite`] when a
+/// behavioural source's expression overflowed on the way; plus any stamping
+/// or solve error.
 pub fn solve_nonlinear(
     circuit: &Circuit,
     node_map: &NodeMap,
@@ -64,41 +66,53 @@ pub fn solve_nonlinear(
         opts,
     ) {
         Ok((result, _)) => Ok(result),
-        Err(e @ SimError::ConvergenceFailed { .. }) => {
+        // SingularMatrix and InvalidSolution are topology / numerical errors
+        // that no convergence aid can fix: propagate them at once.
+        Err(e) if !e.is_retryable() => Err(e),
+        Err(first) => {
+            // An expression that overflowed on the way is the better report
+            // when every aid fails: it names the source and what it read.
+            let (mut not_finite, mut last) = (None, None);
+            let mut record = |e: SimError| match e {
+                SimError::NotFinite { .. } if not_finite.is_none() => not_finite = Some(e),
+                e => last = Some(e),
+            };
+            record(first);
             // Fall back to gmin stepping: progressively softens the Jacobian
             // by adding extra conductance to ground on every node, then ramps
             // it down while warm-starting from the previous step's solution.
-            let gmin = if opts.gmin_steps.is_empty() {
-                Err(e)
-            } else {
-                gmin_stepping(
+            if !opts.gmin_steps.is_empty() {
+                match gmin_stepping(
                     circuit,
                     node_map,
                     num_nodes,
                     num_vsources,
                     initial_voltages,
                     opts,
-                )
-            };
-            match gmin {
-                Ok(mut result) => {
-                    result.convergence_aid = Some(ConvergenceAid::GminStepping);
-                    Ok(result)
+                ) {
+                    Ok(mut result) => {
+                        result.convergence_aid = Some(ConvergenceAid::GminStepping);
+                        return Ok(result);
+                    }
+                    Err(e) if !e.is_retryable() => return Err(e),
+                    Err(e) => record(e),
                 }
-                Err(e @ SimError::ConvergenceFailed { .. }) if !opts.source_stepping => Err(e),
-                Err(SimError::ConvergenceFailed { .. }) => {
-                    // Then source stepping: ramp every source up from zero.
-                    let mut result =
-                        source_stepping(circuit, node_map, num_nodes, num_vsources, opts)?;
-                    result.convergence_aid = Some(ConvergenceAid::SourceStepping);
-                    Ok(result)
-                }
-                Err(e) => Err(e),
             }
+            if opts.source_stepping {
+                // Then source stepping: ramp every source up from zero.
+                match source_stepping(circuit, node_map, num_nodes, num_vsources, opts) {
+                    Ok(mut result) => {
+                        result.convergence_aid = Some(ConvergenceAid::SourceStepping);
+                        return Ok(result);
+                    }
+                    Err(e) if !e.is_retryable() => return Err(e),
+                    Err(e) => record(e),
+                }
+            }
+            Err(not_finite
+                .or(last)
+                .expect("the first attempt's error is always recorded"))
         }
-        // SingularMatrix and InvalidSolution are topology / numerical errors
-        // that gmin stepping cannot fix — propagate immediately.
-        Err(e) => Err(e),
     }
 }
 
@@ -141,7 +155,7 @@ fn source_stepping(
                 warm = Some(v);
                 increment = (increment * 2.0).min(0.25);
             }
-            Err(e @ SimError::ConvergenceFailed { .. }) => {
+            Err(e) if e.is_retryable() => {
                 increment /= 2.0;
                 if increment < opts.min_source_step {
                     return Err(e);
@@ -294,22 +308,73 @@ fn nr_inner(
     let igbt_info = collect_igbt_info(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
     let mut last_step = (f64::INFINITY, None);
+    // The iterate `v_prev` stepped from, to shorten a step that lands where
+    // a behavioural expression isn't finite.
+    let mut v_base: Option<DVector<f64>> = None;
+    // The overflow of the full step, reported if halving doesn't help.
+    let mut overflow: Option<SimError> = None;
+    let mut recent: Option<SimError> = None;
+    let mut halvings = 0;
     for _iteration in 0..opts.max_iterations {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(circuit, &mut system, node_map, Some(&v_prev))?;
-
-        // Add Gmin shunts (default GMIN floor + any homotopy extra).
-        add_gmin_shunts(&mut system, num_nodes);
-        if gmin_extra > 0.0 {
-            for i in 0..num_nodes {
-                system.a[(i, i)] += gmin_extra;
+        let stamped = if v_base.is_none() {
+            stamp_first(
+                circuit,
+                &mut system,
+                node_map,
+                &v_prev,
+                (num_nodes, num_vsources),
+            )
+        } else {
+            stamp::stamp_circuit(circuit, &mut system, node_map, Some(&v_prev))
+        };
+        let solved = stamped.and_then(|()| {
+            // Add Gmin shunts (default GMIN floor + any homotopy extra).
+            add_gmin_shunts(&mut system, num_nodes);
+            if gmin_extra > 0.0 {
+                for i in 0..num_nodes {
+                    system.a[(i, i)] += gmin_extra;
+                }
             }
-        }
-
-        let v_new = system.solve()?;
+            system.solve()
+        });
+        let v_new = match (solved, &v_base) {
+            (Ok(v), _) => {
+                // A step that only stamped once shortened: the overflow is
+                // what to report if Newton never settles.
+                recent = if halvings > 0 { overflow.take() } else { None };
+                (overflow, halvings) = (None, 0);
+                v
+            }
+            // The step landed where a behavioural expression isn't finite,
+            // or where the conductances it gives swamp the rest of the
+            // matrix: shorten it toward the iterate it left.
+            (Err(e @ (SimError::NotFinite { .. } | SimError::SingularMatrix)), Some(base)) => {
+                let e = overflow.take().unwrap_or(e);
+                if halvings == MAX_STEP_HALVINGS {
+                    return Err(match e {
+                        SimError::SingularMatrix => convergence_failed(
+                            circuit,
+                            node_map,
+                            last_step,
+                            SolvePoint::OperatingPoint,
+                            opts.max_iterations,
+                        ),
+                        e => e,
+                    });
+                }
+                halvings += 1;
+                overflow = Some(e);
+                v_prev = base + (&v_prev - base) * 0.5;
+                continue;
+            }
+            (Err(e), _) => return Err(e),
+        };
 
         let mut v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
         let igbt_limited = apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
+        let regulator_limited =
+            stamp::limit_regulator_step(circuit, node_map, num_nodes, &v_prev, &mut v_limited);
 
         if debug_nr && _iteration < 30 {
             eprintln!(
@@ -321,15 +386,23 @@ fn nr_inner(
             );
         }
 
-        if !igbt_limited && converged(&v_prev, &v_limited, num_nodes, &diode_info, opts) {
+        if !igbt_limited
+            && !regulator_limited
+            && converged(&v_prev, &v_limited, num_nodes, &diode_info, opts)
+            && stamp::regulator_pieces_settled(circuit, node_map, num_nodes, &v_prev, &v_limited)
+        {
+            stamp::behavioural_finite_at(circuit, node_map, &v_limited, 0.0)?;
             let result = results::extract_results(circuit, node_map, &v_limited, num_nodes);
             return Ok((result, v_limited));
         }
 
         last_step = max_node_step(&v_prev, &v_limited, num_nodes);
-        v_prev = v_limited;
+        v_base = Some(std::mem::replace(&mut v_prev, v_limited));
     }
 
+    if let Some(e) = recent {
+        return Err(e);
+    }
     Err(convergence_failed(
         circuit,
         node_map,
@@ -338,6 +411,49 @@ fn nr_inner(
         opts.max_iterations,
     ))
 }
+
+/// Stamps `circuit` at the starting guess. A behavioural source whose
+/// expression isn't finite there (`ln` of a node that starts at 0 V) is
+/// left out of this first iteration, so the rest of the circuit moves its
+/// inputs to where it is.
+fn stamp_first(
+    circuit: &Circuit,
+    system: &mut MnaSystem,
+    node_map: &NodeMap,
+    v: &DVector<f64>,
+    (num_nodes, num_vsources): (usize, usize),
+) -> Result<(), SimError> {
+    let mut off: Option<Circuit> = None;
+    loop {
+        let stamped =
+            stamp::stamp_circuit(off.as_ref().unwrap_or(circuit), system, node_map, Some(v));
+        match stamped {
+            Err(SimError::NotFinite { component, .. })
+                if switch_off(off.get_or_insert_with(|| circuit.clone()), &component) =>
+            {
+                *system = MnaSystem::new(num_nodes, num_vsources);
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Sets behavioural source `id`'s expression to 0; false if it already is.
+fn switch_off(circuit: &mut Circuit, id: &str) -> bool {
+    let zero = crate::expression::Expression::parse("0").expect("0 parses");
+    circuit.components.iter_mut().any(|c| match c {
+        CircuitElement::Behavioural { id: this, expr, .. } if this == id && *expr != zero => {
+            *expr = zero.clone();
+            true
+        }
+        _ => false,
+    })
+}
+
+/// How many times one Newton step is halved, toward the iterate it left,
+/// when it lands where a behavioural expression isn't finite: 2⁻²⁰ of a
+/// 1 kV step is about a millivolt.
+const MAX_STEP_HALVINGS: usize = 20;
 
 /// Rails far enough out that the op-amp clamp never engages.
 const UNCLAMPED_RAIL: f64 = 1e12;
@@ -393,6 +509,10 @@ pub(crate) struct DiodeLimitInfo {
     /// BV of a diode whose breakdown is exponential: its reverse steps are
     /// limited past breakdown as forward ones are, mirrored about `−BV`.
     breakdown: Option<f64>,
+    /// Whether the anode and the cathode are held by voltage sources, as
+    /// [`held_nodes`] finds them. A held terminal is treated like ground
+    /// when a limited step is split between the two.
+    held: [bool; 2],
 }
 
 /// Which node to apply voltage limiting corrections to.
@@ -427,6 +547,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: bv,
                     breakdown: bv,
+                    held: [false; 2],
                 });
             }
             CircuitElement::Led {
@@ -446,6 +567,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
             }
             CircuitElement::ZenerDiode {
@@ -465,6 +587,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: Some(*vz),
                     breakdown: Some(*vz),
+                    held: [false; 2],
                 });
             }
             CircuitElement::SchottkyDiode {
@@ -481,6 +604,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
             }
             CircuitElement::Photodiode {
@@ -501,6 +625,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
             }
             CircuitElement::Bjt {
@@ -530,6 +655,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: true,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
 
                 // B-C junction: correction goes ONLY to the collector node.
@@ -553,13 +679,56 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: true,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
             }
             _ => {}
         }
     }
 
+    let held = held_nodes(circuit, node_map);
+    let is_held = |idx: Option<usize>| idx.is_some_and(|i| held[i]);
+    for junction in &mut info {
+        junction.held = [is_held(junction.anode_idx), is_held(junction.cathode_idx)];
+    }
     info
+}
+
+/// Which nodes a voltage source holds: one whose other terminal is ground
+/// or another held node, as a supply rail is. Newton can't move such a
+/// node (the next linear solve puts it back where the sources say), so
+/// limiting must not move it either.
+fn held_nodes(circuit: &Circuit, node_map: &NodeMap) -> Vec<bool> {
+    let mut held = vec![false; node_map.num_nodes()];
+    let sources: Vec<[Option<usize>; 2]> = circuit
+        .components
+        .iter()
+        .filter_map(|c| match c {
+            CircuitElement::VoltageSource { nodes, .. } => {
+                Some([node_map.index(&nodes[0]), node_map.index(&nodes[1])])
+            }
+            _ => None,
+        })
+        .collect();
+    // Ground is `None`; each pass holds the far end of a source with one
+    // end held, so a stack of n sources takes n passes.
+    let fixed = |held: &[bool], idx: Option<usize>| idx.is_none_or(|i| held[i]);
+    loop {
+        let mut changed = false;
+        for &[a, b] in &sources {
+            for (near, far) in [(a, b), (b, a)] {
+                if let Some(f) = far {
+                    if !held[f] && fixed(&held, near) {
+                        held[f] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return held;
+        }
+    }
 }
 
 /// Apply voltage limiting to all diode/junction node voltages.
@@ -639,13 +808,21 @@ pub(crate) fn apply_voltage_limiting(
             }
             None => {
                 // Standard diode: split adjustment between anode and cathode;
-                // if one is ground, apply the full delta to the non-ground node.
-                let both_present = info.anode_idx.is_some() && info.cathode_idx.is_some();
-                let share = if both_present { 0.5 } else { 1.0 };
-                if let Some(ai) = info.anode_idx {
+                // if one is ground or held by a source, apply the full delta
+                // to the other. Moving a held node would linearise the
+                // junction at a voltage the next solve can't keep, and leave
+                // the free node only half corrected.
+                let anode = info.anode_idx.filter(|_| !info.held[0]);
+                let cathode = info.cathode_idx.filter(|_| !info.held[1]);
+                let share = if anode.is_some() && cathode.is_some() {
+                    0.5
+                } else {
+                    1.0
+                };
+                if let Some(ai) = anode {
                     v_limited[ai] += delta * share;
                 }
-                if let Some(ci) = info.cathode_idx {
+                if let Some(ci) = cathode {
                     v_limited[ci] -= delta * share;
                 }
             }
@@ -1221,6 +1398,39 @@ mod tests {
         }
     }
 
+    /// An LED hanging from a 9 V rail: the limited step goes all to its
+    /// cathode. Split between the two, half of it would land on the rail,
+    /// which the next solve puts straight back at 9 V.
+    #[test]
+    fn limiting_leaves_a_rail_held_by_a_source_alone() {
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                vsource("V1", "vcc", 9.0),
+                CircuitElement::Led {
+                    id: "D1".into(),
+                    nodes: ["vcc".into(), "k".into()],
+                    color: "red".into(),
+                    temperature: 300.15,
+                },
+                resistor("R1", "k", "0", 470.0),
+            ],
+            ..Default::default()
+        };
+        let node_map = NodeMap::from_circuit(&circuit);
+        let info = collect_diode_info(&circuit, &node_map);
+        let (vcc, k) = (node_map.index("vcc").unwrap(), node_map.index("k").unwrap());
+        let n = node_map.num_nodes();
+        let mut v_prev = DVector::zeros(n + 1);
+        v_prev[vcc] = 9.0;
+        v_prev[k] = 8.0;
+        let mut v_new = v_prev.clone();
+        v_new[k] = 1.0;
+        let v = apply_voltage_limiting(&v_new, &v_prev, &info);
+        assert_eq!(v[vcc], 9.0);
+        assert!(v[k] > 1.0 && v[k] < 8.0, "cathode {}", v[k]);
+    }
+
     #[test]
     fn forward_schottky_behind_5v_converges() {
         let circuit = junction_behind(CircuitElement::SchottkyDiode {
@@ -1463,6 +1673,7 @@ mod tests {
                 is_bjt: true,
                 zener_vz: None,
                 breakdown: None,
+                held: [false; 2],
             },
             DiodeLimitInfo {
                 anode_idx: Some(0),
@@ -1474,6 +1685,7 @@ mod tests {
                 is_bjt: true,
                 zener_vz: None,
                 breakdown: None,
+                held: [false; 2],
             },
         ];
         let v_prev = DVector::from_vec(vec![0.65, 5.0]);

@@ -96,7 +96,7 @@ pub fn series_resistors() -> Circuit {
     }
 }
 
-/// Current-limiting resistor protects an LED (modeled as a 2 V source).
+/// A 9 V supply drives a red LED through a 330 Ω current-limiting resistor.
 pub fn led_circuit() -> Circuit {
     Circuit {
         ground_node: "0".into(),
@@ -112,11 +112,11 @@ pub fn led_circuit() -> Circuit {
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 330.0,
             },
-            CircuitElement::VoltageSource {
-                id: "V_LED".into(),
+            CircuitElement::Led {
+                id: "LED1".into(),
                 nodes: ["n2".into(), "0".into()],
-                voltage: 2.0,
-                waveform: None,
+                color: "red".into(),
+                temperature: 300.15,
             },
         ],
         ..Default::default()
@@ -296,6 +296,7 @@ pub fn transformer_stepdown() -> Circuit {
                 l1: 1.0,
                 l2: 0.25,
                 k: 0.999,
+                saturation: None,
             },
             CircuitElement::Resistor {
                 id: "R_load".into(),
@@ -428,8 +429,8 @@ mod meta {
             },
             ExampleCircuit {
                 id: "led-circuit".into(),
-                name: "LED Circuit (Simplified)".into(),
-                description: "A current-limiting resistor protects an LED (modeled as a 2V source). Shows how resistors set current in a circuit.".into(),
+                name: "LED Circuit".into(),
+                description: "A 330Ω current-limiting resistor sets a red LED's current from a 9V supply. Sweep the supply to see the LED block until its forward voltage, then conduct.".into(),
                 circuit: led_circuit(),
             },
             ExampleCircuit {
@@ -522,30 +523,37 @@ mod tests {
     #[test]
     fn voltage_divider_matches_closed_form() {
         let result = solve_circuit(&voltage_divider()).unwrap();
-        assert!((result.node_voltages["n2"] - 10.0 * 2000.0 / 3000.0).abs() < 1e-9);
+        assert!((result.voltage("n2").unwrap() - 10.0 * 2000.0 / 3000.0).abs() < 1e-9);
     }
 
     #[test]
     fn current_divider_splits_inversely_to_resistance() {
         let result = solve_circuit(&current_divider()).unwrap();
-        let current = |id: &str| {
-            result
-                .component_results
-                .iter()
-                .find(|c| c.id == id)
-                .unwrap()
-                .current_through
-                .abs()
-        };
+        let current = |id: &str| result.current(id).unwrap().abs();
         assert!((current("R1") - 12.0 / 3000.0).abs() < 1e-12);
         assert!((current("R2") - 12.0 / 6000.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn led_example_blocks_below_its_forward_voltage() {
+        let sweep = crate::dc_sweep(&led_circuit(), "V1", 0.0, 9.0, 10).unwrap();
+        let curve = sweep.component_current_curve("LED1");
+        let at = |v: f64| curve.iter().find(|(x, _)| (x - v).abs() < 1e-9).unwrap().1;
+        // No current at 0 V and essentially none below a red LED's ~1.8 V.
+        assert!(at(0.0).abs() < 1e-9, "I(0 V) = {}", at(0.0));
+        assert!(at(1.0).abs() < 1e-6, "I(1 V) = {}", at(1.0));
+        // Never backwards.
+        assert!(curve.iter().all(|(_, i)| *i > -1e-9));
+        // About 20 mA at 9 V through 330 Ω.
+        let i9 = at(9.0);
+        assert!((0.018..0.024).contains(&i9), "I(9 V) = {i9}");
     }
 
     #[test]
     fn bjt_examples_sit_in_their_intended_regions() {
         let region = |circuit: Circuit| {
             let result = solve_circuit(&circuit).unwrap();
-            result.bjt_results[0].region.clone()
+            result.bjt("Q1").unwrap().region.clone()
         };
         assert_eq!(region(npn_common_emitter()), "active");
         assert_eq!(region(npn_switch()), "saturation");

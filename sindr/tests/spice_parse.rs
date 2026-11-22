@@ -271,9 +271,8 @@ fn continuation_lines() {
     );
 }
 
-/// sindr reads `.model` and `.subckt` only at the top level. One inside a
-/// `.subckt` used to be dropped without a word, leaving an element that
-/// uses it "undefined"; now each is named in a warning.
+/// sindr reads `.subckt` only at the top level. One inside a `.subckt`
+/// is named in a warning; a `.model` there is read (next test).
 #[test]
 fn nested_definitions_are_skipped_with_a_warning() {
     let deck = "* n\n.subckt amp in out\n.model dloc D(IS=1e-14)\n\
@@ -283,27 +282,57 @@ fn nested_definitions_are_skipped_with_a_warning() {
     assert_eq!(
         warnings(&netlist),
         [
-            "`.model dloc` inside `.subckt amp` is ignored; sindr reads `.model` and \
-             `.subckt` definitions only at the top level",
-            "`.subckt inner` inside `.subckt amp` is ignored; sindr reads `.model` and \
-             `.subckt` definitions only at the top level",
+            "`.subckt inner` inside `.subckt amp` is ignored; sindr reads `.subckt` \
+          definitions only at the top level"
         ]
-    );
-    let span = netlist.warnings[0]
-        .span
-        .expect("the .model warning has a span");
-    assert_eq!(
-        &deck[span.offset()..span.offset() + span.len()],
-        ".model dloc D(IS=1e-14)"
     );
     // The body's own elements still expand.
     let flat = netlist.circuit.flattened().unwrap();
     assert!(flat.components.iter().any(|c| c.id() == "x1.r1"));
+}
 
-    // An element that uses the nested model still fails, as undefined.
-    let uses = deck.replace("R1 in out 1k", "D1 in out dloc");
+/// A `.model` inside a `.subckt` is that body's own: its elements use it
+/// ahead of a top-level card of the same name, and nothing outside sees it.
+#[test]
+fn subckt_models_are_local_and_shadow_top_level_ones() {
+    let deck = "* m
+.model d1n D(IS=1e-9)
+                .subckt clamp a k
+D1 a k d1n
+.model d1n D(IS=2e-14 N=1.5)
+.ends
+                V1 a 0 1
+X1 a 0 clamp
+D2 a 0 d1n
+.end
+";
+    let netlist = parse_str(deck).unwrap();
+    assert!(netlist.warnings.is_empty(), "{:?}", netlist.warnings);
+    let flat = netlist.circuit.flatten().unwrap();
+    let model = |id: &str| {
+        flat.components
+            .iter()
+            .find_map(|c| match c {
+                CircuitElement::Diode { id: i, model, .. } if i == id => *model,
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no diode {id}"))
+    };
+    assert_eq!((model("x1.d1").is, model("x1.d1").n), (2e-14, 1.5));
+    assert_eq!(model("d2").is, 1e-9);
+    // Outside the subckt, its card isn't there.
+    let outside = "* m
+.subckt clamp a k
+.model dloc D
+R1 a k 1k
+.ends
+                   V1 a 0 1
+X1 a 0 clamp
+D2 a 0 dloc
+.end
+";
     assert!(matches!(
-        parse_str(&uses),
+        parse_str(outside),
         Err(SpiceParseError::UndefinedModel { name, .. }) if name == "dloc"
     ));
 }
@@ -455,17 +484,55 @@ fn ignored_model_parameters_warning_names_the_file() {
     let main = dir.join("main.cir");
     std::fs::write(
         &main,
-        "* m\n.model m D(IS=1e-14 EG=1.1)\nV1 a 0 1\nR1 a b 1k\nD1 b 0 m\n.end\n",
+        "* m\n.model m D(IS=1e-14 VAR=1.1)\nV1 a 0 1\nR1 a b 1k\nD1 b 0 m\n.end\n",
     )
     .unwrap();
     let netlist = sindr::spice::parse_file_with_options(&main, lenient()).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(
         warnings(&netlist),
-        ["`.model m` parameter EG ignored (sindr's model doesn't use them)"]
+        ["`.model m` parameter VAR ignored (sindr's model doesn't use them)"]
     );
     assert_eq!(
         netlist.warnings[0].file.as_deref(),
         Some(main.display().to_string().as_str())
+    );
+}
+
+/// `EG` and `XTI` set how a junction's IS follows temperature, and are
+/// read onto the model as given: silicon's, or a Schottky's.
+#[test]
+fn temperature_coefficients_are_read() {
+    let deck = "* t\n.model sk D(IS=1e-8 EG=0.69 XTI=2 TNOM=27)\n\
+                .model q1 PNP(IS=1e-15 EG=1.12 XTI=3.5)\n\
+                V1 a 0 1\nR1 a b 1k\nD1 b 0 sk\nQ1 0 b a q1\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert!(netlist.warnings.is_empty(), "{:?}", warnings(&netlist));
+    match element(&netlist, "d1") {
+        CircuitElement::Diode { model: Some(m), .. } => {
+            assert_eq!((m.eg, m.xti), (0.69, 2.0));
+        }
+        other => panic!("{other:?}"),
+    }
+    match element(&netlist, "q1") {
+        CircuitElement::Bjt { model: Some(m), .. } => assert_eq!((m.eg, m.xti), (1.12, 3.5)),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// `TNOM` is the temperature a card's values are at; sindr's are at 27 °C,
+/// so any other is refused in strict mode and read as 27 in lenient mode.
+#[test]
+fn another_nominal_temperature_is_refused() {
+    let deck = "* t\n.model d1 D(IS=1e-14 TNOM=25)\nV1 a 0 1\nR1 a b 1k\nD1 b 0 d1\n.end\n";
+    let err = parse_str(deck).unwrap_err().to_string();
+    assert!(err.contains("TNOM=25") && err.contains("TNOM=27"), "{err}");
+    let netlist = parse_str_with_options(deck, lenient()).unwrap();
+    assert_eq!(
+        warnings(&netlist),
+        [
+            "`.model d1` parameter TNOM=25 ignored (sindr's model doesn't use them; its values \
+          are at TNOM=27)"
+        ]
     );
 }

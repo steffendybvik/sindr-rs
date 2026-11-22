@@ -1,0 +1,19 @@
+* AC sensitivity of a linear network: R, C, L and all four controlled sources
+* ngspice 47's AC .sens is right only at a sweep's first frequency, so one.
+V1 in 0 dc 0 ac 1
+R1 in a 1k
+C1 a 0 100n
+L1 a b 10m
+R2 b 0 2k
+E1 e 0 b 0 2
+R3 e f 500
+G1 0 f a 0 1m
+R4 f 0 1k
+VS f g 0
+R5 g 0 3k
+F1 0 h VS 4
+R6 h 0 1k
+H1 out 0 VS 200
+R7 out h 1k
+.sens v(h) ac lin 1 1k 1k
+.end

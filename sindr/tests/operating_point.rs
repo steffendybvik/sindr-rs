@@ -113,6 +113,7 @@ fn op_reports_no_internal_transformer_branch() {
             l1: 1e-3,
             l2: 4e-3,
             k: 0.99,
+            saturation: None,
         },
         r("R2", "s", "0", 100.0),
     ]))

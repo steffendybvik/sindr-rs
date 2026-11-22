@@ -30,10 +30,14 @@ Diode and BJT cases are SPICE decks that both simulators read, `.model` card
 included. sindr reads `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV` from a `D` card and `IS`, `BF`, `BR`,
 `NF`, `NR`, `VAF` from an `NPN`/`PNP` card, and rejects any other parameter
 (the goldens parse in strict mode), so a card here can't quietly lose one.
-`dc_diode_1n4148` and `op_bjt_card` use non-default values. MOSFET, JFET,
-LED, Schottky and photodiode have no SPICE card in sindr, so those tests
-build the `Circuit` in Rust, element for element, and the `.cir` is read
-only by ngspice. Each one passes its circuit through `in_deck`
+`dc_diode_1n4148` and `op_bjt_card` use non-default values. The MOSFET
+and JFET decks are read by sindr's parser too (`op_fet_decks_parse`,
+`ac_fet_decks_parse`, `ac_mosfet_card`, `ac_jfet_caps`, `op_pjf`, and the vendor-style
+subcircuit `dc_power_mosfet_subckt` / `dc_power_mosfet_body`, whose
+`.model` cards sit inside the `.subckt`). LED, Schottky and photodiode
+have no SPICE card in sindr, so those tests, and the Rust-built twins of
+the FET decks, build the `Circuit` in Rust, element for element, and the
+`.cir` is read only by ngspice. Each one passes its circuit through `in_deck`
 (`tests/support/deck_parity.rs`), which reads the `.cir` and fails unless
 every element matches: names, nodes, values, and each `.model` parameter
 against the Rust parameter it stands for (`KP·W/L` against `kp`,
@@ -66,6 +70,26 @@ SINDR_WRITE_DECKS=1 cargo test -p sindr --all-features --test golden exported
 sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 ```
 
+### Sensitivity decks
+
+The `sens_*` decks carry their `.sens` card, which sindr reads; the `.ctl`
+says what ngspice does instead. ngspice 47's own `.sens` is only trusted
+where it holds up:
+
+- **Elements and controlled sources** (`sens_dc_controlled`,
+  `sens_ac_linear`) come from ngspice's `.sens` (`r1`, `e1_gain`,
+  `v1_acmag`, ...).
+- **Device-model parameters** (`sens_dc_diode_mos`, `sens_dc_bjt`) come
+  from central differences of re-solved ngspice operating points (an
+  `altermod` 0.1 % either side, at `reltol=1e-10`), as `<id>_<param>`.
+  ngspice's `.sens` reports 0 for a diode's RS and a BJT's BF, BR, NF and
+  NR, is 2 % off for a diode's IS and N, and about 6e-4 off for a MOSFET's
+  KP and VTO, against its own differences. No VAF: ngspice's Gummel–Poon
+  Early effect isn't sindr's.
+- **AC** at one frequency of a linear deck: ngspice's AC `.sens` gets only
+  a sweep's first point right, and linearises at a zero bias, so a
+  transistor would be off.
+
 ## Adding a case
 
 1. Write `<case>.cir` (and `.include` files next to it) plus `<case>.ctl`.
@@ -97,6 +121,9 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
   `tran_bjt_switch`'s collector is checked to 3 %: in the active region
   ic = IS·exp(vbe/Vt) turns the base's 0.4 mV error into about 2.7 % of ic
   on an edge that falls 5 V in 3 µs. The base itself is held to 0.1 %.
+- **Sensitivity:** 1e-6 relative for elements and controlled sources,
+  DC and AC (each part of an AC phasor to 1e-6 of its magnitude); 1e-5 for
+  device-model parameters against ngspice's central differences.
 - **AC phase:** ngspice's `cph` unwraps the phase, so sindr's is compared
   a whole number of turns from it, to the magnitude's relative tolerance in
   radians (at least 1e-4°).
@@ -108,10 +135,12 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 | Operating point | `op_resistive`, `op_diode`, `op_diode_series`, `op_bjt_ce`, `op_bjt_pnp`, `op_bjt_card`, `op_exported_controlled` (E, G, F, H, I, potentiometer, switch), `op_exported_spdt`, `op_mosfet_cs`, `op_mosfet_follower`, `op_pmos_highside`, `op_jfet`, `op_led`, `op_schottky`, `op_photodiode`, `op_subckt_param` (`.param`, nested `.subckt`, `.include`) |
 | DC sweep | `dc_diode_iv`, `dc_diode_1n4148`, `dc_diode_breakdown` (BV, IBV), `dc_zener` (a `ZenerDiode` through its knee), `dc_mosfet_body_diode` (an NMOS's body diode, freewheeling) |
 | Diode charge | `cv_1n4148`, `cv_1n5819`: sindr's AC admittance at each bias of an ngspice sweep, against ngspice's `gd` and `cd` behind the card's RS |
-| AC | `ac_rc_lowpass`, `ac_partial_decade` (`.ac dec` over 1.7 decades: ngspice's 17-point grid), `ac_rlc_bandpass`, `ac_bjt_ce`, `ac_bjt_caps` (Cbe, Cbc), `ac_diode` (1N4148 with its charge), `ac_mosfet_cs` (Cgs, Cgd), `ac_jfet`, `ac_exported_transformer`, `ac_exported_crystal` (through both resonances), `ac_exported_ferrite_bead` (past its self-resonance) |
-| Transient | `tran_rc_step`, `tran_rl_step`, `tran_op_start` (operating-point start), `tran_ic_op` and `tran_ic_uic` (`.ic` without and with `UIC`), `tran_tstart`, `tran_halfwave` (sine into a diode and filter cap), `tran_bjt_switch` (pulse through an RC into an NPN; collector to 3 %, see below), `tran_rlc_ring`, `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
+| AC | `ac_rc_lowpass`, `ac_partial_decade` (`.ac dec` over 1.7 decades: ngspice's 17-point grid), `ac_rlc_bandpass`, `ac_bjt_ce`, `ac_bjt_caps` (Cbe, Cbc), `ac_diode` (1N4148 with its charge), `ac_mosfet_cs` (Cgs, Cgd), `ac_jfet`, `ac_jfet_caps` (CGS, CGD as graded junctions, from the `NJF` card), `ac_exported_transformer`, `ac_exported_crystal` (through both resonances), `ac_exported_ferrite_bead` (past its self-resonance) |
+| Transient | `tran_rc_step`, `tran_rl_step`, `tran_op_start` (operating-point start), `tran_ic_op` and `tran_ic_uic` (`.ic` without and with `UIC`), `tran_tstart`, `tran_halfwave` (sine into a diode and filter cap), `tran_bjt_switch` (pulse through an RC into an NPN; collector to 3 %, see below), `tran_rlc_ring`, `tran_flasher` (a two-transistor LED flasher from rest: its period and the on LED's current, since each edge is a jump a fraction of a millisecond either way), `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
 | Noise | `noise_rc_lowpass`, `noise_rc_total`, `noise_bjt_ce`, `noise_partial_decade` (`.noise dec` over 1.7 decades, which stops short of fstop) |
+| Pole-zero | `pz_rlc_vol` (`.pz … vol pz`: a complex pole pair and a complex zero pair), `pz_ladder_cur` (`.pz … cur pz`: three poles and a zero at DC). ngspice writes nine significant digits, so roots are held to 1e-8 relative, and to 1e-8 of the largest root absolute (sindr's zero at DC comes out at round-off) |
 | Temperature | `temp_diode` |
+| Sensitivity | `sens_dc_controlled` (E, G, F, H gains), `sens_dc_diode_mos` (diode IS, N, RS; MOSFET KP, VTO, LAMBDA), `sens_dc_bjt` (BF, IS, BR, NF, NR), `sens_ac_linear` (R, C, L, E, G, F, H, AC magnitude at 1 kHz) |
 
 None is ignored. `temp_diode` was, until the diode temperature fix; it reads
 its deck and runs like the rest.

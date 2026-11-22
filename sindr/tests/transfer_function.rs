@@ -327,6 +327,7 @@ fn transformer_windings_are_shorts() {
             l1: 1e-3,
             l2: 4e-3,
             k: 0.99,
+            saturation: None,
         },
         vsource("V1", "in", "0", 1.0),
         resistor("R1", "in", "p", 1e3),

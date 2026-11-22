@@ -1,9 +1,10 @@
 //! The test bench: what a schematic leaves out, and the analysis to run.
 
-use super::{parse_value, ImportError, ImportedCircuit, Netlist, Pin};
+use super::{parse_value, ImportError, ImportOptions, ImportedCircuit, Netlist, Pin, Value};
 use crate::ac_analysis::{solve_ac, AcConfig, AcResult};
-use crate::circuit::{Circuit, CircuitElement};
+use crate::circuit::{BehaviouralOutput, Circuit, CircuitElement};
 use crate::dc_sweep::{dc_sweep, DcSweepResult};
+use crate::expression::Expression;
 use crate::results::SimulationResult;
 use crate::transient::{solve_transient, TransientConfig};
 use crate::waveform::Waveform;
@@ -172,6 +173,87 @@ pub enum LoadKind {
     Capacitor(f64),
     /// An inductance (H).
     Inductor(f64),
+    /// A constant current drawn from `a`'s net and returned into `b`'s,
+    /// such as an IC's supply current: `amps` flows into the load at `a`
+    /// and out of it at `b`. For a current that changes with time, use a
+    /// [`SourceKind::Current`] with a waveform, negated: it drives its
+    /// current into `plus`, so a sink at `a` is a source on `a` with a
+    /// negative value.
+    CurrentSink {
+        /// The current drawn (A).
+        amps: f64,
+    },
+    /// A switch between `a` and `b` that changes state once, at `at`: an
+    /// open-drain output holding a line low and then letting go, or a
+    /// short that closes part way through. It is `on_resistance` while
+    /// closed and `off_resistance` (the leakage) while open.
+    ///
+    /// The operating point, a DC sweep and AC take its state at t = 0. A
+    /// transient lands a step on `at`; that step still sees the old state,
+    /// and the next one the new, as a source's waveform jumps. With `at ≤
+    /// 0` it is in its switched state from the start.
+    TimedSwitch {
+        /// Resistance while closed (Ω).
+        on_resistance: f64,
+        /// Resistance while open (Ω). In JSON it defaults to 1 GΩ, as a
+        /// [`Switch`](CircuitElement::Switch) has.
+        #[cfg_attr(feature = "serde", serde(default = "default_off_resistance"))]
+        off_resistance: f64,
+        /// When it switches (s).
+        at: f64,
+        /// Closed until `at` and open after it (`true`, the default in
+        /// JSON), or open until `at` and closed after it.
+        #[cfg_attr(feature = "serde", serde(default = "default_starts_closed"))]
+        starts_closed: bool,
+    },
+}
+
+#[cfg(feature = "serde")]
+fn default_off_resistance() -> f64 {
+    1e9
+}
+
+#[cfg(feature = "serde")]
+fn default_starts_closed() -> bool {
+    true
+}
+
+impl LoadKind {
+    /// A [`CurrentSink`](Self::CurrentSink) drawing `amps`.
+    pub fn current_sink(amps: f64) -> Self {
+        LoadKind::CurrentSink { amps }
+    }
+
+    /// A [`TimedSwitch`](Self::TimedSwitch) closed through `on_resistance`
+    /// until `at`, then open (1 GΩ): a line held low and released.
+    pub fn released_at(at: f64, on_resistance: f64) -> Self {
+        LoadKind::TimedSwitch {
+            on_resistance,
+            off_resistance: 1e9,
+            at,
+            starts_closed: true,
+        }
+    }
+
+    /// A [`TimedSwitch`](Self::TimedSwitch) open (1 GΩ) until `at`, then
+    /// closed through `on_resistance`.
+    pub fn closed_at(at: f64, on_resistance: f64) -> Self {
+        LoadKind::TimedSwitch {
+            on_resistance,
+            off_resistance: 1e9,
+            at,
+            starts_closed: false,
+        }
+    }
+
+    /// Sets a [`TimedSwitch`](Self::TimedSwitch)'s off resistance (Ω);
+    /// any other kind is returned unchanged.
+    pub fn with_off_resistance(mut self, ohms: f64) -> Self {
+        if let LoadKind::TimedSwitch { off_resistance, .. } = &mut self {
+            *off_resistance = ohms;
+        }
+        self
+    }
 }
 
 /// A load the bench adds: what an output drives, a probe's capacitance.
@@ -209,9 +291,9 @@ impl BenchLoad {
         self
     }
 
-    pub(super) fn element(&self, nodes: [String; 2]) -> CircuitElement {
+    pub(super) fn element(&self, nodes: [String; 2]) -> Result<CircuitElement, ImportError> {
         let id = self.id.clone();
-        match self.kind {
+        Ok(match self.kind {
             LoadKind::Resistor(resistance) => CircuitElement::Resistor {
                 id,
                 nodes,
@@ -228,6 +310,58 @@ impl BenchLoad {
                 inductance,
                 saturation: None,
             },
+            // A current source pushes from nodes[0] to nodes[1] through
+            // itself, so it draws from a's net into b's.
+            LoadKind::CurrentSink { amps } => CircuitElement::CurrentSource {
+                id,
+                nodes,
+                current: amps,
+                waveform: None,
+            },
+            // A behavioural current v(a, b)·g(t): Newton stamps it as the
+            // conductance it is, and the transient lands a step on `at`
+            // from the `time < at` it compares.
+            LoadKind::TimedSwitch {
+                on_resistance,
+                off_resistance,
+                at,
+                starts_closed,
+            } => {
+                let ohms = |field: &str, r: f64| {
+                    if r.is_finite() && r > 0.0 {
+                        Ok(1.0 / r)
+                    } else {
+                        Err(self.bad(field, r, "a positive resistance (Ω)"))
+                    }
+                };
+                let g_on = ohms("on_resistance", on_resistance)?;
+                let g_off = ohms("off_resistance", off_resistance)?;
+                if !at.is_finite() {
+                    return Err(self.bad("at", at, "a finite time (s)"));
+                }
+                let (before, after) = if starts_closed {
+                    (g_on, g_off)
+                } else {
+                    (g_off, g_on)
+                };
+                let [a, b] = &nodes;
+                let expr = Expression::timed_conductance(a, b, at, before, after);
+                CircuitElement::Behavioural {
+                    id,
+                    nodes,
+                    output: BehaviouralOutput::Current,
+                    expr,
+                }
+            }
+        })
+    }
+
+    fn bad(&self, field: &str, given: f64, expected: &str) -> ImportError {
+        ImportError::BadValue {
+            component: self.id.clone(),
+            field: field.to_string(),
+            given: Value::Number(given),
+            expected: expected.to_string(),
         }
     }
 }
@@ -401,7 +535,49 @@ pub enum BenchError {
 /// [`BenchError::Import`] when the circuit can't be built,
 /// [`BenchError::Sim`] when it doesn't solve.
 pub fn simulate(netlist: &Netlist, bench: &Bench) -> Result<Imported, BenchError> {
-    let circuit = netlist.to_circuit(bench)?;
+    simulate_with(netlist, bench, &ImportOptions::default())
+}
+
+/// [`simulate`], reading the netlist as `options` say
+/// ([`Netlist::to_circuit_with`]): terminal names from each component's
+/// table, unknown kinds refused or kept as black boxes. The black boxes
+/// are listed in the result's [`ImportedCircuit::black_boxes`].
+///
+/// ```
+/// use sindr::import::{simulate_with, Bench, BenchSource, Component, ComponentKind,
+///                     ImportOptions, Net, Netlist, Simulation};
+///
+/// // An LED whose nets name its terminals by id.
+/// let netlist = Netlist {
+///     components: vec![
+///         Component::new("r1", ComponentKind::from_name("resistor")).with_value("470"),
+///         Component::new("d1", ComponentKind::from_name("led")).with_value("Green"),
+///     ],
+///     nets: vec![
+///         Net::new("vcc", [("r1", "1")]),
+///         Net::new("a", [("r1", "2"), ("d1", "1")]),
+///         Net::new("gnd", [("d1", "2")]),
+///     ],
+/// };
+/// let options = ImportOptions::new().with_terminal_names("d1", [("1", "Anode"), ("2", "Cathode")]);
+/// let bench = Bench::new("gnd").with_source(BenchSource::voltage("vs", "vcc", 5.0));
+///
+/// let Simulation::OperatingPoint(op) = simulate_with(&netlist, &bench, &options)?.result else {
+///     unreachable!()
+/// };
+/// assert!(op.node_voltages["a"] > 1.5 && op.node_voltages["a"] < 2.2);
+/// # Ok::<(), sindr::import::BenchError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`simulate`].
+pub fn simulate_with(
+    netlist: &Netlist,
+    bench: &Bench,
+    options: &ImportOptions,
+) -> Result<Imported, BenchError> {
+    let circuit = netlist.to_circuit_with(bench, options)?;
     let result = match &bench.analysis {
         Analysis::OperatingPoint => Simulation::OperatingPoint(operating_point(&circuit.circuit)?),
         Analysis::Transient(config) => {

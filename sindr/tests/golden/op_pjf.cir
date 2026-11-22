@@ -1,0 +1,8 @@
+op: P-channel JFET self-bias from a card with an area factor
+VDD vdd 0 12
+RS vdd s 330
+RG g vdd 1meg
+RD d 0 1k
+J1 d g s pj 2
+.model pj PJF(VTO=-2.5 BETA=1m)
+.end

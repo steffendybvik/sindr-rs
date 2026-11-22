@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Solve the operating point directly.
     let op = sindr::solve_circuit(&netlist.circuit)?;
-    println!("V(n2) = {:.3} V", op.node_voltages["n2"]);
+    println!("V(n2) = {:.3} V", op.voltage("n2").unwrap_or(f64::NAN));
 
     // 3. Dispatch each parsed directive to the matching sindr routine.
     for analysis in &netlist.analyses {
@@ -93,16 +93,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tf.gain, tf.input_resistance, tf.output_resistance
                 );
             }
+            AnalysisRequest::Pz { .. } => {
+                let config = analysis.pz_config().ok_or("not a .pz")?;
+                let pz = sindr::solve_pz(&netlist.circuit, &config)?;
+                println!("pz: poles {:?}, zeros {:?}", pz.poles, pz.zeros);
+            }
             // Analyses added in later releases.
             other => println!("not run here: {other:?}"),
         }
     }
 
-    // 4. Lenient mode: an unsupported element (M = MOSFET) becomes a
-    //    collected warning instead of a hard error.
-    let with_mosfet = format!("{DECK}M1 n2 n1 0 nmod\n");
+    // 4. Lenient mode: an unsupported element (B = behavioural source)
+    //    becomes a collected warning instead of a hard error.
+    let with_behavioural = format!("{DECK}B1 n2 0 V=1\n");
     let opts = ParseOptions::default().with_strict(false);
-    let lenient = parse_str_with_options(&with_mosfet, opts)?;
+    let lenient = parse_str_with_options(&with_behavioural, opts)?;
     for warning in &lenient.warnings {
         println!("warning: {warning:?}");
     }

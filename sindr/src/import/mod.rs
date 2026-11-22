@@ -22,9 +22,38 @@
 //! net or bench item it is about.
 //!
 //! Terminals are matched by name, never by pin number, since pin numbers
-//! depend on the package. Names are compared without case; each kind lists
+//! depend on the package. Names are compared without case, with `-`, `_`
+//! and spaces alike (`Non-inverting`, `non_inverting`); each kind lists
 //! the names it takes in [`ComponentKind::terminals`]. Unpolarised
-//! two-terminal parts also take `1` and `2`.
+//! two-terminal parts also take `1` and `2`. Kind names read the same way,
+//! so a schematic tool's symbol id (`resistor-iec`, `op-amp`, `header-4`)
+//! names its kind.
+//!
+//! # Netlists as an editor exports them
+//!
+//! An editor's nets often name a terminal by its id (`"1"`) and keep the
+//! terminal's name (`"Base"`) in a table on the component. Pass that table
+//! in [`ImportOptions::with_terminal_names`] and import with
+//! [`Netlist::to_circuit_with`] or [`simulate_with`]: a terminal with a
+//! name is matched by its name, one without by its id. A bare pin number
+//! still never picks a polarised terminal.
+//!
+//! A part sindr can't simulate, such as an IC, is a
+//! [`ComponentKind::BlackBox`]: it adds no element, but a bench can still
+//! attach to its terminals. Any other kind sindr doesn't know is refused
+//! by default; [`UnknownKinds::BlackBox`] makes those black boxes too.
+//! Either way each one is listed in [`ImportedCircuit::black_boxes`].
+//!
+//! # Models from part data
+//!
+//! A part's model comes from its [`Component::model`], its value (an LED's
+//! `"Amber"`), its parameters, or datasheet figures an editor's parts
+//! library holds (`vf` at `if`, `hfe`, `vce_sat`, `vth`, `rds_on`), fitted
+//! by the constructors in [`crate::datasheet`]; [`ComponentKind`] lists
+//! what each kind reads. When none of them says anything, sindr's default
+//! model is used, and never silently: [`ImportedCircuit::models`] records
+//! each component's [`ModelSource`], and [`ImportedCircuit::warnings`]
+//! carries an [`ImportWarning`] for each one that fell back to the default.
 //!
 //! # Example
 //!
@@ -58,19 +87,25 @@ mod bench;
 mod value;
 
 pub use bench::{
-    simulate, Analysis, Attach, Bench, BenchError, BenchLoad, BenchSource, Imported, LoadKind,
-    Simulation, SourceKind,
+    simulate, simulate_with, Analysis, Attach, Bench, BenchError, BenchLoad, BenchSource, Imported,
+    LoadKind, Simulation, SourceKind,
 };
 pub use value::parse_value;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::circuit::{BjtModel, Circuit, CircuitElement, DiodeModel, OpAmpModel};
+use crate::circuit::{
+    BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel, FerriteBeadParams, OpAmpModel,
+};
+use crate::datasheet::{
+    BjtDatasheet, DatasheetError, DatasheetValue, DiodeDatasheet, MosfetDatasheet, ZenerDatasheet,
+};
 use crate::design::Part;
 use sindr_devices::battery::BatteryParams;
 use sindr_devices::bjt::BjtKind;
 use sindr_devices::igbt::IgbtParams;
 use sindr_devices::jfet::JfetKind;
+use sindr_devices::led;
 use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 use sindr_devices::regulator::RegulatorParams;
 use sindr_devices::varactor::VaractorParams;
@@ -108,9 +143,11 @@ pub struct Component {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub value: Option<Value>,
-    /// Further parameters by name, such as `bf` for a transistor's gain or
-    /// `color` for an LED. Each kind's are listed on [`ComponentKind`];
-    /// any other name is an [`ImportError::UnknownParameter`].
+    /// Further parameters by name, such as `bf` for a transistor's gain,
+    /// `color` for an LED, or datasheet figures such as `vf` and `if`. Each
+    /// kind's are listed on [`ComponentKind`] (figures also take `_min`,
+    /// `_typ` and `_max`); any other name is an
+    /// [`ImportError::UnknownParameter`].
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "BTreeMap::is_empty")
@@ -169,7 +206,8 @@ impl Component {
     }
 }
 
-/// A value or parameter: a number in SI base units, text, or a flag.
+/// A value or parameter: a number in SI base units, text, a flag, or a
+/// typed quantity.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(untagged))]
 #[derive(Debug, Clone, PartialEq)]
@@ -182,6 +220,198 @@ pub enum Value {
     /// Text: a value as written (`"4k7"`, read by [`parse_value`]) or a
     /// name (an LED's `"red"`).
     Text(String),
+    /// A typed quantity, as a parts library stores it: a number in base
+    /// units with its unit, and the text it was shown as. In JSON,
+    /// `{"value": 300, "unit": "K", "text": "300 K"}`. A quantity whose
+    /// unit isn't the one a value or parameter is in is an
+    /// [`ImportError::BadValue`]. Boxed, so a `Value` stays as small as
+    /// its text.
+    Quantity(Box<Quantity>),
+}
+
+/// A number in base units with its unit, as a parts library stores a
+/// typed spec: `Quantity::new(0.02, Unit::Ampere)` for 20 mA.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// or build it with [`new`](Self::new) and [`with_text`](Self::with_text).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Quantity {
+    /// The number, in the unit's base unit (A, not mA), exact as the
+    /// library stores it.
+    pub value: f64,
+    /// The unit.
+    pub unit: Unit,
+    /// The quantity as the editor shows it (`"20 mA"`), for messages; the
+    /// number is [`value`](Self::value), not this text.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub text: Option<String>,
+}
+
+impl Quantity {
+    /// `value` in `unit`, with no text.
+    pub fn new(value: f64, unit: Unit) -> Self {
+        Self {
+            value,
+            unit,
+            text: None,
+        }
+    }
+
+    /// Sets [`text`](Self::text).
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        self.text = Some(text.into());
+        self
+    }
+}
+
+/// The unit of a [`Quantity`]: the base units a parts library stores
+/// specs in. Serialised as its symbol: `"Ohm"`, `"F"`, `"H"`, `"V"`,
+/// `"A"`, `"W"`, `"Hz"`, `"s"`, `"m"`, `"K"`, and `"1"` for a plain ratio
+/// (a gain, a position). [`from_symbol`](Self::from_symbol) also reads
+/// `Ω`; any other symbol is [`Other`](Self::Other).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Unit {
+    /// Ohm (Ω).
+    Ohm,
+    /// Farad.
+    Farad,
+    /// Henry.
+    Henry,
+    /// Volt.
+    Volt,
+    /// Ampere.
+    Ampere,
+    /// Watt.
+    Watt,
+    /// Hertz.
+    Hertz,
+    /// Second.
+    Second,
+    /// Metre.
+    Metre,
+    /// Kelvin.
+    Kelvin,
+    /// A plain ratio, unit `1`: a gain, a coupling, a position.
+    #[default]
+    Ratio,
+    /// A unit sindr doesn't know, by its symbol. Accepted where any unit is.
+    Other(String),
+}
+
+const UNIT_SYMBOLS: &[(&str, Unit)] = &[
+    ("Ohm", Unit::Ohm),
+    ("F", Unit::Farad),
+    ("H", Unit::Henry),
+    ("V", Unit::Volt),
+    ("A", Unit::Ampere),
+    ("W", Unit::Watt),
+    ("Hz", Unit::Hertz),
+    ("s", Unit::Second),
+    ("m", Unit::Metre),
+    ("K", Unit::Kelvin),
+    ("1", Unit::Ratio),
+];
+
+impl Unit {
+    /// The unit with this symbol: `"Ohm"` (or `"Ω"`, `"ohm"`), `"F"`,
+    /// `"H"`, `"V"`, `"A"`, `"W"`, `"Hz"`, `"s"`, `"m"`, `"K"`, `"1"`.
+    /// Case matters except for `Ohm` and `Hz`, since `m` and `K` aren't
+    /// `M` and `k`.
+    pub fn from_symbol(symbol: &str) -> Self {
+        let symbol = symbol.trim();
+        if ["\u{3a9}", "\u{2126}"].contains(&symbol)
+            || symbol.eq_ignore_ascii_case("ohm")
+            || symbol.eq_ignore_ascii_case("ohms")
+        {
+            return Unit::Ohm;
+        }
+        if symbol.eq_ignore_ascii_case("hz") {
+            return Unit::Hertz;
+        }
+        UNIT_SYMBOLS
+            .iter()
+            .find(|(s, _)| *s == symbol)
+            .map_or_else(|| Unit::Other(symbol.to_string()), |(_, u)| u.clone())
+    }
+
+    /// The unit's symbol, as [`from_symbol`](Self::from_symbol) reads it.
+    pub fn symbol(&self) -> &str {
+        match self {
+            Unit::Other(s) => s,
+            unit => UNIT_SYMBOLS
+                .iter()
+                .find(|(_, u)| u == unit)
+                .map_or("", |(s, _)| s),
+        }
+    }
+}
+
+impl From<String> for Unit {
+    fn from(symbol: String) -> Self {
+        Unit::from_symbol(&symbol)
+    }
+}
+
+impl From<Unit> for String {
+    fn from(unit: Unit) -> Self {
+        unit.symbol().to_string()
+    }
+}
+
+impl From<Quantity> for Value {
+    fn from(q: Quantity) -> Self {
+        Value::Quantity(Box::new(q))
+    }
+}
+
+/// Where an imported component's model came from. Recorded for every
+/// component that becomes an element, in
+/// [`ImportedCircuit::models`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ModelSource {
+    /// [`Component::model`].
+    Model,
+    /// [`Component::value`]: a resistance, a zener's voltage, an LED's
+    /// colour named in the value text.
+    Value,
+    /// Named parameters that set the model directly: `bf`, `color`,
+    /// `idss`.
+    Params,
+    /// Datasheet figures (`vf` at `if`, `hfe`, `vce_sat`, `vth`,
+    /// `rds_on` …), fitted by the `from_datasheet` constructors in
+    /// [`crate::datasheet`].
+    Datasheet,
+    /// Nothing the component gave: sindr's built-in model for the kind.
+    /// Each such component has an [`ImportWarning`].
+    Default,
+}
+
+/// Something about an import worth checking, though it isn't an error:
+/// mostly a component that got sindr's default model because nothing in
+/// its data said otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ImportWarning {
+    /// The component's id.
+    pub component: String,
+    /// What happened, and what sindr used instead.
+    pub message: String,
+}
+
+impl std::fmt::Display for ImportWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "component \"{}\": {}", self.component, self.message)
+    }
 }
 
 impl From<f64> for Value {
@@ -248,9 +478,11 @@ impl Model {
 }
 
 /// What a [`Component`] is. Serialised as its snake_case name
-/// (`"resistor"`, `"npn"`); a name sindr doesn't know reads as
-/// [`Other`](Self::Other), which [`Netlist::to_circuit`] refuses with the
-/// component's id.
+/// (`"resistor"`, `"npn"`). [`from_name`](Self::from_name) also reads a
+/// schematic tool's symbol ids (`"resistor-iec"`, `"op-amp"`); a name
+/// sindr doesn't know reads as [`Other`](Self::Other), which
+/// [`Netlist::to_circuit`] refuses with the component's id unless
+/// [`UnknownKinds::BlackBox`] says to keep it as a black box.
 ///
 /// Parameters each kind takes, besides [`Component::value`] (numbers in SI
 /// units, or text for [`parse_value`]):
@@ -260,30 +492,93 @@ impl Model {
 /// | `resistor` | Ω, required | | |
 /// | `capacitor`, `capacitor_polarized` | F, required | | |
 /// | `inductor` | H, required | | |
-/// | `diode`, `schottky_diode`, `photodiode` | | `temperature` (K); photodiode `irradiance` (W) | diode only: `Diode` |
-/// | `zener_diode` | V (breakdown) or `vz` | `vz`, `temperature` | |
-/// | `led` | | `color` (`"red"`, `"green"`, `"blue"`, …; default red), `temperature` | |
+/// | `diode` | | `vf` (V) at `if` (A), and `vf2` at `if2`; `temperature` (K) | `Diode` |
+/// | `schottky_diode`, `photodiode` | | `temperature` (K); photodiode `irradiance` (W) | |
+/// | `zener_diode` | V (breakdown) or `vz` | `vz` at `iz` (A); `temperature` | |
+/// | `led` | colour named in the text (`"Amber"`, `"LED red 3mm"`) | `color` or `colour` (`red`, `orange`, `amber`, `yellow`, `green`, `blue`, `white`, any case); `vf` (V) at `if` (A), and `vf2` at `if2`; `temperature` | |
 /// | `varactor` | | | `Varactor` |
-/// | `npn`, `pnp` | | `bf` (or `beta`, `hfe`), `temperature` | `Bjt` |
-/// | `nmos`, `pmos` | | | `Mosfet` |
+/// | `npn`, `pnp` | | `bf` (or `beta`); `hfe` at `hfe_ic` (A); `vce_sat` (V) at `vce_sat_ic` and `vce_sat_ib` (A); `temperature` | `Bjt` |
+/// | `nmos`, `pmos` | | `vth` (V) at `vth_id` (A); `rds_on` (Ω) at `rds_on_vgs` (V), optionally at `rds_on_id` (A) | `Mosfet` |
 /// | `njfet`, `pjfet` | | `idss` (A), `vp` (V) | |
 /// | `igbt` | | | `Igbt` |
 /// | `op_amp`, `comparator` | | `v_pos`, `v_neg` (V; default from bench supplies on its supply pins, else ±15) | op-amp: `OpAmp` |
+/// | `dual_op_amp`, `quad_op_amp`, `dual_comparator`, `quad_comparator` | | as `op_amp` and `comparator`, for every unit | op-amps: `OpAmp` |
 /// | `potentiometer` | Ω, required | `position` (0 top to 1 bottom, default 0.5) | |
 /// | `switch`, `push_button` | | `closed` (default false) | |
 /// | `fuse` | A (rating) | `blown` (default false) | |
 /// | `relay` | | `pickup_voltage` (V, required), `coil_resistance` (Ω), `inductance` (H) | |
 /// | `transformer` | | `l1`, `l2` (H, required), `k` | |
+/// | `crystal` | Hz (series resonance) or `frequency` | `frequency`, `esr` (Ω, default 50), `c0` (F, default 5 pF) | |
+/// | `ferrite_bead` | Ω (impedance at 100 MHz) or `z_100mhz` | `z_100mhz`, `r_dc` (Ω, default 0.1) | |
 /// | `regulator` | V (output) or `voltage` | `voltage` | `Regulator` |
 /// | `battery` | V, unless a model | `state_of_charge` (default 1), `r_series` (Ω, default 0.1), `capacity` (Ah, default 1) | `Battery` |
 /// | `thermistor` | | `temperature` (K) | |
 /// | `photoresistor` | | `light_level` (0 dark to 1 bright) | |
 /// | `voltage_source`, `current_source` | V or A, required | | |
 /// | `connector`, `test_point`, `net_tie`, `mounting_hole` | | | |
+/// | `black_box` | | | |
 ///
-/// The last row are [passive](Self::is_passive): they add no element, and
-/// any terminal name is fine. A bench attaches sources and loads to their
-/// terminals.
+/// # Part data
+///
+/// `vf`, `vf2`, `vz`, `hfe`, `vce_sat`, `vth` and `rds_on` are datasheet
+/// figures: each also takes `_min`, `_typ` and `_max` forms (`hfe_min`,
+/// `vce_sat_max`), and a fit uses the typical value, else the middle of
+/// minimum and maximum, else whichever is given
+/// ([`DatasheetValue::nominal`](crate::datasheet::DatasheetValue::nominal)).
+/// The other names are test conditions, read as given. A figure needs its
+/// condition (`vf` needs `if`, `vth` needs `vth_id` and `rds_on`), or the
+/// import is an [`ImportError::MissingValue`]. What each fit does:
+///
+/// - **Diode**: [`DiodeModel::from_datasheet`]: IS through `vf` at `if`
+///   (N = 1), or IS and N through both points.
+/// - **LED** with `vf`: [`DiodeModel::led_from_datasheet`], imported as a
+///   [`CircuitElement::Diode`] with that model, since the LED element knows
+///   only its colour's preset. Without `vf`, the colour sets the preset; a
+///   colour from the `color` parameter wins over one in the value text.
+/// - **Zener** with `iz`: [`DiodeModel::zener_from_datasheet`] sets the
+///   element's `vz` so that it carries `iz` at the datasheet's Vz.
+/// - **NPN, PNP**: `bf` is `hfe` (or `bf`/`beta`, which win); with
+///   `vce_sat`, [`BjtModel::from_datasheet`] fits BR through it. `hfe_ic`
+///   is kept for the record: the model's gain doesn't change with current.
+/// - **NMOS, PMOS**: [`MosfetParams::from_datasheet`] fits KP and VTO.
+///
+/// [`ImportedCircuit::models`] says, for every component, which of model,
+/// value, parameters, datasheet figures or sindr's default the model came
+/// from, and [`ImportedCircuit::warnings`] has one warning for every
+/// component that got the default (a transistor whose value is only a part
+/// number, an LED with no colour). Values and parameters may be typed
+/// quantities ([`Value::Quantity`]), whose unit is checked against the
+/// parameter's.
+///
+/// # Other kinds
+///
+/// The last two rows add no element, and any terminal name is fine. A
+/// bench attaches sources and loads to their terminals. The connectors and
+/// the like are [passive](Self::is_passive); a black box stands for a part
+/// sindr can't simulate (an IC), takes any value, parameters and model and
+/// ignores them, and is listed in [`ImportedCircuit::black_boxes`].
+///
+/// A dual or quad part is one package with two or four units sharing its
+/// supply pins. Each unit becomes its own element, `<id>.a`, `<id>.b`
+/// and so on, so results are keyed by those; [`Component::part`] stays
+/// under the package's id. A unit's terminals are an op-amp's with the
+/// unit's letter or number on them: `a_in+`, `in+ a`, `1IN+`, `IN1+`,
+/// `INA+`, `-IN B`, `OUT B`, `2OUT`, `Non-inverting A`. The supplies are `v+` and
+/// `v-` (or `vcc`, `vee`, `positive supply` …), without a unit. A unit
+/// with none of its terminals connected (a spare half) adds no element;
+/// one connected in part is an [`ImportError::Unconnected`] as for a
+/// single op-amp.
+///
+/// Names besides the canonical ones: `resistor_iec`, `resistor_us`, `res`;
+/// `cap`, `capacitor_polarised`, `capacitor_electrolytic`, `electrolytic`;
+/// `zener`, `schottky`; `opamp`, `operational_amplifier`;
+/// `op_amp_dual`, `dual_opamp`, `op_amp_quad`, `quad_opamp`,
+/// `comparator_dual`, `comparator_quad`; `pot`,
+/// `trimmer`; `pushbutton`, `button`; `switch_spst`, `spst`;
+/// `xtal`, `quartz`; `ferrite`, `bead`; `ldo`, `voltage_regulator`;
+/// `cell`; `ntc`; `ldr`; `testpoint`; `header`, `header_<n>`,
+/// `pin_header`, `terminal_block`, `conn` for a connector; `ic` for a
+/// black box.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -309,6 +604,14 @@ pub enum ComponentKind {
     Igbt,
     OpAmp,
     Comparator,
+    /// Two op-amps in one package, sharing its supply pins.
+    DualOpAmp,
+    /// Four op-amps in one package, sharing its supply pins.
+    QuadOpAmp,
+    /// Two comparators in one package, sharing its supply pins.
+    DualComparator,
+    /// Four comparators in one package, sharing its supply pins.
+    QuadComparator,
     Potentiometer,
     Switch,
     PushButton,
@@ -317,6 +620,13 @@ pub enum ComponentKind {
     Transformer,
     Regulator,
     Battery,
+    /// A quartz crystal ([`CircuitElement::Crystal`]).
+    Crystal,
+    /// A ferrite bead ([`CircuitElement::FerriteBead`]).
+    FerriteBead,
+    /// A part sindr doesn't simulate, kept for its terminals: it adds no
+    /// element, and a bench may attach to its terminals.
+    BlackBox,
     Thermistor,
     Photoresistor,
     VoltageSource,
@@ -349,6 +659,10 @@ const KINDS: &[(&str, ComponentKind)] = &[
     ("igbt", ComponentKind::Igbt),
     ("op_amp", ComponentKind::OpAmp),
     ("comparator", ComponentKind::Comparator),
+    ("dual_op_amp", ComponentKind::DualOpAmp),
+    ("quad_op_amp", ComponentKind::QuadOpAmp),
+    ("dual_comparator", ComponentKind::DualComparator),
+    ("quad_comparator", ComponentKind::QuadComparator),
     ("potentiometer", ComponentKind::Potentiometer),
     ("switch", ComponentKind::Switch),
     ("push_button", ComponentKind::PushButton),
@@ -356,6 +670,9 @@ const KINDS: &[(&str, ComponentKind)] = &[
     ("relay", ComponentKind::Relay),
     ("transformer", ComponentKind::Transformer),
     ("regulator", ComponentKind::Regulator),
+    ("crystal", ComponentKind::Crystal),
+    ("ferrite_bead", ComponentKind::FerriteBead),
+    ("black_box", ComponentKind::BlackBox),
     ("battery", ComponentKind::Battery),
     ("thermistor", ComponentKind::Thermistor),
     ("photoresistor", ComponentKind::Photoresistor),
@@ -367,14 +684,127 @@ const KINDS: &[(&str, ComponentKind)] = &[
     ("mounting_hole", ComponentKind::MountingHole),
 ];
 
+/// Other names for kinds, normalised (see [`normalise`]).
+const ALIASES: &[(&str, ComponentKind)] = &[
+    ("resistor_iec", ComponentKind::Resistor),
+    ("resistor_us", ComponentKind::Resistor),
+    ("res", ComponentKind::Resistor),
+    ("cap", ComponentKind::Capacitor),
+    ("capacitor_polarised", ComponentKind::CapacitorPolarized),
+    ("capacitor_electrolytic", ComponentKind::CapacitorPolarized),
+    ("electrolytic", ComponentKind::CapacitorPolarized),
+    ("zener", ComponentKind::ZenerDiode),
+    ("schottky", ComponentKind::SchottkyDiode),
+    ("opamp", ComponentKind::OpAmp),
+    ("operational_amplifier", ComponentKind::OpAmp),
+    ("op_amp_dual", ComponentKind::DualOpAmp),
+    ("dual_opamp", ComponentKind::DualOpAmp),
+    ("opamp_dual", ComponentKind::DualOpAmp),
+    ("op_amp_quad", ComponentKind::QuadOpAmp),
+    ("quad_opamp", ComponentKind::QuadOpAmp),
+    ("opamp_quad", ComponentKind::QuadOpAmp),
+    ("comparator_dual", ComponentKind::DualComparator),
+    ("comparator_quad", ComponentKind::QuadComparator),
+    ("pot", ComponentKind::Potentiometer),
+    ("trimmer", ComponentKind::Potentiometer),
+    ("pushbutton", ComponentKind::PushButton),
+    ("button", ComponentKind::PushButton),
+    ("switch_spst", ComponentKind::Switch),
+    ("spst", ComponentKind::Switch),
+    ("xtal", ComponentKind::Crystal),
+    ("quartz", ComponentKind::Crystal),
+    ("ferrite", ComponentKind::FerriteBead),
+    ("bead", ComponentKind::FerriteBead),
+    ("ldo", ComponentKind::Regulator),
+    ("voltage_regulator", ComponentKind::Regulator),
+    ("cell", ComponentKind::Battery),
+    ("ntc", ComponentKind::Thermistor),
+    ("ldr", ComponentKind::Photoresistor),
+    ("testpoint", ComponentKind::TestPoint),
+    ("header", ComponentKind::Connector),
+    ("pin_header", ComponentKind::Connector),
+    ("terminal_block", ComponentKind::Connector),
+    ("conn", ComponentKind::Connector),
+    ("ic", ComponentKind::BlackBox),
+];
+
+/// An op-amp's supply pins, by the names they answer to.
+const V_POS: &[&str] = &["v+", "vcc", "vdd", "vs+", "v_pos", "positive_supply"];
+const V_NEG: &[&str] = &["v-", "vee", "vss", "vs-", "v_neg", "negative_supply"];
+
+/// The terminals of a multi-unit op-amp or comparator: each unit's
+/// `in+`, `in-` and `out`, tagged with its letter and number, then the
+/// shared supplies.
+macro_rules! unit_terminals {
+    ($(($x:literal, $d:literal)),*) => {
+        &[
+            $(
+                &[
+                    concat!($x, "_in+"), concat!("in+_", $x), concat!($d, "in+"),
+                    concat!("in", $d, "+"), concat!("in", $x, "+"), concat!($x, "+"), concat!("+in_", $x),
+                    concat!("non_inverting_", $x), concat!($x, "_non_inverting"),
+                ],
+                &[
+                    concat!($x, "_in-"), concat!("in-_", $x), concat!($d, "in-"),
+                    concat!("in", $d, "-"), concat!("in", $x, "-"), concat!($x, "-"), concat!("-in_", $x),
+                    concat!("inverting_", $x), concat!($x, "_inverting"),
+                ],
+                &[
+                    concat!($x, "_out"), concat!("out_", $x), concat!($d, "out"),
+                    concat!("out", $d), concat!("out", $x),
+                    concat!("output_", $x), concat!($x, "_output"),
+                ],
+            )*
+            V_POS,
+            V_NEG,
+        ]
+    };
+}
+
+const DUAL_UNIT_TERMINALS: &[&[&str]] = unit_terminals!(("a", "1"), ("b", "2"));
+const QUAD_UNIT_TERMINALS: &[&[&str]] =
+    unit_terminals!(("a", "1"), ("b", "2"), ("c", "3"), ("d", "4"));
+
+/// A name as it's compared: trimmed, lowercase, and each run of `-`, `_`
+/// and whitespace one `_`. A separator is kept rather than dropped so a
+/// minus sign (`-`, `in-`) still means something.
+fn normalise(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut in_separator = false;
+    for c in name.trim().chars() {
+        if c == '-' || c == '_' || c.is_whitespace() {
+            if !in_separator {
+                out.push('_');
+            }
+            in_separator = true;
+        } else {
+            out.extend(c.to_lowercase());
+            in_separator = false;
+        }
+    }
+    out
+}
+
 impl ComponentKind {
-    /// The kind with this snake_case name, or [`Other`](Self::Other).
+    /// The kind with this name, or [`Other`](Self::Other) with the name as
+    /// given. Case is ignored and `-`, `_` and spaces are alike, so a
+    /// symbol id such as `"Op-Amp"` or `"push button"` reads too; the
+    /// aliases on [`ComponentKind`] (`resistor-iec`, `header-4`, `xtal`)
+    /// name kinds as well.
     pub fn from_name(name: &str) -> Self {
-        KINDS
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, k)| k.clone())
-            .unwrap_or_else(|| ComponentKind::Other(name.to_string()))
+        let key = normalise(name);
+        if let Some((_, kind)) = KINDS.iter().chain(ALIASES).find(|(n, _)| *n == key) {
+            return kind.clone();
+        }
+        // `header_3`, `header_2x5`: a pin header of any size.
+        if let Some(size) = key.strip_prefix("header_") {
+            if size.starts_with(|c: char| c.is_ascii_digit())
+                && size.chars().all(|c| c.is_ascii_digit() || c == 'x')
+            {
+                return ComponentKind::Connector;
+            }
+        }
+        ComponentKind::Other(name.to_string())
     }
 
     /// The kind's snake_case name; an [`Other`](Self::Other) kind's own.
@@ -385,8 +815,9 @@ impl ComponentKind {
         }
     }
 
-    /// Whether the kind adds no element: connectors, test points, net ties
-    /// and mounting holes.
+    /// Whether the kind is a connector, test point, net tie or mounting
+    /// hole: no element, any terminal name. A [`BlackBox`](Self::BlackBox)
+    /// adds no element either, but isn't passive.
     pub fn is_passive(&self) -> bool {
         matches!(
             self,
@@ -398,9 +829,12 @@ impl ComponentKind {
     }
 
     /// The kind's terminals in element order: each a list of the names it
-    /// answers to, lowercase, canonical first. Required terminals come
-    /// first; [`optional_terminals`](Self::optional_terminals) says how
-    /// many at the end may be left off. Empty for passive and unknown
+    /// answers to, lowercase, canonical first. A terminal given as
+    /// `Non-inverting` or `positive supply` matches `non_inverting` and
+    /// `positive_supply`: case is ignored and `-`, `_` and spaces are
+    /// alike. Required terminals come first;
+    /// [`optional_terminals`](Self::optional_terminals) says how many at
+    /// the end may be left off. Empty for passive, black-box and unknown
     /// kinds.
     pub fn terminals(&self) -> &'static [&'static [&'static str]] {
         use ComponentKind as K;
@@ -412,7 +846,9 @@ impl ComponentKind {
             | K::PushButton
             | K::Fuse
             | K::Thermistor
-            | K::Photoresistor => &[&["1", "a"], &["2", "b"]],
+            | K::Photoresistor
+            | K::Crystal
+            | K::FerriteBead => &[&["1", "a"], &["2", "b"]],
             K::CapacitorPolarized | K::Battery | K::VoltageSource => &[
                 &["+", "positive", "pos", "p"],
                 &["-", "negative", "neg", "n"],
@@ -434,9 +870,11 @@ impl ComponentKind {
                 &["in+", "+", "inp", "non_inverting", "in_plus"],
                 &["in-", "-", "inn", "inverting", "in_minus"],
                 &["out", "output", "vout"],
-                &["v+", "vcc", "vdd", "vs+", "v_pos"],
-                &["v-", "vee", "vss", "vs-", "v_neg"],
+                V_POS,
+                V_NEG,
             ],
+            K::DualOpAmp | K::DualComparator => DUAL_UNIT_TERMINALS,
+            K::QuadOpAmp | K::QuadComparator => QUAD_UNIT_TERMINALS,
             K::Potentiometer => &[
                 &["1", "top", "cw"],
                 &["2", "wiper", "w"],
@@ -459,40 +897,93 @@ impl ComponentKind {
                 &["out", "vout", "output"],
                 &["gnd", "ground", "com"],
             ],
-            K::Connector | K::TestPoint | K::NetTie | K::MountingHole | K::Other(_) => &[],
+            K::Connector
+            | K::TestPoint
+            | K::NetTie
+            | K::MountingHole
+            | K::BlackBox
+            | K::Other(_) => &[],
         }
     }
 
     /// How many of [`terminals`](Self::terminals), at the end, may be left
     /// unconnected: a MOSFET's body (tied to its source), an op-amp's two
-    /// supply pins.
+    /// supply pins (a multi-unit part's too).
     pub fn optional_terminals(&self) -> usize {
         match self {
             ComponentKind::Nmos | ComponentKind::Pmos => 1,
             ComponentKind::OpAmp | ComponentKind::Comparator => 2,
+            ComponentKind::DualOpAmp
+            | ComponentKind::QuadOpAmp
+            | ComponentKind::DualComparator
+            | ComponentKind::QuadComparator => 2,
             _ => 0,
+        }
+    }
+
+    /// For a multi-unit part, the kind of each unit and how many there
+    /// are: a dual op-amp is two [`OpAmp`](Self::OpAmp)s.
+    pub fn units(&self) -> Option<(ComponentKind, usize)> {
+        use ComponentKind as K;
+        match self {
+            K::DualOpAmp => Some((K::OpAmp, 2)),
+            K::QuadOpAmp => Some((K::OpAmp, 4)),
+            K::DualComparator => Some((K::Comparator, 2)),
+            K::QuadComparator => Some((K::Comparator, 4)),
+            _ => None,
         }
     }
 
     fn params(&self) -> &'static [&'static str] {
         use ComponentKind as K;
         match self {
-            K::Diode | K::SchottkyDiode => &["temperature"],
+            K::Diode => &["vf", "if", "vf2", "if2", "temperature"],
+            K::SchottkyDiode => &["temperature"],
             K::Photodiode => &["temperature", "irradiance"],
-            K::ZenerDiode => &["vz", "temperature"],
-            K::Led => &["color", "temperature"],
-            K::Npn | K::Pnp => &["bf", "beta", "hfe", "temperature"],
+            K::ZenerDiode => &["vz", "iz", "temperature"],
+            K::Led => &["color", "colour", "vf", "if", "vf2", "if2", "temperature"],
+            K::Npn | K::Pnp => &[
+                "bf",
+                "beta",
+                "hfe",
+                "hfe_ic",
+                "vce_sat",
+                "vce_sat_ic",
+                "vce_sat_ib",
+                "temperature",
+            ],
+            K::Nmos | K::Pmos => &["vth", "vth_id", "rds_on", "rds_on_vgs", "rds_on_id"],
             K::Njfet | K::Pjfet => &["idss", "vp"],
-            K::OpAmp | K::Comparator => &["v_pos", "v_neg"],
+            K::OpAmp
+            | K::Comparator
+            | K::DualOpAmp
+            | K::QuadOpAmp
+            | K::DualComparator
+            | K::QuadComparator => &["v_pos", "v_neg"],
             K::Potentiometer => &["position"],
             K::Switch | K::PushButton => &["closed"],
             K::Fuse => &["blown"],
             K::Relay => &["pickup_voltage", "coil_resistance", "inductance"],
             K::Transformer => &["l1", "l2", "k"],
             K::Regulator => &["voltage"],
+            K::Crystal => &["frequency", "esr", "c0"],
+            K::FerriteBead => &["z_100mhz", "r_dc"],
             K::Battery => &["state_of_charge", "r_series", "capacity"],
             K::Thermistor => &["temperature"],
             K::Photoresistor => &["light_level"],
+            _ => &[],
+        }
+    }
+
+    /// The parameters that are datasheet figures, which also take `_min`,
+    /// `_typ` and `_max` forms.
+    fn figures(&self) -> &'static [&'static str] {
+        use ComponentKind as K;
+        match self {
+            K::Diode | K::Led => &["vf", "vf2"],
+            K::ZenerDiode => &["vz"],
+            K::Npn | K::Pnp => &["hfe", "vce_sat"],
+            K::Nmos | K::Pmos => &["vth", "rds_on"],
             _ => &[],
         }
     }
@@ -504,7 +995,7 @@ impl ComponentKind {
             (K::Diode, Model::Diode(_))
                 | (K::Npn | K::Pnp, Model::Bjt(_))
                 | (K::Nmos | K::Pmos, Model::Mosfet(_))
-                | (K::OpAmp, Model::OpAmp(_))
+                | (K::OpAmp | K::DualOpAmp | K::QuadOpAmp, Model::OpAmp(_))
                 | (K::Regulator, Model::Regulator(_))
                 | (K::Battery, Model::Battery(_))
                 | (K::Varactor, Model::Varactor(_))
@@ -619,7 +1110,8 @@ pub enum ImportError {
         component: String,
         /// Its kind's name.
         kind: String,
-        /// The terminal as given.
+        /// The terminal as given, followed by its name in parentheses when
+        /// [`ImportOptions::with_terminal_names`] gave it one.
         terminal: String,
         /// The names it takes.
         expected: String,
@@ -715,6 +1207,114 @@ pub enum ImportError {
     },
 }
 
+/// What to do with a component of a kind sindr doesn't know
+/// ([`ComponentKind::Other`]).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UnknownKinds {
+    /// Refuse the import with [`ImportError::UnsupportedKind`], naming the
+    /// first such component. The default, and what
+    /// [`Netlist::to_circuit`] does.
+    #[default]
+    Refuse,
+    /// Import it as a [`ComponentKind::BlackBox`]: no element, terminals
+    /// kept for the bench, listed in [`ImportedCircuit::black_boxes`].
+    BlackBox,
+}
+
+/// How [`Netlist::to_circuit_with`] and [`simulate_with`] read a netlist:
+/// what to do with unknown kinds, and each component's terminal names.
+///
+/// Built with [`new`](Self::new) and the `with_*` setters. The default
+/// reads a netlist as [`Netlist::to_circuit`] does.
+///
+/// ```
+/// use sindr::import::{ImportOptions, UnknownKinds};
+///
+/// let options = ImportOptions::new()
+///     .with_unknown_kinds(UnknownKinds::BlackBox)
+///     .with_terminal_names("q1", [("1", "Base"), ("2", "Emitter"), ("3", "Collector")]);
+/// assert_eq!(options.terminal_names["q1"]["1"], "Base");
+/// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct ImportOptions {
+    /// What to do with a component of a kind sindr doesn't know.
+    pub unknown_kinds: UnknownKinds,
+    /// Terminal names by component id, then terminal id: the table a
+    /// schematic tool keeps on each component (`"1"` is `"Base"`). A pin
+    /// whose terminal has a name here is matched by that name, then by its
+    /// id; one without is matched by the id alone, so a bare pin number
+    /// still can't pick a polarised terminal. On a passive or black-box
+    /// part, a bench may attach to a terminal by its name. Names for a
+    /// component that isn't in the netlist are unused.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
+    pub terminal_names: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl ImportOptions {
+    /// Options that read a netlist as [`Netlist::to_circuit`] does.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets [`unknown_kinds`](Self::unknown_kinds).
+    pub fn with_unknown_kinds(mut self, unknown_kinds: UnknownKinds) -> Self {
+        self.unknown_kinds = unknown_kinds;
+        self
+    }
+
+    /// Adds names for `component`'s terminals, as `(terminal id, name)`
+    /// pairs. Leave out terminals that have no name.
+    pub fn with_terminal_names<T, N>(
+        mut self,
+        component: impl Into<String>,
+        names: impl IntoIterator<Item = (T, N)>,
+    ) -> Self
+    where
+        T: Into<String>,
+        N: Into<String>,
+    {
+        self.terminal_names
+            .entry(component.into())
+            .or_default()
+            .extend(names.into_iter().map(|(t, n)| (t.into(), n.into())));
+        self
+    }
+
+    /// Whether `component` is imported as a black box; an error for an
+    /// unknown kind when those are refused.
+    fn black_box(&self, component: &Component) -> Result<bool, ImportError> {
+        match &component.kind {
+            ComponentKind::BlackBox => Ok(true),
+            ComponentKind::Other(_) if self.unknown_kinds == UnknownKinds::BlackBox => Ok(true),
+            ComponentKind::Other(name) => Err(ImportError::UnsupportedKind {
+                component: component.id.clone(),
+                kind: name.clone(),
+            }),
+            _ => Ok(false),
+        }
+    }
+}
+
+/// A component imported as a black box: a [`ComponentKind::BlackBox`],
+/// or an unknown kind under [`UnknownKinds::BlackBox`]. It simulates
+/// nothing.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct BlackBoxPart {
+    /// The component's id.
+    pub component: String,
+    /// Its kind's name: `"black_box"`, or the unknown kind as given.
+    pub kind: String,
+    /// Net id by terminal id, for the terminals that are on a net.
+    pub terminals: BTreeMap<String, String>,
+}
+
 /// A [`Circuit`] built from a [`Netlist`], with the map from the caller's
 /// net ids to its node names.
 #[derive(Debug, Clone, PartialEq)]
@@ -726,6 +1326,17 @@ pub struct ImportedCircuit {
     /// Node name by net id. Nets the bench ties together share one node,
     /// named after one of them; every other net's node is its own id.
     pub nodes: BTreeMap<String, String>,
+    /// Every component imported as a black box, in netlist order. None of
+    /// them is in [`circuit`](Self::circuit), so a result has nothing for
+    /// them; check this list before calling a design done.
+    pub black_boxes: Vec<BlackBoxPart>,
+    /// Where each component's model came from, by component id, for every
+    /// component that became an element (a dual or quad part once, under
+    /// its package's id).
+    pub models: BTreeMap<String, ModelSource>,
+    /// Warnings, in netlist order: one for every component whose model is
+    /// [`ModelSource::Default`], and any other part data sindr couldn't use.
+    pub warnings: Vec<ImportWarning>,
 }
 
 impl ImportedCircuit {
@@ -733,19 +1344,82 @@ impl ImportedCircuit {
     pub fn node(&self, net_id: &str) -> Option<&str> {
         self.nodes.get(net_id).map(String::as_str)
     }
+
+    /// Where component `id`'s model came from; `None` for a component
+    /// that isn't an element (passive, black box) or isn't in the netlist.
+    pub fn model_source(&self, id: &str) -> Option<ModelSource> {
+        self.models.get(id).copied()
+    }
+
+    /// The ids of the components that got sindr's default model, in id
+    /// order.
+    pub fn defaulted(&self) -> impl Iterator<Item = &str> {
+        self.models
+            .iter()
+            .filter(|(_, s)| **s == ModelSource::Default)
+            .map(|(id, _)| id.as_str())
+    }
 }
 
 impl Netlist {
     /// Builds the circuit: the netlist's components, with `bench`'s ground,
     /// ties, sources and loads. The bench's analysis isn't run; see
-    /// [`simulate`].
+    /// [`simulate`]. Unknown kinds are refused; [`to_circuit_with`]
+    /// can keep them as black boxes.
     ///
     /// # Errors
     ///
     /// An [`ImportError`] naming the component, net or bench item that
     /// can't be built. Solver checks (a floating node, no path to ground)
     /// come later, from the analysis.
+    ///
+    /// [`to_circuit_with`]: Self::to_circuit_with
     pub fn to_circuit(&self, bench: &Bench) -> Result<ImportedCircuit, ImportError> {
+        self.to_circuit_with(bench, &ImportOptions::default())
+    }
+
+    /// [`to_circuit`](Self::to_circuit), reading the netlist as `options`
+    /// say: with each component's terminal names, and unknown kinds
+    /// refused or kept as black boxes.
+    ///
+    /// ```
+    /// use sindr::import::{Bench, BenchSource, Component, ComponentKind, ImportOptions,
+    ///                     Net, Netlist, UnknownKinds};
+    ///
+    /// // A transistor whose nets name terminals by id, and an IC sindr
+    /// // doesn't know on the supply.
+    /// let netlist = Netlist {
+    ///     components: vec![
+    ///         Component::new("q1", ComponentKind::from_name("npn")),
+    ///         Component::new("r1", ComponentKind::from_name("resistor-iec")).with_value("100k"),
+    ///         Component::new("u1", ComponentKind::from_name("mcu-qfn32")).with_value("MCU"),
+    ///     ],
+    ///     nets: vec![
+    ///         Net::new("vcc", [("r1", "1"), ("q1", "3"), ("u1", "8")]),
+    ///         Net::new("base", [("r1", "2"), ("q1", "1")]),
+    ///         Net::new("gnd", [("q1", "2"), ("u1", "1")]),
+    ///     ],
+    /// };
+    /// let options = ImportOptions::new()
+    ///     .with_unknown_kinds(UnknownKinds::BlackBox)
+    ///     .with_terminal_names("q1", [("1", "Base"), ("2", "Emitter"), ("3", "Collector")]);
+    /// let bench = Bench::new("gnd").with_source(BenchSource::voltage("vs", "vcc", 5.0));
+    ///
+    /// let imported = netlist.to_circuit_with(&bench, &options).unwrap();
+    /// assert_eq!(imported.black_boxes[0].component, "u1");
+    /// assert_eq!(imported.black_boxes[0].terminals["8"], "vcc");
+    /// assert!(netlist.to_circuit(&bench).is_err());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`to_circuit`](Self::to_circuit); with
+    /// [`UnknownKinds::BlackBox`], never [`ImportError::UnsupportedKind`].
+    pub fn to_circuit_with(
+        &self,
+        bench: &Bench,
+        options: &ImportOptions,
+    ) -> Result<ImportedCircuit, ImportError> {
         let mut ids = BTreeSet::new();
         for id in self
             .components
@@ -778,7 +1452,7 @@ impl Netlist {
                         component: pin.component.clone(),
                     }
                 })?;
-                let slot = slot_of(component, &pin.terminal)?;
+                let slot = slot_of(component, &pin.terminal, options)?;
                 if let Some(first) = pin_net.insert((component.id.as_str(), slot), &net.id) {
                     return Err(ImportError::TerminalOnTwoNets {
                         component: component.id.clone(),
@@ -794,6 +1468,7 @@ impl Netlist {
             nets: &self.nets,
             components: &components,
             pin_net: &pin_net,
+            options,
         };
 
         // Ties: union-find over net ids, each set named after its least id
@@ -839,17 +1514,73 @@ impl Netlist {
             }
         }
 
+        let mut black_boxes = Vec::new();
+        let mut models = BTreeMap::new();
+        let mut warnings = Vec::new();
+        let mut record = |id: &str, built: &Built| {
+            if let Some(source) = built.source {
+                models.entry(id.to_string()).or_insert(source);
+            }
+            for message in &built.warnings {
+                let warning = ImportWarning {
+                    component: id.to_string(),
+                    message: message.clone(),
+                };
+                if !warnings.contains(&warning) {
+                    warnings.push(warning);
+                }
+            }
+        };
         for component in &self.components {
+            if let Some(part) = &component.part {
+                circuit.parts.insert(component.id.clone(), part.clone());
+            }
+            if options.black_box(component)? {
+                let terminals = pin_net
+                    .iter()
+                    .filter(|((c, _), _)| *c == component.id)
+                    .filter_map(|((_, slot), net)| match slot {
+                        Slot::Named(t) => Some((t.clone(), net.to_string())),
+                        Slot::Index(_) => None,
+                    })
+                    .collect();
+                black_boxes.push(BlackBoxPart {
+                    component: component.id.clone(),
+                    kind: component.kind.name().to_string(),
+                    terminals,
+                });
+                continue;
+            }
             let nodes_of = |slot: usize| -> Option<String> {
                 pin_net
                     .get(&(component.id.as_str(), Slot::Index(slot)))
                     .map(|net| node(net))
             };
-            if let Some(element) = build_element(component, nodes_of, &supply)? {
-                circuit.components.push(element);
-            }
-            if let Some(part) = &component.part {
-                circuit.parts.insert(component.id.clone(), part.clone());
+            let Some((unit_kind, count)) = component.kind.units() else {
+                let built = build_element(component, nodes_of, &supply)?;
+                record(&component.id, &built);
+                circuit.components.extend(built.element);
+                continue;
+            };
+            // Each unit as its own component: its in+, in- and out, then
+            // the package's shared supplies.
+            for u in 0..count {
+                let slot = |i: usize| if i < 3 { 3 * u + i } else { 3 * count + i - 3 };
+                if (0..3).all(|i| nodes_of(slot(i)).is_none()) {
+                    continue;
+                }
+                let unit = Component {
+                    id: format!("{}.{}", component.id, char::from(b'a' + u as u8)),
+                    kind: unit_kind.clone(),
+                    part: None,
+                    ..component.clone()
+                };
+                if ids.contains(unit.id.as_str()) {
+                    return Err(ImportError::DuplicateId { id: unit.id });
+                }
+                let built = build_element(&unit, |i| nodes_of(slot(i)), &supply)?;
+                record(&component.id, &built);
+                circuit.components.extend(built.element);
             }
         }
 
@@ -865,10 +1596,16 @@ impl Netlist {
                 node(resolver.net(&load.a, &load.id)?),
                 side(&load.b, &load.id)?,
             ];
-            circuit.components.push(load.element(nodes));
+            circuit.components.push(load.element(nodes)?);
         }
 
-        Ok(ImportedCircuit { circuit, nodes })
+        Ok(ImportedCircuit {
+            circuit,
+            nodes,
+            black_boxes,
+            models,
+            warnings,
+        })
     }
 }
 
@@ -890,39 +1627,56 @@ enum Slot {
     Named(String),
 }
 
-fn slot_of(component: &Component, terminal: &str) -> Result<Slot, ImportError> {
+fn slot_of(
+    component: &Component,
+    terminal: &str,
+    options: &ImportOptions,
+) -> Result<Slot, ImportError> {
     let kind = &component.kind;
-    if kind.is_passive() {
+    let names = options.terminal_names.get(&component.id);
+    if kind.is_passive() || options.black_box(component)? {
+        // The terminal's id: as given, or the one terminal by that name.
+        if let Some(names) = names.filter(|n| !n.contains_key(terminal)) {
+            let wanted = normalise(terminal);
+            let mut ids = names.iter().filter(|(_, n)| normalise(n) == wanted);
+            if let (Some((id, _)), None) = (ids.next(), ids.next()) {
+                return Ok(Slot::Named(id.clone()));
+            }
+        }
         return Ok(Slot::Named(terminal.to_string()));
     }
-    if let ComponentKind::Other(name) = kind {
-        return Err(ImportError::UnsupportedKind {
-            component: component.id.clone(),
-            kind: name.clone(),
-        });
+    let index = |given: &str| {
+        let wanted = normalise(given);
+        kind.terminals()
+            .iter()
+            .position(|aliases| aliases.iter().any(|a| normalise(a) == wanted))
+    };
+    // A terminal's name says what it is; its id may be only a pin number.
+    let name = names.and_then(|n| n.get(terminal));
+    if let Some(slot) = name.and_then(|n| index(n)).or_else(|| index(terminal)) {
+        return Ok(Slot::Index(slot));
     }
-    let wanted = terminal.trim().to_lowercase();
-    kind.terminals()
-        .iter()
-        .position(|names| names.contains(&wanted.as_str()))
-        .map(Slot::Index)
-        .ok_or_else(|| ImportError::UnknownTerminal {
-            component: component.id.clone(),
-            kind: kind.name().to_string(),
-            terminal: terminal.to_string(),
-            expected: kind
-                .terminals()
-                .iter()
-                .map(|names| format!("\"{}\"", names[0]))
-                .collect::<Vec<_>>()
-                .join(", "),
-        })
+    Err(ImportError::UnknownTerminal {
+        component: component.id.clone(),
+        kind: kind.name().to_string(),
+        terminal: match name {
+            Some(name) => format!("{terminal} ({name})"),
+            None => terminal.to_string(),
+        },
+        expected: kind
+            .terminals()
+            .iter()
+            .map(|names| format!("\"{}\"", names[0]))
+            .collect::<Vec<_>>()
+            .join(", "),
+    })
 }
 
 struct Resolver<'a> {
     nets: &'a [Net],
     components: &'a BTreeMap<&'a str, &'a Component>,
     pin_net: &'a BTreeMap<(&'a str, Slot), &'a str>,
+    options: &'a ImportOptions,
 }
 
 impl<'a> Resolver<'a> {
@@ -954,7 +1708,7 @@ impl<'a> Resolver<'a> {
                         component: pin.component.clone(),
                     }
                 })?;
-                let slot = slot_of(component, &pin.terminal)?;
+                let slot = slot_of(component, &pin.terminal, self.options)?;
                 self.pin_net
                     .get(&(component.id.as_str(), slot))
                     .copied()
@@ -987,8 +1741,74 @@ impl Reader<'_> {
         match value {
             Value::Number(n) if n.is_finite() => Ok(*n),
             Value::Text(t) => parse_value(t).ok_or_else(|| self.bad(field, value, "a number")),
+            Value::Quantity(q) if q.value.is_finite() => {
+                match unit_of(&self.component.kind, field) {
+                    Some(want) if !matches!(q.unit, Unit::Other(_)) && q.unit != want => {
+                        Err(self.bad(field, value, &format!("a quantity in {}", want.symbol())))
+                    }
+                    _ => Ok(q.value),
+                }
+            }
             _ => Err(self.bad(field, value, "a number")),
         }
+    }
+
+    /// A datasheet figure: `name` (typical), `name_typ`, `name_min` and
+    /// `name_max`. `None` when none of them is set.
+    fn spec(&self, name: &str) -> Result<Option<DatasheetValue>, ImportError> {
+        let typ = match self.param(&[name])? {
+            Some(v) => Some(v),
+            None => self.param(&[&format!("{name}_typ")])?,
+        };
+        let spec = DatasheetValue {
+            min: self.param(&[&format!("{name}_min")])?,
+            typ,
+            max: self.param(&[&format!("{name}_max")])?,
+        };
+        Ok((!spec.is_empty()).then_some(spec))
+    }
+
+    /// A datasheet fit's error, as the parameter it's about.
+    fn datasheet(&self, e: DatasheetError) -> ImportError {
+        match e {
+            DatasheetError::Missing { figure } => ImportError::MissingValue {
+                component: self.component.id.clone(),
+                what: format!("datasheet figure \"{figure}\""),
+            },
+            DatasheetError::Invalid { figure, reason } => ImportError::BadValue {
+                component: self.component.id.clone(),
+                field: figure.to_string(),
+                given: self
+                    .component
+                    .params
+                    .get(figure)
+                    .cloned()
+                    .unwrap_or(Value::Text(String::new())),
+                expected: format!("a figure that fits: it {reason}"),
+            },
+            _ => ImportError::BadValue {
+                component: self.component.id.clone(),
+                field: "datasheet".into(),
+                given: Value::Text(e.to_string()),
+                expected: "figures sindr can fit".into(),
+            },
+        }
+    }
+
+    /// The value as written, when it's text that isn't a number: a part
+    /// number, a description.
+    fn value_text(&self) -> Option<&str> {
+        match &self.component.value {
+            Some(Value::Text(t)) if parse_value(t).is_none() => Some(t),
+            _ => None,
+        }
+    }
+
+    /// `" (value \"PMBT3904\" isn't one sindr reads)"`, or nothing.
+    fn ignored_value(&self) -> String {
+        self.value_text()
+            .map(|t| format!(" (value {t:?} isn't one sindr reads)"))
+            .unwrap_or_default()
     }
 
     /// The first of `names` that is set, as a number.
@@ -1013,12 +1833,16 @@ impl Reader<'_> {
         }
     }
 
-    fn text(&self, name: &str) -> Result<Option<String>, ImportError> {
-        match self.component.params.get(name) {
-            None => Ok(None),
-            Some(Value::Text(t)) => Ok(Some(t.clone())),
-            Some(v) => Err(self.bad(name, v, "text")),
+    /// The first of `names` that is set, as text.
+    fn text(&self, names: &[&str]) -> Result<Option<String>, ImportError> {
+        for name in names {
+            match self.component.params.get(*name) {
+                None => continue,
+                Some(Value::Text(t)) => return Ok(Some(t.clone())),
+                Some(v) => return Err(self.bad(name, v, "text")),
+            }
         }
+        Ok(None)
     }
 
     /// The value as a number; `None` when unset or text that isn't a value
@@ -1054,26 +1878,33 @@ impl Reader<'_> {
 
 const NOMINAL_K: f64 = 300.15;
 
+/// A component as built: its element (`None` for a passive one), where its
+/// model came from, and what to warn about.
+#[derive(Default)]
+struct Built {
+    element: Option<CircuitElement>,
+    source: Option<ModelSource>,
+    warnings: Vec<String>,
+}
+
 /// The element for `component`, or `None` for a passive one. `node(i)` is
 /// the node of terminal slot `i`, if connected.
 fn build_element(
     component: &Component,
     node: impl Fn(usize) -> Option<String>,
     supply: &BTreeMap<String, f64>,
-) -> Result<Option<CircuitElement>, ImportError> {
+) -> Result<Built, ImportError> {
     use ComponentKind as K;
     let kind = &component.kind;
-    if let K::Other(name) = kind {
-        return Err(ImportError::UnsupportedKind {
-            component: component.id.clone(),
-            kind: name.clone(),
-        });
-    }
     if kind.is_passive() {
-        return Ok(None);
+        return Ok(Built::default());
     }
     for name in component.params.keys() {
-        if !kind.params().contains(&name.as_str()) {
+        let figure = ["_min", "_typ", "_max"]
+            .iter()
+            .find_map(|suffix| name.strip_suffix(suffix))
+            .filter(|base| kind.figures().contains(base));
+        if !kind.params().contains(&name.as_str()) && figure.is_none() {
             return Err(ImportError::UnknownParameter {
                 component: component.id.clone(),
                 kind: kind.name().to_string(),
@@ -1116,6 +1947,26 @@ fn build_element(
     let model = component.model.as_ref();
     let temperature = || r.param_or("temperature", NOMINAL_K);
 
+    // Most kinds' model is their value and parameters; the device kinds
+    // set `source` (and warn on a default) as they read theirs.
+    let mut source = if component.params.is_empty() {
+        ModelSource::Value
+    } else {
+        ModelSource::Params
+    };
+    let mut warnings = Vec::new();
+    let mut defaulted = |what: String| {
+        warnings.push(format!("no model data{}; using {what}", r.ignored_value()));
+        ModelSource::Default
+    };
+    let from_model = |given: bool, otherwise: ModelSource| {
+        if given {
+            ModelSource::Model
+        } else {
+            otherwise
+        }
+    };
+
     let element = match kind {
         K::Resistor => CircuitElement::Resistor {
             id,
@@ -1133,68 +1984,206 @@ fn build_element(
             inductance: r.required_value("an inductance (H)")?,
             saturation: None,
         },
-        K::Diode => CircuitElement::Diode {
-            id,
-            nodes: n2(),
-            temperature: temperature()?,
-            model: match model {
-                Some(Model::Diode(m)) => Some(*m),
-                _ => None,
-            },
+        K::Diode => {
+            let model = match model {
+                Some(Model::Diode(m)) => {
+                    source = ModelSource::Model;
+                    Some(*m)
+                }
+                _ => match diode_datasheet(&r)? {
+                    Some(ds) => {
+                        source = ModelSource::Datasheet;
+                        Some(DiodeModel::from_datasheet(&ds).map_err(|e| r.datasheet(e))?)
+                    }
+                    None => {
+                        source =
+                            defaulted("the built-in silicon diode (IS = 1e-14 A, N = 1)".into());
+                        None
+                    }
+                },
+            };
+            CircuitElement::Diode {
+                id,
+                nodes: n2(),
+                temperature: temperature()?,
+                model,
+            }
+        }
+        K::SchottkyDiode => {
+            source =
+                defaulted("the built-in Schottky diode; sindr reads no model for this kind".into());
+            CircuitElement::SchottkyDiode {
+                id,
+                nodes: n2(),
+                temperature: temperature()?,
+            }
+        }
+        K::Photodiode => {
+            source =
+                defaulted("the built-in photodiode; sindr reads no model for this kind".into());
+            CircuitElement::Photodiode {
+                id,
+                nodes: n2(),
+                irradiance: r.param_or("irradiance", 0.0)?,
+                temperature: temperature()?,
+            }
+        }
+        K::ZenerDiode => {
+            let (vz, from) = match r.spec("vz")? {
+                Some(vz) => (vz, ModelSource::Params),
+                None => match r.value()? {
+                    Some(v) => (DatasheetValue::typical(v), ModelSource::Value),
+                    None => {
+                        return Err(ImportError::MissingValue {
+                            component: component.id.clone(),
+                            what: "a breakdown voltage (V), as the value or \"vz\"".into(),
+                        })
+                    }
+                },
+            };
+            let vz = match r.param(&["iz"])? {
+                Some(iz) => {
+                    source = ModelSource::Datasheet;
+                    let fit = DiodeModel::zener_from_datasheet(&ZenerDatasheet { vz, iz })
+                        .map_err(|e| r.datasheet(e))?;
+                    fit.bv.unwrap_or_default()
+                }
+                None => {
+                    source = from;
+                    vz.require("vz").map_err(|e| r.datasheet(e))?
+                }
+            };
+            CircuitElement::ZenerDiode {
+                id,
+                nodes: n2(),
+                vz,
+                temperature: temperature()?,
+            }
+        }
+        K::Led => match diode_datasheet(&r)? {
+            // An LED through its own Vf is a diode with that model: the LED
+            // element knows only its colour's preset.
+            Some(ds) => {
+                source = ModelSource::Datasheet;
+                CircuitElement::Diode {
+                    id,
+                    nodes: n2(),
+                    temperature: temperature()?,
+                    model: Some(DiodeModel::led_from_datasheet(&ds).map_err(|e| r.datasheet(e))?),
+                }
+            }
+            None => {
+                let given = r.text(&["color", "colour"])?;
+                let color = match &given {
+                    Some(c) => led::color_in(c).inspect(|_| source = ModelSource::Params),
+                    None => None,
+                };
+                let color = color.or_else(|| {
+                    let c = match &component.value {
+                        Some(Value::Text(t)) => led::color_in(t),
+                        _ => None,
+                    };
+                    c.inspect(|_| source = ModelSource::Value)
+                });
+                let color = match color {
+                    Some(c) => c,
+                    None => {
+                        source = match &given {
+                            Some(c) => {
+                                warnings.push(format!(
+                                    "colour {c:?} isn't one sindr knows; using a red LED (1.8 V at 20 mA)"
+                                ));
+                                ModelSource::Default
+                            }
+                            None => defaulted("a red LED (1.8 V at 20 mA)".into()),
+                        };
+                        "red"
+                    }
+                };
+                CircuitElement::Led {
+                    id,
+                    nodes: n2(),
+                    color: color.to_string(),
+                    temperature: temperature()?,
+                }
+            }
         },
-        K::SchottkyDiode => CircuitElement::SchottkyDiode {
-            id,
-            nodes: n2(),
-            temperature: temperature()?,
-        },
-        K::Photodiode => CircuitElement::Photodiode {
-            id,
-            nodes: n2(),
-            irradiance: r.param_or("irradiance", 0.0)?,
-            temperature: temperature()?,
-        },
-        K::ZenerDiode => CircuitElement::ZenerDiode {
-            id,
-            nodes: n2(),
-            vz: match r.param(&["vz"])? {
-                Some(vz) => vz,
-                None => r.value()?.ok_or_else(|| ImportError::MissingValue {
-                    component: component.id.clone(),
-                    what: "a breakdown voltage (V), as the value or \"vz\"".into(),
-                })?,
-            },
-            temperature: temperature()?,
-        },
-        K::Led => CircuitElement::Led {
-            id,
-            nodes: n2(),
-            color: r.text("color")?.unwrap_or_else(|| "red".into()),
-            temperature: temperature()?,
-        },
-        K::Varactor => CircuitElement::Varactor {
-            id,
-            nodes: n2(),
-            params: match model {
-                Some(Model::Varactor(p)) => p.clone(),
-                _ => VaractorParams::default(),
-            },
-        },
-        K::Npn | K::Pnp => CircuitElement::Bjt {
-            id,
-            nodes: n3(),
-            kind: if *kind == K::Npn {
-                BjtKind::Npn
-            } else {
-                BjtKind::Pnp
-            },
-            bf: r.param(&["bf", "beta", "hfe"])?.unwrap_or(100.0),
-            temperature: temperature()?,
-            parasitic_caps: None,
-            model: match model {
+        K::Varactor => {
+            source = match model {
+                Some(Model::Varactor(_)) => ModelSource::Model,
+                _ => defaulted("the built-in varactor".into()),
+            };
+            CircuitElement::Varactor {
+                id,
+                nodes: n2(),
+                params: match model {
+                    Some(Model::Varactor(p)) => p.clone(),
+                    _ => VaractorParams::default(),
+                },
+            }
+        }
+        K::Npn | K::Pnp => {
+            let npn = *kind == K::Npn;
+            let gain = r.param(&["bf", "beta"])?;
+            let hfe = r.spec("hfe")?;
+            let vce_sat = r.spec("vce_sat")?;
+            let given = match model {
                 Some(Model::Bjt(m)) => Some(*m),
                 _ => None,
-            },
-        },
+            };
+            let (bf, bjt_model) = if vce_sat.is_some() && given.is_none() {
+                let ds = BjtDatasheet {
+                    hfe: gain
+                        .map(DatasheetValue::typical)
+                        .or(hfe)
+                        .unwrap_or_default(),
+                    hfe_ic: r.param(&["hfe_ic"])?.unwrap_or(0.0),
+                    vce_sat,
+                    vce_sat_ic: r.param(&["vce_sat_ic"])?,
+                    vce_sat_ib: r.param(&["vce_sat_ib"])?,
+                };
+                let (bf, m) = BjtModel::from_datasheet(&ds).map_err(|e| r.datasheet(e))?;
+                source = ModelSource::Datasheet;
+                (bf, Some(m))
+            } else {
+                let hfe = hfe
+                    .map(|h| h.require("hfe"))
+                    .transpose()
+                    .map_err(|e| r.datasheet(e))?;
+                let bf = match (gain, hfe) {
+                    (Some(bf), _) => {
+                        source = from_model(given.is_some(), ModelSource::Params);
+                        bf
+                    }
+                    (None, Some(hfe)) => {
+                        source = from_model(given.is_some(), ModelSource::Datasheet);
+                        hfe
+                    }
+                    (None, None) if given.is_some() => {
+                        source = ModelSource::Model;
+                        warnings.push("the model gives no gain; using bf = 100".into());
+                        100.0
+                    }
+                    (None, None) => {
+                        source = defaulted(format!(
+                            "the default {} (bf = 100)",
+                            if npn { "NPN" } else { "PNP" }
+                        ));
+                        100.0
+                    }
+                };
+                (bf, given)
+            };
+            CircuitElement::Bjt {
+                id,
+                nodes: n3(),
+                kind: if npn { BjtKind::Npn } else { BjtKind::Pnp },
+                bf,
+                temperature: temperature()?,
+                parasitic_caps: None,
+                model: bjt_model,
+            }
+        }
         K::Nmos | K::Pmos => {
             if let Some(body) = node(3) {
                 if body != nodes[2] {
@@ -1213,9 +2202,36 @@ fn build_element(
                     MosfetKind::Pmos
                 },
                 params: match model {
-                    Some(Model::Mosfet(p)) => p.clone(),
-                    _ if nmos => MosfetParams::default_nmos(),
-                    _ => MosfetParams::default_pmos(),
+                    Some(Model::Mosfet(p)) => {
+                        source = ModelSource::Model;
+                        p.clone()
+                    }
+                    _ => {
+                        let mos_kind = if nmos {
+                            MosfetKind::Nmos
+                        } else {
+                            MosfetKind::Pmos
+                        };
+                        match mosfet_datasheet(&r)? {
+                            Some(ds) => {
+                                source = ModelSource::Datasheet;
+                                MosfetParams::from_datasheet(mos_kind, &ds)
+                                    .map_err(|e| r.datasheet(e))?
+                            }
+                            None if nmos => {
+                                source = defaulted(
+                                    "the default NMOS (VTO = 0.7 V, KP = 200 µA/V²)".into(),
+                                );
+                                MosfetParams::default_nmos()
+                            }
+                            None => {
+                                source = defaulted(
+                                    "the default PMOS (VTO = −0.7 V, KP = 100 µA/V²)".into(),
+                                );
+                                MosfetParams::default_pmos()
+                            }
+                        }
+                    }
                 },
                 parasitic_caps: None,
                 body_diode: None,
@@ -1223,6 +2239,12 @@ fn build_element(
         }
         K::Njfet | K::Pjfet => {
             let n = *kind == K::Njfet;
+            if component.params.is_empty() {
+                source = defaulted(format!(
+                    "the default JFET (idss = 10 mA, vp = {} V)",
+                    if n { "−2" } else { "2" }
+                ));
+            }
             CircuitElement::Jfet {
                 id,
                 nodes: n3(),
@@ -1233,16 +2255,23 @@ fn build_element(
                 },
                 idss: r.param_or("idss", 10e-3)?,
                 vp: r.param_or("vp", if n { -2.0 } else { 2.0 })?,
+                parasitic_caps: None,
             }
         }
-        K::Igbt => CircuitElement::Igbt {
-            id,
-            nodes: n3(),
-            params: match model {
-                Some(Model::Igbt(p)) => p.clone(),
-                _ => IgbtParams::default(),
-            },
-        },
+        K::Igbt => {
+            source = match model {
+                Some(Model::Igbt(_)) => ModelSource::Model,
+                _ => defaulted("the built-in IGBT".into()),
+            };
+            CircuitElement::Igbt {
+                id,
+                nodes: n3(),
+                params: match model {
+                    Some(Model::Igbt(p)) => p.clone(),
+                    _ => IgbtParams::default(),
+                },
+            }
+        }
         K::OpAmp | K::Comparator => {
             let rail = |name: &str, slot: usize, default: f64| -> Result<f64, ImportError> {
                 Ok(match r.param(&[name])? {
@@ -1254,6 +2283,14 @@ fn build_element(
             };
             let v_pos = rail("v_pos", 3, 15.0)?;
             let v_neg = rail("v_neg", 4, -15.0)?;
+            source = match (kind, model) {
+                (K::OpAmp, Some(Model::OpAmp(_))) => ModelSource::Model,
+                (K::OpAmp, _) => defaulted(
+                    "an ideal op-amp (gain 1e5, no bandwidth or slew limit, rails not enforced)"
+                        .into(),
+                ),
+                _ => defaulted("the built-in comparator (gain 1e5, clamped to its rails)".into()),
+            };
             if *kind == K::OpAmp {
                 CircuitElement::OpAmp {
                     id,
@@ -1309,6 +2346,7 @@ fn build_element(
             l1: r.required_param("l1", "a primary inductance (H)")?,
             l2: r.required_param("l2", "a secondary inductance (H)")?,
             k: r.param_or("k", 0.999)?,
+            saturation: None,
         },
         K::Regulator => CircuitElement::VoltageRegulator {
             id,
@@ -1321,15 +2359,53 @@ fn build_element(
                 })?,
             },
             model: match model {
-                Some(Model::Regulator(p)) => Some(*p),
-                _ => None,
+                Some(Model::Regulator(p)) => {
+                    source = ModelSource::Model;
+                    Some(*p)
+                }
+                _ => {
+                    source = defaulted("an ideal regulator (no dropout, no current limit)".into());
+                    None
+                }
             },
+        },
+        K::Crystal => CircuitElement::Crystal {
+            id,
+            nodes: n2(),
+            params: CrystalParams::from_datasheet(
+                match r.param(&["frequency"])? {
+                    Some(f) => f,
+                    None => r.value()?.ok_or_else(|| ImportError::MissingValue {
+                        component: component.id.clone(),
+                        what: "a frequency (Hz), as the value or \"frequency\"".into(),
+                    })?,
+                },
+                r.param_or("esr", 50.0)?,
+                r.param_or("c0", 5e-12)?,
+            ),
+        },
+        K::FerriteBead => CircuitElement::FerriteBead {
+            id,
+            nodes: n2(),
+            params: FerriteBeadParams::from_datasheet(
+                match r.param(&["z_100mhz"])? {
+                    Some(z) => z,
+                    None => r.value()?.ok_or_else(|| ImportError::MissingValue {
+                        component: component.id.clone(),
+                        what: "an impedance at 100 MHz (Ω), as the value or \"z_100mhz\"".into(),
+                    })?,
+                },
+                r.param_or("r_dc", 0.1)?,
+            ),
         },
         K::Battery => CircuitElement::Battery {
             id,
             nodes: n2(),
             params: match model {
-                Some(Model::Battery(p)) => p.clone(),
+                Some(Model::Battery(p)) => {
+                    source = ModelSource::Model;
+                    p.clone()
+                }
                 _ => BatteryParams::constant(
                     r.required_value("a voltage (V), or a battery model")?,
                     r.param_or("capacity", 1.0)?,
@@ -1338,16 +2414,25 @@ fn build_element(
             },
             state_of_charge: r.param_or("state_of_charge", 1.0)?,
         },
-        K::Thermistor => CircuitElement::Thermistor {
-            id,
-            nodes: n2(),
-            temperature: r.param_or("temperature", 298.15)?,
-        },
-        K::Photoresistor => CircuitElement::Photoresistor {
-            id,
-            nodes: n2(),
-            light_level: r.param_or("light_level", 0.0)?,
-        },
+        K::Thermistor => {
+            source = defaulted(
+                "the built-in 10 kΩ NTC (β = 3950); sindr reads no model for this kind".into(),
+            );
+            CircuitElement::Thermistor {
+                id,
+                nodes: n2(),
+                temperature: r.param_or("temperature", 298.15)?,
+            }
+        }
+        K::Photoresistor => {
+            source =
+                defaulted("the built-in photoresistor; sindr reads no model for this kind".into());
+            CircuitElement::Photoresistor {
+                id,
+                nodes: n2(),
+                light_level: r.param_or("light_level", 0.0)?,
+            }
+        }
         K::VoltageSource => CircuitElement::VoltageSource {
             id,
             nodes: n2(),
@@ -1360,9 +2445,97 @@ fn build_element(
             current: r.required_value("a current (A)")?,
             waveform: None,
         },
-        K::Connector | K::TestPoint | K::NetTie | K::MountingHole | K::Other(_) => return Ok(None),
+        K::Connector | K::TestPoint | K::NetTie | K::MountingHole | K::BlackBox | K::Other(_) => {
+            return Ok(Built::default())
+        }
+        // A multi-unit package is built unit by unit, as its unit kind.
+        K::DualOpAmp | K::QuadOpAmp | K::DualComparator | K::QuadComparator => {
+            return Ok(Built::default())
+        }
     };
-    Ok(Some(element))
+    Ok(Built {
+        element: Some(element),
+        source: Some(source),
+        warnings,
+    })
+}
+
+/// A diode's or LED's forward figures, `vf` at `if` (and `vf2` at `if2`),
+/// if `vf` is given.
+fn diode_datasheet(r: &Reader<'_>) -> Result<Option<DiodeDatasheet>, ImportError> {
+    let Some(vf) = r.spec("vf")? else {
+        return Ok(None);
+    };
+    let missing = |what: &str| ImportError::MissingValue {
+        component: r.component.id.clone(),
+        what: what.to_string(),
+    };
+    Ok(Some(DiodeDatasheet {
+        vf,
+        if_: r
+            .param(&["if"])?
+            .ok_or_else(|| missing("the current vf is given at (A, parameter \"if\")"))?,
+        vf2: r.spec("vf2")?,
+        if2: r.param(&["if2"])?,
+    }))
+}
+
+/// A MOSFET's threshold and on-resistance figures, if either is given.
+fn mosfet_datasheet(r: &Reader<'_>) -> Result<Option<MosfetDatasheet>, ImportError> {
+    let vth = r.spec("vth")?;
+    let rds_on = r.spec("rds_on")?;
+    if vth.is_none() && rds_on.is_none() {
+        return Ok(None);
+    }
+    let need = |name: &str, what: &str| -> Result<f64, ImportError> {
+        r.param(&[name])?.ok_or_else(|| ImportError::MissingValue {
+            component: r.component.id.clone(),
+            what: format!("{what} (parameter \"{name}\")"),
+        })
+    };
+    let missing = |name: &str| ImportError::MissingValue {
+        component: r.component.id.clone(),
+        what: format!("datasheet figure \"{name}\""),
+    };
+    Ok(Some(MosfetDatasheet {
+        vth: vth.ok_or_else(|| missing("vth"))?,
+        vth_id: need("vth_id", "the drain current vth is given at (A)")?,
+        rds_on: rds_on.ok_or_else(|| missing("rds_on"))?,
+        rds_on_vgs: need("rds_on_vgs", "the gate voltage rds_on is given at (V)")?,
+        rds_on_id: r.param(&["rds_on_id"])?,
+    }))
+}
+
+/// The unit a value or parameter is in, for checking a [`Quantity`]'s.
+/// `None` where sindr doesn't check (a capacity in Ah, an irradiance).
+fn unit_of(kind: &ComponentKind, field: &str) -> Option<Unit> {
+    use ComponentKind as K;
+    let base = ["_min", "_typ", "_max"]
+        .iter()
+        .find_map(|s| field.strip_suffix(s))
+        .unwrap_or(field);
+    Some(match base {
+        "value" => match kind {
+            K::Resistor | K::Potentiometer | K::FerriteBead => Unit::Ohm,
+            K::Capacitor | K::CapacitorPolarized => Unit::Farad,
+            K::Inductor => Unit::Henry,
+            K::ZenerDiode | K::Regulator | K::Battery | K::VoltageSource => Unit::Volt,
+            K::Fuse | K::CurrentSource => Unit::Ampere,
+            K::Crystal => Unit::Hertz,
+            _ => return None,
+        },
+        "temperature" => Unit::Kelvin,
+        "vz" | "vf" | "vf2" | "vce_sat" | "vth" | "rds_on_vgs" | "vp" | "v_pos" | "v_neg"
+        | "pickup_voltage" | "voltage" => Unit::Volt,
+        "iz" | "if" | "if2" | "hfe_ic" | "vce_sat_ic" | "vce_sat_ib" | "vth_id" | "rds_on_id"
+        | "idss" => Unit::Ampere,
+        "rds_on" | "coil_resistance" | "esr" | "z_100mhz" | "r_dc" | "r_series" => Unit::Ohm,
+        "bf" | "beta" | "hfe" | "position" | "k" | "state_of_charge" | "light_level" => Unit::Ratio,
+        "inductance" | "l1" | "l2" => Unit::Henry,
+        "frequency" => Unit::Hertz,
+        "c0" => Unit::Farad,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

@@ -39,6 +39,7 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 ///    `temperature` (K) positive and finite, capacitances zero or more,
 ///    source values and controlled-source gains finite, a BJT's `bf`
 ///    positive and finite, and the device-model fields each check names
+/// 6. A behavioural source's `i(src)` names a voltage-defined element
 ///
 /// # Errors
 ///
@@ -148,6 +149,25 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
         check_values(comp)?;
     }
 
+    // ------------------------------------------------------------------
+    // Check 6: what a behavioural source's expression reads exists
+    // ------------------------------------------------------------------
+    for comp in &circuit.components {
+        if let CircuitElement::Behavioural { id, expr, .. } = comp {
+            for variable in expr.variables() {
+                if let crate::expression::Variable::Current { source } = variable {
+                    if circuit.vsource_branch_index(source).is_none() {
+                        return Err(SimError::InvalidComponent(format!(
+                            "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
+                             element (voltage source, VCVS, CCVS, op-amp, regulator or \
+                             behavioural voltage source)"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -219,6 +239,8 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             non_negative("model.kf", model.kf, "")?;
             positive("model.af", model.af, "")?;
+            positive("model.eg", model.eg, " eV")?;
+            non_negative("model.xti", model.xti, "")?;
             Ok(())
         }
         CircuitElement::Diode { temperature, .. }
@@ -245,6 +267,8 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
                 non_negative("model.vaf", model.vaf, " V")?;
                 non_negative("model.kf", model.kf, "")?;
                 positive("model.af", model.af, "")?;
+                positive("model.eg", model.eg, " eV")?;
+                non_negative("model.xti", model.xti, "")?;
             }
             Ok(())
         }
@@ -343,6 +367,16 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
+        CircuitElement::Jfet {
+            parasitic_caps: Some(caps),
+            ..
+        } => {
+            non_negative("parasitic_caps.cgs", caps.cgs, " F")?;
+            non_negative("parasitic_caps.cgd", caps.cgd, " F")?;
+            positive("parasitic_caps.pb", caps.pb, " V")?;
+            within("parasitic_caps.m", caps.m, 0.9)?;
+            within("parasitic_caps.fc", caps.fc, 0.95)
+        }
         // Only the noise fields: the rest of a MOSFET's parameters have
         // never been checked here.
         CircuitElement::Mosfet { params, .. } => {
@@ -391,10 +425,36 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             positive("resistance", *resistance, " Ω")?;
             finite("position", *position, "")
         }
-        CircuitElement::Transformer { l1, l2, k, .. } => {
+        CircuitElement::Transformer {
+            l1,
+            l2,
+            k,
+            saturation,
+            ..
+        } => {
             positive("l1", *l1, " H")?;
             positive("l2", *l2, " H")?;
-            finite("k", *k, "")
+            finite("k", *k, "")?;
+            if let Some(sat) = saturation {
+                if *k <= 0.0 {
+                    return Err(SimError::InvalidComponent(format!(
+                        "`{}`: a saturating core needs coupling, but k is {k}",
+                        comp.id()
+                    )));
+                }
+                positive("saturation.i_sat", sat.i_sat, " A")?;
+                positive("saturation.l_sat", sat.l_sat, " H")?;
+                let magnetising = *k * *l1;
+                if sat.l_sat > magnetising {
+                    return Err(SimError::InvalidComponent(format!(
+                        "`{}`: saturation.l_sat {} H must not exceed the magnetising \
+                         inductance k·l1 = {magnetising} H",
+                        comp.id(),
+                        sat.l_sat,
+                    )));
+                }
+            }
+            Ok(())
         }
         CircuitElement::Fuse { rating, .. } => positive("rating", *rating, " A"),
         CircuitElement::Comparator { v_pos, v_neg, .. } => {
@@ -462,8 +522,22 @@ mod tests {
                 model: Some(model),
             })
         };
+        let jfet = |caps: crate::circuit::JfetParasiticCaps| {
+            with(CircuitElement::Jfet {
+                id: "J1".into(),
+                nodes: ["b".into(), "a".into(), "0".into()],
+                kind: crate::JfetKind::NChannel,
+                idss: 10e-3,
+                vp: -2.0,
+                parasitic_caps: Some(caps),
+            })
+        };
         let d = crate::DiodeModel::default();
         let q = crate::BjtModel::default();
+        let j = crate::circuit::JfetParasiticCaps {
+            cgs: 1e-12,
+            ..Default::default()
+        };
         let bad = [
             (diode(crate::DiodeModel { n: 0.0, ..d }), "model.n"),
             (diode(crate::DiodeModel { is: -1.0, ..d }), "model.is"),
@@ -487,6 +561,26 @@ mod tests {
             (bjt(crate::BjtModel { nf: -1.0, ..q }), "model.nf"),
             (bjt(crate::BjtModel { nr: 0.0, ..q }), "model.nr"),
             (bjt(crate::BjtModel { vaf: -5.0, ..q }), "model.vaf"),
+            (diode(crate::DiodeModel { eg: 0.0, ..d }), "model.eg"),
+            (diode(crate::DiodeModel { xti: -1.0, ..d }), "model.xti"),
+            (bjt(crate::BjtModel { eg: f64::NAN, ..q }), "model.eg"),
+            (bjt(crate::BjtModel { xti: -0.5, ..q }), "model.xti"),
+            (
+                jfet(crate::circuit::JfetParasiticCaps { cgd: -1e-12, ..j }),
+                "parasitic_caps.cgd",
+            ),
+            (
+                jfet(crate::circuit::JfetParasiticCaps { pb: 0.0, ..j }),
+                "parasitic_caps.pb",
+            ),
+            (
+                jfet(crate::circuit::JfetParasiticCaps { m: 1.0, ..j }),
+                "parasitic_caps.m",
+            ),
+            (
+                jfet(crate::circuit::JfetParasiticCaps { fc: 0.99, ..j }),
+                "parasitic_caps.fc",
+            ),
         ];
         for (circuit, field) in bad {
             match validate_circuit(&circuit) {

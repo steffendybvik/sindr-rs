@@ -111,7 +111,6 @@ impl<T: MnaScalar> MnaMatrix<T> {
     }
 
     /// The matrix as a dense nalgebra matrix.
-    #[cfg(any(test, feature = "internals"))]
     pub fn to_dense(&self) -> DMatrix<T> {
         match &self.storage {
             Storage::Dense(m) => m.clone(),

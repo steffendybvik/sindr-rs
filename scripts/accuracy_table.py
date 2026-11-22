@@ -36,6 +36,7 @@ ANALYSES = [
     ("ac_", "AC"),
     ("cv_", "Diode charge (AC)"),
     ("noise_", "Noise"),
+    ("pz_", "Pole-zero"),
     ("tran_", "Transient"),
 ]
 

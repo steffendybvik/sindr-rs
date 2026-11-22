@@ -30,7 +30,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sindr-devices = "0.1"
+sindr-devices = "0.2"
 ```
 
 Two-terminal companions return `(g_eq, i_eq)`: the linearised conductance (S)
@@ -141,5 +141,5 @@ assert!(r_85c < 10_000.0 && r_dim > 1_000.0);
 
 ```toml
 # Without serde:
-sindr-devices = { version = "0.1", default-features = false }
+sindr-devices = { version = "0.2", default-features = false }
 ```

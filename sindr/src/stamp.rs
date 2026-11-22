@@ -224,6 +224,27 @@ pub fn stamp_circuit(
                     stamp_cccs(system, node_map, nodes, *alpha, ctrl_branch_idx);
                 }
             }
+            CircuitElement::Behavioural {
+                id,
+                nodes,
+                output,
+                expr,
+            } => {
+                let branch = num_nodes + vsource_index;
+                // Linear first pass: linearised at all-zero unknowns.
+                let zero;
+                let x = match v_prev {
+                    Some(x) => x,
+                    None => {
+                        zero = DVector::zeros(system.b.len());
+                        &zero
+                    }
+                };
+                stamp_behavioural(
+                    system, circuit, node_map, id, nodes, *output, expr, x, 0.0, branch,
+                )?;
+                vsource_index += component.branch_slots();
+            }
             CircuitElement::Pushbutton { nodes, closed, .. } => {
                 let resistance = if *closed {
                     SWITCH_R_CLOSED
@@ -502,6 +523,136 @@ pub(crate) fn regulator_piece_at(
             (vin, iout)
         });
     regulator_piece(&params, voltage, vin, iout)
+}
+
+/// `true` when every regulator in `circuit` is on the same piece of its
+/// characteristic, and of its quiescent-current ramp, at `v_new` as at
+/// `v_prev`, the iterate it was stamped from.
+///
+/// The characteristic is piecewise linear, so a Newton step that lands on
+/// another piece can be within the node tolerance (about 1 mV on a 1 V
+/// node) and still be the solution of the wrong piece. Leaving the 0 V
+/// floor, that stale millivolt across a large output capacitor becomes a
+/// current spike on the next short step.
+pub(crate) fn regulator_pieces_settled(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    num_nodes: usize,
+    v_prev: &DVector<f64>,
+    v_new: &DVector<f64>,
+) -> bool {
+    let mut branch = num_nodes;
+    for component in &circuit.components {
+        if let CircuitElement::VoltageRegulator {
+            nodes,
+            voltage,
+            model,
+            ..
+        } = component
+        {
+            let at =
+                |x: &DVector<f64>| regulator_pieces_at(node_map, nodes, *voltage, model, branch, x);
+            if at(v_prev) != at(v_new) {
+                return false;
+            }
+        }
+        branch += component.branch_slots();
+    }
+    true
+}
+
+/// The piece of its characteristic, and of its quiescent-current ramp, a
+/// regulator is on at `x`.
+fn regulator_pieces_at(
+    node_map: &NodeMap,
+    nodes: &[String; 3],
+    voltage: f64,
+    model: &Option<RegulatorParams>,
+    branch: usize,
+    x: &DVector<f64>,
+) -> (RegulatorLinear, Option<(f64, f64)>) {
+    let piece = regulator_piece_at(node_map, nodes, voltage, model, branch, Some(x));
+    let ramp = model
+        .as_ref()
+        .zip(regulator_state(node_map, nodes, branch, Some(x)))
+        .map(|(params, (vin, _, _))| {
+            sindr_devices::regulator::regulator_quiescent(params, voltage, vin)
+        });
+    (piece, ramp)
+}
+
+/// Shorten a Newton step from `v_prev` to `v_new` so that no regulator
+/// passes more than one edge of its piecewise characteristic. Returns
+/// whether the step was shortened: a shortened iterate is not a Newton
+/// solution, so it must not count as converged.
+///
+/// Each iterate solves the regulators' pieces at `v_prev`, which hold only
+/// up to the first edge along the step. Where a node is held by little else
+/// (the input behind an inductor whose companion conductance is `h/L`,
+/// about 1 µS on a 1 ps step), that solution can lie many volts and every
+/// piece away, and the next iterate's piece throws it back: Newton cycles
+/// between the floor and regulation for ever. Stopping inside the next
+/// piece along the step, as Katzenelson's method for piecewise-linear
+/// networks does, walks the regulator one piece at a time. Halfway to the
+/// next edge keeps it clear of both.
+pub(crate) fn limit_regulator_step(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    num_nodes: usize,
+    v_prev: &DVector<f64>,
+    v_new: &mut DVector<f64>,
+) -> bool {
+    // Fractions of the step at which some regulator that changes piece
+    // crosses an edge.
+    let mut crossings: Vec<f64> = Vec::new();
+    let mut branch = num_nodes;
+    for component in &circuit.components {
+        if let CircuitElement::VoltageRegulator {
+            nodes,
+            voltage,
+            model,
+            ..
+        } = component
+        {
+            let at =
+                |x: &DVector<f64>| regulator_pieces_at(node_map, nodes, *voltage, model, branch, x);
+            if at(v_prev) != at(v_new) {
+                let params = model.unwrap_or_default();
+                let edges = |x: &DVector<f64>| {
+                    let (vin, _, iout) =
+                        regulator_state(node_map, nodes, branch, Some(x)).unwrap_or_default();
+                    let mut e =
+                        sindr_devices::regulator::regulator_edges(&params, *voltage, vin, iout);
+                    if model.is_none() {
+                        // No quiescent current, so no ramp to cross.
+                        e[3] = f64::INFINITY;
+                        e[4] = f64::INFINITY;
+                    }
+                    e
+                };
+                for (a, b) in edges(v_prev).into_iter().zip(edges(v_new)) {
+                    let side = |e: f64| (e > 0.0, e < 0.0);
+                    if a.is_finite() && b.is_finite() && side(a) != side(b) {
+                        crossings.push(a / (a - b));
+                    }
+                }
+            }
+        }
+        branch += component.branch_slots();
+    }
+    crossings.sort_by(f64::total_cmp);
+    // Edges that meet (the floor and the top of the ramp, both at the
+    // dropout voltage) are crossed together.
+    let first = match crossings.first() {
+        Some(&first) => first,
+        None => return false,
+    };
+    let Some(&next) = crossings.iter().find(|&&c| c > first + 1e-9) else {
+        return false;
+    };
+    let alpha = 0.5 * (first + next);
+    *v_new = v_prev + (&*v_new - v_prev) * alpha;
+    true
 }
 
 /// Stamp a linear regulator `[in, out, gnd]` on the piece of its
@@ -1045,6 +1196,182 @@ pub fn stamp_ccvs(
     system.a[(branch, ctrl_branch)] -= rm;
 }
 
+/// Checks every behavioural expression is finite at the solution `x`.
+///
+/// Newton accepts its last step without stamping it, so a source whose
+/// expression left its domain on that step (`asin` just past 1) would
+/// otherwise be reported at a point where it has no value.
+///
+/// # Errors
+///
+/// [`SimError::NotFinite`] for the first one that isn't.
+pub(crate) fn behavioural_finite_at(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    x: &DVector<f64>,
+    t: f64,
+) -> Result<(), SimError> {
+    for component in &circuit.components {
+        if let CircuitElement::Behavioural { id, expr, .. } = component {
+            behavioural_linearisation(circuit, node_map, id, expr, x, t)?;
+        }
+    }
+    Ok(())
+}
+
+/// A behavioural source's expression linearised at `x` (the MNA unknowns)
+/// and time `t`: `f(x) ≈ c + Σ jacobian[k].1 · x[jacobian[k].0]`.
+///
+/// `v(n, m)` reads `x[n] − x[m]`, `i(src)` the branch column of `src`,
+/// `time` is `t`.
+///
+/// # Errors
+///
+/// [`SimError::InvalidComponent`] when `i(src)` names no voltage-defined
+/// element, or the expression isn't finite at `x`. An infinite slope at a
+/// finite value is taken as 0.
+pub(crate) fn behavioural_linearisation(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    id: &str,
+    expr: &crate::expression::Expression,
+    x: &DVector<f64>,
+    t: f64,
+) -> Result<(Vec<(usize, f64)>, f64), SimError> {
+    use crate::expression::Variable;
+    let num_nodes = node_map.num_nodes();
+    let at = |k: usize| x.get(k).copied().unwrap_or(0.0);
+    let mut columns: Vec<Vec<(usize, f64)>> = Vec::with_capacity(expr.variables().len());
+    let mut values = Vec::with_capacity(expr.variables().len());
+    for variable in expr.variables() {
+        let (cols, value) = match variable {
+            Variable::Voltage { node, reference } => {
+                let mut cols = Vec::new();
+                let mut value = 0.0;
+                if let Some(k) = node_map.index(node) {
+                    cols.push((k, 1.0));
+                    value += at(k);
+                }
+                if let Some(k) = reference.as_deref().and_then(|r| node_map.index(r)) {
+                    cols.push((k, -1.0));
+                    value -= at(k);
+                }
+                (cols, value)
+            }
+            Variable::Current { source } => {
+                let branch = circuit.vsource_branch_index(source).ok_or_else(|| {
+                    SimError::InvalidComponent(format!(
+                        "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
+                         element (voltage source, VCVS, CCVS, op-amp, regulator or \
+                         behavioural voltage source)"
+                    ))
+                })?;
+                let k = num_nodes + branch;
+                (vec![(k, 1.0)], at(k))
+            }
+            Variable::Time => (Vec::new(), t),
+        };
+        columns.push(cols);
+        values.push(value);
+    }
+    let mut gradient = vec![0.0; values.len()];
+    let f = expr.evaluate_with_gradient(&values, &mut gradient);
+    // A finite value with an infinite slope (sqrt at 0, say) is stamped
+    // flat for this iteration, so Newton can move off it.
+    for g in &mut gradient {
+        if !g.is_finite() {
+            *g = 0.0;
+        }
+    }
+    if !f.is_finite() {
+        return Err(SimError::NotFinite {
+            component: id.to_string(),
+            expression: expr.to_string(),
+            inputs: expr
+                .variables()
+                .iter()
+                .zip(&values)
+                .map(|(v, x)| format!("{} = {x}", variable_name(v)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+    }
+    let mut jacobian: Vec<(usize, f64)> = Vec::new();
+    for (cols, g) in columns.iter().zip(&gradient) {
+        for (k, coefficient) in cols {
+            match jacobian.iter_mut().find(|(c, _)| c == k) {
+                Some((_, j)) => *j += g * coefficient,
+                None => jacobian.push((*k, g * coefficient)),
+            }
+        }
+    }
+    let c = f - jacobian.iter().map(|(k, j)| j * at(*k)).sum::<f64>();
+    Ok((jacobian, c))
+}
+
+fn variable_name(variable: &crate::expression::Variable) -> String {
+    use crate::expression::Variable;
+    match variable {
+        Variable::Voltage {
+            node,
+            reference: None,
+        } => format!("v({node})"),
+        Variable::Voltage {
+            node,
+            reference: Some(r),
+        } => format!("v({node},{r})"),
+        Variable::Current { source } => format!("i({source})"),
+        Variable::Time => "time".to_string(),
+    }
+}
+
+/// Stamps a behavioural source linearised at `x` and time `t`. A voltage
+/// output takes branch row `branch`; a current output takes none.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stamp_behavioural(
+    system: &mut MnaSystem,
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    id: &str,
+    nodes: &[String; 2],
+    output: crate::BehaviouralOutput,
+    expr: &crate::expression::Expression,
+    x: &DVector<f64>,
+    t: f64,
+    branch: usize,
+) -> Result<(), SimError> {
+    let (jacobian, c) = behavioural_linearisation(circuit, node_map, id, expr, x, t)?;
+    let p = node_map.index(&nodes[0]);
+    let q = node_map.index(&nodes[1]);
+    match output {
+        crate::BehaviouralOutput::Current => {
+            // Out of n+, into n-: f leaves p, so p's row gets +∂f/∂x.
+            for (k, j) in &jacobian {
+                if let Some(pi) = p {
+                    system.a[(pi, *k)] += j;
+                }
+                if let Some(qi) = q {
+                    system.a[(qi, *k)] -= j;
+                }
+            }
+            if let Some(pi) = p {
+                system.b[pi] -= c;
+            }
+            if let Some(qi) = q {
+                system.b[qi] += c;
+            }
+        }
+        _ => {
+            // V(p) − V(q) − ∇f·x = c.
+            stamp_voltage_source(system, node_map, nodes, c, branch);
+            for (k, j) in &jacobian {
+                system.a[(branch, *k)] -= j;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Stamp a Current-Controlled Current Source (CCCS).
 ///
 /// I_out = alpha * I_control
@@ -1103,6 +1430,7 @@ mod tests {
                     l1: 1e-3,
                     l2: 1e-3,
                     k: 0.99,
+                    saturation: None,
                 },
                 r("R2", "s", "0", 1e3),
                 v("V2", "b", 3.0),
@@ -1671,6 +1999,7 @@ mod tests {
                     l1: 1e-3,
                     l2: 4e-3,
                     k: 0.999,
+                    saturation: None,
                 },
                 CircuitElement::Resistor {
                     id: "R2".into(),
@@ -1988,6 +2317,7 @@ mod tests {
                 kind: JfetKind::NChannel,
                 idss: 10e-3,
                 vp: -2.0,
+                parasitic_caps: None,
             }],
             ..Default::default()
         };

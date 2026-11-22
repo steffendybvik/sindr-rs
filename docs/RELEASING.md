@@ -34,7 +34,9 @@ In the same PR:
 2. A runnable doctest on each new public entry point. `no_run` or `ignore`
    only with the reason stated next to the block (for example, it reads a
    file that doesn't exist where doctests run).
-3. A CHANGELOG entry under the staging version, marked **Breaking** if it is.
+3. No CHANGELOG edit: the release PR writes the CHANGELOG. Put what a user
+   needs in the PR description instead, with a `> [!CAUTION]` block saying
+   what breaks and how to fix calling code if it's breaking.
 4. A row in the crate-docs **Capabilities** tables, if it's a new analysis,
    device, convergence aid or SPICE card.
 5. A LIMITATIONS update if the capability is partial, or if it removes a
@@ -53,8 +55,10 @@ On the staging branch, before its PR into `main`:
    names the old version. For a release that replaces `0.1.x`:
    `grep -rn '0\.1\.[0-9]\|"0\.1"' --include=*.md --include=*.rs --include=*.toml --include=*.txt .`
    Matches in the CHANGELOG's older sections are expected.
-2. **CHANGELOG.** The release section is complete, and breaking changes say
-   what to change in calling code.
+2. **CHANGELOG.** Write the release section from the PRs merged into the
+   staging branch (`gh pr list --base <staging branch> --state merged`):
+   each PR's description, plus any "Changelog draft" comment on it. Breaking
+   changes say what to change in calling code.
 3. **Capabilities.** The crate-docs tables, `llms.txt` "Key facts" and
    LIMITATIONS agree with what shipped. Read the CHANGELOG's Added/Changed
    entries against each one.

@@ -19,13 +19,14 @@
       "type": "resistor"
     },
     {
-      "id": "V_LED",
+      "color": "red",
+      "id": "LED1",
       "nodes": [
         "n2",
         "0"
       ],
-      "type": "voltage_source",
-      "voltage": 2.0
+      "temperature": 300.15,
+      "type": "led"
     }
   ],
   "ground_node": "0"

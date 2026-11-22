@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use nalgebra::DVector;
+use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 
 use sindr_devices::bjt::{self, BjtKind};
@@ -125,6 +125,17 @@ pub struct AcPoint {
 }
 
 impl AcPoint {
+    /// The complex voltage at `node` (V), or `None` when there's no such
+    /// node. Ground reads 0.
+    pub fn voltage(&self, node: &str) -> Option<Complex64> {
+        self.node_voltages.get(node).copied()
+    }
+
+    /// The magnitude of the voltage at `node`, `|V(node)|` (V).
+    pub fn magnitude(&self, node: &str) -> Option<f64> {
+        self.voltage(node).map(|v| v.norm())
+    }
+
     /// Gain in dB for a node: `20·log10(|V(node)| / source_magnitude)`, a
     /// voltage ratio. `source_magnitude` is in volts, normally
     /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
@@ -157,6 +168,45 @@ pub struct AcResult {
 }
 
 impl AcResult {
+    /// A node's complex voltage as `(frequency in Hz, V)` pairs, one per
+    /// point. Empty when there's no such node.
+    ///
+    /// ```
+    /// use sindr::{solve_ac, AcConfig, Circuit, CircuitElement};
+    ///
+    /// // RC low-pass, corner at 1/(2π·1k·1µ) ≈ 159 Hz.
+    /// let circuit = Circuit::new("0", vec![
+    ///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None },
+    ///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
+    ///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+    /// ]);
+    /// let ac = solve_ac(&circuit, &AcConfig::new("V1", 1.0, 1e5, 51))?;
+    ///
+    /// let first = &ac.points[0];
+    /// assert!((first.magnitude("out").unwrap() - 1.0).abs() < 1e-3);
+    /// let (f, v) = *ac.node_voltage_curve("out").last().unwrap();
+    /// assert_eq!(f, 1e5);
+    /// assert!(v.norm() < 0.01);
+    /// assert_eq!(ac.magnitude_curve("out").len(), 51);
+    /// assert!(ac.node_voltage_curve("nope").is_empty());
+    /// # Ok::<(), sindr::SimError>(())
+    /// ```
+    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, Complex64)> {
+        self.points
+            .iter()
+            .filter_map(|p| p.voltage(node).map(|v| (p.frequency, v)))
+            .collect()
+    }
+
+    /// A node's voltage magnitude as `(frequency in Hz, |V| in V)` pairs,
+    /// one per point; [`AcResult::gain_curve`] has it in dB.
+    pub fn magnitude_curve(&self, node: &str) -> Vec<(f64, f64)> {
+        self.points
+            .iter()
+            .filter_map(|p| p.magnitude(node).map(|m| (p.frequency, m)))
+            .collect()
+    }
+
     /// The gain curve for a node as `(frequency in Hz, gain in dB)` pairs,
     /// one per point, using [`AcConfig::ac_magnitude`].
     pub fn gain_curve(&self, node: &str) -> Vec<(f64, f64)> {
@@ -415,6 +465,23 @@ fn two_terminal(nodes: &[String; 2], node_map: &NodeMap, g: f64) -> SmallSignalM
     }
 }
 
+/// [`validate_config`], and that `config` drives a voltage source of flat
+/// `circuit`.
+pub(crate) fn validate_stimulus(circuit: &Circuit, config: &AcConfig) -> Result<(), SimError> {
+    validate_config(config)?;
+    let drives_a_voltage_source = circuit
+        .components
+        .iter()
+        .any(|c| matches!(c, CircuitElement::VoltageSource { id, .. } if *id == config.source_id));
+    if !drives_a_voltage_source {
+        return Err(SimError::InvalidComponent(format!(
+            "AC sweep: source_id '{}' is not a voltage source in the circuit",
+            config.source_id
+        )));
+    }
+    Ok(())
+}
+
 /// Reject sweep configs that would underflow, divide by zero, or feed
 /// `log10` a non-positive value.
 pub(crate) fn validate_config(config: &AcConfig) -> Result<(), SimError> {
@@ -519,7 +586,9 @@ pub(crate) fn at_junction_temperatures<'a>(
 
 /// `circuit` with each saturating inductor replaced by a linear one at its
 /// incremental inductance `dλ/di` at the DC current `dc` carries through it
-/// (the DC equivalent shorts it with a 0 V source of the same id).
+/// (the DC equivalent shorts it with a 0 V source of the same id), and each
+/// saturating transformer by the linear pair whose inductance matrix is its
+/// incremental one at the DC winding currents (`id` and `id#2`).
 pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationResult) -> Circuit {
     let mut out = circuit.clone();
     for element in &mut out.components {
@@ -533,6 +602,23 @@ pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationRes
             if let Some(sat) = saturation.take() {
                 let i = dc.branch_currents.get(id.as_str()).copied().unwrap_or(0.0);
                 *inductance = sindr_devices::inductor::incremental_inductance(i, *inductance, &sat);
+            }
+        }
+        if let CircuitElement::Transformer {
+            id,
+            l1,
+            l2,
+            k,
+            saturation,
+            ..
+        } = element
+        {
+            if let Some(sat) = saturation.take() {
+                let current = |w: &str| dc.branch_currents.get(w).copied().unwrap_or(0.0);
+                let i = [current(id), current(&format!("{id}#2"))];
+                let (_, l) = crate::transient::transformer_flux(*l1, *l2, *k, &sat, i);
+                (*l1, *l2) = (l[0][0], l[1][1]);
+                *k = l[0][1] / (l[0][0] * l[1][1]).sqrt();
             }
         }
     }
@@ -616,12 +702,114 @@ pub(crate) fn small_signal_system(
     ss_models: &[SmallSignalModel],
     omega: f64,
 ) -> SmallSignalSystem {
+    build_small_signal(
+        circuit,
+        node_map,
+        dc_solution,
+        ss_models,
+        Complex64::new(0.0, omega),
+        false,
+    )
+}
+
+/// The linearised system as the matrix pencil `G + s·C`, for pole-zero
+/// analysis. Elements whose admittance isn't affine in `s` (an inductor's
+/// `1/(sL)`, a battery's `R1‖C1`, a diode's charge behind its `RS`) get
+/// extra unknowns after the node and branch rows (an inductor's current,
+/// an internal node), so every entry is `g + s·c`.
+pub(crate) struct SmallSignalPencil {
+    /// The `s⁰` part.
+    pub g: DMatrix<f64>,
+    /// The `s¹` part.
+    pub c: DMatrix<f64>,
+    /// Branch row of each independent voltage source, by id.
+    pub vsource_branches: HashMap<String, usize>,
+}
+
+/// The pencil `G + s·C` of `circuit`, linearised around `dc_solution`
+/// through `ss_models`.
+///
+/// # Errors
+///
+/// [`SimError::InvalidComponent`] if the system isn't affine in `s`, which
+/// would mean an element's stamp has no pencil form.
+pub(crate) fn small_signal_pencil(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    dc_solution: &DVector<f64>,
+    ss_models: &[SmallSignalModel],
+) -> Result<SmallSignalPencil, SimError> {
+    let at = |s: Complex64| build_small_signal(circuit, node_map, dc_solution, ss_models, s, true);
+    // At s = j every stamp g + s·c is (g, c) with no rounding, which
+    // subtracting A(0) from A(1) would not give for a small c beside a
+    // large g.
+    let a1 = at(Complex64::new(0.0, 1.0));
+    let vsource_branches = a1.vsource_branches;
+    let a1 = a1.a.to_dense();
+    let g = a1.map(|z| z.re);
+    let c = a1.map(|z| z.im);
+    // Every stamp is affine in s, so A(0) = G and A(2j) = G + 2j·C.
+    let a0 = at(Complex64::new(0.0, 0.0)).a.to_dense();
+    let a2 = at(Complex64::new(0.0, 2.0)).a.to_dense();
+    let affine = (0..g.len()).all(|k| {
+        let (g, c) = (g[k], c[k]);
+        let tol = 1e-12 * (g.abs() + 2.0 * c.abs());
+        (a0[k] - g).norm() <= tol && (a2[k] - Complex64::new(g, 2.0 * c)).norm() <= tol
+    });
+    if !affine {
+        return Err(SimError::InvalidComponent(
+            "pole-zero: the linearised circuit isn't of the form G + sC".into(),
+        ));
+    }
+    Ok(SmallSignalPencil {
+        g,
+        c,
+        vsource_branches,
+    })
+}
+
+/// The extra unknowns an element takes in the pencil form of
+/// [`build_small_signal`].
+fn pencil_rows(element: &CircuitElement) -> usize {
+    match element {
+        CircuitElement::Inductor { .. } => 1,
+        CircuitElement::Battery { params, .. } if params.rc.is_some() => 2,
+        CircuitElement::Diode {
+            model, temperature, ..
+        } if device_params::diode_charge(model.as_ref()).is_some()
+            && device_params::diode(model.as_ref(), *temperature).rs > 0.0 =>
+        {
+            1
+        }
+        _ => 0,
+    }
+}
+
+/// The small-signal system at complex frequency `s`. With `pencil`, the
+/// stamps that aren't affine in `s` take extra unknowns instead (see
+/// [`SmallSignalPencil`]); without it the system is the plain node and
+/// branch one AC solves.
+fn build_small_signal(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    dc_solution: &DVector<f64>,
+    ss_models: &[SmallSignalModel],
+    s: Complex64,
+    pencil: bool,
+) -> SmallSignalSystem {
     let num_nodes = node_map.num_nodes();
     let num_vsources = circuit.count_voltage_sources();
-    let mut a = MnaMatrix::zeros(num_nodes + num_vsources);
+    let extra: usize = if pencil {
+        circuit.components.iter().map(pencil_rows).sum()
+    } else {
+        0
+    };
+    let mut a = MnaMatrix::zeros(num_nodes + num_vsources + extra);
     let mut vsource_index: usize = 0;
     let mut vsource_branches = HashMap::new();
-    let j_omega = Complex64::new(0.0, omega);
+    let j_omega = s;
+    // The next free extra unknown of the pencil form.
+    let mut aux = num_nodes + num_vsources;
 
     // Stamp linear components
     for component in &circuit.components {
@@ -680,6 +868,24 @@ pub(crate) fn small_signal_system(
                     stamp_complex_conductance(&mut a, q, p, -y);
                 }
             }
+            CircuitElement::Jfet {
+                nodes,
+                kind,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                // Each gate junction's capacitance at the DC bias.
+                for (_, c0, p, q) in crate::transient::jfet_junctions(nodes, pc) {
+                    let v = |n: &String| node_map.index(n).map_or(0.0, |i| dc_solution[i]);
+                    let (_, c) = crate::transient::jfet_gate_charge(v(&p) - v(&q), *kind, pc, c0);
+                    let y = j_omega * c;
+                    let (p, q) = (node_map.index(&p), node_map.index(&q));
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
+            }
             CircuitElement::Varactor { nodes, params, .. } => {
                 // Small-signal capacitance at the DC bias.
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
@@ -691,6 +897,29 @@ pub(crate) fn small_signal_system(
                 stamp_complex_conductance(&mut a, q, q, y);
                 stamp_complex_conductance(&mut a, p, q, -y);
                 stamp_complex_conductance(&mut a, q, p, -y);
+            }
+            CircuitElement::Battery { nodes, params, .. } if pencil && params.rc.is_some() => {
+                // Z = R0 + R1‖C1 as a branch current `i` through R0 into an
+                // internal node `m`, then R1‖C1 from `m` to nodes[1].
+                let Some(pair) = params.rc else { continue };
+                let (i, m) = (aux, aux + 1);
+                aux += 2;
+                let one = Complex64::new(1.0, 0.0);
+                let p = node_map.index(&nodes[0]);
+                let q = node_map.index(&nodes[1]);
+                if let Some(p) = p {
+                    a[(p, i)] += one;
+                    a[(i, p)] += one;
+                }
+                a[(i, m)] -= one;
+                a[(i, i)] -= Complex64::new(params.r_series, 0.0);
+                a[(m, i)] -= one;
+                let y = Complex64::new(1.0 / pair.r, 0.0) + s * pair.c;
+                let m = Some(m);
+                stamp_complex_conductance(&mut a, m, m, y);
+                stamp_complex_conductance(&mut a, q, q, y);
+                stamp_complex_conductance(&mut a, m, q, -y);
+                stamp_complex_conductance(&mut a, q, m, -y);
             }
             CircuitElement::Battery { nodes, params, .. } => {
                 // Its open-circuit voltage is a DC source, zero in AC; what
@@ -710,9 +939,26 @@ pub(crate) fn small_signal_system(
             }
             CircuitElement::Inductor {
                 nodes, inductance, ..
+            } if pencil => {
+                // Branch form, V_p − V_q = sL·i, which is affine in s.
+                let i = aux;
+                aux += 1;
+                let one = Complex64::new(1.0, 0.0);
+                if let Some(p) = node_map.index(&nodes[0]) {
+                    a[(p, i)] += one;
+                    a[(i, p)] += one;
+                }
+                if let Some(q) = node_map.index(&nodes[1]) {
+                    a[(q, i)] -= one;
+                    a[(i, q)] -= one;
+                }
+                a[(i, i)] -= s * *inductance;
+            }
+            CircuitElement::Inductor {
+                nodes, inductance, ..
             } => {
                 // Y = 1/(j*omega*L)
-                let y = if omega.abs() > 1e-15 {
+                let y = if s.norm() > 1e-15 {
                     Complex64::new(1.0, 0.0) / (j_omega * *inductance)
                 } else {
                     // At DC, inductor is a short circuit (very high conductance)
@@ -861,6 +1107,24 @@ pub(crate) fn small_signal_system(
                     let (g_j, c_j) = diode::junction_small_signal(v_d, &params, &charge);
                     let (g_d, _) = diode::diode_companion(v_d, &params);
                     let junction = Complex64::new(g_j, 0.0) + j_omega * c_j;
+                    let p = node_map.index(&nodes[0]);
+                    let q = node_map.index(&nodes[1]);
+                    if pencil && params.rs > 0.0 {
+                        // RS from the anode to an internal node `m`, the
+                        // junction from `m` to the cathode, less the g_d
+                        // the small-signal model stamps across the diode.
+                        let m = Some(aux);
+                        aux += 1;
+                        let g_rs = Complex64::new(1.0 / params.rs, 0.0);
+                        let g_d = Complex64::new(g_d, 0.0);
+                        for (x, y, v) in [(p, m, g_rs), (m, q, junction), (p, q, -g_d)] {
+                            stamp_complex_conductance(&mut a, x, x, v);
+                            stamp_complex_conductance(&mut a, y, y, v);
+                            stamp_complex_conductance(&mut a, x, y, -v);
+                            stamp_complex_conductance(&mut a, y, x, -v);
+                        }
+                        continue;
+                    }
                     let y = if params.rs > 0.0 {
                         Complex64::new(1.0, 0.0) / (params.rs + 1.0 / junction)
                     } else {
@@ -871,8 +1135,6 @@ pub(crate) fn small_signal_system(
                     } else {
                         Complex64::new(0.0, 0.0)
                     };
-                    let p = node_map.index(&nodes[0]);
-                    let q = node_map.index(&nodes[1]);
                     stamp_complex_conductance(&mut a, p, p, y);
                     stamp_complex_conductance(&mut a, q, q, y);
                     stamp_complex_conductance(&mut a, p, q, -y);
@@ -1075,6 +1337,56 @@ pub(crate) fn small_signal_system(
                     }
                 }
             }
+            CircuitElement::Behavioural {
+                id,
+                nodes,
+                output,
+                expr,
+            } => {
+                // Its Jacobian at the bias point; the constant term is a DC
+                // source and drops out of the small-signal system. `circuit`
+                // was checked by the bias solve, so this can't fail here.
+                let (jacobian, _) = crate::stamp::behavioural_linearisation(
+                    circuit,
+                    node_map,
+                    id,
+                    expr,
+                    dc_solution,
+                    0.0,
+                )
+                .unwrap_or_default();
+                let p = node_map.index(&nodes[0]);
+                let q = node_map.index(&nodes[1]);
+                match output {
+                    crate::BehaviouralOutput::Current => {
+                        for (k, g) in &jacobian {
+                            let g = Complex64::new(*g, 0.0);
+                            if let Some(pi) = p {
+                                a[(pi, *k)] += g;
+                            }
+                            if let Some(qi) = q {
+                                a[(qi, *k)] -= g;
+                            }
+                        }
+                    }
+                    _ => {
+                        let branch = num_nodes + vsource_index;
+                        let one = Complex64::new(1.0, 0.0);
+                        if let Some(pi) = p {
+                            a[(pi, branch)] += one;
+                            a[(branch, pi)] += one;
+                        }
+                        if let Some(qi) = q {
+                            a[(qi, branch)] -= one;
+                            a[(branch, qi)] -= one;
+                        }
+                        for (k, g) in &jacobian {
+                            a[(branch, *k)] -= Complex64::new(*g, 0.0);
+                        }
+                    }
+                }
+                vsource_index += component.branch_slots();
+            }
             // Fuse: stamp as resistor (intact=0.001 Ohm, blown=1e9 Ohm) in AC
             CircuitElement::Fuse { nodes, blown, .. } => {
                 let r = if *blown { 1e9_f64 } else { 0.001_f64 };
@@ -1241,17 +1553,7 @@ pub(crate) fn solve_ac_with(
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    validate_config(config)?;
-    let drives_a_voltage_source = circuit
-        .components
-        .iter()
-        .any(|c| matches!(c, CircuitElement::VoltageSource { id, .. } if *id == config.source_id));
-    if !drives_a_voltage_source {
-        return Err(SimError::InvalidComponent(format!(
-            "AC sweep: source_id '{}' is not a voltage source in the circuit",
-            config.source_id
-        )));
-    }
+    validate_stimulus(circuit, config)?;
 
     let (node_map, dc_solution, dc) = bias_point_with_result(circuit, opts)?;
     let circuit = &incremental_inductors(&at_junction_temperatures(circuit, &dc), &dc);
@@ -1654,6 +1956,7 @@ mod tests {
                         kind,
                         idss: 10e-3,
                         vp,
+                        parasitic_caps: None,
                     },
                 ])
             };

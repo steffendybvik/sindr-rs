@@ -277,6 +277,145 @@ pub fn bjt_terminal_jacobian(vbe: f64, vbc: f64, params: &BjtParams) -> BjtJacob
     }
 }
 
+/// The derivatives of a BJT's terminal currents and of its terminal Jacobian
+/// with respect to one parameter, at fixed junction voltages, in the NPN
+/// frame: a PNP caller negates the currents and keeps the Jacobian, as for
+/// [`bjt_terminal_currents`] and [`bjt_terminal_jacobian`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct BjtDerivative {
+    /// ∂Ib/∂p: base current (A) per unit of the parameter.
+    pub ib: f64,
+    /// ∂Ic/∂p: collector current (A) per unit of the parameter.
+    pub ic: f64,
+    /// ∂J/∂p: each entry of the [`BjtJacobian`] (S) per unit of the
+    /// parameter.
+    pub jacobian: BjtJacobian,
+}
+
+/// [`BjtDerivative`]s with respect to each parameter of [`BjtParams`] the
+/// DC model uses, from [`bjt_derivatives`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct BjtDerivatives {
+    /// With respect to `is` (per A).
+    pub is: BjtDerivative,
+    /// With respect to `bf`.
+    pub bf: BjtDerivative,
+    /// With respect to `br`.
+    pub br: BjtDerivative,
+    /// With respect to `nf`.
+    pub nf: BjtDerivative,
+    /// With respect to `nr`.
+    pub nr: BjtDerivative,
+    /// With respect to `vaf` (per V). Zero while the Early effect is off
+    /// (`vaf` of 0 or infinite).
+    pub vaf: BjtDerivative,
+}
+
+/// The exact derivatives of [`bjt_terminal_currents`] and
+/// [`bjt_terminal_jacobian`] at junction voltages `vbe`/`vbc` (V,
+/// sign-adjusted for PNP) with respect to each parameter, for sensitivity
+/// analysis.
+pub fn bjt_derivatives(vbe: f64, vbc: f64, params: &BjtParams) -> BjtDerivatives {
+    let vt = params.vt();
+    let f = JunctionExpDerivative::at(vbe, params.nf * vt);
+    let r = JunctionExpDerivative::at(vbc, params.nr * vt);
+    let (is, bf, br, vaf) = (params.is, params.bf, params.br, params.vaf);
+    let i_f = is * (f.e - 1.0);
+    let i_r = is * (r.e - 1.0);
+    let g_f = is * f.de_dv;
+    let g_r = is * r.de_dv;
+    let k = 1.0 + 1.0 / br; // 1/α_r
+    let i_tr = i_f - k * i_r;
+    let vce = vbe - vbc;
+    let early_on = early_enabled(params);
+    let s = i_tr.signum();
+    let early = if early_on { 1.0 + s * vce / vaf } else { 1.0 };
+
+    // One parameter's derivative from those of the model's pieces: i_f,
+    // i_r, g_f, g_r (A, S), bf, br and vaf.
+    let derivative = |di_f: f64, di_r: f64, dg_f: f64, dg_r: f64, dbf: f64, dbr: f64, dvaf: f64| {
+        let dk = -dbr / (br * br);
+        let di_tr = di_f - dk * i_r - k * di_r;
+        let (dearly, dg_o) = if early_on {
+            (
+                -s * vce * dvaf / (vaf * vaf),
+                s * di_tr / vaf - i_tr.abs() * dvaf / (vaf * vaf),
+            )
+        } else {
+            (0.0, 0.0)
+        };
+        BjtDerivative {
+            ib: di_f / bf - i_f * dbf / (bf * bf) + di_r / br - i_r * dbr / (br * br),
+            ic: di_tr * early + i_tr * dearly,
+            jacobian: BjtJacobian {
+                dib_dvbe: dg_f / bf - g_f * dbf / (bf * bf),
+                dib_dvbc: dg_r / br - g_r * dbr / (br * br),
+                dic_dvbe: dg_f * early + g_f * dearly + dg_o,
+                dic_dvbc: -(dk * g_r + k * dg_r) * early - k * g_r * dearly - dg_o,
+            },
+        }
+    };
+
+    BjtDerivatives {
+        is: derivative(f.e - 1.0, r.e - 1.0, f.de_dv, r.de_dv, 0.0, 0.0, 0.0),
+        bf: derivative(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+        br: derivative(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        nf: derivative(
+            is * vt * f.de_da,
+            0.0,
+            is * vt * f.dde_dv_da,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ),
+        nr: derivative(
+            0.0,
+            is * vt * r.de_da,
+            0.0,
+            is * vt * r.dde_dv_da,
+            0.0,
+            0.0,
+            0.0,
+        ),
+        vaf: derivative(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    }
+}
+
+/// [`junction_exp`] and its derivatives with respect to `n_vt`.
+struct JunctionExpDerivative {
+    e: f64,
+    de_dv: f64,
+    de_da: f64,
+    dde_dv_da: f64,
+}
+
+impl JunctionExpDerivative {
+    fn at(v: f64, a: f64) -> Self {
+        let (e, de_dv) = junction_exp(v, a);
+        if v > V_MAX_EXP {
+            // e = E0·(1 + (v − Vm)/a), de/dv = E0/a, with E0 = exp(Vm/a).
+            let e0 = (V_MAX_EXP / a).exp();
+            let de0_da = -V_MAX_EXP * e0 / (a * a);
+            Self {
+                e,
+                de_dv,
+                de_da: de0_da * (1.0 + (v - V_MAX_EXP) / a) - e0 * (v - V_MAX_EXP) / (a * a),
+                dde_dv_da: de0_da / a - e0 / (a * a),
+            }
+        } else {
+            Self {
+                e,
+                de_dv,
+                de_da: -v * e / (a * a),
+                dde_dv_da: -(e / (a * a)) * (1.0 + v / a),
+            }
+        }
+    }
+}
+
 /// Detect operating region from junction voltages.
 pub fn detect_region(vbe: f64, vbc: f64) -> BjtRegion {
     if vbe < 0.1 {
@@ -526,5 +665,92 @@ mod tests {
         assert_relative_eq!(gm, ic / V_T, max_relative = 1e-6);
         assert_relative_eq!(j.dib_dvbe, i_tr / (100.0 * V_T), max_relative = 1e-6);
         assert!(j.dib_dvbc.abs() < 1e-20);
+    }
+
+    #[test]
+    fn bjt_derivatives_match_central_differences() {
+        let params = BjtParams {
+            is: 3e-15,
+            bf: 120.0,
+            nf: 1.1,
+            br: 4.0,
+            nr: 1.3,
+            vaf: 60.0,
+            var: 0.0,
+            temperature: 310.0,
+        };
+        let no_early = BjtParams {
+            vaf: 0.0,
+            ..params.clone()
+        };
+        type Set = fn(&mut BjtParams, f64);
+        type Pick = fn(&BjtDerivatives) -> BjtDerivative;
+        let setters: [(&str, Set, Pick); 6] = [
+            ("is", |p, x| p.is = x, |d| d.is),
+            ("bf", |p, x| p.bf = x, |d| d.bf),
+            ("br", |p, x| p.br = x, |d| d.br),
+            ("nf", |p, x| p.nf = x, |d| d.nf),
+            ("nr", |p, x| p.nr = x, |d| d.nr),
+            ("vaf", |p, x| p.vaf = x, |d| d.vaf),
+        ];
+        // Forward active, saturation, reverse active, and past the
+        // exponential's linear continuation.
+        for (p, vbe, vbc) in [
+            (&params, 0.68, -4.0),
+            (&params, 0.72, 0.6),
+            (&params, -3.0, 0.7),
+            (&params, 1.2, -1.0),
+            (&no_early, 0.7, -2.0),
+        ] {
+            let d = bjt_derivatives(vbe, vbc, p);
+            for (name, set, pick) in setters {
+                let want = pick(&d);
+                let x = match name {
+                    "is" => p.is,
+                    "bf" => p.bf,
+                    "br" => p.br,
+                    "nf" => p.nf,
+                    "nr" => p.nr,
+                    _ => p.vaf,
+                };
+                if name == "vaf" && x == 0.0 {
+                    assert_eq!(want.ic, 0.0);
+                    continue;
+                }
+                let h = x.abs() * 1e-6;
+                let at = |x: f64| {
+                    let mut q = p.clone();
+                    set(&mut q, x);
+                    (
+                        bjt_terminal_currents(vbe, vbc, &q),
+                        bjt_terminal_jacobian(vbe, vbc, &q),
+                    )
+                };
+                let ((ib1, ic1), j1) = at(x + h);
+                let ((ib0, ic0), j0) = at(x - h);
+                let fd = |a: f64, b: f64| (a - b) / (2.0 * h);
+                let tol = |got: f64, want: f64, scale: f64| {
+                    assert!(
+                        (got - want).abs() <= 1e-5 * want.abs() + 1e-9 * scale,
+                        "{name} at ({vbe}, {vbc}): {got} vs {want}"
+                    );
+                };
+                let i_scale = ib1.abs().max(ic1.abs()) / x.abs();
+                tol(want.ib, fd(ib1, ib0), i_scale);
+                tol(want.ic, fd(ic1, ic0), i_scale);
+                let m1 = [j1.dib_dvbe, j1.dib_dvbc, j1.dic_dvbe, j1.dic_dvbc];
+                let m0 = [j0.dib_dvbe, j0.dib_dvbc, j0.dic_dvbe, j0.dic_dvbc];
+                let got = [
+                    want.jacobian.dib_dvbe,
+                    want.jacobian.dib_dvbc,
+                    want.jacobian.dic_dvbe,
+                    want.jacobian.dic_dvbc,
+                ];
+                let g_scale = m1.iter().fold(0.0_f64, |a, b| a.max(b.abs())) / x.abs();
+                for k in 0..4 {
+                    tol(got[k], fd(m1[k], m0[k]), g_scale);
+                }
+            }
+        }
     }
 }

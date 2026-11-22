@@ -174,6 +174,7 @@ fn jfet_with_gate_and_source_on_ground_carries_idss() {
                 kind: JfetKind::NChannel,
                 idss: 10e-3,
                 vp: -2.0,
+                parasitic_caps: None,
             },
         ],
     );
@@ -198,6 +199,7 @@ fn p_jfet_with_its_drain_on_ground_carries_idss() {
                 kind: JfetKind::PChannel,
                 idss: 10e-3,
                 vp: 2.0,
+                parasitic_caps: None,
             },
         ],
     );
@@ -319,6 +321,7 @@ fn reversed_primary_inverts_the_secondary() {
                     l1: 10e-3,
                     l2: 40e-3,
                     k: 0.99,
+                    saturation: None,
                 },
                 r("RL", "s", "0", 1e3),
             ],

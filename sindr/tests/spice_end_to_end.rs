@@ -140,9 +140,9 @@ fn parse_file_include_lib() {
 
 #[test]
 fn strict_mode_unsupported_device_errors() {
-    // M is a recognised SPICE prefix but not implemented by the parser.
-    let src = "* title\nV1 d 0 1\nR1 d 0 1k\nM1 d g s nm\n.end\n";
-    let err = parse_str(src).expect_err("strict mode should error on M device");
+    // S (voltage-controlled switch) is a recognised SPICE prefix but not implemented by the parser.
+    let src = "* title\nV1 d 0 1\nR1 d 0 1k\nS1 d 0 d 0 sw\n.end\n";
+    let err = parse_str(src).expect_err("strict mode should error on S device");
     match err {
         SpiceParseError::UnsupportedDevice { .. } => {}
         other => panic!("expected UnsupportedDevice, got {other:?}"),
@@ -151,21 +151,21 @@ fn strict_mode_unsupported_device_errors() {
 
 #[test]
 fn lenient_mode_unsupported_device_warns() {
-    let src = "* title\nV1 d 0 1\nR1 d 0 1k\nM1 d g s nm\n.end\n";
+    let src = "* title\nV1 d 0 1\nR1 d 0 1k\nS1 d 0 d 0 sw\n.end\n";
     let opts = ParseOptions::default().with_strict(false);
     let nl = parse_str_with_options(src, opts).expect("lenient should not error");
     assert!(
         !nl.warnings.is_empty(),
-        "expected at least one warning for the M element"
+        "expected at least one warning for the S element"
     );
-    let has_m = nl
+    let has_s = nl
         .circuit
         .components
         .iter()
-        .any(|c| c.id().starts_with('m'));
+        .any(|c| c.id().starts_with('s'));
     assert!(
-        !has_m,
-        "M element should be omitted from circuit components"
+        !has_s,
+        "S element should be omitted from circuit components"
     );
 }
 

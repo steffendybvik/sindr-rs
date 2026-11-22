@@ -17,8 +17,8 @@ use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 use sindr::noise::{solve_noise, NoiseConfig, NoiseResult};
 use sindr::spice::{parse_file, to_netlist};
 use sindr::{
-    dc_sweep, solve_circuit, solve_op, temperature_sweep, Circuit, CircuitElement, JfetKind,
-    MosfetKind, SimulationResult,
+    dc_sweep, solve_ac_sensitivity, solve_circuit, solve_op, solve_sensitivity, temperature_sweep,
+    Circuit, CircuitElement, JfetKind, MosfetKind, SensParameter, SimulationResult,
 };
 use sindr_devices::mosfet::MosfetParams;
 
@@ -294,6 +294,36 @@ fn op_reactive() {
     check_op("op_reactive", &parse("op_reactive"), (OP_V, OP_I));
 }
 
+/// B sources and the `VALUE` forms of E and G: a multiplier, `i()` of a
+/// source, a current that depends on its own output, and a `.param`
+/// inside an expression. Pins `I=`'s direction and `i()`'s sign.
+#[test]
+fn op_behavioural() {
+    check_op("op_behavioural", &parse("op_behavioural"), (OP_V, OP_I));
+}
+
+/// `POLY` on E, G, F and H, lowered to behavioural sources: pins SPICE2's
+/// coefficient order (`x1², x1·x2, x2²` after the linear terms).
+#[test]
+fn op_poly() {
+    check_op("op_poly", &parse("op_poly"), (OP_V, OP_I));
+}
+
+/// A squarer's small-signal gain is its slope at the bias, 2·1.5, into
+/// an RC pole.
+#[test]
+fn ac_behavioural() {
+    check_ac(
+        "ac_behavioural",
+        &parse("ac_behavioural"),
+        "vin",
+        "out",
+        5,
+        (10.0, 1e6),
+        OP_V,
+    );
+}
+
 #[test]
 fn op_resistive() {
     check_op("op_resistive", &parse("op_resistive"), (OP_V, OP_I));
@@ -454,6 +484,7 @@ fn op_jfet() {
                     kind: JfetKind::NChannel,
                     idss: 10e-3,
                     vp: -2.0,
+                    parasitic_caps: None,
                 },
             ]),
         ),
@@ -858,9 +889,185 @@ fn ac_jfet() {
             kind: JfetKind::NChannel,
             idss: 10e-3,
             vp: -2.0,
+            parasitic_caps: None,
         },
     ]);
     check_ac("ac_jfet", &circuit, "vin", "d", 5, (0.1, 100e3), JFET.0);
+}
+
+/// A JFET common-source stage driven from 10 kΩ: the input pole of CGS plus
+/// the Miller-multiplied CGD, both at their reverse-biased junction values
+/// (`C0/√(1 − v/PB)`), and the feedforward zero of CGD. Built in Rust and
+/// read from the deck, whose `NJF` card carries `CGS`, `CGD`, `PB` and `FC`.
+#[test]
+fn ac_jfet_caps() {
+    let circuit = circuit(vec![
+        vsource("vdd", "vdd", "0", 12.0),
+        vsource("vin", "in", "0", -1.0),
+        resistor("rsig", "in", "g", 10e3),
+        resistor("rd", "vdd", "d", 1e3),
+        CircuitElement::Jfet {
+            id: "j1".into(),
+            nodes: ["g".into(), "d".into(), "0".into()],
+            kind: JfetKind::NChannel,
+            idss: 10e-3,
+            vp: -2.0,
+            parasitic_caps: Some(sindr::circuit::JfetParasiticCaps {
+                cgs: 10e-12,
+                cgd: 2e-12,
+                pb: 0.8,
+                fc: 0.5,
+                ..Default::default()
+            }),
+        },
+    ]);
+    // The gate is reverse-biased, so ngspice's default gate IS adds next to
+    // nothing and the case holds to the junction devices' 1e-6.
+    let range = (10e3, 1e9);
+    check_ac(
+        "ac_jfet_caps",
+        in_deck("ac_jfet_caps", &circuit),
+        "vin",
+        "d",
+        5,
+        range,
+        OP_V,
+    );
+    let parsed = parse("ac_jfet_caps");
+    assert!(matches!(
+        parsed.components.iter().find(|c| c.id() == "j1"),
+        Some(CircuitElement::Jfet {
+            parasitic_caps: Some(_),
+            ..
+        })
+    ));
+    check_ac("ac_jfet_caps", &parsed, "vin", "d", 5, range, OP_V);
+}
+
+// ------------------------------------------------- M and J lines, parsed
+
+/// The FET decks above, read by sindr's parser instead of built in Rust.
+/// Their cards leave `IS` at SPICE's 1e-14 A, so each MOSFET also gets
+/// that drain–bulk junction as its body diode, reverse-biased here.
+#[test]
+fn op_fet_decks_parse() {
+    for case in ["op_mosfet_cs", "op_mosfet_follower", "op_pmos_highside"] {
+        check_op(case, &parse(case), (OP_V, OP_I));
+    }
+    check_op("op_jfet", &parse("op_jfet"), JFET);
+}
+
+#[test]
+fn ac_fet_decks_parse() {
+    check_ac(
+        "ac_mosfet_cs",
+        &parse("ac_mosfet_cs"),
+        "vg",
+        "d",
+        5,
+        (1e3, 1e9),
+        OP_V,
+    );
+    check_ac(
+        "ac_jfet",
+        &parse("ac_jfet"),
+        "vin",
+        "d",
+        5,
+        (0.1, 100e3),
+        JFET.0,
+    );
+}
+
+/// A level-1 card with what the M line maps beyond the defaults: `W`, `L`,
+/// `LD` and `M` into `kp`, `CGSO`/`CGDO`/`CGBO` into the gate capacitances
+/// and `CBD`/`PB`/`MJ` into the body diode's junction capacitance.
+#[test]
+fn ac_mosfet_card() {
+    let circuit = parse("ac_mosfet_card");
+    let Some(CircuitElement::Mosfet {
+        params,
+        parasitic_caps: Some(caps),
+        body_diode: Some(body),
+        ..
+    }) = circuit.components.iter().find(|c| c.id() == "m1")
+    else {
+        panic!("ac_mosfet_card: m1 should be a MOSFET with caps and a body diode");
+    };
+    let (w, l_eff, m) = (20e-6, 2e-6 - 2.0 * 0.1e-6, 2.0);
+    assert!((params.kp - 50e-6 * w / l_eff * m).abs() < 1e-12);
+    assert!((caps.cgs - (1e-9 * w + 0.2e-9 * l_eff) * m).abs() < 1e-20);
+    assert!((caps.cgd - 0.3e-9 * w * m).abs() < 1e-20);
+    assert!((body.cjo - 5e-12 * m).abs() < 1e-20);
+    check_ac("ac_mosfet_card", &circuit, "vg", "d", 5, (1e3, 1e9), OP_V);
+}
+
+/// A P-channel JFET with an area factor: `IDSS = BETA·VTO²·area`.
+#[test]
+fn op_pjf() {
+    check_op("op_pjf", &parse("op_pjf"), JFET);
+}
+
+/// A DC sweep of a parsed deck: `v(<node>)` and `i(<source>)` against
+/// ngspice's. Off, ngspice adds GMIN leakage sindr doesn't, hence 1 nA.
+fn check_dc_deck(case: &'static str, source: &str, from: f64, to: f64) {
+    let golden = Golden::load(case);
+    let scale = golden.scale();
+    let sweep = dc_sweep(&parse(case), source, from, to, scale.len())
+        .unwrap_or_else(|e| panic!("{case}: {e}"));
+    let mut check = Check::new(case);
+    for name in golden.names.iter().skip(1) {
+        let inner = &name[2..name.len() - 1];
+        let (values, tol): (Vec<f64>, Tol) = if name.starts_with("v(") {
+            let v = sweep.points.iter().map(|p| p.result.node_voltages[inner]);
+            (v.collect(), OP_V)
+        } else {
+            let i = sweep
+                .points
+                .iter()
+                .map(|p| source_current(&p.result, inner));
+            (
+                i.collect(),
+                Tol {
+                    rel: 1e-4,
+                    abs: 1e-9,
+                },
+            )
+        };
+        check.series(name, &scale, &values, &golden.column(name), tol);
+    }
+    check.finish();
+}
+
+/// A vendor-style power MOSFET: a `.subckt` holding a gate resistor, a
+/// level-1 core, an explicit body diode and its own `.model` cards,
+/// switching a 1 Ω load from off to fully on.
+#[test]
+fn dc_power_mosfet_subckt() {
+    check_dc_deck("dc_power_mosfet_subckt", "vg", 0.0, 10.0);
+}
+
+/// The same part held off, its drain pulled below its source: the body
+/// diode from the subckt's local card conducts amps.
+#[test]
+fn dc_power_mosfet_body() {
+    check_dc_deck("dc_power_mosfet_body", "vd", -3.0, 0.0);
+}
+
+/// The body-diode deck parsed: its MOSFET card switches the built-in
+/// junction off (`IS=1e-30`) and the explicit `D1` does the conducting.
+#[test]
+fn dc_mosfet_body_diode_deck_parses() {
+    let golden = Golden::load("dc_mosfet_body_diode");
+    let sweep = dc_sweep(&parse("dc_mosfet_body_diode"), "v1", -5.0, 5.0, 41).unwrap();
+    let vd: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["d"])
+        .collect();
+    let mut check = Check::new("dc_mosfet_body_diode");
+    check.series("v(d)", &golden.scale(), &vd, &golden.column("v(d)"), OP_V);
+    check.finish();
 }
 
 // ---------------------------------------------------------------- noise
@@ -1117,6 +1324,7 @@ fn ac_exported_transformer() {
                 l1: 1e-3,
                 l2: 4e-3,
                 k: 0.99,
+                saturation: None,
             },
             resistor("rl", "s", "0", 1e3),
         ],
@@ -1142,6 +1350,87 @@ fn ac_exported_transformer() {
         (10.0, 1e6),
         AC_LINEAR,
     );
+}
+
+/// Every FET `to_netlist` writes: both JFET polarities, and a MOSFET of
+/// each kind, one body diode on the card's drain–bulk junction and one, with
+/// series resistance and breakdown SPICE's junction lacks, as its own `D`.
+fn exported_fets() -> Circuit {
+    circuit(vec![
+        vsource("vdd", "vdd", "0", 12.0),
+        resistor("rjd", "vdd", "jd", 1e3),
+        resistor("rjs", "js", "0", 220.0),
+        resistor("rjg", "jg", "0", 1e6),
+        CircuitElement::Jfet {
+            id: "j1".into(),
+            nodes: ["jg".into(), "jd".into(), "js".into()],
+            kind: JfetKind::NChannel,
+            idss: 10e-3,
+            vp: -2.0,
+            parasitic_caps: None,
+        },
+        resistor("rps", "vdd", "ps", 330.0),
+        resistor("rpg", "pg", "vdd", 1e6),
+        resistor("rpd", "pd", "0", 1e3),
+        CircuitElement::Jfet {
+            id: "j2".into(),
+            nodes: ["pg".into(), "pd".into(), "ps".into()],
+            kind: JfetKind::PChannel,
+            idss: 12.5e-3,
+            vp: 2.5,
+            parasitic_caps: None,
+        },
+        vsource("vg1", "g1", "0", 3.0),
+        resistor("rd1", "vdd", "d1", 10e3),
+        CircuitElement::Mosfet {
+            id: "m1".into(),
+            nodes: ["g1".into(), "d1".into(), "0".into()],
+            kind: MosfetKind::Nmos,
+            params: MosfetParams::default_nmos(),
+            parasitic_caps: None,
+            body_diode: Some(sindr::DiodeModel {
+                is: 1e-12,
+                n: 1.2,
+                rs: 0.05,
+                bv: Some(60.0),
+                ibv: 250e-6,
+                ..Default::default()
+            }),
+        },
+        vsource("vg2", "g2", "0", 5.0),
+        resistor("rd2", "d2", "0", 10e3),
+        CircuitElement::Mosfet {
+            id: "m2".into(),
+            nodes: ["g2".into(), "d2".into(), "vdd".into()],
+            kind: MosfetKind::Pmos,
+            params: MosfetParams::default_pmos(),
+            parasitic_caps: Some(sindr::circuit::MosfetParasiticCaps {
+                cgs: 10e-12,
+                cgd: 2e-12,
+            }),
+            body_diode: Some(sindr::DiodeModel {
+                is: 1e-14,
+                cjo: 5e-12,
+                vj: 0.8,
+                ..Default::default()
+            }),
+        },
+    ])
+}
+
+#[test]
+fn op_exported_fets() {
+    let circuit = exported_fets();
+    check_op(
+        "op_exported_fets",
+        exported("op_exported_fets", &circuit),
+        JFET,
+    );
+    // Read back, the deck solves the same: the separate body diode is then
+    // `dm1_body` beside a junction-less `m1`.
+    let parsed = parse("op_exported_fets");
+    check_op("op_exported_fets", &parsed, JFET);
+    assert!(parsed.components.iter().any(|c| c.id() == "dm1_body"));
 }
 
 // ---------------------------------------------------------------- .tran
@@ -1302,9 +1591,104 @@ fn tran_bjt_switch() {
     check_deck_tran_within("tran_bjt_switch", &["v(c)", "i(vcc)"], 3e-2);
 }
 
+/// Rises of `v` through `level` on the time base `t`, linearly
+/// interpolated.
+fn rising_through(t: &[f64], v: &[f64], level: f64) -> Vec<f64> {
+    (1..t.len())
+        .filter(|&i| v[i - 1] < level && v[i] >= level)
+        .map(|i| t[i - 1] + (level - v[i - 1]) / (v[i] - v[i - 1]) * (t[i] - t[i - 1]))
+        .collect()
+}
+
+/// The two-transistor LED flasher from rest. Its transistors have no
+/// junction charge, so each edge is a jump that sindr takes by
+/// pseudo-transient continuation, and the waveforms can't be compared
+/// point by point (an edge a fraction of a millisecond off is volts off).
+/// What's compared is what the circuit is for: the period, from each
+/// collector's rises through 4 V after the first, to 0.2 %, and the current
+/// in the LED that's on (its peak), to 0.5 %. The golden is ngspice at a
+/// 10 µs TMAX, resampled to 1 ms, which places a rise to about 10 µs.
+#[test]
+fn tran_flasher() {
+    let case = "tran_flasher";
+    let golden = Golden::load(case);
+    let config = sindr::TransientConfig::new(1.2, 1e-4);
+    let tran = sindr::solve_transient(&parse(case), &config)
+        .unwrap_or_else(|e| panic!("{case}: {e}"))
+        .transient
+        .unwrap();
+    let time: Vec<f64> = tran.timesteps.iter().map(|s| s.time).collect();
+    let node =
+        |n: &str| -> Vec<f64> { tran.timesteps.iter().map(|s| s.node_voltages[n]).collect() };
+    let steady_period =
+        |rises: &[f64]| (rises[rises.len() - 1] - rises[1]) / (rises.len() - 2) as f64;
+    let mut check = Check::new(case);
+    for (collector, anode, led) in [("c1n", "a1", "d1"), ("c2n", "a2", "d2")] {
+        let ours = rising_through(&time, &node(collector), 4.0);
+        let theirs = rising_through(
+            &golden.scale(),
+            &golden.column(&format!("v({collector})")),
+            4.0,
+        );
+        assert!(theirs.len() >= 4, "{case}: ngspice rises {theirs:?}");
+        assert_eq!(
+            ours.len(),
+            theirs.len(),
+            "{case}: {collector} rises {ours:?} vs {theirs:?}"
+        );
+        check.value(
+            &format!("period of v({collector})"),
+            steady_period(&ours),
+            steady_period(&theirs),
+            Tol {
+                rel: 2e-3,
+                abs: 0.0,
+            },
+        );
+
+        let peak = |i: Vec<f64>| i.into_iter().fold(0.0, f64::max);
+        let ours = peak(
+            tran.timesteps
+                .iter()
+                .map(|s| {
+                    s.component_results
+                        .iter()
+                        .find(|c| c.id == led)
+                        .unwrap()
+                        .current_through
+                })
+                .collect(),
+        );
+        let theirs = peak(
+            golden
+                .column(&format!("v({anode})"))
+                .iter()
+                .zip(golden.column(&format!("v({collector})")))
+                .map(|(a, c)| (a - c) / 470.0)
+                .collect(),
+        );
+        check.value(
+            &format!("peak i({led})"),
+            ours,
+            theirs,
+            Tol {
+                rel: 5e-3,
+                abs: 0.0,
+            },
+        );
+    }
+    check.finish();
+}
+
 #[test]
 fn tran_rlc_ring() {
     check_deck_tran("tran_rlc_ring", &["v(b)", "i(v1)"]);
+}
+
+/// A B-source time function into an RC, from the deck's own `.tran`.
+#[test]
+fn tran_behavioural() {
+    check_deck_tran("tran_behavioural", &["v(s)", "v(out)"]);
 }
 
 // ---------------------------------------------------------------- temperature
@@ -1327,6 +1711,79 @@ fn temp_diode() {
         .collect();
     let mut check = Check::new("temp_diode");
     check.series("v(out)", &kelvin, &got, &golden.column("v(out)"), OP_V);
+    check.finish();
+}
+
+/// A vendor-style card stating silicon's EG, XTI and TNOM, with N and RS
+/// off the defaults: it parses in strict mode and follows ngspice across
+/// the sweep, since those are the values sindr scales IS with.
+#[test]
+fn temp_diode_card() {
+    let golden = Golden::load("temp_diode_card");
+    let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
+    let sweep = temperature_sweep(
+        &parse("temp_diode_card"),
+        kelvin[0],
+        *kelvin.last().unwrap(),
+        kelvin.len(),
+    )
+    .unwrap();
+    let got: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["out"])
+        .collect();
+    let mut check = Check::new("temp_diode_card");
+    check.series("v(out)", &kelvin, &got, &golden.column("v(out)"), OP_V);
+    check.finish();
+}
+
+/// A Schottky-style card: IS follows EG = 0.69 eV and XTI = 2, so it
+/// rises far more slowly with temperature than silicon's.
+#[test]
+fn temp_schottky_card() {
+    let golden = Golden::load("temp_schottky_card");
+    let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
+    let sweep = temperature_sweep(
+        &parse("temp_schottky_card"),
+        kelvin[0],
+        *kelvin.last().unwrap(),
+        kelvin.len(),
+    )
+    .unwrap();
+    let got: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["out"])
+        .collect();
+    let mut check = Check::new("temp_schottky_card");
+    check.series("v(out)", &kelvin, &got, &golden.column("v(out)"), OP_V);
+    check.finish();
+}
+
+/// A BJT card with its own EG and XTI, biased by a base resistor: Vbe
+/// falls and the collector current rises with temperature as ngspice's.
+#[test]
+fn temp_bjt_card() {
+    let golden = Golden::load("temp_bjt_card");
+    let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
+    let sweep = temperature_sweep(
+        &parse("temp_bjt_card"),
+        kelvin[0],
+        *kelvin.last().unwrap(),
+        kelvin.len(),
+    )
+    .unwrap();
+    let mut check = Check::new("temp_bjt_card");
+    for node in ["b", "c"] {
+        let got: Vec<f64> = sweep
+            .points
+            .iter()
+            .map(|p| p.result.node_voltages[node])
+            .collect();
+        let name = format!("v({node})");
+        check.series(&name, &kelvin, &got, &golden.column(&name), OP_V);
+    }
     check.finish();
 }
 
@@ -1714,5 +2171,216 @@ fn ac_exported_ferrite_bead() {
         20,
         (1e5, 1e10),
         AC_LINEAR,
+    );
+}
+
+/// The golden vector for a sensitivity entry. Elements, gains and the
+/// stimulus as ngspice's `.sens` names them: an element's own value is its
+/// name, a controlled source's gain `<id>_gain`, a stimulus `<id>_acmag`.
+/// A device-model parameter `<id>_<param>`, the central difference the
+/// case's `.ctl` takes of ngspice's operating point.
+fn sens_vector(id: &str, parameter: SensParameter) -> String {
+    use SensParameter as P;
+    let param = match parameter {
+        P::VoltageGain | P::Transconductance | P::Transresistance | P::CurrentGain => "gain",
+        P::AcMagnitude => "acmag",
+        P::SaturationCurrent => "is",
+        P::EmissionCoefficient => "n",
+        P::SeriesResistance => "rs",
+        P::ForwardBeta => "bf",
+        P::ReverseBeta => "br",
+        P::ForwardEmissionCoefficient => "nf",
+        P::ReverseEmissionCoefficient => "nr",
+        P::EarlyVoltage => "vaf",
+        P::TransconductanceParameter => "kp",
+        P::ThresholdVoltage => "vto",
+        P::ChannelLengthModulation => "lambda",
+        _ => return id.to_string(),
+    };
+    format!("{id}_{param}")
+}
+
+/// A DC `.sens` deck: every vector in its golden against sindr's entry.
+fn check_dc_sens(case: &'static str, tol: Tol) {
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    let config = netlist.analyses[0].sens_config().unwrap();
+    let sens = solve_sensitivity(&netlist.circuit, &config).unwrap();
+    let golden = Golden::load(case);
+    let mut check = Check::new(case);
+    let mut seen = 0;
+    for e in &sens.entries {
+        let name = sens_vector(&e.component_id, e.parameter);
+        // Column 0 is the scale, whatever its name.
+        if !golden.names[1..].contains(&name) {
+            continue;
+        }
+        seen += 1;
+        check.value(&name, e.sensitivity, golden.op(&name), tol);
+    }
+    // The scale column repeats one vector, so it isn't counted.
+    assert_eq!(
+        seen,
+        golden.names.len() - 1,
+        "{case}: vectors without an entry"
+    );
+    check.finish();
+}
+
+/// Device-model parameters against ngspice's own central differences (a
+/// 0.1 % step). ngspice's `.sens` isn't the reference here: it takes its
+/// own finite step, and is 2 % off for a diode's IS and N, and reports 0 for
+/// RS, BF, BR, NF and NR.
+const SENS_DEVICE: Tol = Tol {
+    rel: 1e-5,
+    abs: 1e-9,
+};
+
+/// A diode's IS, N and RS and a MOSFET's KP, VTO and LAMBDA, with the IS
+/// derivative the size of 10¹² V/A.
+#[test]
+fn sens_dc_diode_mos() {
+    check_dc_sens("sens_dc_diode_mos", SENS_DEVICE);
+}
+
+/// A BJT's BF, IS, BR, NF and NR.
+#[test]
+fn sens_dc_bjt() {
+    check_dc_sens("sens_dc_bjt", SENS_DEVICE);
+}
+
+/// E, G, F and H gains, through the controlling branch current for F and H.
+#[test]
+fn sens_dc_controlled() {
+    check_dc_sens(
+        "sens_dc_controlled",
+        Tol {
+            rel: 1e-6,
+            abs: 1e-12,
+        },
+    );
+}
+
+/// AC sensitivity of a linear network to R, C, L, every controlled source's
+/// gain and the stimulus, at 1 kHz. A single frequency: ngspice 47 gets only
+/// a sweep's first point right, and linearises at a zero bias, so the deck
+/// is linear.
+#[test]
+fn sens_ac_linear() {
+    let case = "sens_ac_linear";
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    let config = netlist.ac_sens_config().unwrap().unwrap();
+    let sens = solve_ac_sensitivity(&netlist.circuit, &config).unwrap();
+    let golden = Golden::load(case);
+    let point = &sens.points[0];
+    let mut check = Check::new(case);
+    check.value(
+        "frequency",
+        point.frequency,
+        golden.scale()[0],
+        Tol {
+            rel: 1e-12,
+            abs: 0.0,
+        },
+    );
+    let mut seen = 0;
+    for e in &point.entries {
+        let name = sens_vector(&e.component_id, e.parameter);
+        let Some(i) = golden.names.iter().position(|n| *n == name) else {
+            continue;
+        };
+        seen += 1;
+        let want = Complex64::new(golden.rows[0][i], golden.rows[0][i + 1]);
+        // Both parts to 1e-6 of the phasor's magnitude.
+        let tol = Tol {
+            rel: 0.0,
+            abs: 1e-6 * want.norm(),
+        };
+        check.value(&format!("{name} re"), e.sensitivity.re, want.re, tol);
+        check.value(&format!("{name} im"), e.sensitivity.im, want.im, tol);
+    }
+    // Each vector is two columns (real, imaginary) after the frequency.
+    assert_eq!(
+        seen,
+        (golden.names.len() - 1) / 2,
+        "vectors without an entry"
+    );
+    check.finish();
+}
+
+/// The poles and zeros in a `.pz` golden: each `pole(k)` / `zero(k)` is a
+/// real and an imaginary column after the scale.
+fn pz_golden(case: &str) -> (Vec<Complex64>, Vec<Complex64>) {
+    let golden = Golden::load(case);
+    let row = &golden.rows[0];
+    let (mut poles, mut zeros) = (Vec::new(), Vec::new());
+    for k in (1..golden.names.len()).step_by(2) {
+        let z = Complex64::new(row[k], row[k + 1]);
+        if golden.names[k].starts_with("pole") {
+            poles.push(z);
+        } else {
+            zeros.push(z);
+        }
+    }
+    (poles, zeros)
+}
+
+/// Each golden root against the nearest of sindr's, to `rel` relative and
+/// `rel·scale` absolute (ngspice writes nine significant digits, and a root
+/// at 0 comes out at round-off of the others' size).
+fn check_roots(
+    check: &mut Check,
+    what: &str,
+    got: &[Complex64],
+    want: &[Complex64],
+    rel: f64,
+    scale: f64,
+) {
+    assert_eq!(got.len(), want.len(), "{what}: {got:?} vs {want:?}");
+    let tol = Tol {
+        rel,
+        abs: rel * scale,
+    };
+    for (k, w) in want.iter().enumerate() {
+        let g = got
+            .iter()
+            .min_by(|a, b| (*a - w).norm().total_cmp(&(*b - w).norm()))
+            .unwrap();
+        check.value(&format!("{what}({}).re", k + 1), g.re, w.re, tol);
+        check.value(&format!("{what}({}).im", k + 1), g.im, w.im, tol);
+    }
+}
+
+fn check_pz(case: &'static str, config: &sindr::PzConfig) {
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    let pz = sindr::solve_pz(&netlist.circuit, config).unwrap();
+    let (poles, zeros) = pz_golden(case);
+    let scale = poles
+        .iter()
+        .chain(&zeros)
+        .map(|z| z.norm())
+        .fold(0.0, f64::max);
+    let mut check = Check::new(case);
+    check_roots(&mut check, "pole", &pz.poles, &poles, 1e-8, scale);
+    check_roots(&mut check, "zero", &pz.zeros, &zeros, 1e-8, scale);
+    check.finish();
+}
+
+/// `.pz … vol pz` through an RLC tank with a capacitor bridging it: a
+/// complex pole pair and a complex zero pair.
+#[test]
+fn pz_rlc_vol() {
+    check_pz(
+        "pz_rlc_vol",
+        &sindr::PzConfig::voltage_gain("in", "0", "a", "0"),
+    );
+}
+
+/// `.pz … cur pz` into an RC-RL ladder: three poles and the inductor's zero
+/// at DC.
+#[test]
+fn pz_ladder_cur() {
+    check_pz(
+        "pz_ladder_cur",
+        &sindr::PzConfig::transimpedance("in", "0", "out", "0"),
     );
 }

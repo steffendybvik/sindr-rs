@@ -1,0 +1,16 @@
+* DC sensitivity through all four controlled sources
+V1 in 0 2
+R1 in a 1k
+R2 a 0 2k
+E1 e 0 a 0 2
+R3 e f 500
+G1 0 f a 0 1m
+R4 f 0 1k
+VS f g 0
+R5 g 0 3k
+F1 0 h VS 4
+R6 h 0 1k
+H1 out 0 VS 200
+R7 out h 1k
+.sens v(h)
+.end

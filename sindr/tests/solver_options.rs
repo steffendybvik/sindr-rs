@@ -5,7 +5,8 @@ use std::collections::HashMap;
 
 use sindr::dc_sweep::DcSweepAxis;
 use sindr::{
-    solve_circuit, solve_transient, BjtKind, Circuit, CircuitElement, ConvergenceAid, NoiseConfig,
+    solve_ac_sensitivity, solve_circuit, solve_loop_gain, solve_pz, solve_transient, AcSensConfig,
+    BjtKind, Circuit, CircuitElement, ConvergenceAid, LoopGainConfig, NoiseConfig, PzConfig,
     SensConfig, SimError, SolvePoint, Solver, SolverOptions, TfConfig, TfOutput, TransientConfig,
 };
 
@@ -412,6 +413,24 @@ fn every_analysis(solver: &Solver, c: &Circuit) -> Vec<(&'static str, Result<(),
         ("noise", solver.noise(c, &noise).map(drop)),
         ("tf", solver.tf(c, &tf).map(drop)),
         (
+            "pz",
+            solver
+                .pz(c, &PzConfig::voltage_gain("vcc", "0", "a", "0"))
+                .map(drop),
+        ),
+        (
+            "loop_gain",
+            solver
+                .loop_gain(c, &LoopGainConfig::new("VP", 10.0, 1e3, 3))
+                .map(drop),
+        ),
+        (
+            "ac_sensitivity",
+            solver
+                .ac_sensitivity(c, &AcSensConfig::new(out.clone(), ac.clone()))
+                .map(drop),
+        ),
+        (
             "sensitivity",
             solver.sensitivity(c, &SensConfig::new(out)).map(drop),
         ),
@@ -430,11 +449,13 @@ fn every_analysis(solver: &Solver, c: &Circuit) -> Vec<(&'static str, Result<(),
     ]
 }
 
-/// The diode circuit with a second source, `V2`, for the nested sweep.
+/// The diode circuit with a second source, `V2`, for the nested sweep,
+/// feeding `a` through a 0 V probe, `VP`, for the loop gain.
 fn two_source_diode_circuit() -> Circuit {
     let mut c = diode_circuit();
     c.components.push(vsource("V2", "b", "0", 1.0));
-    c.components.push(resistor("R2", "b", "a", 10e3));
+    c.components.push(resistor("R2", "b", "p", 10e3));
+    c.components.push(vsource("VP", "a", "p", 0.0));
     c
 }
 
@@ -506,4 +527,77 @@ fn every_analysis_runs_with_the_solvers_options() {
     for (name, result) in every_analysis(&Solver::new(seeded), &c) {
         assert!(result.is_ok(), "{name}: {result:?}");
     }
+}
+
+/// The diode circuit with a capacitor on `a`, so the analyses that look at
+/// frequency have a pole to find.
+fn diode_rc_circuit() -> Circuit {
+    let mut c = two_source_diode_circuit();
+    c.components.push(CircuitElement::Capacitor {
+        id: "C1".into(),
+        nodes: ["a".into(), "0".into()],
+        capacitance: 1e-9,
+    });
+    c
+}
+
+#[test]
+fn default_solver_matches_the_free_frequency_analyses() {
+    let c = diode_rc_circuit();
+    let solver = Solver::default();
+
+    let pz = PzConfig::voltage_gain("vcc", "0", "a", "0");
+    let free = solve_pz(&c, &pz).unwrap();
+    assert_eq!(free.poles.len(), 1, "{:?}", free.poles);
+    assert_eq!(solver.pz(&c, &pz).unwrap(), free);
+
+    let lg = LoopGainConfig::new("VP", 10.0, 1e6, 5);
+    assert_eq!(
+        solver.loop_gain(&c, &lg).unwrap(),
+        solve_loop_gain(&c, &lg).unwrap()
+    );
+
+    let out = TfOutput::voltage("a");
+    let sens = AcSensConfig::new(out, sindr::AcConfig::new("V1", 10.0, 1e6, 5));
+    let free = solve_ac_sensitivity(&c, &sens).unwrap();
+    assert_eq!(free.points.len(), 5);
+    assert_eq!(solver.ac_sensitivity(&c, &sens).unwrap(), free);
+}
+
+/// A nodeset at the answer lets a starved solver find the same poles, loop
+/// gain and AC sensitivities as the default one.
+#[test]
+fn nodeset_seeds_the_frequency_analyses() {
+    let c = diode_rc_circuit();
+    let mut seeded = starved(2);
+    seeded.nodeset = solve_circuit(&c).unwrap().node_voltages;
+    let (starved, seeded) = (Solver::new(starved(2)), Solver::new(seeded));
+
+    let pz = PzConfig::voltage_gain("vcc", "0", "a", "0");
+    assert!(starved.pz(&c, &pz).is_err());
+    let (got, want) = (seeded.pz(&c, &pz).unwrap(), solve_pz(&c, &pz).unwrap());
+    let rel = (got.poles[0] - want.poles[0]).norm() / want.poles[0].norm();
+    assert!(rel < 1e-6, "{:?} vs {:?}", got.poles, want.poles);
+
+    let lg = LoopGainConfig::new("VP", 10.0, 1e6, 5);
+    assert!(starved.loop_gain(&c, &lg).is_err());
+    let got = seeded.loop_gain(&c, &lg).unwrap();
+    let want = solve_loop_gain(&c, &lg).unwrap();
+    for (g, w) in got.points.iter().zip(&want.points) {
+        // No feedback reaches `a` back through VP, so T is zero to rounding.
+        assert!(
+            (g.gain - w.gain).norm() <= 1e-6 * w.gain.norm() + 1e-12,
+            "{g:?} vs {w:?}"
+        );
+    }
+
+    let sens = AcSensConfig::new(
+        TfOutput::voltage("a"),
+        sindr::AcConfig::new("V1", 10.0, 1e6, 5),
+    );
+    assert!(starved.ac_sensitivity(&c, &sens).is_err());
+    assert_eq!(
+        seeded.ac_sensitivity(&c, &sens).unwrap().points.len(),
+        solve_ac_sensitivity(&c, &sens).unwrap().points.len()
+    );
 }
