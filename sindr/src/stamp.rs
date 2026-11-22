@@ -1300,6 +1300,7 @@ mod tests {
                     l1: 1e-3,
                     l2: 1e-3,
                     k: 0.99,
+                    saturation: None,
                 },
                 r("R2", "s", "0", 1e3),
                 v("V2", "b", 3.0),
@@ -1868,6 +1869,7 @@ mod tests {
                     l1: 1e-3,
                     l2: 4e-3,
                     k: 0.999,
+                    saturation: None,
                 },
                 CircuitElement::Resistor {
                     id: "R2".into(),

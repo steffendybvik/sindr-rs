@@ -960,6 +960,7 @@ fn switches_fuses_relays_and_transformers() {
             l1: 10e-3,
             l2: 1e-3,
             k: 0.999,
+            saturation: None,
         }
     );
 }

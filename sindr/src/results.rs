@@ -1169,6 +1169,7 @@ mod extract_tests {
                     l1: 1e-3,
                     l2: 1e-3,
                     k: 0.99,
+                    saturation: None,
                 },
                 CircuitElement::VoltageSource {
                     id: "V1".into(),

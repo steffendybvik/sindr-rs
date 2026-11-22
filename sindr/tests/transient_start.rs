@@ -198,6 +198,7 @@ fn transformer_windings_start_with_their_dc_currents() {
             l1: 10e-3,
             l2: 10e-3,
             k: 0.99,
+            saturation: None,
         },
         r("RL", "s", "0", 100.0),
     ]);

@@ -319,6 +319,7 @@ fn reversed_primary_inverts_the_secondary() {
                     l1: 10e-3,
                     l2: 40e-3,
                     k: 0.99,
+                    saturation: None,
                 },
                 r("RL", "s", "0", 1e3),
             ],

@@ -296,6 +296,7 @@ pub fn transformer_stepdown() -> Circuit {
                 l1: 1.0,
                 l2: 0.25,
                 k: 0.999,
+                saturation: None,
             },
             CircuitElement::Resistor {
                 id: "R_load".into(),

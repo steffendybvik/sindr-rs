@@ -451,6 +451,10 @@ impl<'a> Deck<'a> {
             CircuitElement::Inductor {
                 saturation: Some(_),
                 ..
+            }
+            | CircuitElement::Transformer {
+                saturation: Some(_),
+                ..
             } => Err(unsupported("a saturating core has no SPICE3 primitive")),
             CircuitElement::Inductor {
                 nodes, inductance, ..

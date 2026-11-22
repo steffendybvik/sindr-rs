@@ -330,6 +330,7 @@ fn transformer_matches_closed_form() {
             l1: 1e-3,
             l2: 4e-3,
             k: 0.99,
+            saturation: None,
         },
         resistor("RL", "s", "0", 100.0),
     ]);

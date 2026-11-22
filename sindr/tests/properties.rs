@@ -73,6 +73,7 @@ impl Network {
                         l1: value * 1e-6,
                         l2: value * 0.5e-6,
                         k: 0.9,
+                        saturation: None,
                     });
                     for (i, mid) in [m1, m2].into_iter().enumerate() {
                         out.push(CircuitElement::Resistor {

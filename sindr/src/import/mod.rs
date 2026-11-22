@@ -1309,6 +1309,7 @@ fn build_element(
             l1: r.required_param("l1", "a primary inductance (H)")?,
             l2: r.required_param("l2", "a secondary inductance (H)")?,
             k: r.param_or("k", 0.999)?,
+            saturation: None,
         },
         K::Regulator => CircuitElement::VoltageRegulator {
             id,

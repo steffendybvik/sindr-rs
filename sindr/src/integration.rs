@@ -163,6 +163,33 @@ impl Integrator {
         }
         (z, rhs)
     }
+
+    /// [`coupled`](Self::coupled) for windings whose fluxes are nonlinear in
+    /// their currents, linearised at currents `i` (A), where they have fluxes
+    /// `lambda` (Wb) and incremental inductance `l = dλ/di` (H). The
+    /// histories `h` hold fluxes, not currents.
+    ///
+    /// From `v_k = a0·λ_k(i) + H_k`, with `λ(i) ≈ λ + l·(i − i*)`:
+    /// `v_k − a0·Σ_j l_kj·i_j = a0·(λ_k − Σ_j l_kj·i*_j) + H_k`.
+    pub(crate) fn coupled_nonlinear(
+        &self,
+        l: [[f64; 2]; 2],
+        lambda: [f64; 2],
+        i: [f64; 2],
+        h: [&History; 2],
+    ) -> ([[f64; 2]; 2], [f64; 2]) {
+        let mut z = [[0.0; 2]; 2];
+        let mut rhs = [0.0; 2];
+        for k in 0..2 {
+            let mut linear = lambda[k];
+            for j in 0..2 {
+                z[k][j] = -l[k][j] * self.a0;
+                linear -= l[k][j] * i[j];
+            }
+            rhs[k] = self.a0 * linear + self.a1 * h[k].x1 + self.a2 * h[k].x2 - self.b1 * h[k].y1;
+        }
+        (z, rhs)
+    }
 }
 
 /// The last two states and the last rate of one reactive element: a

@@ -285,6 +285,7 @@ fn ac_loaded_transformer_matches_transfer_function() {
             l1,
             l2,
             k,
+            saturation: None,
         },
         vsource("V1", "in", "0", 0.0),
         resistor("RS", "in", "p", rs),
