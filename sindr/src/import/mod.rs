@@ -291,6 +291,7 @@ impl Model {
 /// | `njfet`, `pjfet` | | `idss` (A), `vp` (V) | |
 /// | `igbt` | | | `Igbt` |
 /// | `op_amp`, `comparator` | | `v_pos`, `v_neg` (V; default from bench supplies on its supply pins, else ±15) | op-amp: `OpAmp` |
+/// | `dual_op_amp`, `quad_op_amp`, `dual_comparator`, `quad_comparator` | | as `op_amp` and `comparator`, for every unit | op-amps: `OpAmp` |
 /// | `potentiometer` | Ω, required | `position` (0 top to 1 bottom, default 0.5) | |
 /// | `switch`, `push_button` | | `closed` (default false) | |
 /// | `fuse` | A (rating) | `blown` (default false) | |
@@ -312,9 +313,22 @@ impl Model {
 /// sindr can't simulate (an IC), takes any value, parameters and model and
 /// ignores them, and is listed in [`ImportedCircuit::black_boxes`].
 ///
+/// A dual or quad part is one package with two or four units sharing its
+/// supply pins. Each unit becomes its own element, `<id>.a`, `<id>.b`
+/// and so on, so results are keyed by those; [`Component::part`] stays
+/// under the package's id. A unit's terminals are an op-amp's with the
+/// unit's letter or number on them: `a_in+`, `in+ a`, `1IN+`, `IN1+`,
+/// `INA+`, `-IN B`, `OUT B`, `2OUT`, `Non-inverting A`. The supplies are `v+` and
+/// `v-` (or `vcc`, `vee`, `positive supply` …), without a unit. A unit
+/// with none of its terminals connected (a spare half) adds no element;
+/// one connected in part is an [`ImportError::Unconnected`] as for a
+/// single op-amp.
+///
 /// Names besides the canonical ones: `resistor_iec`, `resistor_us`, `res`;
 /// `cap`, `capacitor_polarised`, `capacitor_electrolytic`, `electrolytic`;
-/// `zener`, `schottky`; `opamp`, `operational_amplifier`; `pot`,
+/// `zener`, `schottky`; `opamp`, `operational_amplifier`;
+/// `op_amp_dual`, `dual_opamp`, `op_amp_quad`, `quad_opamp`,
+/// `comparator_dual`, `comparator_quad`; `pot`,
 /// `trimmer`; `pushbutton`, `button`; `switch_spst`, `spst`;
 /// `xtal`, `quartz`; `ferrite`, `bead`; `ldo`, `voltage_regulator`;
 /// `cell`; `ntc`; `ldr`; `testpoint`; `header`, `header_<n>`,
@@ -345,6 +359,14 @@ pub enum ComponentKind {
     Igbt,
     OpAmp,
     Comparator,
+    /// Two op-amps in one package, sharing its supply pins.
+    DualOpAmp,
+    /// Four op-amps in one package, sharing its supply pins.
+    QuadOpAmp,
+    /// Two comparators in one package, sharing its supply pins.
+    DualComparator,
+    /// Four comparators in one package, sharing its supply pins.
+    QuadComparator,
     Potentiometer,
     Switch,
     PushButton,
@@ -392,6 +414,10 @@ const KINDS: &[(&str, ComponentKind)] = &[
     ("igbt", ComponentKind::Igbt),
     ("op_amp", ComponentKind::OpAmp),
     ("comparator", ComponentKind::Comparator),
+    ("dual_op_amp", ComponentKind::DualOpAmp),
+    ("quad_op_amp", ComponentKind::QuadOpAmp),
+    ("dual_comparator", ComponentKind::DualComparator),
+    ("quad_comparator", ComponentKind::QuadComparator),
     ("potentiometer", ComponentKind::Potentiometer),
     ("switch", ComponentKind::Switch),
     ("push_button", ComponentKind::PushButton),
@@ -426,6 +452,14 @@ const ALIASES: &[(&str, ComponentKind)] = &[
     ("schottky", ComponentKind::SchottkyDiode),
     ("opamp", ComponentKind::OpAmp),
     ("operational_amplifier", ComponentKind::OpAmp),
+    ("op_amp_dual", ComponentKind::DualOpAmp),
+    ("dual_opamp", ComponentKind::DualOpAmp),
+    ("opamp_dual", ComponentKind::DualOpAmp),
+    ("op_amp_quad", ComponentKind::QuadOpAmp),
+    ("quad_opamp", ComponentKind::QuadOpAmp),
+    ("opamp_quad", ComponentKind::QuadOpAmp),
+    ("comparator_dual", ComponentKind::DualComparator),
+    ("comparator_quad", ComponentKind::QuadComparator),
     ("pot", ComponentKind::Potentiometer),
     ("trimmer", ComponentKind::Potentiometer),
     ("pushbutton", ComponentKind::PushButton),
@@ -448,6 +482,43 @@ const ALIASES: &[(&str, ComponentKind)] = &[
     ("conn", ComponentKind::Connector),
     ("ic", ComponentKind::BlackBox),
 ];
+
+/// An op-amp's supply pins, by the names they answer to.
+const V_POS: &[&str] = &["v+", "vcc", "vdd", "vs+", "v_pos", "positive_supply"];
+const V_NEG: &[&str] = &["v-", "vee", "vss", "vs-", "v_neg", "negative_supply"];
+
+/// The terminals of a multi-unit op-amp or comparator: each unit's
+/// `in+`, `in-` and `out`, tagged with its letter and number, then the
+/// shared supplies.
+macro_rules! unit_terminals {
+    ($(($x:literal, $d:literal)),*) => {
+        &[
+            $(
+                &[
+                    concat!($x, "_in+"), concat!("in+_", $x), concat!($d, "in+"),
+                    concat!("in", $d, "+"), concat!("in", $x, "+"), concat!($x, "+"), concat!("+in_", $x),
+                    concat!("non_inverting_", $x), concat!($x, "_non_inverting"),
+                ],
+                &[
+                    concat!($x, "_in-"), concat!("in-_", $x), concat!($d, "in-"),
+                    concat!("in", $d, "-"), concat!("in", $x, "-"), concat!($x, "-"), concat!("-in_", $x),
+                    concat!("inverting_", $x), concat!($x, "_inverting"),
+                ],
+                &[
+                    concat!($x, "_out"), concat!("out_", $x), concat!($d, "out"),
+                    concat!("out", $d), concat!("out", $x),
+                    concat!("output_", $x), concat!($x, "_output"),
+                ],
+            )*
+            V_POS,
+            V_NEG,
+        ]
+    };
+}
+
+const DUAL_UNIT_TERMINALS: &[&[&str]] = unit_terminals!(("a", "1"), ("b", "2"));
+const QUAD_UNIT_TERMINALS: &[&[&str]] =
+    unit_terminals!(("a", "1"), ("b", "2"), ("c", "3"), ("d", "4"));
 
 /// A name as it's compared: trimmed, lowercase, and each run of `-`, `_`
 /// and whitespace one `_`. A separator is kept rather than dropped so a
@@ -554,9 +625,11 @@ impl ComponentKind {
                 &["in+", "+", "inp", "non_inverting", "in_plus"],
                 &["in-", "-", "inn", "inverting", "in_minus"],
                 &["out", "output", "vout"],
-                &["v+", "vcc", "vdd", "vs+", "v_pos", "positive_supply"],
-                &["v-", "vee", "vss", "vs-", "v_neg", "negative_supply"],
+                V_POS,
+                V_NEG,
             ],
+            K::DualOpAmp | K::DualComparator => DUAL_UNIT_TERMINALS,
+            K::QuadOpAmp | K::QuadComparator => QUAD_UNIT_TERMINALS,
             K::Potentiometer => &[
                 &["1", "top", "cw"],
                 &["2", "wiper", "w"],
@@ -590,12 +663,29 @@ impl ComponentKind {
 
     /// How many of [`terminals`](Self::terminals), at the end, may be left
     /// unconnected: a MOSFET's body (tied to its source), an op-amp's two
-    /// supply pins.
+    /// supply pins (a multi-unit part's too).
     pub fn optional_terminals(&self) -> usize {
         match self {
             ComponentKind::Nmos | ComponentKind::Pmos => 1,
             ComponentKind::OpAmp | ComponentKind::Comparator => 2,
+            ComponentKind::DualOpAmp
+            | ComponentKind::QuadOpAmp
+            | ComponentKind::DualComparator
+            | ComponentKind::QuadComparator => 2,
             _ => 0,
+        }
+    }
+
+    /// For a multi-unit part, the kind of each unit and how many there
+    /// are: a dual op-amp is two [`OpAmp`](Self::OpAmp)s.
+    pub fn units(&self) -> Option<(ComponentKind, usize)> {
+        use ComponentKind as K;
+        match self {
+            K::DualOpAmp => Some((K::OpAmp, 2)),
+            K::QuadOpAmp => Some((K::OpAmp, 4)),
+            K::DualComparator => Some((K::Comparator, 2)),
+            K::QuadComparator => Some((K::Comparator, 4)),
+            _ => None,
         }
     }
 
@@ -608,7 +698,12 @@ impl ComponentKind {
             K::Led => &["color", "temperature"],
             K::Npn | K::Pnp => &["bf", "beta", "hfe", "temperature"],
             K::Njfet | K::Pjfet => &["idss", "vp"],
-            K::OpAmp | K::Comparator => &["v_pos", "v_neg"],
+            K::OpAmp
+            | K::Comparator
+            | K::DualOpAmp
+            | K::QuadOpAmp
+            | K::DualComparator
+            | K::QuadComparator => &["v_pos", "v_neg"],
             K::Potentiometer => &["position"],
             K::Switch | K::PushButton => &["closed"],
             K::Fuse => &["blown"],
@@ -631,7 +726,7 @@ impl ComponentKind {
             (K::Diode, Model::Diode(_))
                 | (K::Npn | K::Pnp, Model::Bjt(_))
                 | (K::Nmos | K::Pmos, Model::Mosfet(_))
-                | (K::OpAmp, Model::OpAmp(_))
+                | (K::OpAmp | K::DualOpAmp | K::QuadOpAmp, Model::OpAmp(_))
                 | (K::Regulator, Model::Regulator(_))
                 | (K::Battery, Model::Battery(_))
                 | (K::Varactor, Model::Varactor(_))
@@ -1154,8 +1249,31 @@ impl Netlist {
                     .get(&(component.id.as_str(), Slot::Index(slot)))
                     .map(|net| node(net))
             };
-            if let Some(element) = build_element(component, nodes_of, &supply)? {
-                circuit.components.push(element);
+            let Some((unit_kind, count)) = component.kind.units() else {
+                if let Some(element) = build_element(component, nodes_of, &supply)? {
+                    circuit.components.push(element);
+                }
+                continue;
+            };
+            // Each unit as its own component: its in+, in- and out, then
+            // the package's shared supplies.
+            for u in 0..count {
+                let slot = |i: usize| if i < 3 { 3 * u + i } else { 3 * count + i - 3 };
+                if (0..3).all(|i| nodes_of(slot(i)).is_none()) {
+                    continue;
+                }
+                let unit = Component {
+                    id: format!("{}.{}", component.id, char::from(b'a' + u as u8)),
+                    kind: unit_kind.clone(),
+                    part: None,
+                    ..component.clone()
+                };
+                if ids.contains(unit.id.as_str()) {
+                    return Err(ImportError::DuplicateId { id: unit.id });
+                }
+                if let Some(element) = build_element(&unit, |i| nodes_of(slot(i)), &supply)? {
+                    circuit.components.push(element);
+                }
             }
         }
 
@@ -1714,6 +1832,8 @@ fn build_element(
         K::Connector | K::TestPoint | K::NetTie | K::MountingHole | K::BlackBox | K::Other(_) => {
             return Ok(None)
         }
+        // A multi-unit package is built unit by unit, as its unit kind.
+        K::DualOpAmp | K::QuadOpAmp | K::DualComparator | K::QuadComparator => return Ok(None),
     };
     Ok(Some(element))
 }

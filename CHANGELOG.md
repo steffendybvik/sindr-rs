@@ -83,6 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UnknownKinds::BlackBox` imports unknown kinds that way instead of
   refusing them, which stays the default. `ImportedCircuit::black_boxes`
   lists every black box with the nets it's on.
+- `ComponentKind::DualOpAmp`, `QuadOpAmp`, `DualComparator` and
+  `QuadComparator`: one package whose two or four units share its supply
+  pins. Each unit imports as its own element, `<id>.a`, `<id>.b` …, with
+  terminals tagged by unit as datasheets write them (`1IN+`, `IN1-`,
+  `INA+`, `-IN B`, `OUT A`, `2OUT`). A spare unit with nothing connected
+  adds no element. `ComponentKind::units` gives a package's unit kind and
+  count.
 - `ComponentKind::Crystal` and `ComponentKind::FerriteBead` import as
   `CircuitElement::Crystal` and `CircuitElement::FerriteBead`, from a
   frequency, ESR and shunt capacitance, or an impedance at 100 MHz and a

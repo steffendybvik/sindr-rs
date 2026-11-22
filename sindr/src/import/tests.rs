@@ -554,7 +554,7 @@ fn build(component: Component, terminals: &[&str]) -> Result<CircuitElement, Imp
         .circuit
         .components
         .into_iter()
-        .find(|e| e.id() == id)
+        .find(|e| e.id() == id || e.id().starts_with(&format!("{id}.")))
         .expect("the component's element"))
 }
 
@@ -1844,7 +1844,7 @@ fn build_with(
         .circuit
         .components
         .into_iter()
-        .find(|e| e.id() == id)
+        .find(|e| e.id() == id || e.id().starts_with(&format!("{id}.")))
         .expect("the component's element"))
 }
 
@@ -2115,5 +2115,156 @@ fn options_read_from_json() {
     assert_eq!(
         serde_json::to_string(&empty).unwrap(),
         r#"{"unknown_kinds":"refuse"}"#
+    );
+}
+
+#[test]
+fn multi_unit_kinds_read_from_symbol_names() {
+    use ComponentKind as K;
+    for (name, kind) in [
+        ("dual-op-amp", K::DualOpAmp),
+        ("Op Amp Dual", K::DualOpAmp),
+        ("dual_opamp", K::DualOpAmp),
+        ("quad op-amp", K::QuadOpAmp),
+        ("opamp-quad", K::QuadOpAmp),
+        ("Dual Comparator", K::DualComparator),
+        ("comparator-quad", K::QuadComparator),
+    ] {
+        assert_eq!(ComponentKind::from_name(name), kind, "{name}");
+    }
+    assert_eq!(K::DualOpAmp.units(), Some((K::OpAmp, 2)));
+    assert_eq!(K::QuadComparator.units(), Some((K::Comparator, 4)));
+    assert_eq!(K::OpAmp.units(), None);
+    assert_eq!(K::DualOpAmp.terminals().len(), 8);
+    assert_eq!(K::QuadOpAmp.terminals().len(), 14);
+}
+
+/// A dual op-amp on ±12 V: unit A a follower, unit B an inverting gain
+/// of −2. Unit A's pins are named in three styles, and unit B's by pin
+/// number through a terminal-name table.
+#[test]
+fn dual_op_amp_builds_one_element_per_unit_on_shared_supplies() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("u1", ComponentKind::from_name("dual-op-amp"))
+                .with_model(Model::OpAmp(OpAmpModel::default())),
+            Component::new("rin", ComponentKind::Resistor).with_value("10k"),
+            Component::new("rf", ComponentKind::Resistor).with_value("20k"),
+            Component::new("rl", ComponentKind::Resistor).with_value("10k"),
+            // Supply bleeders, so the rails aren't nets of one source alone.
+            Component::new("rp", ComponentKind::Resistor).with_value("100k"),
+            Component::new("rn", ComponentKind::Resistor).with_value("100k"),
+        ],
+        nets: vec![
+            Net::new("in", [("u1", "1IN+"), ("rin", "1")]),
+            Net::new("outa", [("u1", "OUT A"), ("u1", "in1-"), ("rl", "1")]),
+            Net::new("sum", [("u1", "6"), ("rin", "2"), ("rf", "1")]),
+            Net::new("outb", [("u1", "7"), ("rf", "2")]),
+            Net::new("vcc", [("u1", "8"), ("rp", "1")]),
+            Net::new("vee", [("u1", "4"), ("rn", "1")]),
+            Net::new("gnd", [("u1", "5"), ("rl", "2"), ("rp", "2"), ("rn", "2")]),
+        ],
+    };
+    let options = ImportOptions::new().with_terminal_names(
+        "u1",
+        [
+            ("4", "V-"),
+            ("5", "+IN B"),
+            ("6", "-IN B"),
+            ("7", "OUT B"),
+            ("8", "V+"),
+        ],
+    );
+    let bench = Bench::new("gnd")
+        .with_source(BenchSource::voltage("vp", "vcc", 12.0))
+        .with_source(BenchSource::voltage("vn", "vee", -12.0))
+        .with_source(BenchSource::voltage("vin", "in", 1.5));
+    let imported = netlist.to_circuit_with(&bench, &options).unwrap();
+    for id in ["u1.a", "u1.b"] {
+        let Some(CircuitElement::OpAmp {
+            v_pos,
+            v_neg,
+            model,
+            ..
+        }) = imported.circuit.components.iter().find(|c| c.id() == id)
+        else {
+            panic!("no op-amp {id}")
+        };
+        assert_eq!((*v_pos, *v_neg), (12.0, -12.0), "{id}");
+        assert!(model.is_some(), "{id}");
+    }
+    assert!(imported.circuit.components.iter().all(|c| c.id() != "u1"));
+
+    let r = crate::solve_circuit(&imported.circuit).unwrap();
+    let v = |net: &str| r.node_voltages[imported.node(net).unwrap()];
+    assert!((v("outa") - 1.5).abs() < 1e-3, "follower: {}", v("outa"));
+    assert!((v("outb") + 3.0).abs() < 1e-3, "inverting: {}", v("outb"));
+}
+
+#[test]
+fn a_spare_unit_adds_no_element_and_a_half_wired_one_is_refused() {
+    let quad = |nets: Vec<Net>| Netlist {
+        components: vec![
+            Component::new("u2", ComponentKind::QuadComparator),
+            Component::new("rl", ComponentKind::Resistor).with_value("10k"),
+            Component::new("rp", ComponentKind::Resistor).with_value("100k"),
+        ],
+        nets,
+    };
+    // Only unit C is wired: in+ to a 2 V input, in- to ground.
+    let netlist = quad(vec![
+        Net::new("in", [("u2", "INC+")]),
+        Net::new("out", [("u2", "3OUT"), ("rl", "1")]),
+        Net::new("vcc", [("u2", "VCC"), ("rp", "1")]),
+        Net::new(
+            "gnd",
+            [("u2", "c-"), ("u2", "V-"), ("rl", "2"), ("rp", "2")],
+        ),
+    ]);
+    let bench = Bench::new("gnd")
+        .with_source(BenchSource::voltage("vp", "vcc", 5.0))
+        .with_source(BenchSource::voltage("vin", "in", 2.0));
+    let imported = netlist.to_circuit(&bench).unwrap();
+    let units: Vec<&str> = imported
+        .circuit
+        .components
+        .iter()
+        .map(|c| c.id())
+        .filter(|id| id.starts_with("u2"))
+        .collect();
+    assert_eq!(units, ["u2.c"]);
+    // 2 V above 0 V: unit C drives its grounded load to the 5 V rail.
+    let r = crate::solve_circuit(&imported.circuit).unwrap();
+    assert!(r.node_voltages[imported.node("out").unwrap()] > 4.9);
+
+    // Unit A with its output wired but not its inputs.
+    let half = quad(vec![
+        Net::new("out", [("u2", "1OUT"), ("rl", "1")]),
+        Net::new("gnd", [("rl", "2"), ("rp", "1"), ("rp", "2")]),
+    ]);
+    assert_eq!(
+        err(&half, &Bench::new("gnd")),
+        ImportError::Unconnected {
+            component: "u2.a".into(),
+            terminal: "in+".into(),
+        }
+    );
+}
+
+#[test]
+fn a_unit_id_that_clashes_with_a_component_is_refused() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("u1", ComponentKind::DualOpAmp),
+            Component::new("u1.a", ComponentKind::Resistor).with_value("1k"),
+        ],
+        nets: vec![
+            Net::new("x", [("u1", "a_in+"), ("u1", "a_in-"), ("u1", "a_out")]),
+            Net::new("gnd", [("u1.a", "1"), ("u1.a", "2")]),
+        ],
+    };
+    assert_eq!(
+        err(&netlist, &Bench::new("gnd")),
+        ImportError::DuplicateId { id: "u1.a".into() }
     );
 }

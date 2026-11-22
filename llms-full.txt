@@ -980,6 +980,7 @@ println!("vout = {:.3} V", op.node_voltages["vout"]);
 - **Ids carry through.** Element ids are your component ids and node names your net ids, so results land on your parts. Every `ImportError` names the component, net or bench item: an unknown kind, a terminal the kind doesn't have, a terminal on two nets or on none, a value that isn't one.
 - **Terminals by name, never pin number:** `anode`/`cathode` (or `A`/`K`), `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out` (or `Non-inverting`, `Inverting`, `Output`, `Positive supply`, `Negative supply`), case ignored and `-`, `_` and spaces alike. Unpolarised two-terminal parts also take `1` and `2`. `ComponentKind::terminals` lists each kind's names. A MOSFET's `body` must sit on its source's net; an op-amp's `V+`/`V-` pins set its rails from the bench supplies on those nets.
 - **Netlists as an editor exports them.** `ComponentKind::from_name` reads symbol ids (`resistor-iec`, `capacitor-polarized`, `op-amp`, `push-button`, `switch-spst`, `test-point`, `header-4`). When nets name terminals by id and the names sit in a table on each component, pass the table with `ImportOptions::with_terminal_names` to `Netlist::to_circuit_with` or `import::simulate_with`: a named terminal matches by its name, an unnamed one by its id, so pin `1` of an LED still needs its `Anode` name.
+- **Dual and quad op-amps and comparators.** `dual_op_amp`, `quad_op_amp`, `dual_comparator` and `quad_comparator` (or `op-amp-dual` and the like) are one package whose units share its `V+`/`V-` pins. Each unit becomes its own element, `<id>.a`, `<id>.b` …, with terminals tagged by unit as datasheets write them: `1IN+`, `IN1-`, `INA+`, `-IN B`, `OUT A`, `2OUT`. A spare unit with nothing connected adds no element.
 - **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently.
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
@@ -4042,6 +4043,7 @@ pub enum Model {
 /// | `njfet`, `pjfet` | | `idss` (A), `vp` (V) | |
 /// | `igbt` | | | `Igbt` |
 /// | `op_amp`, `comparator` | | `v_pos`, `v_neg` (V; default from bench supplies on its supply pins, else ±15) | op-amp: `OpAmp` |
+/// | `dual_op_amp`, `quad_op_amp`, `dual_comparator`, `quad_comparator` | | as `op_amp` and `comparator`, for every unit | op-amps: `OpAmp` |
 /// | `potentiometer` | Ω, required | `position` (0 top to 1 bottom, default 0.5) | |
 /// | `switch`, `push_button` | | `closed` (default false) | |
 /// | `fuse` | A (rating) | `blown` (default false) | |
@@ -4063,9 +4065,22 @@ pub enum Model {
 /// sindr can't simulate (an IC), takes any value, parameters and model and
 /// ignores them, and is listed in [`ImportedCircuit::black_boxes`].
 ///
+/// A dual or quad part is one package with two or four units sharing its
+/// supply pins. Each unit becomes its own element, `<id>.a`, `<id>.b`
+/// and so on, so results are keyed by those; [`Component::part`] stays
+/// under the package's id. A unit's terminals are an op-amp's with the
+/// unit's letter or number on them: `a_in+`, `in+ a`, `1IN+`, `IN1+`,
+/// `INA+`, `-IN B`, `OUT B`, `2OUT`, `Non-inverting A`. The supplies are `v+` and
+/// `v-` (or `vcc`, `vee`, `positive supply` …), without a unit. A unit
+/// with none of its terminals connected (a spare half) adds no element;
+/// one connected in part is an [`ImportError::Unconnected`] as for a
+/// single op-amp.
+///
 /// Names besides the canonical ones: `resistor_iec`, `resistor_us`, `res`;
 /// `cap`, `capacitor_polarised`, `capacitor_electrolytic`, `electrolytic`;
-/// `zener`, `schottky`; `opamp`, `operational_amplifier`; `pot`,
+/// `zener`, `schottky`; `opamp`, `operational_amplifier`;
+/// `op_amp_dual`, `dual_opamp`, `op_amp_quad`, `quad_opamp`,
+/// `comparator_dual`, `comparator_quad`; `pot`,
 /// `trimmer`; `pushbutton`, `button`; `switch_spst`, `spst`;
 /// `xtal`, `quartz`; `ferrite`, `bead`; `ldo`, `voltage_regulator`;
 /// `cell`; `ntc`; `ldr`; `testpoint`; `header`, `header_<n>`,
@@ -4091,6 +4106,14 @@ pub enum ComponentKind {
     Igbt,
     OpAmp,
     Comparator,
+    /// Two op-amps in one package, sharing its supply pins.
+    DualOpAmp,
+    /// Four op-amps in one package, sharing its supply pins.
+    QuadOpAmp,
+    /// Two comparators in one package, sharing its supply pins.
+    DualComparator,
+    /// Four comparators in one package, sharing its supply pins.
+    QuadComparator,
     Potentiometer,
     Switch,
     PushButton,
@@ -4146,8 +4169,12 @@ impl ComponentKind {
 
     /// How many of [`terminals`](Self::terminals), at the end, may be left
     /// unconnected: a MOSFET's body (tied to its source), an op-amp's two
-    /// supply pins.
+    /// supply pins (a multi-unit part's too).
     pub fn optional_terminals(&self) -> usize { … }
+
+    /// For a multi-unit part, the kind of each unit and how many there
+    /// are: a dual op-amp is two [`OpAmp`](Self::OpAmp)s.
+    pub fn units(&self) -> Option<(ComponentKind, usize)> { … }
 }
 
 /// A net: the terminals wired together.
