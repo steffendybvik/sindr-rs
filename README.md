@@ -68,7 +68,7 @@ Each analysis is checked against [ngspice](https://ngspice.sourceforge.io/) 47 o
 | Diode charge (AC) | 2 | 2e-4 | — |
 | Noise | 4 | 7e-7 | — |
 | Pole-zero | 2 | 1e-9 | — |
-| Transient | 11 | — | 2.6 % of full scale |
+| Transient | 12 | 3e-4 | 2.6 % of full scale |
 <!-- accuracy:end -->
 
 The transient's worst is a switching BJT's collector on a 3 µs edge, where a 0.4 mV base error becomes 2.6 % of the current; its other cases stay under 0.15 %. Every case, and the tolerance its test holds it to, is in [`docs/ACCURACY.md`](./docs/ACCURACY.md); how the cases are built is in [`sindr/tests/golden/README.md`](./sindr/tests/golden/README.md). Both tables come from the test suite (`scripts/accuracy_table.py`).

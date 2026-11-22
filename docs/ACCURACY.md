@@ -73,6 +73,7 @@ largest deviation over every quantity and point the case checks;
 | `tran_behavioural` | Transient | 0.022 % FS | 0.1 % FS |
 | `tran_bjt_switch` | Transient | 2.6 % FS | 3 % FS |
 | `tran_diode_recovery` | Transient | 0.15 % FS | 2 % FS |
+| `tran_flasher` | Transient | 3e-4 | 5e-3 |
 | `tran_halfwave` | Transient | 0.065 % FS | 0.1 % FS |
 | `tran_ic_op` | Transient | < 0.001 % FS | 0.1 % FS |
 | `tran_ic_uic` | Transient | < 0.001 % FS | 0.1 % FS |

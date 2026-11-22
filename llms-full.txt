@@ -75,7 +75,7 @@ Each analysis is checked against [ngspice](https://ngspice.sourceforge.io/) 47 o
 | Diode charge (AC) | 2 | 2e-4 | — |
 | Noise | 4 | 7e-7 | — |
 | Pole-zero | 2 | 1e-9 | — |
-| Transient | 11 | — | 2.6 % of full scale |
+| Transient | 12 | 3e-4 | 2.6 % of full scale |
 <!-- accuracy:end -->
 
 The transient's worst is a switching BJT's collector on a 3 µs edge, where a 0.4 mV base error becomes 2.6 % of the current; its other cases stay under 0.15 %. Every case, and the tolerance its test holds it to, is in [`docs/ACCURACY.md`](./docs/ACCURACY.md); how the cases are built is in [`sindr/tests/golden/README.md`](./sindr/tests/golden/README.md). Both tables come from the test suite (`scripts/accuracy_table.py`).
@@ -1153,7 +1153,7 @@ pub enum SimError {
 | Reactive elements (C, L, Varactor, Transformer, parasitic caps, a diode whose model sets `cjo` or `tt`) or waveform sources | Transient (Gear-2 by default) |
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
-The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
+The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried. One that fails even at a millionth of `tstep` is a regenerative edge with nothing to slow it (a multivibrator's or Schmitt trigger's, transistors without junction capacitance): the node voltages jump while the capacitors hold theirs, and the stepper follows the jump by pseudo-transient continuation, then restarts the integration after it. `stats.jumped_steps` counts those.
 
 ### Performance
 
@@ -6697,6 +6697,12 @@ pub struct TransientStats {
     pub lte_rejections: usize,
     /// Steps retried at half the size because Newton–Raphson didn't converge.
     pub newton_rejections: usize,
+    /// Steps Newton–Raphson couldn't take even at the shortest step, solved
+    /// by pseudo-transient continuation instead: regenerative edges the
+    /// node voltages jump across, such as a multivibrator's when its
+    /// transistors have no junction capacitance.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub jumped_steps: usize,
 }
 
 /// Complete simulation output.
