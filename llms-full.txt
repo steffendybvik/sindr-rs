@@ -3434,7 +3434,7 @@ pub fn current_divider() -> Circuit { … }
 /// Three resistors in series. Voltage drops proportional to resistance.
 pub fn series_resistors() -> Circuit { … }
 
-/// Current-limiting resistor protects an LED (modeled as a 2 V source).
+/// A 9 V supply drives a red LED through a 330 Ω current-limiting resistor.
 pub fn led_circuit() -> Circuit { … }
 
 /// 5 V source through a 1 A fuse and 100 Ω load. Toggle `blown` for the open-fuse case.
