@@ -1,0 +1,13 @@
+* DC sensitivity of a diode and a MOSFET in series to their model parameters.
+* ngspice's own .sens is 2 % off for the diode and skips RS, so the .ctl takes
+* central differences of re-solved operating points instead.
+VDD vdd 0 12
+RD vdd d 1k
+D1 d k dmod
+VG g 0 2.5
+M1 k g 0 0 nmod w=1u l=1u
+RL k 0 20k
+.model dmod d is=5e-15 n=1.6 rs=12
+.model nmod nmos level=1 kp=400u vto=1 lambda=0.02
+.sens v(k)
+.end

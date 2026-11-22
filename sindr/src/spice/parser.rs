@@ -1186,16 +1186,48 @@ fn output_variable(input: &mut Input<'_>) -> ModalResult<crate::TfOutput> {
     .parse_next(input)
 }
 
-/// Parse `.sens v(node[,ref])` or `.sens i(vsource)`.
+/// Parse `.sens v(node[,ref])` or `.sens i(vsource)`, either followed by
+/// `ac <sweep> points fstart fstop` for AC sensitivity.
 fn parse_card_sens(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
     let output = output_variable(input)?;
+    ws(input)?;
+    if input.is_empty() {
+        return Ok(RawCard::Analysis(
+            RawAnalysis::Sens { output },
+            Span::detached(),
+        ));
+    }
+    let (ac, _) = ident(input)?;
+    if ac != "ac" {
+        return Err(ErrMode::from_input(input));
+    }
+    ws(input)?;
+    let (sweep_kw, _) = ident(input)?;
+    let sweep = match sweep_kw.as_str() {
+        "dec" => AcSweepKind::Dec,
+        "oct" => AcSweepKind::Oct,
+        "lin" => AcSweepKind::Lin,
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    ws(input)?;
+    let (points, _) = value_expr(input)?;
+    ws(input)?;
+    let (fstart, _) = value_expr(input)?;
+    ws(input)?;
+    let (fstop, _) = value_expr(input)?;
     ws(input)?;
     if !input.is_empty() {
         return Err(ErrMode::from_input(input));
     }
     Ok(RawCard::Analysis(
-        RawAnalysis::Sens { output },
+        RawAnalysis::SensAc {
+            output,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        },
         Span::detached(),
     ))
 }

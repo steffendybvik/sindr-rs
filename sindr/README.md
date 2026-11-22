@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -553,7 +553,7 @@ println!("{} V/V, Rin {} Ω, Rout {} Ω", tf.gain, tf.input_resistance, tf.outpu
 
 The input resistance is infinite when the input source draws no small-signal current. Every other independent source is zeroed for the output resistance. A current output (`I(Vx)`) runs from the source's `nodes[0]` through it to `nodes[1]`, as SPICE's.
 
-## DC sensitivity
+## Sensitivity
 
 SPICE's `.sens`: the derivative of one DC output with respect to each component parameter, at the operating point. One adjoint solve covers them all, however many there are.
 
@@ -571,7 +571,25 @@ for e in &sens.entries {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Entries cover resistance, voltage and current source values, VCVS gain and VCCS gm. Other components get no entry: device-model parameters, CCVS and CCCS gains, capacitors and inductors. There is no AC sensitivity.
+Entries cover resistance, voltage and current source values, the gains of all four controlled sources (VCVS, VCCS, CCVS, CCCS), and device-model parameters: a diode's IS, N and RS, a BJT's BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA. A device has an entry per parameter; `sens.get_parameter("D1", SensParameter::SaturationCurrent)` picks one. Each is the total derivative, the operating point moving with the parameter. Capacitors, inductors and the other devices (LED, Zener, Schottky, photodiode, JFET, IGBT) get no entry.
+
+`.sens v(out) ac dec 10 1 1meg` is the AC form: at each frequency, the derivative of the output phasor with respect to R, C, L, the controlled-source gains, the stimulus's AC magnitude and the same device parameters, plus a diode's CJO and TT. One adjoint solve per frequency. As in ngspice, the DC operating point is held fixed: a device parameter's entry is its effect on that device's small-signal conductances and capacitances, not through a shift of the bias, so a source's DC value has no AC entry.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+use sindr::ac_analysis::AcConfig;
+use sindr::{solve_ac_sensitivity, AcSensConfig, SensParameter, TfOutput};
+
+let config = AcSensConfig::new(TfOutput::voltage("out"), AcConfig::new("V1", 10.0, 1e6, 51));
+let sens = solve_ac_sensitivity(&circuit, &config)?;
+for (f, s) in sens.curve("C1", SensParameter::Capacitance) {
+    println!("{f} Hz: dV(out)/dC1 = {s}");
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+For a deck, `ParsedNetlist::ac_sens_config()` builds the `AcSensConfig` from the `.sens ... ac` card and the `AC` spec on the source line.
 
 ## Noise
 

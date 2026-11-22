@@ -297,6 +297,20 @@ impl JunctionCharge {
         self.cjo == 0.0 && self.tt == 0.0
     }
 
+    /// The slope dC/dv (F/V) of the depletion capacitance at junction
+    /// voltage `v` (V): the diffusion part, `TT·g_d`, is the caller's.
+    pub fn depletion_capacitance_slope(&self, v: f64) -> f64 {
+        if self.cjo <= 0.0 {
+            return 0.0;
+        }
+        let (vj, m, fc) = (self.vj, self.m, self.fc);
+        if v < fc * vj {
+            self.cjo * m / vj * (1.0 - v / vj).powf(-m - 1.0)
+        } else {
+            self.cjo / (1.0 - fc).powf(1.0 + m) * m / vj
+        }
+    }
+
     /// Stored charge (C) and capacitance dQ/dV (F) at junction voltage `v`
     /// (V), carrying current `i_d` (A) with conductance `g_d` (S).
     ///
@@ -388,6 +402,94 @@ pub fn limit_voltage(v_new: f64, v_old: f64, v_crit: f64, n: f64, vt: f64) -> f6
         }
     } else {
         v_new
+    }
+}
+
+/// The derivatives of a diode's operating point with respect to one of its
+/// parameters, at a fixed terminal voltage: what a sensitivity analysis
+/// needs of the device.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct DiodeDerivative {
+    /// ∂I/∂p: terminal current (A, anode → cathode) per unit of the
+    /// parameter.
+    pub current: f64,
+    /// ∂v_j/∂p: voltage across the junction behind RS (V) per unit of the
+    /// parameter.
+    pub junction_voltage: f64,
+    /// ∂g_j/∂p: the junction's conductance (S) per unit of the parameter.
+    pub junction_conductance: f64,
+}
+
+/// [`DiodeDerivative`]s with respect to each parameter of [`DiodeParams`]
+/// that shapes the DC curve, from [`diode_derivatives`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct DiodeDerivatives {
+    /// With respect to `is` (per A), `n` held.
+    pub is: DiodeDerivative,
+    /// With respect to `n`, `is` held.
+    pub n: DiodeDerivative,
+    /// With respect to `rs` (per Ω).
+    pub rs: DiodeDerivative,
+}
+
+/// The exact derivatives of the diode at terminal voltage `v_d` (V, anode −
+/// cathode) with respect to `params.is`, `params.n` and `params.rs`, the
+/// breakdown branch included: the junction voltage moves with the parameter
+/// so that `v_j + RS·I = v_d` still holds.
+///
+/// `is` and `n` are taken as they are in `params`; a caller whose IS follows
+/// temperature chains through its own scaling.
+pub fn diode_derivatives(v_d: f64, params: &DiodeParams) -> DiodeDerivatives {
+    let v_j = junction_voltage(v_d, params);
+    let (i, g) = junction_current(v_j, params);
+    let (is, n, rs) = (params.is, params.n, params.rs);
+    let nv_t = n * params.vt();
+
+    // Partials at fixed v_j: (∂I/∂is, ∂g/∂is), (∂I/∂n, ∂g/∂n), and ∂g/∂v_j.
+    let e = (v_j / nv_t).exp();
+    let g_f = is * e / nv_t;
+    let mut d_is = (e - 1.0, e / nv_t);
+    let mut d_n = (-g_f * v_j / n, g_f * (-v_j / (n * nv_t) - 1.0 / n));
+    let mut dg_dvj = g_f / nv_t;
+    if let Some(xbv) = breakdown_knee(params) {
+        let eb = (-(v_j + xbv) / nv_t).exp();
+        let g_b = is * eb / nv_t;
+        // The knee moves with IS and N where it is fitted to IBV.
+        let (dx_dis, dx_dn) = match params.breakdown {
+            Some(Breakdown { bv, ibv }) if ibv >= is * bv / params.vt() => {
+                let ep = ((bv - xbv) / nv_t).exp();
+                let g_x = is * (-ep / nv_t + 1.0 / params.vt());
+                let g_is = ep - 1.0 + xbv / params.vt();
+                let g_n = -is * ep * (bv - xbv) / (n * nv_t);
+                (-g_is / g_x, -g_n / g_x)
+            }
+            _ => (0.0, 0.0),
+        };
+        // I_b = −is·eb and g_b = is·eb/(n·V_T), each through xbv as well.
+        d_is.0 += -eb + g_b * dx_dis;
+        d_is.1 += eb / nv_t - g_b / nv_t * dx_dis;
+        d_n.0 += -g_b * (v_j + xbv) / n + g_b * dx_dn;
+        d_n.1 += g_b * ((v_j + xbv) / (n * nv_t) - 1.0 / n) - g_b / nv_t * dx_dn;
+        dg_dvj -= g_b / nv_t;
+    }
+
+    // With v_j = v_d − RS·I: dI·(1 + RS·g) = ∂I/∂p − g·I·∂RS/∂p.
+    let denominator = 1.0 + rs * g;
+    let total = |(di, dg): (f64, f64), d_rs: f64| {
+        let current = (di - g * i * d_rs) / denominator;
+        let junction_voltage = -rs * current - i * d_rs;
+        DiodeDerivative {
+            current,
+            junction_voltage,
+            junction_conductance: dg + dg_dvj * junction_voltage,
+        }
+    };
+    DiodeDerivatives {
+        is: total(d_is, 0.0),
+        n: total(d_n, 0.0),
+        rs: total((0.0, 0.0), 1.0),
     }
 }
 
@@ -850,6 +952,95 @@ mod tests {
             };
             let i = diode_current(-bv, &p);
             assert_relative_eq!(-i, ibv - is * bv / p.vt(), max_relative = 1.5e-3);
+        }
+    }
+
+    /// Whether `want` is the derivative of `f` in one parameter of `params`
+    /// at `x`: the central difference's change matches `want`'s to 1e-5, or
+    /// to a few ulps of `f` where the change is below its resolution.
+    fn matches_central_difference(
+        want: f64,
+        params: &DiodeParams,
+        set: fn(&mut DiodeParams, f64),
+        x: f64,
+        f: impl Fn(&DiodeParams) -> f64,
+    ) -> bool {
+        let h = x.abs() * 1e-6;
+        let at = |x: f64| {
+            let mut p = params.clone();
+            set(&mut p, x);
+            f(&p)
+        };
+        let (hi, lo) = (at(x + h), at(x - h));
+        let (got, expected) = (hi - lo, want * 2.0 * h);
+        (got - expected).abs() <= 1e-5 * expected.abs() + 8.0 * f64::EPSILON * hi.abs()
+    }
+
+    #[test]
+    fn diode_derivatives_match_central_differences() {
+        let forward = DiodeParams {
+            is: 2e-14,
+            n: 1.7,
+            rs: 15.0,
+            temperature: 320.0,
+            breakdown: None,
+        };
+        let breakdown = DiodeParams {
+            rs: 2.0,
+            breakdown: Some(Breakdown { bv: 5.1, ibv: 1e-3 }),
+            ..forward.clone()
+        };
+        for (params, v_d) in [
+            (&forward, 0.75),
+            (&forward, -0.3),
+            (&breakdown, -5.3),
+            (&breakdown, 0.7),
+        ] {
+            let d = diode_derivatives(v_d, params);
+            let v_j = |p: &DiodeParams| junction_voltage(v_d, p);
+            let g_j = |p: &DiodeParams| junction_current(junction_voltage(v_d, p), p).1;
+            type Set = fn(&mut DiodeParams, f64);
+            let cases: [(&str, DiodeDerivative, Set, f64); 3] = [
+                ("is", d.is, |p, x| p.is = x, params.is),
+                ("n", d.n, |p, x| p.n = x, params.n),
+                ("rs", d.rs, |p, x| p.rs = x, params.rs),
+            ];
+            for (name, want, set, x) in cases {
+                let current = |p: &DiodeParams| diode_current(v_d, p);
+                assert!(
+                    matches_central_difference(want.current, params, set, x, current),
+                    "I by {name} at {v_d} V"
+                );
+                assert!(
+                    matches_central_difference(want.junction_voltage, params, set, x, v_j),
+                    "v_j by {name} at {v_d} V"
+                );
+                assert!(
+                    matches_central_difference(want.junction_conductance, params, set, x, g_j),
+                    "g_j by {name} at {v_d} V"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn depletion_capacitance_slope_matches_central_differences() {
+        let charge = JunctionCharge {
+            cjo: 2e-12,
+            vj: 0.8,
+            m: 0.4,
+            fc: 0.5,
+            tt: 0.0,
+        };
+        for v in [-2.0, 0.1, 0.6] {
+            let h = 1e-6;
+            let c = |v: f64| charge.charge(v, 0.0, 0.0).1;
+            let fd = (c(v + h) - c(v - h)) / (2.0 * h);
+            assert_relative_eq!(
+                charge.depletion_capacitance_slope(v),
+                fd,
+                max_relative = 1e-6
+            );
         }
     }
 }

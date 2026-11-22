@@ -1,0 +1,13 @@
+* DC sensitivity of a BJT stage to its model parameters. ngspice's .sens
+* reports 0 for BF, BR, NF and NR, so the .ctl takes central differences of
+* re-solved operating points. No VAF: ngspice's Gummel-Poon Early effect
+* isn't sindr's.
+VCC vcc 0 12
+V1 in 0 2
+RB in b 47k
+Q1 c b e qmod
+RC vcc c 2.2k
+RE e 0 470
+.model qmod npn is=2e-15 bf=150 br=3 nf=1.02 nr=1.1
+.sens v(c)
+.end

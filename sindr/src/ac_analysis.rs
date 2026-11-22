@@ -465,6 +465,23 @@ fn two_terminal(nodes: &[String; 2], node_map: &NodeMap, g: f64) -> SmallSignalM
     }
 }
 
+/// [`validate_config`], and that `config` drives a voltage source of flat
+/// `circuit`.
+pub(crate) fn validate_stimulus(circuit: &Circuit, config: &AcConfig) -> Result<(), SimError> {
+    validate_config(config)?;
+    let drives_a_voltage_source = circuit
+        .components
+        .iter()
+        .any(|c| matches!(c, CircuitElement::VoltageSource { id, .. } if *id == config.source_id));
+    if !drives_a_voltage_source {
+        return Err(SimError::InvalidComponent(format!(
+            "AC sweep: source_id '{}' is not a voltage source in the circuit",
+            config.source_id
+        )));
+    }
+    Ok(())
+}
+
 /// Reject sweep configs that would underflow, divide by zero, or feed
 /// `log10` a non-positive value.
 pub(crate) fn validate_config(config: &AcConfig) -> Result<(), SimError> {
@@ -1378,17 +1395,7 @@ pub(crate) fn solve_ac_with(
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    validate_config(config)?;
-    let drives_a_voltage_source = circuit
-        .components
-        .iter()
-        .any(|c| matches!(c, CircuitElement::VoltageSource { id, .. } if *id == config.source_id));
-    if !drives_a_voltage_source {
-        return Err(SimError::InvalidComponent(format!(
-            "AC sweep: source_id '{}' is not a voltage source in the circuit",
-            config.source_id
-        )));
-    }
+    validate_stimulus(circuit, config)?;
 
     let (node_map, dc_solution, dc) = bias_point_with_result(circuit, opts)?;
     let circuit = &incremental_inductors(&at_junction_temperatures(circuit, &dc), &dc);
