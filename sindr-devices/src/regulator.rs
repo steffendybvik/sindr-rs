@@ -174,6 +174,34 @@ pub fn regulator_piece(
     piece
 }
 
+/// Where a regulator set to `voltage` changes piece, as signed distances
+/// at input `vin` and output current `iout` (from the ground pin): leaving
+/// regulation, reaching the 0 V floor, the current limit, and the two ends
+/// of the quiescent-current ramp. [`regulator_piece`] and
+/// [`regulator_quiescent`] switch only where one of these changes sign.
+/// Each is linear in `vin` and `iout`, so a straight step between two
+/// operating points crosses each at most once. An edge the parameters
+/// don't have (no current limit) is `+∞`.
+pub fn regulator_edges(params: &RegulatorParams, voltage: f64, vin: f64, iout: f64) -> [f64; 5] {
+    if voltage < 0.0 {
+        return regulator_edges(params, -voltage, -vin, -iout);
+    }
+    let regulating = voltage + params.line_regulation * (vin - (voltage + params.dropout))
+        - params.output_resistance * iout;
+    let dropout = vin - params.dropout - params.dropout_resistance * iout;
+    let limit = params
+        .current_limit
+        .filter(|l| *l > 0.0)
+        .map_or(f64::INFINITY, |l| iout - l);
+    [
+        dropout - regulating,
+        vin - params.dropout,
+        limit,
+        vin,
+        vin - params.dropout.max(0.1),
+    ]
+}
+
 /// The quiescent current a regulator set to `voltage` draws from its input
 /// at `vin` (V, from the ground pin), as `i0 + g·Vin` (A, into the input and
 /// out at the ground pin). It is the full `quiescent_current` once the input

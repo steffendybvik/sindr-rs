@@ -550,22 +550,108 @@ pub(crate) fn regulator_pieces_settled(
             ..
         } = component
         {
-            let at = |x: &DVector<f64>| {
-                let piece = regulator_piece_at(node_map, nodes, *voltage, model, branch, Some(x));
-                let ramp = model
-                    .as_ref()
-                    .zip(regulator_state(node_map, nodes, branch, Some(x)))
-                    .map(|(params, (vin, _, _))| {
-                        sindr_devices::regulator::regulator_quiescent(params, *voltage, vin)
-                    });
-                (piece, ramp)
-            };
+            let at =
+                |x: &DVector<f64>| regulator_pieces_at(node_map, nodes, *voltage, model, branch, x);
             if at(v_prev) != at(v_new) {
                 return false;
             }
         }
         branch += component.branch_slots();
     }
+    true
+}
+
+/// The piece of its characteristic, and of its quiescent-current ramp, a
+/// regulator is on at `x`.
+fn regulator_pieces_at(
+    node_map: &NodeMap,
+    nodes: &[String; 3],
+    voltage: f64,
+    model: &Option<RegulatorParams>,
+    branch: usize,
+    x: &DVector<f64>,
+) -> (RegulatorLinear, Option<(f64, f64)>) {
+    let piece = regulator_piece_at(node_map, nodes, voltage, model, branch, Some(x));
+    let ramp = model
+        .as_ref()
+        .zip(regulator_state(node_map, nodes, branch, Some(x)))
+        .map(|(params, (vin, _, _))| {
+            sindr_devices::regulator::regulator_quiescent(params, voltage, vin)
+        });
+    (piece, ramp)
+}
+
+/// Shorten a Newton step from `v_prev` to `v_new` so that no regulator
+/// passes more than one edge of its piecewise characteristic. Returns
+/// whether the step was shortened: a shortened iterate is not a Newton
+/// solution, so it must not count as converged.
+///
+/// Each iterate solves the regulators' pieces at `v_prev`, which hold only
+/// up to the first edge along the step. Where a node is held by little else
+/// (the input behind an inductor whose companion conductance is `h/L`,
+/// about 1 µS on a 1 ps step), that solution can lie many volts and every
+/// piece away, and the next iterate's piece throws it back: Newton cycles
+/// between the floor and regulation for ever. Stopping inside the next
+/// piece along the step, as Katzenelson's method for piecewise-linear
+/// networks does, walks the regulator one piece at a time. Halfway to the
+/// next edge keeps it clear of both.
+pub(crate) fn limit_regulator_step(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    num_nodes: usize,
+    v_prev: &DVector<f64>,
+    v_new: &mut DVector<f64>,
+) -> bool {
+    // Fractions of the step at which some regulator that changes piece
+    // crosses an edge.
+    let mut crossings: Vec<f64> = Vec::new();
+    let mut branch = num_nodes;
+    for component in &circuit.components {
+        if let CircuitElement::VoltageRegulator {
+            nodes,
+            voltage,
+            model,
+            ..
+        } = component
+        {
+            let at =
+                |x: &DVector<f64>| regulator_pieces_at(node_map, nodes, *voltage, model, branch, x);
+            if at(v_prev) != at(v_new) {
+                let params = model.unwrap_or_default();
+                let edges = |x: &DVector<f64>| {
+                    let (vin, _, iout) =
+                        regulator_state(node_map, nodes, branch, Some(x)).unwrap_or_default();
+                    let mut e =
+                        sindr_devices::regulator::regulator_edges(&params, *voltage, vin, iout);
+                    if model.is_none() {
+                        // No quiescent current, so no ramp to cross.
+                        e[3] = f64::INFINITY;
+                        e[4] = f64::INFINITY;
+                    }
+                    e
+                };
+                for (a, b) in edges(v_prev).into_iter().zip(edges(v_new)) {
+                    let side = |e: f64| (e > 0.0, e < 0.0);
+                    if a.is_finite() && b.is_finite() && side(a) != side(b) {
+                        crossings.push(a / (a - b));
+                    }
+                }
+            }
+        }
+        branch += component.branch_slots();
+    }
+    crossings.sort_by(f64::total_cmp);
+    // Edges that meet (the floor and the top of the ramp, both at the
+    // dropout voltage) are crossed together.
+    let first = match crossings.first() {
+        Some(&first) => first,
+        None => return false,
+    };
+    let Some(&next) = crossings.iter().find(|&&c| c > first + 1e-9) else {
+        return false;
+    };
+    let alpha = 0.5 * (first + next);
+    *v_new = v_prev + (&*v_new - v_prev) * alpha;
     true
 }
 
