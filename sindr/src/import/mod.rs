@@ -1596,7 +1596,7 @@ impl Netlist {
                 node(resolver.net(&load.a, &load.id)?),
                 side(&load.b, &load.id)?,
             ];
-            circuit.components.push(load.element(nodes));
+            circuit.components.push(load.element(nodes)?);
         }
 
         Ok(ImportedCircuit {
