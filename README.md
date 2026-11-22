@@ -20,7 +20,7 @@ A circuit simulator you embed in Rust: build a circuit as a typed value, solve i
 
 ```toml
 [dependencies]
-sindr = "0.2"
+sindr = "0.3"
 ```
 
 How much current does a red LED draw from 5 V through 220 Ω?
@@ -137,7 +137,7 @@ A SPICE3 netlist parser ships inside `sindr` behind the optional, default-off `s
 
 ```toml
 [dependencies]
-sindr = { version = "0.2", features = ["spice"] }
+sindr = { version = "0.3", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -157,7 +157,7 @@ cargo run --example parse_netlist --features spice
 
 ## Status
 
-`0.2.0`, [published on crates.io](https://crates.io/crates/sindr). Until 1.0, a breaking change bumps the minor version (`0.3.0`) and anything else the patch (`0.2.1`), so `sindr = "0.2"` never breaks on `cargo update`. The road to 1.0 is in [`ROADMAP.md`](./ROADMAP.md).
+`0.3.0`, [published on crates.io](https://crates.io/crates/sindr). Until 1.0, a breaking change bumps the minor version (`0.4.0`) and anything else the patch (`0.3.1`), so `sindr = "0.3"` never breaks on `cargo update`. The road to 1.0 is in [`ROADMAP.md`](./ROADMAP.md).
 
 ## Scope & limitations
 

@@ -189,10 +189,10 @@
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = "0.2"
+//! sindr = "0.3"
 //!
 //! # No serde:
-//! sindr = { version = "0.2", default-features = false }
+//! sindr = { version = "0.3", default-features = false }
 //! ```
 //!
 //! # Transient results
@@ -262,7 +262,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = { version = "0.2", features = ["spice"] }
+//! sindr = { version = "0.3", features = ["spice"] }
 //! ```
 //!
 //! (`no_run`: it reads `amp.cir`, which doesn't exist where doctests run.)
