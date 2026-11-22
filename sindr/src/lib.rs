@@ -47,7 +47,7 @@
 //!     CircuitElement::Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 },
 //! ]);
 //! let result = solve_circuit(&circuit)?;
-//! let led = result.component_results.iter().find(|c| c.id == "D1").unwrap();
+//! let led = result.component("D1").expect("D1 is in the circuit");
 //! println!("{:.1} mA, {:.1} mW", led.current_through * 1e3, led.power * 1e3);
 //!
 //! // About 1.8 V across the LED leaves about 3.2 V across R1.
@@ -233,8 +233,8 @@
 //! // The capacitor charges from 0 V towards 5 V.
 //! let first = &tran.timesteps[0];
 //! let last = tran.timesteps.last().unwrap();
-//! assert!(first.node_voltages["out"] < 1.0);
-//! assert!((last.node_voltages["out"] - 5.0).abs() < 0.1);
+//! assert!(first.voltage("out").unwrap() < 1.0);
+//! assert!((last.voltage("out").unwrap() - 5.0).abs() < 0.1);
 //! ```
 //!
 //! # CSV export
@@ -351,8 +351,8 @@ pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
 pub use noise::{solve_noise, NoiseConfig, NoiseResult};
 pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 pub use results::{
-    BjtResult, ComponentResult, ConvergenceAid, MosfetResult, OpAmpResult, RelayResult,
-    SimulationResult, TimestepSnapshot, TransientData, TransientStats,
+    BjtResult, ComponentResult, ConvergenceAid, InstanceResult, MosfetResult, OpAmpResult,
+    RelayResult, SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
 pub use sensitivity::{solve_sensitivity, SensConfig, SensEntry, SensParameter, SensResult};
 pub use solver::{Solver, SolverOptions};
@@ -549,8 +549,8 @@ fn auto_transient_config(
 ///
 /// let result = solve_circuit(&circuit).unwrap();
 /// // I = V/R = 5 mA flowing through R1
-/// let r1 = result.component_results.iter().find(|c| c.id == "R1").unwrap();
-/// assert!((r1.current_through.abs() - 0.005).abs() < 1e-9);
+/// let i_r1 = result.current("R1").unwrap();
+/// assert!((i_r1.abs() - 0.005).abs() < 1e-9);
 /// ```
 pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     solve_circuit_with(circuit, &SolverOptions::default())
@@ -637,8 +637,8 @@ fn solve_circuit_parts(
 ///     ..Default::default()
 /// };
 /// let op = solve_op(&circuit)?;
-/// assert_eq!(op.node_voltages["mid"], 1.0);
-/// assert!((op.branch_currents["L1"] - 1e-3).abs() < 1e-12);
+/// assert_eq!(op.voltage("mid"), Some(1.0));
+/// assert!((op.branch_current("L1").unwrap() - 1e-3).abs() < 1e-12);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
 ///

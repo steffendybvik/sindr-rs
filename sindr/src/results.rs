@@ -293,6 +293,297 @@ pub enum ConvergenceAid {
     SourceStepping,
 }
 
+/// A component's current: its [`ComponentResult::current_through`], or its
+/// branch current when it has no component result.
+fn current_in(
+    components: &[ComponentResult],
+    branches: Option<&HashMap<String, f64>>,
+    id: &str,
+) -> Option<f64> {
+    find_by_id(components, id, |c| &c.id)
+        .map(|c| c.current_through)
+        .or_else(|| branches.and_then(|b| b.get(id).copied()))
+}
+
+fn find_by_id<'a, T>(items: &'a [T], id: &str, key: impl Fn(&T) -> &str) -> Option<&'a T> {
+    items.iter().find(|item| key(item) == id)
+}
+
+impl SimulationResult {
+    /// The voltage at `node` (V), or `None` when the circuit has no such
+    /// node. The ground node is in every result and reads `0.0`.
+    ///
+    /// Inside a block, a local net is named by its instance path
+    /// (`"X1.mid"`); [`SimulationResult::instance`] does the joining.
+    ///
+    /// ```
+    /// use sindr::{solve_circuit, Circuit, CircuitElement};
+    ///
+    /// let circuit = Circuit::new("0", vec![
+    ///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 10.0, waveform: None },
+    ///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
+    ///     CircuitElement::Resistor { id: "R2".into(), nodes: ["out".into(), "0".into()], resistance: 1e3 },
+    /// ]);
+    /// let result = solve_circuit(&circuit)?;
+    /// assert!((result.voltage("out").unwrap() - 5.0).abs() < 1e-9);
+    /// assert_eq!(result.voltage("0"), Some(0.0));
+    /// assert_eq!(result.voltage("nope"), None);
+    /// # Ok::<(), sindr::SimError>(())
+    /// ```
+    pub fn voltage(&self, node: &str) -> Option<f64> {
+        self.node_voltages.get(node).copied()
+    }
+
+    /// The current through component `id` (A): its
+    /// [`ComponentResult::current_through`], from `nodes[0]` to `nodes[1]`
+    /// for a two-terminal part, the collector or drain current for a
+    /// transistor. An id with a branch current but no component result
+    /// falls back to its [`branch_current`](Self::branch_current). `None`
+    /// when there's no such component.
+    ///
+    /// This is what a measurement's `Signal::i` reads.
+    pub fn current(&self, id: &str) -> Option<f64> {
+        current_in(&self.component_results, Some(&self.branch_currents), id)
+    }
+
+    /// The MNA branch current of component `id` (A), with the sign
+    /// convention of [`SimulationResult::branch_currents`]: a source
+    /// delivering power reads negative. `None` when `id` has no branch
+    /// current (resistors, diodes and other parts without a current
+    /// unknown) or isn't in the circuit.
+    pub fn branch_current(&self, id: &str) -> Option<f64> {
+        self.branch_currents.get(id).copied()
+    }
+
+    /// The voltage, current and power of component `id`, or `None` when
+    /// there's no such component.
+    pub fn component(&self, id: &str) -> Option<&ComponentResult> {
+        find_by_id(&self.component_results, id, |c| &c.id)
+    }
+
+    /// The operating point of BJT `id`, or `None` when there's no BJT by
+    /// that id.
+    pub fn bjt(&self, id: &str) -> Option<&BjtResult> {
+        find_by_id(&self.bjt_results, id, |b| &b.id)
+    }
+
+    /// The operating point of MOSFET `id`, or `None` when there's no
+    /// MOSFET by that id.
+    pub fn mosfet(&self, id: &str) -> Option<&MosfetResult> {
+        find_by_id(&self.mosfet_results, id, |m| &m.id)
+    }
+
+    /// The inputs and output of op-amp or comparator `id`, or `None` when
+    /// there's no op-amp or comparator by that id.
+    pub fn op_amp(&self, id: &str) -> Option<&OpAmpResult> {
+        find_by_id(&self.op_amp_results, id, |o| &o.id)
+    }
+
+    /// The coil voltage and contact state of relay `id`, or `None` when
+    /// there's no relay by that id.
+    pub fn relay(&self, id: &str) -> Option<&RelayResult> {
+        find_by_id(&self.relay_results, id, |r| &r.id)
+    }
+
+    /// The results inside a block instance, addressed by its instance path:
+    /// `"X1"`, or `"X1.X2"` for an instance nested in another. Chain
+    /// [`InstanceResult::instance`] to go deeper.
+    ///
+    /// Names inside it are the ones written in the block, joined to the
+    /// path with [`PATH_SEPARATOR`](crate::design::PATH_SEPARATOR) the way
+    /// flattening names them, so `instance("X1").voltage("mid")` reads
+    /// node `X1.mid`. A parsed SPICE deck is lowercase: `instance("x1")`.
+    ///
+    /// ```
+    /// use sindr::{solve_circuit, Block, Circuit, CircuitElement, Instance};
+    ///
+    /// let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+    ///     id: id.into(), nodes: [a.into(), b.into()], resistance: 1e3,
+    /// };
+    /// let mut circuit = Circuit::new("0", vec![
+    ///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 4.0, waveform: None },
+    /// ]);
+    /// circuit.blocks.insert("ladder".into(), sindr::Block {
+    ///     ports: vec!["top".into()],
+    ///     components: vec![r("R1", "top", "mid"), r("R2", "mid", "0")],
+    ///     ..Block::default()
+    /// });
+    /// circuit.instances.push(Instance::new("X1", "ladder", ["in"]));
+    ///
+    /// let result = solve_circuit(&circuit)?;
+    /// let x1 = result.instance("X1");
+    /// assert!((x1.voltage("mid").unwrap() - 2.0).abs() < 1e-9);
+    /// assert!((x1.current("R2").unwrap() - 2e-3).abs() < 1e-12);
+    /// // A port is the caller's net, not a node of its own.
+    /// assert_eq!(x1.voltage("top"), None);
+    /// # Ok::<(), sindr::SimError>(())
+    /// ```
+    ///
+    /// The view never fails to build: an instance that doesn't exist
+    /// answers `None` to every lookup. Ports, ground and globals keep the
+    /// name they have outside the block (a port is the net it's bound
+    /// to), so read those on the parent.
+    pub fn instance(&self, path: &str) -> InstanceResult<'_> {
+        InstanceResult {
+            result: self,
+            path: path.to_string(),
+        }
+    }
+}
+
+/// The results inside one block instance: what
+/// [`SimulationResult::instance`] returns.
+///
+/// Each lookup joins the instance path to a name as the block writes it
+/// (`"sw"` inside `"X1.X2"` is `"X1.X2.sw"`) and reads the full result.
+#[derive(Debug, Clone)]
+pub struct InstanceResult<'a> {
+    result: &'a SimulationResult,
+    path: String,
+}
+
+impl<'a> InstanceResult<'a> {
+    /// The instance path, e.g. `"X1.X2"`.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The flat name of `name` inside this instance: `"X1.X2.sw"` for
+    /// `"sw"` inside `"X1.X2"`. Use it to read an AC, sweep or transient
+    /// result, whose accessors take flat names.
+    pub fn name(&self, name: &str) -> String {
+        if self.path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}{}{name}", self.path, crate::design::PATH_SEPARATOR)
+        }
+    }
+
+    /// The instance at `path` inside this one.
+    pub fn instance(&self, path: &str) -> InstanceResult<'a> {
+        InstanceResult {
+            result: self.result,
+            path: self.name(path),
+        }
+    }
+
+    /// The voltage at local net `node` (V); see
+    /// [`SimulationResult::voltage`].
+    pub fn voltage(&self, node: &str) -> Option<f64> {
+        self.result.voltage(&self.name(node))
+    }
+
+    /// The current through component `id` (A); see
+    /// [`SimulationResult::current`].
+    pub fn current(&self, id: &str) -> Option<f64> {
+        self.result.current(&self.name(id))
+    }
+
+    /// The branch current of component `id` (A); see
+    /// [`SimulationResult::branch_current`].
+    pub fn branch_current(&self, id: &str) -> Option<f64> {
+        self.result.branch_current(&self.name(id))
+    }
+
+    /// The voltage, current and power of component `id`.
+    pub fn component(&self, id: &str) -> Option<&'a ComponentResult> {
+        self.result.component(&self.name(id))
+    }
+
+    /// The operating point of BJT `id`.
+    pub fn bjt(&self, id: &str) -> Option<&'a BjtResult> {
+        self.result.bjt(&self.name(id))
+    }
+
+    /// The operating point of MOSFET `id`.
+    pub fn mosfet(&self, id: &str) -> Option<&'a MosfetResult> {
+        self.result.mosfet(&self.name(id))
+    }
+
+    /// The inputs and output of op-amp or comparator `id`.
+    pub fn op_amp(&self, id: &str) -> Option<&'a OpAmpResult> {
+        self.result.op_amp(&self.name(id))
+    }
+
+    /// The coil voltage and contact state of relay `id`.
+    pub fn relay(&self, id: &str) -> Option<&'a RelayResult> {
+        self.result.relay(&self.name(id))
+    }
+}
+
+impl TimestepSnapshot {
+    /// The voltage at `node` at this instant (V), or `None` when there's
+    /// no such node. Ground reads `0.0`.
+    pub fn voltage(&self, node: &str) -> Option<f64> {
+        self.node_voltages.get(node).copied()
+    }
+
+    /// The current through component `id` at this instant (A), its
+    /// [`ComponentResult::current_through`], or `None` when there's no
+    /// such component.
+    pub fn current(&self, id: &str) -> Option<f64> {
+        current_in(&self.component_results, None, id)
+    }
+
+    /// The voltage, current and power of component `id` at this instant.
+    pub fn component(&self, id: &str) -> Option<&ComponentResult> {
+        find_by_id(&self.component_results, id, |c| &c.id)
+    }
+}
+
+impl TransientData {
+    /// A node's waveform as `(time in s, voltage in V)` pairs, one per
+    /// step. Empty when there's no such node.
+    ///
+    /// ```
+    /// use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+    ///
+    /// let circuit = Circuit::new("0", vec![
+    ///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 5.0, waveform: None },
+    ///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
+    ///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+    /// ]);
+    /// let result = solve_transient(&circuit, &TransientConfig::new(5e-3, 1e-5))?;
+    /// let tran = result.transient.unwrap();
+    ///
+    /// let wave = tran.node_voltage_curve("out");
+    /// assert_eq!(wave.len(), tran.timesteps.len());
+    /// // One time constant in: 1 − 1/e of the way to 5 V.
+    /// let v_tau = tran.voltage_at("out", 1e-3).unwrap();
+    /// assert!((v_tau - 5.0 * (1.0 - (-1.0f64).exp())).abs() < 0.02);
+    /// # Ok::<(), sindr::SimError>(())
+    /// ```
+    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> {
+        self.timesteps
+            .iter()
+            .filter_map(|s| s.voltage(node).map(|v| (s.time, v)))
+            .collect()
+    }
+
+    /// A component's current as `(time in s, current in A)` pairs, one per
+    /// step; see [`TimestepSnapshot::current`]. Empty when there's no such
+    /// component.
+    pub fn component_current_curve(&self, id: &str) -> Vec<(f64, f64)> {
+        self.timesteps
+            .iter()
+            .filter_map(|s| s.current(id).map(|i| (s.time, i)))
+            .collect()
+    }
+
+    /// The voltage at `node` at time `t` (V), linearly interpolated between
+    /// the steps either side. `None` when there's no such node or `t` is
+    /// outside the run.
+    pub fn voltage_at(&self, node: &str, t: f64) -> Option<f64> {
+        crate::measure::interpolate(&self.node_voltage_curve(node), t)
+    }
+
+    /// The current through component `id` at time `t` (A), linearly
+    /// interpolated as [`TransientData::voltage_at`] is.
+    pub fn current_at(&self, id: &str, t: f64) -> Option<f64> {
+        crate::measure::interpolate(&self.component_current_curve(id), t)
+    }
+}
+
 /// Look up a node voltage from the solution vector.
 ///
 /// Ground nodes (index `None`) return 0.0.

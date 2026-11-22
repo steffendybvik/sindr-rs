@@ -38,6 +38,34 @@ pub struct TempSweepResult {
     pub points: Vec<TempSweepPoint>,
 }
 
+impl TempSweepResult {
+    /// `(temperature in K, node voltage in V)` pairs for a node, one per
+    /// point. Empty when there's no such node.
+    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> {
+        self.points
+            .iter()
+            .filter_map(|p| p.result.voltage(node).map(|v| (p.temperature_kelvin, v)))
+            .collect()
+    }
+
+    /// `(temperature in K, current in A)` pairs for a component, one per
+    /// point: its [`ComponentResult::current_through`], as
+    /// [`DcSweepResult::component_current_curve`] reads it.
+    ///
+    /// [`ComponentResult::current_through`]: crate::ComponentResult::current_through
+    /// [`DcSweepResult::component_current_curve`]: crate::DcSweepResult::component_current_curve
+    pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> {
+        self.points
+            .iter()
+            .filter_map(|p| {
+                p.result
+                    .component(component_id)
+                    .map(|c| (p.temperature_kelvin, c.current_through))
+            })
+            .collect()
+    }
+}
+
 /// Sweeps junction temperature across a range and solves the circuit at
 /// each step.
 ///

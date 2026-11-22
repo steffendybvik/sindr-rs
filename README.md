@@ -35,7 +35,7 @@ fn main() -> Result<(), sindr::SimError> {
         CircuitElement::Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 },
     ]);
     let result = solve_circuit(&circuit)?;
-    let led = result.component_results.iter().find(|c| c.id == "D1").unwrap();
+    let led = result.component("D1").expect("D1 is in the circuit");
     println!("{:.1} mA, {:.1} mW", led.current_through * 1e3, led.power * 1e3);
     Ok(())
 }

@@ -523,21 +523,13 @@ mod tests {
     #[test]
     fn voltage_divider_matches_closed_form() {
         let result = solve_circuit(&voltage_divider()).unwrap();
-        assert!((result.node_voltages["n2"] - 10.0 * 2000.0 / 3000.0).abs() < 1e-9);
+        assert!((result.voltage("n2").unwrap() - 10.0 * 2000.0 / 3000.0).abs() < 1e-9);
     }
 
     #[test]
     fn current_divider_splits_inversely_to_resistance() {
         let result = solve_circuit(&current_divider()).unwrap();
-        let current = |id: &str| {
-            result
-                .component_results
-                .iter()
-                .find(|c| c.id == id)
-                .unwrap()
-                .current_through
-                .abs()
-        };
+        let current = |id: &str| result.current(id).unwrap().abs();
         assert!((current("R1") - 12.0 / 3000.0).abs() < 1e-12);
         assert!((current("R2") - 12.0 / 6000.0).abs() < 1e-12);
     }
@@ -561,7 +553,7 @@ mod tests {
     fn bjt_examples_sit_in_their_intended_regions() {
         let region = |circuit: Circuit| {
             let result = solve_circuit(&circuit).unwrap();
-            result.bjt_results[0].region.clone()
+            result.bjt("Q1").unwrap().region.clone()
         };
         assert_eq!(region(npn_common_emitter()), "active");
         assert_eq!(region(npn_switch()), "saturation");

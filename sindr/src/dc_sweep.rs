@@ -45,12 +45,7 @@ impl DcSweepResult {
     pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()
-            .filter_map(|p| {
-                p.result
-                    .node_voltages
-                    .get(node)
-                    .map(|v| (p.sweep_value, *v))
-            })
+            .filter_map(|p| p.result.voltage(node).map(|v| (p.sweep_value, v)))
             .collect()
     }
 
@@ -65,9 +60,7 @@ impl DcSweepResult {
             .iter()
             .filter_map(|p| {
                 p.result
-                    .component_results
-                    .iter()
-                    .find(|c| c.id == component_id)
+                    .component(component_id)
                     .map(|c| (p.sweep_value, c.current_through))
             })
             .collect()

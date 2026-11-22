@@ -54,7 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for node in ["top", "mid"] {
         println!(
             "V({node}): plain {:.6} V, seeded {:.6} V",
-            plain.node_voltages[node], seeded.node_voltages[node]
+            plain.voltage(node).unwrap_or(f64::NAN),
+            seeded.voltage(node).unwrap_or(f64::NAN)
         );
     }
 

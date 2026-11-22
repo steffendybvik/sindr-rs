@@ -688,7 +688,7 @@ fn span_text(trace: &[(f64, f64)]) -> String {
 
 /// Linear interpolation; `None` outside the trace. A single-point trace
 /// answers for any x, since a DC operating point has no x axis.
-fn interpolate(trace: &[(f64, f64)], x: f64) -> Option<f64> {
+pub(crate) fn interpolate(trace: &[(f64, f64)], x: f64) -> Option<f64> {
     match trace {
         [] => None,
         [(_, y)] => Some(*y),

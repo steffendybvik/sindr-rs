@@ -69,9 +69,8 @@ let circuit = Circuit {
 
 let result = solve_circuit(&circuit)?;
 
-println!("n2 = {:.3} V", result.node_voltages["n2"]);  // 6.667 V
-println!("R1 current = {:.3} mA", result.component_results
-    .iter().find(|c| c.id == "R1").unwrap().current_through * 1000.0);
+println!("n2 = {:.3} V", result.voltage("n2").unwrap());           // 6.667 V
+println!("R1 current = {:.3} mA", result.current("R1").unwrap() * 1e3); // 3.333 mA
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
@@ -273,7 +272,7 @@ let circuit = Circuit {
 
 let result = solve_circuit(&circuit)?;
 
-let q1 = result.bjt_results.iter().find(|b| b.id == "Q1").unwrap();
+let q1 = result.bjt("Q1").unwrap();
 println!("Vbe = {:.3} V, Vce = {:.3} V, Ic = {:.3} mA, region = {}",
     q1.vbe, q1.vce, q1.ic * 1000.0, q1.region);
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -408,7 +407,36 @@ assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
 
 ## Reading results
 
-`solve_circuit` returns `Result<SimulationResult, SimError>`.
+`solve_circuit` returns `Result<SimulationResult, SimError>`. Read it by name:
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+let result = solve_circuit(&circuit)?;
+
+let vout = result.voltage("out");            // Option<f64>; ground reads Some(0.0)
+let i_r1 = result.current("R1");             // its current_through, A
+let r1 = result.component("R1");             // Option<&ComponentResult>: V, I, P
+let i_v1 = result.branch_current("V1");      // MNA branch current, negative when sourcing
+let q1 = result.bjt("Q1");                   // also mosfet(..), op_amp(..), relay(..)
+
+// Inside a block instance or a SPICE subcircuit, by instance path.
+let v_sw = result.instance("X1").instance("X2").voltage("sw"); // node X1.X2.sw
+let i_l = result.instance("X1.X2").current("L1");               // component X1.X2.L1
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Every accessor returns `None` for a name the result doesn't have. Names are exact: a parsed SPICE deck's are lowercase (`instance("x1")`). Inside an instance only its own nets and components get the path; a port is the net it's bound to outside, and ground and globals keep their names, so read those on the parent. `InstanceResult::name("sw")` gives the flat name (`"X1.X2.sw"`) for the AC, sweep and transient accessors below.
+
+| Result | By name |
+|--------|---------|
+| `TimestepSnapshot` | `voltage(node)`, `current(id)`, `component(id)` |
+| `TransientData` | `node_voltage_curve(node)` and `component_current_curve(id)` as `(t, value)`; `voltage_at(node, t)`, `current_at(id, t)`, interpolated |
+| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, ref)` |
+| `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°) as `(Hz, value)` |
+| `DcSweepResult`, `TempSweepResult` | `node_voltage_curve(node)`, `component_current_curve(id)` as `(sweep value, value)`; each point's `result` has the accessors above |
+
+The fields behind them stay public:
 
 ```rust,ignore
 pub struct SimulationResult {
@@ -614,7 +642,7 @@ use sindr::{Circuit, temperature_sweep, TempSweepResult};
 let result = temperature_sweep(&circuit, 250.0, 350.0, 11)?; // 250 K → 350 K, 11 points
 
 for point in &result.points {
-    let ic = point.result.bjt_results.iter().find(|b| b.id == "Q1").map_or(0.0, |b| b.ic);
+    let ic = point.result.bjt("Q1").map_or(0.0, |b| b.ic);
     println!("T = {:.1} K, Ic = {:.3} mA", point.temperature_kelvin, ic * 1000.0);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -782,7 +810,7 @@ let bench = Bench::new("gnd")
     .with_source(BenchSource::voltage("supply", "vin", 5.0))
     .with_analysis(Analysis::OperatingPoint);
 let Simulation::OperatingPoint(op) = simulate(&netlist, &bench).unwrap().result else { unreachable!() };
-println!("vout = {:.3} V", op.node_voltages["vout"]);
+println!("vout = {:.3} V", op.voltage("vout").unwrap());
 ```
 
 - **Ids carry through.** Element ids are your component ids and node names your net ids, so results land on your parts. Every `ImportError` names the component, net or bench item: an unknown kind, a terminal the kind doesn't have, a terminal on two nets or on none, a value that isn't one.
