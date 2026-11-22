@@ -10,7 +10,7 @@ env:
 
 jobs:
   parse:
-    name: fuzz SPICE and expression parsers
+    name: fuzz the SPICE and expression parsers and the import API
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -30,6 +30,13 @@ jobs:
           cp seeds/expression/* corpus/expression/
           cargo +nightly fuzz run expression corpus/expression -- \
             -max_total_time=300 -max_len=1024
+      - name: Run the import API and its solves for five minutes
+        working-directory: fuzz
+        run: |
+          mkdir -p corpus/import
+          cp seeds/import/* corpus/import/
+          cargo +nightly fuzz run import corpus/import -- \
+            -max_total_time=300 -max_len=512 -timeout=20
       - name: Keep the crashing input
         if: failure()
         uses: actions/upload-artifact@v4

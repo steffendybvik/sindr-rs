@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1"
 sindr = { path = "../sindr", features = ["spice"] }
 
 # Not part of the main workspace: it needs nightly and libFuzzer.
@@ -25,6 +26,13 @@ bench = false
 [[bin]]
 name = "expression"
 path = "fuzz_targets/expression.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "import"
+path = "fuzz_targets/import.rs"
 test = false
 doc = false
 bench = false
