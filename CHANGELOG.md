@@ -78,6 +78,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal that names every field needs `eg` and `xti` too. One that ends
   in `..Default::default()` is unaffected.
 
+### Fixed
+
+- The `led-circuit` example (`examples::led_circuit()`) is a red `Led`
+  (`LED1`), not a fixed 2 V source (`V_LED`). Swept with `dc_sweep`, the
+  stand-in conducted backwards below 2 V (6 mA at 0 V); the LED blocks
+  until its forward voltage and draws about 20 mA at 9 V. "(Simplified)"
+  is gone from its name.
+
 ## [0.1.0] - 2026-11-21
 
 The first plain release. Versions are now `0.x` with no prereleases: a
