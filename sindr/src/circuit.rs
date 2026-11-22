@@ -572,7 +572,10 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
-        /// Emission colour (e.g. `"red"`, `"blue"`); sets the forward voltage drop.
+        /// Emission colour, any case: `"red"`, `"orange"`, `"amber"`,
+        /// `"yellow"`, `"green"`, `"blue"` or `"white"`
+        /// ([`led::COLORS`](sindr_devices::led::COLORS)); sets the forward
+        /// voltage drop. Any other name is red.
         color: String,
         /// Junction temperature (K), positive and finite. Default 300.15 K.
         /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.

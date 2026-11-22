@@ -25,6 +25,17 @@ const UNITS: &[&str] = &[
     "ohms", "ohm", "\u{3a9}", "\u{2126}", "hz", "f", "h", "v", "a", "w", "s",
 ];
 
+/// Units compared with case, since in another case they are prefixes:
+/// `K` (kelvin; `k` is kilo) and `m` (metre; a bare `m` right after the
+/// number is milli).
+const CASED_UNITS: &[&str] = &["K", "m"];
+
+/// Units that, apart from the number by a space, stand alone: `300 K` is
+/// 300 kelvin (while `300K` is 300 k, as a schematic writes it), `0.5 m`
+/// half a metre, and `0.01 1` the ratio 0.01 (`1` is the unit of a plain
+/// ratio in a parts library).
+const SPACED_UNITS: &[&str] = &["K", "m", "1"];
+
 /// Reads a component value the way a schematic writes it, to a number in
 /// SI base units. `None` when the text isn't a value.
 ///
@@ -35,6 +46,14 @@ const UNITS: &[&str] = &[
 /// The prefix (or `R` for 1, or the unit) may stand in for the decimal
 /// point, as on a resistor's marking: `4k7` is 4.7 k, `4R7` is 4.7, `2M2`
 /// is 2.2 M, `5V1` is 5.1 V.
+///
+/// A space between the number and its unit doesn't run them together:
+/// `"0.01 1"` (a ratio, unit `1`) is 0.01, and `"300 K"` is 300 kelvin.
+/// Written with no space, `300K` is 300 k as on a schematic; a bare `m`
+/// or `K` after a space is the unit (metre, kelvin), any other text after
+/// a space reads as if the space weren't there (`10 k`, `4.7 µF`), and
+/// digits after a space make it no value (`1 2` isn't 12). Kelvin
+/// and metre also follow a prefix: `300 mK`, `5mm`.
 ///
 /// ```
 /// use sindr::import::parse_value;
@@ -47,7 +66,19 @@ const UNITS: &[&str] = &[
 /// assert_eq!(parse_value("BC547"), None);
 /// ```
 pub fn parse_value(text: &str) -> Option<f64> {
-    let s: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let trimmed = text.trim();
+    let n = number_len(trimmed);
+    if n > 0 && trimmed[n..].starts_with(char::is_whitespace) {
+        let unit = trimmed[n..].trim();
+        if SPACED_UNITS.contains(&unit) {
+            return parse_value(&trimmed[..n]);
+        }
+        // Digits after a space are a second number, not more of this one.
+        if unit.starts_with(|c: char| c.is_ascii_digit()) {
+            return None;
+        }
+    }
+    let s: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
     let (sign, rest) = match s.strip_prefix('-') {
         Some(r) => (-1.0, r),
         None => (1.0, s.strip_prefix('+').unwrap_or(&s)),
@@ -112,6 +143,7 @@ pub fn parse_value(text: &str) -> Option<f64> {
     }
 
     if !rest.is_empty()
+        && !CASED_UNITS.contains(&rest)
         && !UNITS
             .iter()
             .any(|u| rest.eq_ignore_ascii_case(u) || rest == *u)
@@ -132,6 +164,33 @@ pub fn parse_value(text: &str) -> Option<f64> {
     };
     let value = sign * value;
     value.is_finite().then_some(value)
+}
+
+/// Length in bytes of the number `s` starts with: a sign, digits with an
+/// optional decimal point, and an exponent when digits follow the `e`.
+/// 0 when `s` doesn't start with a number.
+fn number_len(s: &str) -> usize {
+    let b = s.as_bytes();
+    let digits = |from: usize| b[from..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let mut i = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    let int = digits(i);
+    i += int;
+    let mut frac = 0;
+    if b.get(i) == Some(&b'.') {
+        frac = digits(i + 1);
+        i += 1 + frac;
+    }
+    if int + frac == 0 {
+        return 0;
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        let sign = usize::from(matches!(b.get(i + 1), Some(b'+' | b'-')));
+        let exp = digits(i + 1 + sign);
+        if exp > 0 {
+            i += 1 + sign + exp;
+        }
+    }
+    i
 }
 
 fn starts_with_ignore_case(s: &str, prefix: &str) -> bool {
@@ -207,6 +266,23 @@ mod tests {
         close("1n5", 1.5e-9);
         close("3V3", 3.3);
         close("5V1", 5.1);
+    }
+
+    #[test]
+    fn a_space_keeps_number_and_unit_apart() {
+        close("300 K", 300.0);
+        close("300K", 300e3);
+        close("0.01 1", 0.01);
+        close("0.011", 0.011);
+        close("2 m", 2.0);
+        close("2m", 2e-3);
+        close("5 mm", 5e-3);
+        close("300 mK", 0.3);
+        close("1.5e3 K", 1.5e3);
+        close("10 k", 10e3);
+        close("1 M", 1e6);
+        close(" 4.7 µF ", 4.7e-6);
+        assert_eq!(parse_value("1 2"), None);
     }
 
     #[test]

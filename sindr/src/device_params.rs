@@ -10,7 +10,7 @@ use sindr_devices::bjt::BjtParams;
 use sindr_devices::diode::{
     temperature_scale_is, Breakdown, DiodeParams, JunctionCharge, K_OVER_Q, T_NOM,
 };
-use sindr_devices::led::{led_params_from_str, LedColor};
+use sindr_devices::led::{forward_voltage_of, led_params_from_str, LedColor};
 use sindr_devices::mosfet::{self, MosfetCompanion, MosfetKind, MosfetParams};
 use sindr_devices::photodiode::PhotodiodeParams;
 use sindr_devices::schottky::SchottkyParams;
@@ -52,7 +52,7 @@ fn scale_is_with(is: f64, temperature: f64, n: f64, eg: f64, xti: f64) -> f64 {
 /// current. Silicon's 1.11 eV, below every LED's Vf, made a hot LED's Vf
 /// rise. The photon energy (≈ 1.9 eV for red) only gets it to about
 /// −0.6 mV/K, so this is an effective value, a little above it.
-fn led_eg(vf: f64) -> f64 {
+pub(crate) fn led_eg(vf: f64) -> f64 {
     vf - T_NOM * (LED_VF_TEMPCO + XTI * K_OVER_Q)
 }
 
@@ -85,7 +85,8 @@ pub(crate) fn diode_charge(model: Option<&DiodeModel>) -> Option<JunctionCharge>
 /// does.
 pub(crate) fn led(color: &str, temperature: f64) -> DiodeParams {
     let mut params = led_params_from_str(color);
-    let eg = led_eg(LedColor::from_str(color).forward_voltage());
+    let vf = forward_voltage_of(color).unwrap_or(LedColor::Red.forward_voltage());
+    let eg = led_eg(vf);
     params.is = scale_is_eg(params.is, temperature, params.n, eg);
     params.temperature = temperature;
     params
@@ -196,7 +197,7 @@ mod tests {
     /// An LED's Vf at its rated 20 mA falls about 2 mV/K, for every colour.
     #[test]
     fn hot_led_forward_voltage_falls() {
-        for color in ["red", "green", "blue", "yellow", "white"] {
+        for color in ["red", "green", "blue", "yellow", "white", "amber", "Orange"] {
             let vf = |t: f64| {
                 let p = led(color, t);
                 p.n * p.vt() * (0.020 / p.is).ln_1p()
@@ -207,7 +208,7 @@ mod tests {
                 "{color}: {tempco} V/K"
             );
             // 27 °C is untouched.
-            let rated = LedColor::from_str(color).forward_voltage();
+            let rated = forward_voltage_of(color).unwrap();
             assert!((vf(T_NOM) - rated).abs() < 1e-9, "{color}");
         }
     }

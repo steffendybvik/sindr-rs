@@ -364,7 +364,7 @@ Both, and the SPDT switch, are solved as those networks: results and ratings com
 
 ```rust,ignore
 CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
-CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"green"|"blue"|"yellow"|"white"
+CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
 CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage at 5 mA
 CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
@@ -1031,10 +1031,29 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Netlists as an editor exports them.** `ComponentKind::from_name` reads symbol ids (`resistor-iec`, `capacitor-polarized`, `op-amp`, `push-button`, `switch-spst`, `test-point`, `header-4`). When nets name terminals by id and the names sit in a table on each component, pass the table with `ImportOptions::with_terminal_names` to `Netlist::to_circuit_with` or `import::simulate_with`: a named terminal matches by its name, an unnamed one by its id, so pin `1` of an LED still needs its `Anode` name.
 - **Dual and quad op-amps and comparators.** `dual_op_amp`, `quad_op_amp`, `dual_comparator` and `quad_comparator` (or `op-amp-dual` and the like) are one package whose units share its `V+`/`V-` pins. Each unit becomes its own element, `<id>.a`, `<id>.b` …, with terminals tagged by unit as datasheets write them: `1IN+`, `IN1-`, `INA+`, `-IN B`, `OUT A`, `2OUT`. A spare unit with nothing connected adds no element.
 - **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently.
-- **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
+- **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
+
+#### What sindr reads from part data
+
+An editor's parts library knows more about a part than its value: a datasheet's forward voltage, gain, threshold. Export those as parameters and sindr fits its models to them; leave them out and sindr uses its default model for the kind, and says so.
+
+| Kind | Reads | Fitted |
+|---|---|---|
+| `led` | `color`/`colour` (`red`, `orange`, `amber`, `yellow`, `green`, `blue`, `white`, any case), or a colour word in the value (`Amber`, `LED red 3mm`) | the colour's preset (≈ 1.8–3.2 V at 20 mA) |
+| `led` | `vf` (V) at `if` (A), optionally `vf2` at `if2` | a diode through that point (N = 2), with Vf falling 2 mV/K |
+| `diode` | `vf` (V) at `if` (A), optionally `vf2` at `if2` | IS (N = 1), or IS and N through both points |
+| `zener_diode` | `vz` (V) or the value, at `iz` (A) | breakdown so that it carries `iz` at `vz` |
+| `npn`, `pnp` | `hfe` (ratio) at `hfe_ic` (A); `vce_sat` (V) at `vce_sat_ic` and `vce_sat_ib` (A) | `bf` = hFE; BR through Vce(sat) |
+| `nmos`, `pmos` | `vth` (V) at `vth_id` (A); `rds_on` (Ω) at `rds_on_vgs` (V), optionally at `rds_on_id` (A) | Level-1 KP and VTO through both |
+
+- **Min, typ and max.** Each figure (`vf`, `vf2`, `vz`, `hfe`, `vce_sat`, `vth`, `rds_on`) also takes `_min`, `_typ` and `_max` (`hfe_min`, `vce_sat_max`). A fit uses the typical value, else the middle of min and max, else whichever is given. Test conditions (`if`, `iz`, `vth_id` …) are exact.
+- **Units an editor's library has.** Numbers are in base units (V, A, Ω, a plain ratio), as numbers, text (`"20 mA"`, `"0.2 V"`) or typed quantities: `Value::Quantity` holds the number, its `Unit` (`Ohm`, `F`, `H`, `V`, `A`, `W`, `Hz`, `s`, `m`, `K`, `1`) and the text shown, `{"value": 0.02, "unit": "A", "text": "20 mA"}` in JSON. A quantity in the wrong unit for its parameter is an error.
+- **Nothing falls back silently.** `ImportedCircuit::models` records each component's `ModelSource` (model, value, params, datasheet or default), and `ImportedCircuit::warnings` has a warning for every component that got the default: a transistor whose value is only a part number (`PMBT3904`, bf = 100), an LED with no colour (red), a diode with no `vf`. Warnings don't stop the import.
+- **Spaces don't merge.** `parse_value` keeps a number and a unit apart when a space is between them: `"300 K"` is 300 kelvin and `"0.01 1"` the ratio 0.01, while `300K` is still 300 k as a schematic writes it.
+- The constructors are public: `DiodeModel::from_datasheet`, `DiodeModel::led_from_datasheet`, `DiodeModel::zener_from_datasheet`, `BjtModel::from_datasheet` and `MosfetParams::from_datasheet`, with the figures in `sindr::datasheet`.
 
 ### Examples
 
@@ -1390,6 +1409,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No CLI**. sindr is a library only.
 - **No schematic input**. Circuits are written as Rust `Vec<CircuitElement>` (or JSON via serde).
 - **No parsers for editors' own netlist files.** `sindr::import` takes a netlist an editor has already read (components, values, nets), not the editor's file format.
+- **No part-number lookup.** `sindr::import` builds a model from what a part's data says (a colour, datasheet figures such as `vf` at `if`, `hfe`, `vce_sat`, `vth`, `rds_on`), not from its part number: a `PMBT3904` with no figures gets the default NPN, with a warning in `ImportedCircuit::warnings`.
+- **Datasheet fits are as simple as the models.** A BJT's gain is the same at every collector current (`hfe_ic` doesn't move it), and with no collector resistance in the model a Vce(sat) fit gives a low BR. A MOSFET fit is Level 1 through one threshold and one on-resistance point, so the transfer curve between them is a square law. A zener fit shifts only the breakdown voltage; its 1 Ω dynamic resistance is fixed. An LED given by `vf` at `if` imports as a diode element with the fitted model, not as an LED element.
 - **ICs import as black boxes.** A part `sindr::import` has no kind for (a microcontroller, a timer) can come in as a `ComponentKind::BlackBox`, which simulates nothing: its pins draw and drive no current, so a net only it holds up floats. Model the part's behaviour with bench sources and loads, or leave it out of the analysis.
 - **Waveform export is CSV only.** Transient, AC and sweep results have `to_csv()`; there's no VCD, Touchstone or Common Simulation Data Format.
 - **No built-in plotting**. Examples like `bode_plot.rs` produce data; rendering is on the user.
@@ -2097,7 +2118,10 @@ pub enum CircuitElement {
         id: String,
         /// Terminals `[anode, cathode]`.
         nodes: [String; 2],
-        /// Emission colour (e.g. `"red"`, `"blue"`); sets the forward voltage drop.
+        /// Emission colour, any case: `"red"`, `"orange"`, `"amber"`,
+        /// `"yellow"`, `"green"`, `"blue"` or `"white"`
+        /// ([`led::COLORS`](sindr_devices::led::COLORS)); sets the forward
+        /// voltage drop. Any other name is red.
         color: String,
         /// Junction temperature (K), positive and finite. Default 300.15 K.
         /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
@@ -2821,6 +2845,133 @@ impl AcResult {
     /// row per frequency. Magnitude and phase follow from the two parts.
     /// See [CSV export](crate#csv-export) for the layout.
     pub fn to_csv(&self) -> String { … }
+}
+```
+
+## `sindr/src/datasheet.rs`
+
+Models fitted to datasheet figures.
+
+The figures are [`sindr_devices::datasheet`]'s, re-exported here:
+[`DiodeDatasheet`], [`ZenerDatasheet`], [`BjtDatasheet`] and
+[`MosfetDatasheet`], each figure a [`DatasheetValue`] with optional
+minimum, typical and maximum. The constructors sit on the models they
+build:
+
+| Constructor | Fits | Through |
+|---|---|---|
+| [`DiodeModel::from_datasheet`] | IS (N = 1), or IS and N with a second point | `vf` at `if_` (and `vf2` at `if2`) |
+| [`DiodeModel::led_from_datasheet`] | IS (N = 2) or IS and N, and EG for −2 mV/K | `vf` at `if_` (and `vf2` at `if2`) |
+| [`DiodeModel::zener_from_datasheet`] | BV of sindr's zener card | `vz` at `iz` |
+| [`BjtModel::from_datasheet`] | the element's `bf`, and BR | `hfe`; `vce_sat` at `vce_sat_ic` / `vce_sat_ib` |
+| [`MosfetParams::from_datasheet`] | KP and VTO | `vth` at `vth_id`; `rds_on` at `rds_on_vgs` |
+
+Figures are read at 27 °C, the temperature sindr's model values are
+given at.
+
+```rust
+pub use sindr_devices::datasheet:: { … }
+
+pub use sindr_devices::mosfet::MosfetParams;
+
+impl DiodeModel {
+    /// A diode through its datasheet forward voltage: IS so that it
+    /// conducts `if_` at `vf`, with N = 1 and no series resistance. With a
+    /// second point (`vf2` at `if2`), N is fitted too, so the diode passes
+    /// through both. Other parameters are the defaults.
+    ///
+    /// ```
+    /// use sindr::circuit::DiodeModel;
+    /// use sindr::datasheet::DiodeDatasheet;
+    ///
+    /// // 1N4148: 0.62 V at 1 mA, 0.72 V at 10 mA (typical).
+    /// let ds = DiodeDatasheet::new(0.62, 1e-3).with_second_point(0.72, 10e-3);
+    /// let m = DiodeModel::from_datasheet(&ds).unwrap();
+    /// assert!(m.n > 1.5 && m.n < 2.0);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`DatasheetError`] when `vf` or `if_` is missing or not positive,
+    /// when only half of the second point is given, or when `vf2` doesn't
+    /// rise with current from `vf`.
+    pub fn from_datasheet(ds: &DiodeDatasheet) -> Result<Self, DatasheetError> { … }
+
+    /// An LED through its datasheet forward voltage: as
+    /// [`from_datasheet`](Self::from_datasheet), with N = 2 (sindr's LED
+    /// presets' emission coefficient) when there is one point, and EG set
+    /// so `vf` falls 2 mV/K at `if_`, as sindr's LED colours do. Use it as
+    /// a [`CircuitElement::Diode`](crate::CircuitElement::Diode)'s model.
+    ///
+    /// ```
+    /// use sindr::circuit::DiodeModel;
+    /// use sindr::datasheet::DiodeDatasheet;
+    ///
+    /// // An amber LED: 2.05 V at 20 mA.
+    /// let m = DiodeModel::led_from_datasheet(&DiodeDatasheet::new(2.05, 20e-3)).unwrap();
+    /// assert_eq!(m.n, 2.0);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`from_datasheet`](Self::from_datasheet).
+    pub fn led_from_datasheet(ds: &DiodeDatasheet) -> Result<Self, DatasheetError> { … }
+
+    /// The zener card sindr stamps a
+    /// [`CircuitElement::ZenerDiode`](crate::CircuitElement::ZenerDiode)
+    /// as (IBV = 5 mA, RS = 1 Ω), with BV solved so that it carries `iz`
+    /// in reverse at `vz`. Its `bv` is the element's `vz`: a datasheet's
+    /// Vz at a test current other than 5 mA, or with the 1 Ω drop, shifts
+    /// it a little.
+    ///
+    /// ```
+    /// use sindr::circuit::DiodeModel;
+    /// use sindr::datasheet::ZenerDatasheet;
+    ///
+    /// // 1N4733A: 5.1 V at 49 mA.
+    /// let m = DiodeModel::zener_from_datasheet(&ZenerDatasheet::new(5.1, 49e-3)).unwrap();
+    /// let vz = m.bv.unwrap();
+    /// assert!(vz < 5.1 && vz > 4.9);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`DatasheetError`] when `vz` or `iz` is missing or not positive.
+    pub fn zener_from_datasheet(ds: &ZenerDatasheet) -> Result<Self, DatasheetError> { … }
+}
+
+impl BjtModel {
+    /// A transistor through its datasheet gain and saturation voltage:
+    /// the element's `bf` (returned first) is `hfe`, and the model's BR is
+    /// solved so that at collector current `vce_sat_ic` and base current
+    /// `vce_sat_ib` the collector–emitter voltage is `vce_sat`. Without
+    /// Vce(sat), BR stays at 1. Other parameters are the defaults, so the
+    /// Early effect stays off and the gain is the same at every current.
+    ///
+    /// The Ebers–Moll saturation voltage, with NF = NR = 1, is
+    /// `VT·ln((1 + (1 + β)/BR) / (1 − β/BF))` with `β = Ic/Ib`, solved here
+    /// for BR. sindr's transistor has no collector resistance, so a
+    /// datasheet's Vce(sat) (which includes it) gives a low BR.
+    ///
+    /// ```
+    /// use sindr::circuit::BjtModel;
+    /// use sindr::datasheet::{BjtDatasheet, DatasheetValue};
+    ///
+    /// // 2N3904: hFE 100–300 at 10 mA, Vce(sat) 0.2 V max at 10 mA / 1 mA.
+    /// let ds = BjtDatasheet::new(DatasheetValue::range(100.0, 300.0), 10e-3)
+    ///     .with_vce_sat(DatasheetValue { max: Some(0.2), ..Default::default() }, 10e-3, 1e-3);
+    /// let (bf, model) = BjtModel::from_datasheet(&ds).unwrap();
+    /// assert_eq!(bf, 200.0);
+    /// assert!(model.br > 0.0);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`DatasheetError`] when `hfe` is missing or not positive, when
+    /// Vce(sat) comes without both currents, when `ic / ib` isn't below
+    /// `hfe` (the part wouldn't saturate), or when `vce_sat` is too low to
+    /// reach at that overdrive.
+    pub fn from_datasheet(ds: &BjtDatasheet) -> Result<(f64, Self), DatasheetError> { … }
 }
 ```
 
@@ -4016,6 +4167,17 @@ attach to its terminals. Any other kind sindr doesn't know is refused
 by default; [`UnknownKinds::BlackBox`] makes those black boxes too.
 Either way each one is listed in [`ImportedCircuit::black_boxes`].
 
+### Models from part data
+
+A part's model comes from its [`Component::model`], its value (an LED's
+`"Amber"`), its parameters, or datasheet figures an editor's parts
+library holds (`vf` at `if`, `hfe`, `vce_sat`, `vth`, `rds_on`), fitted
+by the constructors in [`crate::datasheet`]; [`ComponentKind`] lists
+what each kind reads. When none of them says anything, sindr's default
+model is used, and never silently: [`ImportedCircuit::models`] records
+each component's [`ModelSource`], and [`ImportedCircuit::warnings`]
+carries an [`ImportWarning`] for each one that fell back to the default.
+
 ### Example
 
 ```
@@ -4078,9 +4240,11 @@ pub struct Component {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub value: Option<Value>,
-    /// Further parameters by name, such as `bf` for a transistor's gain or
-    /// `color` for an LED. Each kind's are listed on [`ComponentKind`];
-    /// any other name is an [`ImportError::UnknownParameter`].
+    /// Further parameters by name, such as `bf` for a transistor's gain,
+    /// `color` for an LED, or datasheet figures such as `vf` and `if`. Each
+    /// kind's are listed on [`ComponentKind`] (figures also take `_min`,
+    /// `_typ` and `_max`); any other name is an
+    /// [`ImportError::UnknownParameter`].
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "BTreeMap::is_empty")
@@ -4118,7 +4282,8 @@ impl Component {
     pub fn with_part(mut self, part: Part) -> Self { … }
 }
 
-/// A value or parameter: a number in SI base units, text, or a flag.
+/// A value or parameter: a number in SI base units, text, a flag, or a
+/// typed quantity.
 pub enum Value {
     /// A number in SI base units (Ω, F, H, V, A, Hz, K).
     Number(f64),
@@ -4127,6 +4292,116 @@ pub enum Value {
     /// Text: a value as written (`"4k7"`, read by [`parse_value`]) or a
     /// name (an LED's `"red"`).
     Text(String),
+    /// A typed quantity, as a parts library stores it: a number in base
+    /// units with its unit, and the text it was shown as. In JSON,
+    /// `{"value": 300, "unit": "K", "text": "300 K"}`. A quantity whose
+    /// unit isn't the one a value or parameter is in is an
+    /// [`ImportError::BadValue`]. Boxed, so a `Value` stays as small as
+    /// its text.
+    Quantity(Box<Quantity>),
+}
+
+/// A number in base units with its unit, as a parts library stores a
+/// typed spec: `Quantity::new(0.02, Unit::Ampere)` for 20 mA.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// or build it with [`new`](Self::new) and [`with_text`](Self::with_text).
+pub struct Quantity {
+    /// The number, in the unit's base unit (A, not mA), exact as the
+    /// library stores it.
+    pub value: f64,
+    /// The unit.
+    pub unit: Unit,
+    /// The quantity as the editor shows it (`"20 mA"`), for messages; the
+    /// number is [`value`](Self::value), not this text.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub text: Option<String>,
+}
+
+impl Quantity {
+    /// `value` in `unit`, with no text.
+    pub fn new(value: f64, unit: Unit) -> Self { … }
+
+    /// Sets [`text`](Self::text).
+    pub fn with_text(mut self, text: impl Into<String>) -> Self { … }
+}
+
+/// The unit of a [`Quantity`]: the base units a parts library stores
+/// specs in. Serialised as its symbol: `"Ohm"`, `"F"`, `"H"`, `"V"`,
+/// `"A"`, `"W"`, `"Hz"`, `"s"`, `"m"`, `"K"`, and `"1"` for a plain ratio
+/// (a gain, a position). [`from_symbol`](Self::from_symbol) also reads
+/// `Ω`; any other symbol is [`Other`](Self::Other).
+pub enum Unit {
+    /// Ohm (Ω).
+    Ohm,
+    /// Farad.
+    Farad,
+    /// Henry.
+    Henry,
+    /// Volt.
+    Volt,
+    /// Ampere.
+    Ampere,
+    /// Watt.
+    Watt,
+    /// Hertz.
+    Hertz,
+    /// Second.
+    Second,
+    /// Metre.
+    Metre,
+    /// Kelvin.
+    Kelvin,
+    /// A plain ratio, unit `1`: a gain, a coupling, a position.
+    #[default]
+    Ratio,
+    /// A unit sindr doesn't know, by its symbol. Accepted where any unit is.
+    Other(String),
+}
+
+impl Unit {
+    /// The unit with this symbol: `"Ohm"` (or `"Ω"`, `"ohm"`), `"F"`,
+    /// `"H"`, `"V"`, `"A"`, `"W"`, `"Hz"`, `"s"`, `"m"`, `"K"`, `"1"`.
+    /// Case matters except for `Ohm` and `Hz`, since `m` and `K` aren't
+    /// `M` and `k`.
+    pub fn from_symbol(symbol: &str) -> Self { … }
+
+    /// The unit's symbol, as [`from_symbol`](Self::from_symbol) reads it.
+    pub fn symbol(&self) -> &str { … }
+}
+
+/// Where an imported component's model came from. Recorded for every
+/// component that becomes an element, in
+/// [`ImportedCircuit::models`].
+pub enum ModelSource {
+    /// [`Component::model`].
+    Model,
+    /// [`Component::value`]: a resistance, a zener's voltage, an LED's
+    /// colour named in the value text.
+    Value,
+    /// Named parameters that set the model directly: `bf`, `color`,
+    /// `idss`.
+    Params,
+    /// Datasheet figures (`vf` at `if`, `hfe`, `vce_sat`, `vth`,
+    /// `rds_on` …), fitted by the `from_datasheet` constructors in
+    /// [`crate::datasheet`].
+    Datasheet,
+    /// Nothing the component gave: sindr's built-in model for the kind.
+    /// Each such component has an [`ImportWarning`].
+    Default,
+}
+
+/// Something about an import worth checking, though it isn't an error:
+/// mostly a component that got sindr's default model because nothing in
+/// its data said otherwise.
+pub struct ImportWarning {
+    /// The component's id.
+    pub component: String,
+    /// What happened, and what sindr used instead.
+    pub message: String,
 }
 
 /// A device model for a [`Component`] whose kind takes one.
@@ -4164,12 +4439,13 @@ pub enum Model {
 /// | `resistor` | Ω, required | | |
 /// | `capacitor`, `capacitor_polarized` | F, required | | |
 /// | `inductor` | H, required | | |
-/// | `diode`, `schottky_diode`, `photodiode` | | `temperature` (K); photodiode `irradiance` (W) | diode only: `Diode` |
-/// | `zener_diode` | V (breakdown) or `vz` | `vz`, `temperature` | |
-/// | `led` | | `color` (`"red"`, `"green"`, `"blue"`, …; default red), `temperature` | |
+/// | `diode` | | `vf` (V) at `if` (A), and `vf2` at `if2`; `temperature` (K) | `Diode` |
+/// | `schottky_diode`, `photodiode` | | `temperature` (K); photodiode `irradiance` (W) | |
+/// | `zener_diode` | V (breakdown) or `vz` | `vz` at `iz` (A); `temperature` | |
+/// | `led` | colour named in the text (`"Amber"`, `"LED red 3mm"`) | `color` or `colour` (`red`, `orange`, `amber`, `yellow`, `green`, `blue`, `white`, any case); `vf` (V) at `if` (A), and `vf2` at `if2`; `temperature` | |
 /// | `varactor` | | | `Varactor` |
-/// | `npn`, `pnp` | | `bf` (or `beta`, `hfe`), `temperature` | `Bjt` |
-/// | `nmos`, `pmos` | | | `Mosfet` |
+/// | `npn`, `pnp` | | `bf` (or `beta`); `hfe` at `hfe_ic` (A); `vce_sat` (V) at `vce_sat_ic` and `vce_sat_ib` (A); `temperature` | `Bjt` |
+/// | `nmos`, `pmos` | | `vth` (V) at `vth_id` (A); `rds_on` (Ω) at `rds_on_vgs` (V), optionally at `rds_on_id` (A) | `Mosfet` |
 /// | `njfet`, `pjfet` | | `idss` (A), `vp` (V) | |
 /// | `igbt` | | | `Igbt` |
 /// | `op_amp`, `comparator` | | `v_pos`, `v_neg` (V; default from bench supplies on its supply pins, else ±15) | op-amp: `OpAmp` |
@@ -4188,6 +4464,40 @@ pub enum Model {
 /// | `voltage_source`, `current_source` | V or A, required | | |
 /// | `connector`, `test_point`, `net_tie`, `mounting_hole` | | | |
 /// | `black_box` | | | |
+///
+/// # Part data
+///
+/// `vf`, `vf2`, `vz`, `hfe`, `vce_sat`, `vth` and `rds_on` are datasheet
+/// figures: each also takes `_min`, `_typ` and `_max` forms (`hfe_min`,
+/// `vce_sat_max`), and a fit uses the typical value, else the middle of
+/// minimum and maximum, else whichever is given
+/// ([`DatasheetValue::nominal`](crate::datasheet::DatasheetValue::nominal)).
+/// The other names are test conditions, read as given. A figure needs its
+/// condition (`vf` needs `if`, `vth` needs `vth_id` and `rds_on`), or the
+/// import is an [`ImportError::MissingValue`]. What each fit does:
+///
+/// - **Diode**: [`DiodeModel::from_datasheet`]: IS through `vf` at `if`
+///   (N = 1), or IS and N through both points.
+/// - **LED** with `vf`: [`DiodeModel::led_from_datasheet`], imported as a
+///   [`CircuitElement::Diode`] with that model, since the LED element knows
+///   only its colour's preset. Without `vf`, the colour sets the preset; a
+///   colour from the `color` parameter wins over one in the value text.
+/// - **Zener** with `iz`: [`DiodeModel::zener_from_datasheet`] sets the
+///   element's `vz` so that it carries `iz` at the datasheet's Vz.
+/// - **NPN, PNP**: `bf` is `hfe` (or `bf`/`beta`, which win); with
+///   `vce_sat`, [`BjtModel::from_datasheet`] fits BR through it. `hfe_ic`
+///   is kept for the record: the model's gain doesn't change with current.
+/// - **NMOS, PMOS**: [`MosfetParams::from_datasheet`] fits KP and VTO.
+///
+/// [`ImportedCircuit::models`] says, for every component, which of model,
+/// value, parameters, datasheet figures or sindr's default the model came
+/// from, and [`ImportedCircuit::warnings`] has one warning for every
+/// component that got the default (a transistor whose value is only a part
+/// number, an LED with no colour). Values and parameters may be typed
+/// quantities ([`Value::Quantity`]), whose unit is checked against the
+/// parameter's.
+///
+/// # Other kinds
 ///
 /// The last two rows add no element, and any terminal name is fine. A
 /// bench attaches sources and loads to their terminals. The connectors and
@@ -4564,11 +4874,26 @@ pub struct ImportedCircuit {
     /// them is in [`circuit`](Self::circuit), so a result has nothing for
     /// them; check this list before calling a design done.
     pub black_boxes: Vec<BlackBoxPart>,
+    /// Where each component's model came from, by component id, for every
+    /// component that became an element (a dual or quad part once, under
+    /// its package's id).
+    pub models: BTreeMap<String, ModelSource>,
+    /// Warnings, in netlist order: one for every component whose model is
+    /// [`ModelSource::Default`], and any other part data sindr couldn't use.
+    pub warnings: Vec<ImportWarning>,
 }
 
 impl ImportedCircuit {
     /// The node name of net `net_id`, for looking up results.
     pub fn node(&self, net_id: &str) -> Option<&str> { … }
+
+    /// Where component `id`'s model came from; `None` for a component
+    /// that isn't an element (passive, black box) or isn't in the netlist.
+    pub fn model_source(&self, id: &str) -> Option<ModelSource> { … }
+
+    /// The ids of the components that got sindr's default model, in id
+    /// order.
+    pub fn defaulted(&self) -> impl Iterator<Item = &str> { … }
 }
 
 impl Netlist {
@@ -4646,6 +4971,14 @@ Component values as a schematic writes them: `10k`, `4.7 µF`, `4k7`, `1M`.
 /// The prefix (or `R` for 1, or the unit) may stand in for the decimal
 /// point, as on a resistor's marking: `4k7` is 4.7 k, `4R7` is 4.7, `2M2`
 /// is 2.2 M, `5V1` is 5.1 V.
+///
+/// A space between the number and its unit doesn't run them together:
+/// `"0.01 1"` (a ratio, unit `1`) is 0.01, and `"300 K"` is 300 kelvin.
+/// Written with no space, `300K` is 300 k as on a schematic; a bare `m`
+/// or `K` after a space is the unit (metre, kelvin), any other text after
+/// a space reads as if the space weren't there (`10 k`, `4.7 µF`), and
+/// digits after a space make it no value (`1 2` isn't 12). Kelvin
+/// and metre also follow a prefix: `300 mK`, `5mm`.
 ///
 /// ```
 /// use sindr::import::parse_value;
@@ -4954,6 +5287,8 @@ pub use examples::{get_examples, ExampleCircuit};
 pub mod ac_analysis;
 
 pub mod circuit;
+
+pub mod datasheet;
 
 pub mod dc_sweep;
 
@@ -9330,6 +9665,203 @@ pub fn bjt_derivatives(vbe: f64, vbc: f64, params: &BjtParams) -> BjtDerivatives
 pub fn detect_region(vbe: f64, vbc: f64) -> BjtRegion { … }
 ```
 
+## `sindr-devices/src/datasheet.rs`
+
+Datasheet figures a device model can be fitted to.
+
+A datasheet gives a part's characteristics as figures at test
+conditions: a diode's forward voltage at a current, a transistor's gain
+at a collector current, a MOSFET's threshold at a drain current. These
+structs hold such figures as an editor's parts library stores them:
+quantities in volts, amps, ohms or plain ratios, each figure with its
+minimum, typical and maximum as separate optional values. The
+`from_datasheet` constructors next to each model fit the model through
+them: [`MosfetParams::from_datasheet`](crate::mosfet::MosfetParams::from_datasheet)
+here, and the diode, LED, zener and BJT ones on `sindr`'s `DiodeModel`
+and `BjtModel`.
+
+A figure's [`nominal`](DatasheetValue::nominal) value is what a fit
+uses: the typical value, else the middle of minimum and maximum, else
+whichever of the two is given.
+
+```rust
+/// One datasheet figure: its minimum, typical and maximum, any of which
+/// may be missing. All in the same unit, the base unit of the quantity
+/// (V, A, Ω) or a plain ratio.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
+pub struct DatasheetValue {
+    /// Minimum.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub min: Option<f64>,
+    /// Typical.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub typ: Option<f64>,
+    /// Maximum.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub max: Option<f64>,
+}
+
+impl DatasheetValue {
+    /// A figure with only a typical value.
+    pub fn typical(typ: f64) -> Self { … }
+
+    /// A figure given as a range.
+    pub fn range(min: f64, max: f64) -> Self { … }
+
+    /// The value a fit uses: the typical value, else the middle of minimum
+    /// and maximum, else whichever of them is given. `None` when the figure
+    /// is empty.
+    pub fn nominal(&self) -> Option<f64> { … }
+
+    /// Whether no value is given.
+    pub fn is_empty(&self) -> bool { … }
+
+    /// [`nominal`](Self::nominal), for the figure named `figure`.
+    ///
+    /// # Errors
+    ///
+    /// [`DatasheetError::Missing`] naming `figure` when it's empty;
+    /// [`DatasheetError::Invalid`] when it isn't finite.
+    pub fn require(&self, figure: &'static str) -> Result<f64, DatasheetError> { … }
+}
+
+/// Why a model can't be fitted to datasheet figures.
+pub enum DatasheetError {
+    /// A figure the fit needs is missing.
+    Missing {
+        /// The figure, as the struct's field names it.
+        figure: &'static str,
+    },
+    /// A figure is out of range: a current that isn't positive, a second
+    /// forward point below the first.
+    Invalid {
+        /// The figure.
+        figure: &'static str,
+        /// What's wrong with it.
+        reason: &'static str,
+    },
+}
+
+/// A diode's or LED's forward characteristic: `vf` at `if_`, and
+/// optionally a second point `vf2` at `if2`.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`.
+pub struct DiodeDatasheet {
+    /// Forward voltage Vf (V) at [`if_`](Self::if_).
+    pub vf: DatasheetValue,
+    /// Test current If (A), positive.
+    #[cfg_attr(feature = "serde", serde(rename = "if"))]
+    pub if_: f64,
+    /// A second forward voltage (V), at [`if2`](Self::if2). With it the
+    /// emission coefficient is fitted too.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vf2: Option<DatasheetValue>,
+    /// The second point's test current (A), positive and not `if_`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub if2: Option<f64>,
+}
+
+impl DiodeDatasheet {
+    /// `vf` (V) at `if_` (A).
+    pub fn new(vf: impl Into<DatasheetValue>, if_: f64) -> Self { … }
+
+    /// Adds a second point, `vf2` (V) at `if2` (A).
+    pub fn with_second_point(mut self, vf2: impl Into<DatasheetValue>, if2: f64) -> Self { … }
+}
+
+/// A zener's breakdown: `vz` at the test current `iz`.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`.
+pub struct ZenerDatasheet {
+    /// Zener voltage Vz (V), positive, at [`iz`](Self::iz).
+    pub vz: DatasheetValue,
+    /// Test current Iz (A), positive: 5 mA for a BZX84, 20 mA for many
+    /// 1N47xx parts.
+    pub iz: f64,
+}
+
+impl ZenerDatasheet {
+    /// `vz` (V) at `iz` (A).
+    pub fn new(vz: impl Into<DatasheetValue>, iz: f64) -> Self { … }
+}
+
+/// A bipolar transistor's gain and saturation: `hfe` at `hfe_ic`, and
+/// optionally `vce_sat` at `vce_sat_ic` with base current `vce_sat_ib`.
+/// Currents are magnitudes, the same for an NPN and a PNP.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`.
+pub struct BjtDatasheet {
+    /// DC current gain hFE (ratio), at [`hfe_ic`](Self::hfe_ic).
+    pub hfe: DatasheetValue,
+    /// The collector current hFE is given at (A). The Ebers–Moll model's
+    /// gain doesn't change with current, so this is kept for the record
+    /// and doesn't move the fit; 0 when not given.
+    pub hfe_ic: f64,
+    /// Collector–emitter saturation voltage (V), at
+    /// [`vce_sat_ic`](Self::vce_sat_ic) and
+    /// [`vce_sat_ib`](Self::vce_sat_ib).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vce_sat: Option<DatasheetValue>,
+    /// The collector current Vce(sat) is given at (A).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vce_sat_ic: Option<f64>,
+    /// The base current Vce(sat) is given at (A); typically `ic / 10`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub vce_sat_ib: Option<f64>,
+}
+
+impl BjtDatasheet {
+    /// `hfe` at `ic` (A).
+    pub fn new(hfe: impl Into<DatasheetValue>, ic: f64) -> Self { … }
+
+    /// Adds Vce(sat) `vce_sat` (V) at collector current `ic` and base
+    /// current `ib` (A).
+    pub fn with_vce_sat(mut self, vce_sat: impl Into<DatasheetValue>, ic: f64, ib: f64) -> Self { … }
+}
+
+/// A MOSFET's threshold and on-resistance: gate threshold `vth` at drain
+/// current `vth_id` (with the gate tied to the drain, as datasheets
+/// measure it), and `rds_on` at gate–source voltage `rds_on_vgs`,
+/// optionally at drain current `rds_on_id`.
+///
+/// Voltages and currents are read as magnitudes, so a P-channel part's
+/// figures may be given with the datasheet's minus signs or without.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`.
+pub struct MosfetDatasheet {
+    /// Gate threshold voltage Vgs(th) (V), at [`vth_id`](Self::vth_id).
+    pub vth: DatasheetValue,
+    /// The drain current the threshold is given at (A): 250 µA or 1 mA on
+    /// most datasheets.
+    pub vth_id: f64,
+    /// Drain–source on-resistance Rds(on) (Ω), at
+    /// [`rds_on_vgs`](Self::rds_on_vgs).
+    pub rds_on: DatasheetValue,
+    /// The gate–source voltage Rds(on) is given at (V).
+    pub rds_on_vgs: f64,
+    /// The drain current Rds(on) is given at (A). Without it the fit uses
+    /// the on-resistance at a vanishing drain current.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub rds_on_id: Option<f64>,
+}
+
+impl MosfetDatasheet {
+    /// Threshold `vth` (V) at `vth_id` (A), and on-resistance `rds_on`
+    /// (Ω) at `rds_on_vgs` (V).
+    pub fn new(
+        vth: impl Into<DatasheetValue>,
+        vth_id: f64,
+        rds_on: impl Into<DatasheetValue>,
+        rds_on_vgs: f64,
+    ) -> Self { … }
+
+    /// Sets [`rds_on_id`](Self::rds_on_id).
+    pub fn with_rds_on_id(mut self, id: f64) -> Self { … }
+}
+```
+
 ## `sindr-devices/src/diode.rs`
 
 Diode model: Shockley equation, companion model, voltage limiting.
@@ -9397,9 +9929,8 @@ impl DiodeParams {
     /// with N = 2.0 (typical LED emission coefficient).
     pub fn led(forward_voltage: f64) -> Self { … }
 
-    /// LED parameters by colour name.
-    ///
-    /// Maps common LED colours to their typical forward voltage.
+    /// LED parameters by colour name, case ignored, as
+    /// [`led::COLORS`](crate::led::COLORS) lists them. Unknown names are red.
     pub fn for_led_color(color: &str) -> Self { … }
 }
 
@@ -9719,6 +10250,10 @@ Maps common LED colours to their typical forward voltage, then derives
 DiodeParams via the Shockley equation so LEDs can be stamped as nonlinear
 diodes in any MNA solver.
 
+[`LedColor`] has the five original colours. Colour names, amber and
+orange included, are read by [`forward_voltage_of`] and
+[`color_in`], which ignore case.
+
 ```rust
 /// Common LED colour variants.
 pub enum LedColor {
@@ -9742,10 +10277,49 @@ impl LedColor {
     pub fn from_str(s: &str) -> Self { … }
 }
 
+/// Every colour name sindr knows, lowercase, with its typical forward
+/// voltage (V) at 20 mA. Amber (≈ 590 nm) and orange (≈ 605 nm) parts are
+/// AlInGaP, like most red and yellow indicators, and sit between red and
+/// green: about 2.0–2.1 V at 20 mA on common 3 mm and 5 mm datasheets.
+pub const COLORS: &[(&str, f64)] = &[
+    ("red", 1.8),
+    ("orange", 2.0),
+    ("amber", 2.05),
+    ("yellow", 2.0),
+    ("green", 2.2),
+    ("blue", 3.2),
+    ("white", 3.0),
+];
+
+/// The typical forward voltage (V) at 20 mA of the colour `name`, case
+/// ignored; `None` for a name sindr doesn't know.
+///
+/// ```
+/// use sindr_devices::led::forward_voltage_of;
+///
+/// assert_eq!(forward_voltage_of("Amber"), Some(2.05));
+/// assert_eq!(forward_voltage_of("ultraviolet"), None);
+/// ```
+pub fn forward_voltage_of(name: &str) -> Option<f64> { … }
+
+/// The first colour word in `text`, as its lowercase name: `"LED red
+/// 3mm"` is `"red"`. Words are split at anything but letters and digits,
+/// and compared without case.
+///
+/// ```
+/// use sindr_devices::led::color_in;
+///
+/// assert_eq!(color_in("LED Amber 5mm"), Some("amber"));
+/// assert_eq!(color_in("Green"), Some("green"));
+/// assert_eq!(color_in("LTST-C190"), None);
+/// ```
+pub fn color_in(text: &str) -> Option<&'static str> { … }
+
 /// `DiodeParams` for a given LED colour.
 pub fn led_params(color: LedColor) -> DiodeParams { … }
 
-/// `DiodeParams` from a colour name string. Unknown strings default to red.
+/// `DiodeParams` from a colour name, case ignored ([`COLORS`], amber and
+/// orange included). Unknown names default to red.
 pub fn led_params_from_str(color: &str) -> DiodeParams { … }
 ```
 
@@ -9783,6 +10357,7 @@ end-to-end simulator.
 | [`thermistor`] | NTC thermistor | Beta model `R(T) = R₀·exp(β·(1/T − 1/T₀))` |
 | [`photodiode`] | Photodiode | Diode + photocurrent offset |
 | [`photoresistor`] | Photoresistor (LDR) | Light-level-dependent resistance |
+| [`datasheet`] | Datasheet figures | Min/typ/max figures at test conditions that `from_datasheet` constructors fit models to |
 | [`regulator`] | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation, positive or negative; LM7805 and AMS1117 presets |
 
 ### Quick example
@@ -9818,6 +10393,8 @@ assert!(g_eq > 0.0);
 pub mod battery;
 
 pub mod bjt;
+
+pub mod datasheet;
 
 pub mod diode;
 
@@ -9934,6 +10511,32 @@ impl MosfetParams {
     /// VTO (−0.7 V for [`MosfetParams::default_pmos`]) becomes the +0.7 V
     /// the N-channel equations expect.
     pub fn in_nmos_frame(&self, kind: MosfetKind) -> MosfetParams { … }
+
+    /// Level-1 parameters fitted to a datasheet's threshold and
+    /// on-resistance: KP and VTO are solved so that the drain current at
+    /// `Vgs = Vds = vth` is `vth_id`, and the drain–source resistance at
+    /// `Vgs = rds_on_vgs` is `rds_on` (at `rds_on_id` when given, else at a
+    /// vanishing drain current). LAMBDA, GAMMA and PHI keep the
+    /// [`default_nmos`](Self::default_nmos) / [`default_pmos`](Self::default_pmos)
+    /// values; VTO is signed for `kind`, as SPICE signs it.
+    ///
+    /// ```
+    /// use sindr_devices::datasheet::MosfetDatasheet;
+    /// use sindr_devices::mosfet::{MosfetKind, MosfetParams};
+    ///
+    /// // A small-signal NMOS: Vgs(th) 2.1 V at 250 µA, 1.2 Ω at 10 V.
+    /// let ds = MosfetDatasheet::new(2.1, 250e-6, 1.2, 10.0);
+    /// let p = MosfetParams::from_datasheet(MosfetKind::Nmos, &ds).unwrap();
+    /// assert!(p.vto > 0.0 && p.vto < 2.1);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`DatasheetError`] when a figure is missing or not positive, when
+    /// `rds_on_vgs` isn't above the threshold, or when no Level-1 device
+    /// meets both figures (an `rds_on_id` so high that the part leaves the
+    /// triode region).
+    pub fn from_datasheet(kind: MosfetKind, ds: &MosfetDatasheet) -> Result<Self, DatasheetError> { … }
 }
 
 /// Companion model output for MNA stamping.

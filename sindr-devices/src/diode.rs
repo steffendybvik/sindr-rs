@@ -86,19 +86,10 @@ impl DiodeParams {
         }
     }
 
-    /// LED parameters by colour name.
-    ///
-    /// Maps common LED colours to their typical forward voltage.
+    /// LED parameters by colour name, case ignored, as
+    /// [`led::COLORS`](crate::led::COLORS) lists them. Unknown names are red.
     pub fn for_led_color(color: &str) -> Self {
-        let vf = match color {
-            "red" => 1.8,
-            "green" => 2.2,
-            "blue" => 3.2,
-            "yellow" => 2.0,
-            "white" => 3.0,
-            _ => 1.8, // default to red
-        };
-        Self::led(vf)
+        crate::led::led_params_from_str(color)
     }
 }
 
