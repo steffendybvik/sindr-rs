@@ -160,6 +160,11 @@ impl<T: MnaScalar> MnaMatrix<T> {
     /// [`SimError::SingularMatrix`] if the matrix is singular, or
     /// [`SimError::InvalidSolution`] if the solution contains NaN or Inf.
     pub fn solve(&self, b: &DVector<T>) -> Result<DVector<T>, SimError> {
+        // A circuit with nothing but ground (an element from ground to
+        // ground) has no unknowns; nalgebra's LU can't take a 0 × 0 matrix.
+        if self.size == 0 {
+            return Ok(DVector::from_element(0, T::zero()));
+        }
         let solution = match &self.storage {
             Storage::Dense(m) => m.clone().lu().solve(b).ok_or(SimError::SingularMatrix)?,
             Storage::Sparse { entries, .. } => solve_sparse(self.size, entries, b)?,
@@ -538,6 +543,15 @@ mod tests {
 
     /// A tridiagonal system with a voltage-source row (zero diagonal), solved
     /// dense and sparse: the same answer.
+    /// Nothing but ground has no unknowns: an empty solution, not a panic
+    /// in the LU (it underflowed `0 - 1`).
+    #[test]
+    fn a_system_with_no_unknowns_solves_to_nothing() {
+        let empty = DVector::<f64>::from_element(0, 0.0);
+        assert_eq!(MnaMatrix::<f64>::dense(0).solve(&empty).unwrap().len(), 0);
+        assert_eq!(MnaMatrix::<f64>::sparse(0).solve(&empty).unwrap().len(), 0);
+    }
+
     #[test]
     fn sparse_matches_dense() {
         let n = 50;
