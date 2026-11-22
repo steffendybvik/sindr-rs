@@ -43,6 +43,10 @@
 //! attach to its terminals. Any other kind sindr doesn't know is refused
 //! by default; [`UnknownKinds::BlackBox`] makes those black boxes too.
 //! Either way each one is listed in [`ImportedCircuit::black_boxes`].
+//! A net a black box leaves floating (a pull-up into an MCU input, a
+//! resistor between two IC pins) is tied to ground through
+//! [`HIGH_IMPEDANCE_OHMS`], the pin's leakage, so the rest of the circuit
+//! solves; each is listed in [`ImportedCircuit::high_impedance`].
 //!
 //! # Models from part data
 //!
@@ -1315,6 +1319,93 @@ pub struct BlackBoxPart {
     pub terminals: BTreeMap<String, String>,
 }
 
+/// The resistance an import ties a floating net to ground through: an IC
+/// input's leakage, and SPICE's gmin (10⁻¹² S). A 10 kΩ pull-up into it
+/// sits 33 pV below its rail.
+pub const HIGH_IMPEDANCE_OHMS: f64 = 1e12;
+
+/// A net whose only connections, besides at most one element terminal,
+/// are pins of parts sindr doesn't simulate: an MCU input with a pull-up,
+/// an I²C line between two black boxes, a resistor between two IC pins.
+/// Electrically those pins are high impedance, so the net is held where its
+/// one element puts it; for the solver it would be floating. The import
+/// ties it to ground through [`HIGH_IMPEDANCE_OHMS`], as element
+/// [`resistor`](Self::resistor), so the rest of the circuit solves.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct HighImpedanceNet {
+    /// The node, by its name in the circuit (a net id; see
+    /// [`ImportedCircuit::node`]).
+    pub node: String,
+    /// The id of the tie's resistor in [`ImportedCircuit::circuit`].
+    pub resistor: String,
+    /// The pins of unsimulated parts on the net, in netlist order.
+    pub pins: Vec<Pin>,
+}
+
+/// Ties every node an unsimulated pin leaves floating (fewer than two
+/// element terminals, or no path to ground but through such pins) to ground
+/// through [`HIGH_IMPEDANCE_OHMS`].
+fn tie_high_impedance_nets(
+    circuit: &mut Circuit,
+    unsimulated: BTreeMap<String, Vec<Pin>>,
+    ids: &BTreeSet<&str>,
+) -> Vec<HighImpedanceNet> {
+    let ground = circuit.ground_node.clone();
+    let floating: Vec<(String, Vec<Pin>)> = {
+        let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut adjacent: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for element in &circuit.components {
+            let nodes = element.all_nodes();
+            for n in &nodes {
+                *degree.entry(n.as_str()).or_default() += 1;
+                for m in &nodes {
+                    adjacent.entry(n.as_str()).or_default().insert(m.as_str());
+                }
+            }
+        }
+        let mut grounded = BTreeSet::from([ground.as_str()]);
+        let mut stack = vec![ground.as_str()];
+        while let Some(n) = stack.pop() {
+            for &m in adjacent.get(n).into_iter().flatten() {
+                if grounded.insert(m) {
+                    stack.push(m);
+                }
+            }
+        }
+        unsimulated
+            .into_iter()
+            .filter(|(n, _)| *n != ground)
+            .filter(|(n, _)| {
+                let d = degree.get(n.as_str()).copied().unwrap_or(0);
+                d == 1 || (d > 1 && !grounded.contains(n.as_str()))
+            })
+            .collect()
+    };
+    let mut tied = Vec::new();
+    for (node, pins) in floating {
+        let mut resistor = format!("{node}.hi_z");
+        let mut k = 2;
+        while ids.contains(resistor.as_str())
+            || circuit.components.iter().any(|e| e.id() == resistor)
+        {
+            resistor = format!("{node}.hi_z{k}");
+            k += 1;
+        }
+        circuit.components.push(CircuitElement::Resistor {
+            id: resistor.clone(),
+            nodes: [node.clone(), ground.clone()],
+            resistance: HIGH_IMPEDANCE_OHMS,
+        });
+        tied.push(HighImpedanceNet {
+            node,
+            resistor,
+            pins,
+        });
+    }
+    tied
+}
+
 /// A [`Circuit`] built from a [`Netlist`], with the map from the caller's
 /// net ids to its node names.
 #[derive(Debug, Clone, PartialEq)]
@@ -1337,6 +1428,10 @@ pub struct ImportedCircuit {
     /// Warnings, in netlist order: one for every component whose model is
     /// [`ModelSource::Default`], and any other part data sindr couldn't use.
     pub warnings: Vec<ImportWarning>,
+    /// Nets left floating by parts that simulate nothing, each tied to
+    /// ground through [`HIGH_IMPEDANCE_OHMS`] so the rest of the circuit
+    /// solves. See [`HighImpedanceNet`].
+    pub high_impedance: Vec<HighImpedanceNet>,
 }
 
 impl ImportedCircuit {
@@ -1515,6 +1610,20 @@ impl Netlist {
         }
 
         let mut black_boxes = Vec::new();
+        // Node by node, the pins of parts that simulate nothing (black
+        // boxes, connectors, test points): what an IC pin leaves a net.
+        let mut unsimulated: BTreeMap<String, Vec<Pin>> = BTreeMap::new();
+        let pins_of = |id: &str| -> Vec<(String, Pin)> {
+            self.nets
+                .iter()
+                .flat_map(|net| {
+                    net.pins
+                        .iter()
+                        .filter(|p| p.component == id)
+                        .map(|p| (node(&net.id), p.clone()))
+                })
+                .collect()
+        };
         let mut models = BTreeMap::new();
         let mut warnings = Vec::new();
         let mut record = |id: &str, built: &Built| {
@@ -1549,6 +1658,9 @@ impl Netlist {
                     kind: component.kind.name().to_string(),
                     terminals,
                 });
+                for (n, pin) in pins_of(&component.id) {
+                    unsimulated.entry(n).or_default().push(pin);
+                }
                 continue;
             }
             let nodes_of = |slot: usize| -> Option<String> {
@@ -1559,6 +1671,11 @@ impl Netlist {
             let Some((unit_kind, count)) = component.kind.units() else {
                 let built = build_element(component, nodes_of, &supply)?;
                 record(&component.id, &built);
+                if built.element.is_none() {
+                    for (n, pin) in pins_of(&component.id) {
+                        unsimulated.entry(n).or_default().push(pin);
+                    }
+                }
                 circuit.components.extend(built.element);
                 continue;
             };
@@ -1599,12 +1716,15 @@ impl Netlist {
             circuit.components.push(load.element(nodes)?);
         }
 
+        let high_impedance = tie_high_impedance_nets(&mut circuit, unsimulated, &ids);
+
         Ok(ImportedCircuit {
             circuit,
             nodes,
             black_boxes,
             models,
             warnings,
+            high_impedance,
         })
     }
 }

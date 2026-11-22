@@ -3070,3 +3070,162 @@ fn figures_that_cant_be_fitted_name_the_parameter() {
         ("m".into(), "rds_on_vgs".into(), Value::Number(1.5))
     );
 }
+
+// --- nets left floating by unsimulated parts ---------------------------
+
+/// A microcontroller and a sensor as black boxes, as a board with ICs
+/// imports: an open-drain alert line and two I²C lines, each with only
+/// its pull-up as an element; an LED driven from a pin the bench drives;
+/// and a programming line that reaches only the MCU and a connector.
+fn board_with_ics() -> Netlist {
+    let bb = |id: &str| Component::new(id, ComponentKind::BlackBox);
+    let r = |id: &str, v: &str| Component::new(id, ComponentKind::Resistor).with_value(v);
+    Netlist {
+        components: vec![
+            bb("mcu"),
+            bb("sensor"),
+            Component::new("j1", ComponentKind::Connector),
+            r("r_alert", "10k"),
+            r("r_sda", "4k7"),
+            r("r_scl", "4k7"),
+            r("r_led", "1k"),
+            Component::new("d_led", ComponentKind::Led).with_param("color", "green"),
+        ],
+        nets: vec![
+            Net::new(
+                "vdd",
+                [
+                    ("mcu", "vdd"),
+                    ("sensor", "vdd"),
+                    ("r_alert", "1"),
+                    ("r_sda", "1"),
+                    ("r_scl", "1"),
+                ],
+            ),
+            Net::new("gnd", [("mcu", "gnd"), ("sensor", "gnd"), ("j1", "2")]),
+            Net::new(
+                "alert",
+                [("mcu", "pa3"), ("sensor", "alert"), ("r_alert", "2")],
+            ),
+            Net::new("sda", [("mcu", "pa1"), ("sensor", "sda"), ("r_sda", "2")]),
+            Net::new("scl", [("mcu", "pa2"), ("sensor", "scl"), ("r_scl", "2")]),
+            Net::new("led_pin", [("mcu", "pa6"), ("r_led", "1")]),
+            Net::new("led_k", [("r_led", "2"), ("d_led", "cathode")]),
+            Net::new("led_a", [("d_led", "anode")]),
+            Net::new("updi", [("mcu", "pa0"), ("j1", "1")]),
+        ],
+    }
+}
+
+#[test]
+fn nets_that_only_reach_ic_pins_are_tied_high_impedance() {
+    let netlist = board_with_ics();
+    let bench = Bench::new("gnd")
+        .with_source(BenchSource::voltage("vin", "vdd", 3.3))
+        .with_source(BenchSource::voltage("pin_low", "led_pin", 0.0))
+        .with_tie("led_a", "vdd");
+    let imported = netlist.to_circuit(&bench).unwrap();
+
+    let tied: Vec<&str> = imported
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    assert_eq!(tied, ["alert", "scl", "sda"]);
+    let alert = &imported.high_impedance[0];
+    assert_eq!(alert.resistor, "alert.hi_z");
+    assert_eq!(
+        alert.pins,
+        [Pin::new("mcu", "pa3"), Pin::new("sensor", "alert")]
+    );
+    // The tie is in the circuit as a resistor to ground.
+    let tie = imported
+        .circuit
+        .components
+        .iter()
+        .find(|e| e.id() == "alert.hi_z")
+        .unwrap();
+    assert!(matches!(
+        tie,
+        CircuitElement::Resistor { nodes, resistance, .. }
+            if nodes == &["alert".to_string(), "gnd".to_string()] && *resistance == HIGH_IMPEDANCE_OHMS
+    ));
+
+    let r = op(&netlist, &bench);
+    // The pull-ups hold their lines at the rail: 10 kΩ into 1 TΩ is 33 pV.
+    for net in ["alert", "sda", "scl"] {
+        let v = r.voltage(net).unwrap();
+        assert!((v - 3.3).abs() < 1e-6, "{net}: {v}");
+    }
+    // The LED lights from the pin driven low: (3.3 − Vf) / 1 kΩ.
+    let i = r.current("d_led").unwrap();
+    assert!((1.0e-3..1.4e-3).contains(&i), "{i}");
+}
+
+#[test]
+fn a_net_with_two_elements_or_none_is_left_alone() {
+    let imported = board_with_ics()
+        .to_circuit(
+            &Bench::new("gnd")
+                .with_source(BenchSource::voltage("vin", "vdd", 3.3))
+                .with_load(BenchLoad::new("probe", LoadKind::Resistor(1e6), "alert")),
+        )
+        .unwrap();
+    let tied: Vec<&str> = imported
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    // `alert` has the probe as a second element, `updi` has none, and
+    // `vdd` and `gnd` have many: only the I²C lines and the undriven LED
+    // pin are tied.
+    assert_eq!(tied, ["led_pin", "scl", "sda"]);
+}
+
+#[test]
+fn a_resistor_between_two_ic_pins_is_held_to_ground() {
+    // No path to ground but through the MCU: both ends tied, and it solves
+    // at 0 V instead of failing as a disconnected island.
+    let netlist = Netlist {
+        components: vec![
+            Component::new("mcu", ComponentKind::BlackBox),
+            Component::new("r1", ComponentKind::Resistor).with_value("1k"),
+            Component::new("r2", ComponentKind::Resistor).with_value("1k"),
+        ],
+        nets: vec![
+            Net::new("a", [("mcu", "1"), ("r1", "1")]),
+            Net::new("mid", [("r1", "2"), ("r2", "1")]),
+            Net::new("b", [("mcu", "2"), ("r2", "2")]),
+            Net::new("gnd", [("mcu", "3")]),
+        ],
+    };
+    let bench = Bench::new("gnd");
+    let tied: Vec<String> = netlist
+        .to_circuit(&bench)
+        .unwrap()
+        .high_impedance
+        .into_iter()
+        .map(|h| h.node)
+        .collect();
+    assert_eq!(tied, ["a", "b"]);
+    let r = op(&netlist, &bench);
+    assert_eq!(r.voltage("mid"), Some(0.0));
+}
+
+#[test]
+fn a_tie_never_takes_an_id_already_in_use() {
+    let mut netlist = board_with_ics();
+    netlist
+        .components
+        .push(Component::new("alert.hi_z", ComponentKind::TestPoint));
+    netlist.nets.push(Net::new("tp", [("alert.hi_z", "1")]));
+    let imported = netlist
+        .to_circuit(&Bench::new("gnd").with_source(BenchSource::voltage("vin", "vdd", 3.3)))
+        .unwrap();
+    let alert = imported
+        .high_impedance
+        .iter()
+        .find(|h| h.node == "alert")
+        .unwrap();
+    assert_eq!(alert.resistor, "alert.hi_z2");
+}
