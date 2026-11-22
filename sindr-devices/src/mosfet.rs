@@ -657,4 +657,27 @@ mod tests {
         let empty = MosfetDatasheet::default();
         assert!(MosfetParams::from_datasheet(MosfetKind::Nmos, &empty).is_err());
     }
+
+    /// Each figure that can't be fitted is named in the error.
+    #[test]
+    fn from_datasheet_names_the_figure_it_cant_meet() {
+        let figure = |ds: &MosfetDatasheet| match MosfetParams::from_datasheet(MosfetKind::Nmos, ds)
+        {
+            Err(DatasheetError::Invalid { figure, .. }) => figure,
+            other => panic!("expected an invalid figure, got {other:?}"),
+        };
+        // A test current that isn't positive.
+        let ds = MosfetDatasheet::new(2.0, 250e-6, 1.0, 10.0).with_rds_on_id(0.0);
+        assert_eq!(figure(&ds), "rds_on_id");
+        assert_eq!(figure(&MosfetDatasheet::new(2.0, 0.0, 1.0, 10.0)), "vth_id");
+        // 1 Ω at 1 A is 1 V across the part, more than the 0.5 V overdrive
+        // at 2.5 V: the triode fit needs VTO below 1.5 V, which already
+        // carries far more than 250 µA at the 2 V threshold.
+        let ds = MosfetDatasheet::new(2.0, 250e-6, 1.0, 2.5).with_rds_on_id(1.0);
+        assert_eq!(figure(&ds), "rds_on");
+        // At Vgs = Vds = 2 V a 1 Ω part carries at most about 2 V / 1 Ω
+        // however low VTO goes, so 100 A at threshold can't be met.
+        let ds = MosfetDatasheet::new(2.0, 100.0, 1.0, 10.0);
+        assert_eq!(figure(&ds), "vth_id");
+    }
 }
