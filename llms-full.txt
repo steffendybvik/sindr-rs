@@ -1077,7 +1077,7 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Bench loads** are resistors, capacitors and inductors, plus `LoadKind::CurrentSink` (a constant current drawn from `a` into `b`, such as an IC's supply current; for one that changes with time, use a current `BenchSource` with a waveform) and `LoadKind::TimedSwitch`, which is closed through `on_resistance` until `at` and then open at `off_resistance`, or open then closed with `starts_closed: false`. `LoadKind::released_at(1e-6, 25.0)` is an open-drain output holding a bus line low and letting go at 1 µs, for its rise time through the pull-ups and bus capacitance. The operating point, DC sweeps and AC see it at t = 0; a transient lands a step on `at`, which still sees the old state, as a waveform's jump does.
-- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only.
+- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only. Decorated names (`3V3_A`, `12V_IN`) get none, since they're often rails derived through a filter or a switch. `import::supply_names` reports what that assumes, which supply-like names (`VCC`, `VBAT`, `3V3_A`) were left for you to set, and which nets are named like grounds.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
 
 #### What sindr reads from part data
@@ -4127,11 +4127,64 @@ impl Bench {
 
     /// Adds a DC supply to ground on every net of `netlist` whose display
     /// name is a voltage: `3V3`, `+5V`, `5V0`, `12V`, `-12V`, `+3.3V`.
-    /// Names that aren't (`VCC`, `VDD`, `GND`) get nothing. Each source's
-    /// id is `supply:` and the net's id. Never done unless called: a power
-    /// port's name is only a hint.
+    /// Names that aren't (`VCC`, `VDD`, `GND`) get nothing, and neither do
+    /// decorated ones (`3V3_A`, `12V_IN`): those are often rails derived
+    /// through a filter or a switch, and a source on them would short it.
+    /// Each source's id is `supply:` and the net's id. Never done unless
+    /// called: a power port's name is only a hint. [`supply_names`] says
+    /// which supplies this assumes and which supply-like names it left for
+    /// the caller to set.
     pub fn with_supplies_from_net_names(mut self, netlist: &Netlist) -> Self { … }
 }
+
+/// What [`Bench::with_supplies_from_net_names`] makes of a netlist's net
+/// names, for a UI to show before simulating ("assumed 3.3 V on 3V3; set
+/// VCC").
+pub struct SupplyNames {
+    /// Nets whose name is a voltage, each getting a supply of that voltage,
+    /// in netlist order.
+    pub assumed: Vec<AssumedSupply>,
+    /// Nets whose name looks like a supply but isn't a plain voltage
+    /// (`VCC`, `VDD`, `VBAT`, `3V3_A`), in netlist order, by net id: they get
+    /// nothing, so the caller sets them or leaves them to the circuit.
+    pub unresolved: Vec<String>,
+    /// Nets named like a ground (`GND`, `AGND`, `0V`), in netlist order, by
+    /// net id. One is the bench's ground; joining the others to it is the
+    /// caller's call, with [`Bench::with_tie`].
+    pub grounds: Vec<String>,
+}
+
+/// A supply assumed from a net's name.
+pub struct AssumedSupply {
+    /// The net's id.
+    pub net: String,
+    /// Its display name, which states the voltage.
+    pub name: String,
+    /// The voltage to ground, in volts.
+    pub volts: f64,
+}
+
+/// Reads `netlist`'s net display names as power ports: which state a
+/// voltage, which look like supplies without one, and which are grounds.
+/// Changes nothing; see [`Bench::with_supplies_from_net_names`].
+///
+/// ```
+/// use sindr::import::{supply_names, Net, Netlist};
+///
+/// let netlist = Netlist {
+///     nets: vec![
+///         Net::new("n1", [("r1", "1")]).with_name("3V3"),
+///         Net::new("n2", [("r1", "2")]).with_name("VCC"),
+///         Net::new("n3", [("r2", "1")]).with_name("GND"),
+///     ],
+///     ..Default::default()
+/// };
+/// let names = supply_names(&netlist);
+/// assert_eq!((names.assumed[0].net.as_str(), names.assumed[0].volts), ("n1", 3.3));
+/// assert_eq!(names.unresolved, ["n2"]);
+/// assert_eq!(names.grounds, ["n3"]);
+/// ```
+pub fn supply_names(netlist: &Netlist) -> SupplyNames { … }
 
 /// A netlist built against a bench, and the result of the bench's analysis.
 pub struct Imported {

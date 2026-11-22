@@ -91,8 +91,8 @@ mod bench;
 mod value;
 
 pub use bench::{
-    simulate, simulate_with, Analysis, Attach, Bench, BenchError, BenchLoad, BenchSource, Imported,
-    LoadKind, Simulation, SourceKind,
+    simulate, simulate_with, supply_names, Analysis, AssumedSupply, Attach, Bench, BenchError,
+    BenchLoad, BenchSource, Imported, LoadKind, Simulation, SourceKind, SupplyNames,
 };
 pub use value::parse_value;
 
