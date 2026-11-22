@@ -139,6 +139,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   currents and conductances with respect to its parameters, and
   `JunctionCharge::depletion_capacitance_slope` the slope of the
   depletion capacitance.
+- Pole-zero analysis, SPICE's `.pz`: `solve_pz` with a `PzConfig` gives
+  the poles and zeros (rad/s) of the voltage gain or transimpedance from
+  one node pair to another, as the generalised eigenvalues of the
+  linearised `G + sC` pencil. Infinite eigenvalues are deflated exactly
+  before QZ, so a capacitor across a source or an inductor in series with
+  a current source leaves no spurious roots. The SPICE parser reads
+  `.pz in in_ref out out_ref vol|cur pol|zer|pz` into
+  `AnalysisRequest::Pz`, and `pz_config()` turns it into a `PzConfig`.
+- Loop gain at a break point: `solve_loop_gain` with a `LoopGainConfig`
+  naming a 0 V probe source in series with the loop gives the loop gain
+  `T` over frequency by Tian's double injection, exact for loops that
+  carry signal both ways through the probe, with the gain and phase
+  crossovers and the phase and gain margins, each refined by bisection.
+- `Solver::pz` and `Solver::loop_gain` run them with solver options.
+- Two bench loads. `LoadKind::CurrentSink { amps }` draws a constant
+  current from one attach point to the other (ground by default), such as
+  an IC's supply current. `LoadKind::TimedSwitch` is closed through
+  `on_resistance` until `at` and then open at `off_resistance` (its
+  leakage), or the reverse with `starts_closed: false`: an open-drain
+  line held low and released, for a bus's rise time. The operating point,
+  DC sweeps and AC take it at t = 0, and a transient lands a step on
+  `at`. `LoadKind::current_sink`, `released_at`, `closed_at` and
+  `with_off_resistance` build them; in JSON they are
+  `{"current_sink": {"amps": 0.005}}` and `{"timed_switch":
+  {"on_resistance": 25, "at": 1e-6}}`, the off resistance defaulting to
+  1 GΩ and `starts_closed` to true.
+- A transient lands a step on every time a behavioural source compares
+  `time` with a constant (`time < 1u`), as it does on a waveform's
+  corners.
+- A reference-design test suite, `sindr/tests/reference_linear_supply.rs`:
+  a 7805 from 12 V feeding an AMS1117-3.3 at 500 mA, with datasheet
+  ratings and thermal paths on every part. It checks dissipation and
+  junction temperature against hand calculations, start-up inrush, and
+  that sindr flags each broken variant: no heatsink, the AMS1117 on 12 V,
+  a 6 V input, and missing capacitors.
+- `sindr::import` builds models from part data and says when it
+  couldn't. `ImportedCircuit::models` records each component's
+  `ModelSource` (its model, value, parameters, datasheet figures, or
+  sindr's default), and `ImportedCircuit::warnings` carries an
+  `ImportWarning` for every component that got the default, such as a
+  transistor whose value is only a part number. Warnings don't stop the
+  import.
+- Datasheet constructors: `DiodeModel::from_datasheet` (Vf at If, or two
+  points), `DiodeModel::led_from_datasheet`,
+  `DiodeModel::zener_from_datasheet` (Vz at Iz), `BjtModel::from_datasheet`
+  (hFE, and Vce(sat) at Ic/Ib) and `MosfetParams::from_datasheet` (Vth at
+  Id, Rds(on) at Vgs). Figures are `DatasheetValue`s with optional min,
+  typ and max, in `sindr::datasheet` (and `sindr_devices::datasheet`).
+  `sindr::import` reads them from parameters: `vf`/`if`, `vz`/`iz`,
+  `hfe`, `vce_sat`, `vth`, `rds_on` and their test conditions, each figure
+  also as `_min`, `_typ` and `_max`.
+- LEDs read their colour in any case, from `color`, `colour` or a colour
+  word in the value text (`"Amber"`, `"LED red 3mm"`). Amber (2.05 V at
+  20 mA) and orange (2.0 V) join the colours, through
+  `sindr_devices::led::COLORS`, `forward_voltage_of` and `color_in`; an
+  LED element's `color` takes them too.
+- `import::Value::Quantity`: a typed quantity as a parts library stores
+  it, a number in base units with its `Unit` and the text shown. Its unit
+  is checked against the parameter's.
 
 ### Changed
 
@@ -151,6 +210,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `CircuitElement::Jfet` has a `parasitic_caps` field, so
   a literal needs `parasitic_caps: None`. With serde a missing field is
   `None`.
+- `import::parse_value` reads a unit after a space as a unit: `"2 m"`
+  is now 2 metres, not 2 milli. `"2m"` is still 2 milli.
 
 ### Fixed
 
@@ -159,6 +220,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stand-in conducted backwards below 2 V (6 mA at 0 V); the LED blocks
   until its forward voltage and draws about 20 mA at 9 V. "(Simplified)"
   is gone from its name.
+- Newton no longer settles on a stale piece of a `VoltageRegulator`'s
+  characteristic. A step within the node tolerance could stop on the
+  piece the previous iterate was on, so a regulator leaving its 0 V floor
+  on a ramped input lagged by a millivolt and caught up in one short
+  step: a spike up to the current limit into its output capacitor (1.1 A
+  instead of 0.26 A for 22 µF at 12 V/ms), which `check_ratings` then
+  reported. A solve now converges only once every regulator is on the
+  same piece, and the same quiescent-current ramp, as the iterate it was
+  stamped from.
+- `import::parse_value` no longer runs a number and a unit together
+  across a space: `"0.01 1"` (a ratio) is 0.01, not 0.011, and `"300 K"`
+  is 300 kelvin, not 300 k. `300K` is still 300 k.
+- An LED whose colour was capitalised (`"Green"`) or amber came out red.
 
 ## [0.1.0] - 2026-11-21
 
