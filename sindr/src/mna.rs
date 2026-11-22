@@ -14,6 +14,14 @@
 //! LU. A circuit's sparsity pattern is the same from one Newton iteration or
 //! timestep to the next, so the sparse LU's symbolic analysis is reused while
 //! the pattern doesn't change.
+//!
+//! Before a sparse factorisation, every unknown the system fixes on its own
+//! is substituted out: a grounded voltage source's node, whose branch row
+//! reads `v = V`, together with the source's branch current, found
+//! afterwards from the node's row. A supply rail is a dense row and column,
+//! and left in it fills the factor in; taken out, a board with one shared
+//! rail factorises as cheaply as one with a supply per part. The rearrangement
+//! is exact.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -207,13 +215,156 @@ fn solve_sparse<T: MnaScalar>(
     entries: &[(usize, usize, T)],
     b: &DVector<T>,
 ) -> Result<DVector<T>, SimError> {
-    let triplets: Vec<Triplet<usize, usize, T>> = entries
-        .iter()
-        .map(|&(r, c, v)| Triplet::new(r, c, v))
-        .collect();
-    let mat = SparseColMat::<usize, T>::try_new_from_triplets(size, size, &triplets)
-        .map_err(|_| SimError::InvalidSolution)?;
+    let fixed = fixed_unknowns(size, entries);
+    if fixed.is_empty() {
+        return factor_and_solve(&to_csc(size, entries.iter().copied())?, b);
+    }
+    solve_with_fixed(size, entries, &fixed, b)
+}
 
+fn to_csc<T: MnaScalar>(
+    size: usize,
+    entries: impl Iterator<Item = (usize, usize, T)>,
+) -> Result<SparseColMat<usize, T>, SimError> {
+    let triplets: Vec<Triplet<usize, usize, T>> =
+        entries.map(|(r, c, v)| Triplet::new(r, c, v)).collect();
+    SparseColMat::<usize, T>::try_new_from_triplets(size, size, &triplets)
+        .map_err(|_| SimError::InvalidSolution)
+}
+
+/// An unknown the system fixes on its own: `row`'s only entry is in column
+/// `known`, so `x[known] = b[row] / value`. The row's partner unknown (`row`
+/// as a column) appears in one equation only, `known`'s row, and is found
+/// from it once everything else is solved.
+///
+/// This is how a voltage source to ground stamps: its branch row reads
+/// `v_node = V` and its branch current enters only the node's KCL row. A
+/// supply rail shared by many parts is a dense row and column, and
+/// factorising with it fills the sparse LU in; taking it out first keeps
+/// the factor as sparse as the circuit without the rail.
+#[derive(Debug, Clone, Copy)]
+struct Fixed<T> {
+    known: usize,
+    row: usize,
+    /// The entry at (`row`, `known`).
+    value: T,
+}
+
+/// The fixed unknowns, each with its own row, none sharing an unknown.
+/// Exact rearrangement only: a second row fixing an unknown already taken
+/// is left in, so a circuit that over-determines a node stays singular. An
+/// entry written twice counts twice, which only means it isn't taken out.
+fn fixed_unknowns<T: MnaScalar>(size: usize, entries: &[(usize, usize, T)]) -> Vec<Fixed<T>> {
+    // Per row and per column: the number of non-zeros and the last one.
+    let mut row_count = vec![0u32; size];
+    let mut row_last = vec![(0usize, T::zero()); size];
+    let mut col_count = vec![0u32; size];
+    let mut col_last = vec![0usize; size];
+    for &(r, c, v) in entries {
+        if v != T::zero() {
+            row_count[r] += 1;
+            row_last[r] = (c, v);
+            col_count[c] += 1;
+            col_last[c] = r;
+        }
+    }
+    let mut taken = vec![false; size];
+    let mut fixed = Vec::new();
+    for row in 0..size {
+        let (known, value) = row_last[row];
+        if row_count[row] == 1
+            && col_count[row] == 1
+            && col_last[row] == known
+            && known != row
+            && !taken[known]
+            && !taken[row]
+        {
+            taken[known] = true;
+            taken[row] = true;
+            fixed.push(Fixed { known, row, value });
+        }
+    }
+    fixed
+}
+
+/// Solves the system with the `fixed` unknowns substituted first.
+fn solve_with_fixed<T: MnaScalar>(
+    size: usize,
+    entries: &[(usize, usize, T)],
+    fixed: &[Fixed<T>],
+    b: &DVector<T>,
+) -> Result<DVector<T>, SimError> {
+    const NONE: usize = usize::MAX;
+    let mut x = DVector::from_element(size, T::zero());
+    // For each unknown: its index in the reduced system, or NONE.
+    let mut index = vec![0usize; size];
+    // For each row that's some `known`'s: which entry of `fixed`.
+    let mut slot = vec![NONE; size];
+    let mut is_known = vec![false; size];
+    for (i, f) in fixed.iter().enumerate() {
+        x[f.known] = b[f.row] / f.value;
+        index[f.known] = NONE;
+        index[f.row] = NONE;
+        is_known[f.known] = true;
+        slot[f.known] = i;
+    }
+    let mut m = 0;
+    for j in index.iter_mut() {
+        if *j != NONE {
+            *j = m;
+            m += 1;
+        }
+    }
+    let mut rhs = DVector::from_element(m, T::zero());
+    for (j, &k) in index.iter().enumerate() {
+        if k != NONE {
+            rhs[k] = b[j];
+        }
+    }
+    // One pass: the reduced system, the known unknowns moved to the right,
+    // and each `known`'s own row gathered to find its partner from.
+    let mut reduced = Vec::with_capacity(entries.len());
+    let mut partner_acc: Vec<T> = fixed.iter().map(|f| b[f.known]).collect();
+    let mut partner_coef = vec![T::zero(); fixed.len()];
+    let mut partner_terms: Vec<(usize, usize, T)> = Vec::new();
+    for &(r, c, v) in entries {
+        let i = slot[r];
+        if i != NONE {
+            if c == fixed[i].row {
+                partner_coef[i] += v;
+            } else {
+                partner_terms.push((i, c, v));
+            }
+        } else if index[r] != NONE {
+            if is_known[c] {
+                rhs[index[r]] -= v * x[c];
+            } else if index[c] != NONE {
+                reduced.push((index[r], index[c], v));
+            }
+        }
+    }
+    if m > 0 {
+        let y = factor_and_solve(&to_csc(m, reduced.into_iter())?, &rhs)?;
+        for (j, &k) in index.iter().enumerate() {
+            if k != NONE {
+                x[j] = y[k];
+            }
+        }
+    }
+    for (i, c, v) in partner_terms {
+        partner_acc[i] -= v * x[c];
+    }
+    for (i, f) in fixed.iter().enumerate() {
+        x[f.row] = partner_acc[i] / partner_coef[i];
+    }
+    Ok(x)
+}
+
+fn factor_and_solve<T: MnaScalar>(
+    mat: &SparseColMat<usize, T>,
+    b: &DVector<T>,
+) -> Result<DVector<T>, SimError> {
+    let size = mat.nrows();
     let symbolic = SYMBOLIC.with(|cache| -> Result<SymbolicLu<usize>, SimError> {
         let mut cache = cache.borrow_mut();
         let pattern = mat.symbolic();
@@ -413,6 +564,110 @@ mod tests {
         // Again, through the cached symbolic factorisation.
         let y2 = sparse.solve(&b).unwrap();
         assert_eq!(y, y2);
+    }
+
+    /// `n` nodes on a chain to ground, every one also tied to node 0, a
+    /// rail that `sources` grounded voltage sources hold (node 0 and nodes
+    /// 1.. for the rest), and one floating source between the last two
+    /// nodes. Unknowns: `n` nodes, then one branch per source.
+    fn hub_system<T: MnaScalar>(
+        n: usize,
+        sources: usize,
+        g: impl Fn(usize) -> T,
+        a: &mut MnaMatrix<T>,
+    ) -> DVector<T> {
+        let one = T::one();
+        for i in 1..n {
+            // Each node to the rail, to ground and to its neighbour.
+            let (gr, gg) = (g(i), g(i + n));
+            a[(i, i)] += gr + gg;
+            a[(0, 0)] += gr;
+            a[(i, 0)] -= gr;
+            a[(0, i)] -= gr;
+            if i + 1 < n {
+                let gc = g(i + 2 * n);
+                a[(i, i)] += gc;
+                a[(i + 1, i + 1)] += gc;
+                a[(i, i + 1)] -= gc;
+                a[(i + 1, i)] -= gc;
+            }
+        }
+        let mut b = DVector::from_element(n + sources + 1, T::zero());
+        for s in 0..sources {
+            let (node, k) = (if s == 0 { 0 } else { 10 * s }, n + s);
+            a[(node, k)] += one;
+            a[(k, node)] += one;
+            b[k] = g(s) * T::from_real(1e3 + s as f64);
+        }
+        // A floating source between the last two nodes: not grounded, so it
+        // stays in the system.
+        let (p, q, k) = (n - 2, n - 1, n + sources);
+        a[(p, k)] += one;
+        a[(k, p)] += one;
+        a[(q, k)] -= one;
+        a[(k, q)] -= one;
+        b[k] = T::from_real(0.25);
+        b
+    }
+
+    fn assert_hub_matches_dense<T: MnaScalar + std::fmt::Debug>(g: impl Fn(usize) -> T + Copy) {
+        let (n, sources) = (150, 3);
+        let size = n + sources + 1;
+        let (mut dense, mut sparse) = (MnaMatrix::dense(size), MnaMatrix::sparse(size));
+        let b = hub_system(n, sources, g, &mut dense);
+        hub_system(n, sources, g, &mut sparse);
+        let (x, y) = (dense.solve(&b).unwrap(), sparse.solve(&b).unwrap());
+        for i in 0..size {
+            let scale = x[i].abs().max(1e-12);
+            assert!(
+                (x[i] - y[i]).abs() <= 1e-10 * scale,
+                "unknown {i}: {:?} vs {:?}",
+                x[i],
+                y[i]
+            );
+        }
+        // And transposed, as the adjoint analyses solve it.
+        let (xt, yt) = (
+            dense.transpose().solve(&b).unwrap(),
+            sparse.transpose().solve(&b).unwrap(),
+        );
+        for i in 0..size {
+            let scale = xt[i].abs().max(1e-12);
+            assert!(
+                (xt[i] - yt[i]).abs() <= 1e-10 * scale,
+                "transposed {i}: {:?} vs {:?}",
+                xt[i],
+                yt[i]
+            );
+        }
+    }
+
+    /// A rail held by grounded sources is taken out before factorising
+    /// (it would fill the sparse LU in); the answer, the source currents
+    /// included, is the dense LU's.
+    #[test]
+    fn grounded_sources_are_substituted_exactly() {
+        assert_hub_matches_dense(|i| 1e-3 * (1.0 + (i % 7) as f64));
+        assert_hub_matches_dense(|i| {
+            Complex64::new(1e-3 * (1.0 + (i % 7) as f64), 1e-4 * (i % 5) as f64)
+        });
+    }
+
+    /// Two sources fixing one node over-determine it: still singular, not
+    /// one of them picked.
+    #[test]
+    fn a_node_fixed_twice_is_still_singular() {
+        let n = 120;
+        let mut a = MnaMatrix::<f64>::sparse(n + 2);
+        for i in 0..n {
+            a[(i, i)] += 1e-3;
+        }
+        for k in [n, n + 1] {
+            a[(0, k)] = 1.0;
+            a[(k, 0)] = 1.0;
+        }
+        let b = DVector::from_fn(n + 2, |i, _| if i >= n { 5.0 } else { 0.0 });
+        assert!(matches!(a.solve(&b), Err(SimError::SingularMatrix)));
     }
 
     #[test]
