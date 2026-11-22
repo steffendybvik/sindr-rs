@@ -148,6 +148,23 @@ mod tests {
     }
 
     #[test]
+    fn every_preset_has_its_named_colours_vf() {
+        for (name, color) in [
+            ("red", LedColor::Red),
+            ("green", LedColor::Green),
+            ("blue", LedColor::Blue),
+            ("yellow", LedColor::Yellow),
+            ("white", LedColor::White),
+        ] {
+            assert_eq!(forward_voltage_of(name), Some(color.forward_voltage()));
+            assert_eq!(led_params(color).is, led_params_from_str(name).is, "{name}");
+        }
+        assert_eq!(LedColor::Green.forward_voltage(), 2.2);
+        assert_eq!(LedColor::Yellow.forward_voltage(), 2.0);
+        assert_eq!(LedColor::White.forward_voltage(), 3.0);
+    }
+
+    #[test]
     fn names_ignore_case_and_include_amber_and_orange() {
         assert_eq!(forward_voltage_of("RED"), Some(1.8));
         assert_eq!(forward_voltage_of("orange"), Some(2.0));

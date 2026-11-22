@@ -2790,3 +2790,260 @@ fn sink_and_timed_switch_loads_in_json() {
         serde_json::from_str(&serde_json::to_string(&loads).unwrap()).unwrap();
     assert_eq!(back, loads);
 }
+
+// --- part-data edge cases ---------------------------------------------
+
+/// `component` alone, each terminal on its own net and the last on `gnd`.
+/// A MOSFET's body is left off, so it sits on the source.
+fn wired(component: Component) -> Netlist {
+    let terminals: Vec<_> = component
+        .kind
+        .terminals()
+        .iter()
+        .filter(|names| names[0] != "body")
+        .collect();
+    let nets = terminals
+        .iter()
+        .enumerate()
+        .map(|(i, names)| {
+            let net = if i + 1 == terminals.len() {
+                "gnd".to_string()
+            } else {
+                format!("n{i}")
+            };
+            Net::new(net, [(component.id.as_str(), names[0])])
+        })
+        .collect();
+    Netlist {
+        components: vec![component],
+        nets,
+    }
+}
+
+fn import(component: Component) -> Result<ImportedCircuit, ImportError> {
+    wired(component).to_circuit(&Bench::new("gnd"))
+}
+
+#[test]
+fn values_and_parameters_check_their_quantitys_unit() {
+    use ComponentKind as K;
+    let q = |v: f64, unit: Unit| Value::from(Quantity::new(v, unit));
+    // Each kind with the field it reads, a usable number and its unit.
+    let cases: Vec<(Component, &str, f64, Unit)> = vec![
+        (Component::new("r", K::Resistor), "value", 1e3, Unit::Ohm),
+        (
+            Component::new("c", K::Capacitor),
+            "value",
+            1e-6,
+            Unit::Farad,
+        ),
+        (Component::new("l", K::Inductor), "value", 1e-3, Unit::Henry),
+        (Component::new("b", K::Battery), "value", 3.7, Unit::Volt),
+        (Component::new("f", K::Fuse), "value", 0.5, Unit::Ampere),
+        (Component::new("y", K::Crystal), "value", 8e6, Unit::Hertz),
+        (
+            Component::new("y", K::Crystal),
+            "frequency",
+            8e6,
+            Unit::Hertz,
+        ),
+        (
+            Component::new("y", K::Crystal).with_value(8e6),
+            "c0",
+            5e-12,
+            Unit::Farad,
+        ),
+        (Component::new("q", K::Npn), "bf", 150.0, Unit::Ratio),
+        (
+            Component::new("k", K::Relay).with_param("pickup_voltage", 5.0),
+            "inductance",
+            0.1,
+            Unit::Henry,
+        ),
+        (
+            Component::new("t", K::Transformer).with_param("l2", 1e-3),
+            "l1",
+            1e-3,
+            Unit::Henry,
+        ),
+    ];
+    for (component, field, v, unit) in cases {
+        let with = |value: Value| {
+            let c = component.clone();
+            if field == "value" {
+                c.with_value(value)
+            } else {
+                c.with_param(field, value)
+            }
+        };
+        let id = component.id.clone();
+        let ok = import(with(q(v, unit.clone())));
+        assert!(ok.is_ok(), "{id} {field}: {ok:?}");
+        // A unit sindr doesn't know is taken as given.
+        assert!(
+            import(with(q(v, Unit::Other("x".into())))).is_ok(),
+            "{id} {field}"
+        );
+        match import(with(q(v, Unit::Second))) {
+            Err(ImportError::BadValue {
+                component,
+                field: f,
+                expected,
+                ..
+            }) => {
+                assert_eq!((component.as_str(), f.as_str()), (id.as_str(), field));
+                assert_eq!(expected, format!("a quantity in {}", unit.symbol()));
+            }
+            other => panic!("{id} {field}: {other:?}"),
+        }
+    }
+    // Some parameters aren't checked: an irradiance, a capacity in Ah.
+    let pd = Component::new("pd", K::Photodiode).with_param("irradiance", q(10.0, Unit::Second));
+    assert!(import(pd).is_ok());
+    let b = Component::new("b", K::Battery)
+        .with_value(3.7)
+        .with_param("capacity", q(2.0, Unit::Second));
+    assert!(import(b).is_ok());
+}
+
+#[test]
+fn unit_symbols_round_trip() {
+    for unit in [
+        Unit::Ohm,
+        Unit::Farad,
+        Unit::Henry,
+        Unit::Volt,
+        Unit::Ampere,
+        Unit::Watt,
+        Unit::Hertz,
+        Unit::Second,
+        Unit::Metre,
+        Unit::Kelvin,
+        Unit::Ratio,
+        Unit::Other("Ah".into()),
+    ] {
+        assert_eq!(Unit::from_symbol(unit.symbol()), unit, "{unit:?}");
+    }
+    assert_eq!(Unit::from_symbol(" hz "), Unit::Hertz);
+    assert_eq!(Unit::from_symbol("ohms"), Unit::Ohm);
+}
+
+#[test]
+fn a_bare_diode_warns_it_got_the_default_model() {
+    let imported = import(Component::new("d", ComponentKind::Diode)).unwrap();
+    assert_eq!(imported.model_source("d"), Some(ModelSource::Default));
+    let [warning] = imported.warnings.as_slice() else {
+        panic!("{:?}", imported.warnings)
+    };
+    assert_eq!(
+        warning.to_string(),
+        "component \"d\": no model data; using the built-in silicon diode (IS = 1e-14 A, N = 1)"
+    );
+    let CircuitElement::Diode { model, .. } = &imported.circuit.components[0] else {
+        panic!()
+    };
+    assert_eq!(*model, None);
+}
+
+#[test]
+fn a_bjt_model_without_a_gain_gets_bf_100() {
+    let q = Component::new("q", ComponentKind::Npn).with_model(Model::Bjt(BjtModel::default()));
+    let imported = import(q).unwrap();
+    assert_eq!(imported.model_source("q"), Some(ModelSource::Model));
+    assert_eq!(imported.warnings.len(), 1);
+    assert!(imported.warnings[0].message.contains("bf = 100"));
+    let CircuitElement::Bjt { bf, model, .. } = &imported.circuit.components[0] else {
+        panic!()
+    };
+    assert_eq!((*bf, *model), (100.0, Some(BjtModel::default())));
+}
+
+#[test]
+fn figures_take_min_and_max_forms_only_where_they_are_figures() {
+    // vf from its minimum and maximum: the fit uses the middle, 0.7 V.
+    let ranged = Component::new("d", ComponentKind::Diode)
+        .with_param("vf_min", 0.6)
+        .with_param("vf_max", 0.8)
+        .with_param("if", 10e-3);
+    let typical = Component::new("d", ComponentKind::Diode)
+        .with_param("vf", 0.7)
+        .with_param("if", 10e-3);
+    let model = |c: Component| {
+        let imported = import(c).unwrap();
+        assert_eq!(imported.model_source("d"), Some(ModelSource::Datasheet));
+        match &imported.circuit.components[0] {
+            CircuitElement::Diode { model, .. } => model.unwrap(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(model(ranged), model(typical));
+
+    let z = Component::new("z", ComponentKind::ZenerDiode)
+        .with_param("vz_max", 5.1)
+        .with_param("iz", 5e-3);
+    assert_eq!(
+        import(z).unwrap().model_source("z"),
+        Some(ModelSource::Datasheet)
+    );
+
+    // An op-amp's supply isn't a figure, so it has no `_max` form.
+    let u = Component::new("u", ComponentKind::OpAmp).with_param("v_pos_max", 15.0);
+    assert_eq!(
+        import(u).unwrap_err(),
+        ImportError::UnknownParameter {
+            component: "u".into(),
+            kind: "op_amp".into(),
+            parameter: "v_pos_max".into(),
+        }
+    );
+}
+
+#[test]
+fn figures_that_cant_be_fitted_name_the_parameter() {
+    let missing = |c: Component| match import(c) {
+        Err(ImportError::MissingValue { component, what }) => (component, what),
+        other => panic!("expected MissingValue, got {other:?}"),
+    };
+    let bad = |c: Component| match import(c) {
+        Err(ImportError::BadValue {
+            component,
+            field,
+            given,
+            ..
+        }) => (component, field, given),
+        other => panic!("expected BadValue, got {other:?}"),
+    };
+
+    // vf without the current it's given at.
+    let d = Component::new("d", ComponentKind::Diode).with_param("vf", 0.7);
+    let (c, what) = missing(d);
+    assert_eq!(c, "d");
+    assert!(what.contains("parameter \"if\""), "{what}");
+    // A second point without its current.
+    let d = Component::new("d", ComponentKind::Diode)
+        .with_param("vf", 0.7)
+        .with_param("if", 10e-3)
+        .with_param("vf2", 0.8);
+    assert_eq!(missing(d), ("d".into(), "datasheet figure \"if2\"".into()));
+    // An on-resistance without the threshold it's fitted with.
+    let m = Component::new("m", ComponentKind::Nmos)
+        .with_param("rds_on", 1.0)
+        .with_param("rds_on_vgs", 10.0);
+    assert_eq!(missing(m), ("m".into(), "datasheet figure \"vth\"".into()));
+
+    // A Zener's test current that isn't positive.
+    let z = Component::new("z", ComponentKind::ZenerDiode)
+        .with_param("vz", 5.1)
+        .with_param("iz", -5e-3);
+    assert_eq!(bad(z), ("z".into(), "iz".into(), Value::Number(-5e-3)));
+    // An on-resistance given at a gate voltage below the threshold.
+    let m = Component::new("m", ComponentKind::Nmos)
+        .with_param("vth", 2.0)
+        .with_param("vth_id", 250e-6)
+        .with_param("rds_on", 1.0)
+        .with_param("rds_on_vgs", 1.5);
+    assert_eq!(
+        bad(m),
+        ("m".into(), "rds_on_vgs".into(), Value::Number(1.5))
+    );
+}

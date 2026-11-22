@@ -372,3 +372,72 @@ fn jfet_gate_capacitances_give_the_stage_its_poles_and_miller_zero() {
         "{product} vs {want}"
     );
 }
+
+#[test]
+fn battery_rc_pair_gives_a_pole_and_a_zero() {
+    // A cell R0 + R1‖C1 across RL: Z = RL‖(R0 + R1/(1 + s·R1C1)), driven
+    // by a current into its positive terminal. The zero is where the
+    // cell's own impedance has its zero, −(R0 + R1)/(R0·R1·C1); the pole
+    // is −(RL + R0 + R1)/(R1·C1·(RL + R0)).
+    let (r0, r1, c1, rl) = (0.1, 0.2, 50.0, 10.0);
+    let mut params = sindr_devices::battery::BatteryParams::constant(3.7, 1.0, r0);
+    params.rc = Some(sindr_devices::battery::BatteryRc { r: r1, c: c1 });
+    let parts = vec![
+        CircuitElement::Battery {
+            id: "B1".into(),
+            nodes: ["p".into(), "0".into()],
+            params,
+            state_of_charge: 0.5,
+        },
+        r("RL", "p", "0", rl),
+    ];
+    let pz = solve_pz(
+        &circuit(parts),
+        &PzConfig::transimpedance("p", "0", "p", "0"),
+    )
+    .unwrap();
+    let pole = -(rl + r0 + r1) / (r1 * c1 * (rl + r0));
+    let zero = -(r0 + r1) / (r0 * r1 * c1);
+    assert_roots(&pz.poles, &[Complex64::new(pole, 0.0)], 1e-9);
+    assert_roots(&pz.zeros, &[Complex64::new(zero, 0.0)], 1e-9);
+}
+
+#[test]
+fn reverse_biased_diode_charge_sits_behind_its_series_resistance() {
+    // V1 → R → a → diode (RS, CJO) → ground, reverse biased at −5 V so the
+    // junction is its depletion capacitance Cj = CJO·(1 + 5/VJ)^−M and next
+    // to no conductance: H = (1 + s·RS·Cj) / (1 + s·(R + RS)·Cj).
+    let (rr, rs, cjo) = (1e3, 10.0, 10e-12);
+    let model = sindr::DiodeModel {
+        rs,
+        cjo,
+        ..Default::default()
+    };
+    let cj = cjo * (1.0 + 5.0 / model.vj).powf(-model.m);
+    let parts = vec![
+        CircuitElement::VoltageSource {
+            id: "V1".into(),
+            nodes: ["in".into(), "0".into()],
+            voltage: -5.0,
+            waveform: None,
+        },
+        r("R1", "in", "a", rr),
+        CircuitElement::Diode {
+            id: "D1".into(),
+            nodes: ["a".into(), "0".into()],
+            temperature: 300.15,
+            model: Some(model),
+        },
+    ];
+    let pz = solve_pz(
+        &circuit(parts),
+        &PzConfig::voltage_gain("in", "0", "a", "0"),
+    )
+    .unwrap();
+    assert_roots(
+        &pz.poles,
+        &[Complex64::new(-1.0 / ((rr + rs) * cj), 0.0)],
+        1e-6,
+    );
+    assert_roots(&pz.zeros, &[Complex64::new(-1.0 / (rs * cj), 0.0)], 1e-6);
+}
