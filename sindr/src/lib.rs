@@ -305,6 +305,7 @@ mod battery_state;
 pub mod circuit;
 mod composite;
 mod csv;
+pub mod datasheet;
 pub mod dc_sweep;
 pub mod design;
 mod device_params;

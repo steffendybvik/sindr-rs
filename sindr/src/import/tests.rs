@@ -1336,8 +1336,21 @@ fn each_kind_takes_only_its_own_parameters() {
         for &p in kind.params() {
             let v: Value = match p {
                 "closed" | "blown" => true.into(),
-                "color" => "green".into(),
+                "color" | "colour" => "green".into(),
                 "position" | "light_level" | "state_of_charge" | "k" => 0.5.into(),
+                "vf" => 2.0.into(),
+                "vf2" => 2.2.into(),
+                "if" | "vce_sat_ic" | "hfe_ic" => 0.02.into(),
+                "if2" => 0.05.into(),
+                "iz" => 5e-3.into(),
+                "vz" => 5.1.into(),
+                "bf" | "beta" | "hfe" => 100.0.into(),
+                "vce_sat" => 0.2.into(),
+                "vce_sat_ib" => 2e-3.into(),
+                "vth" => 2.0.into(),
+                "vth_id" => 250e-6.into(),
+                "rds_on" => 0.5.into(),
+                "rds_on_vgs" => 10.0.into(),
                 _ => 1.0.into(),
             };
             c = c.with_param(p, v);
@@ -2269,4 +2282,274 @@ fn a_unit_id_that_clashes_with_a_component_is_refused() {
         err(&netlist, &Bench::new("gnd")),
         ImportError::DuplicateId { id: "u1.a".into() }
     );
+}
+
+// --- models from part data --------------------------------------------
+
+/// A two-transistor LED flasher: an astable multivibrator with an LED and
+/// 470 Ω in each collector. `specs` gives the transistors hFE and
+/// Vce(sat) figures; without, they carry only their part number.
+fn flasher(specs: bool, led_value: &str) -> Netlist {
+    let transistor = |id: &str| {
+        let q = Component::new(id, ComponentKind::Npn).with_value("PMBT3904");
+        if specs {
+            q.with_param("hfe_min", 100.0)
+                .with_param("hfe_max", 300.0)
+                .with_param(
+                    "hfe_ic",
+                    Quantity::new(0.01, Unit::Ampere).with_text("10 mA"),
+                )
+                .with_param("vce_sat_max", "0.2 V")
+                .with_param("vce_sat_ic", 10e-3)
+                .with_param("vce_sat_ib", 1e-3)
+        } else {
+            q
+        }
+    };
+    Netlist {
+        components: vec![
+            Component::new("d1", ComponentKind::Led).with_value(led_value),
+            Component::new("d2", ComponentKind::Led).with_value(led_value),
+            Component::new("r1", ComponentKind::Resistor).with_value("470"),
+            Component::new("r2", ComponentKind::Resistor).with_value("470"),
+            Component::new("rb1", ComponentKind::Resistor).with_value("47k"),
+            Component::new("rb2", ComponentKind::Resistor).with_value("47k"),
+            Component::new("c1", ComponentKind::CapacitorPolarized).with_value("4.7 µF"),
+            Component::new("c2", ComponentKind::CapacitorPolarized).with_value("3.3 µF"),
+            transistor("q1"),
+            transistor("q2"),
+        ],
+        nets: vec![
+            Net::new(
+                "vcc",
+                [("d1", "A"), ("d2", "A"), ("rb1", "1"), ("rb2", "1")],
+            ),
+            Net::new("a1", [("d1", "K"), ("r1", "1")]),
+            Net::new("a2", [("d2", "K"), ("r2", "1")]),
+            Net::new("c1n", [("r1", "2"), ("q1", "C"), ("c1", "+")]),
+            Net::new("c2n", [("r2", "2"), ("q2", "C"), ("c2", "+")]),
+            Net::new("b1", [("rb1", "2"), ("q1", "B"), ("c2", "-")]),
+            Net::new("b2", [("rb2", "2"), ("q2", "B"), ("c1", "-")]),
+            Net::new("gnd", [("q1", "E"), ("q2", "E")]),
+        ],
+    }
+}
+
+fn flasher_bench() -> Bench {
+    Bench::new("gnd").with_source(BenchSource::voltage("vs", "vcc", 9.0))
+}
+
+#[test]
+fn flasher_takes_its_models_from_part_data() {
+    let netlist = flasher(true, "Amber");
+    let imported = netlist.to_circuit(&flasher_bench()).unwrap();
+    assert_eq!(imported.warnings, vec![], "no part fell back to a default");
+    for led in ["d1", "d2"] {
+        assert_eq!(imported.model_source(led), Some(ModelSource::Value));
+    }
+    for q in ["q1", "q2"] {
+        assert_eq!(imported.model_source(q), Some(ModelSource::Datasheet));
+    }
+    assert_eq!(imported.model_source("r1"), Some(ModelSource::Value));
+    assert_eq!(imported.defaulted().count(), 0);
+
+    let element = |id: &str| {
+        imported
+            .circuit
+            .components
+            .iter()
+            .find(|e| e.id() == id)
+            .unwrap()
+    };
+    assert!(matches!(element("d1"), CircuitElement::Led { color, .. } if color == "amber"));
+    let CircuitElement::Bjt { bf, model, .. } = element("q1") else {
+        panic!()
+    };
+    // hFE 100–300 is 200 nominal; BR is fitted to Vce(sat).
+    assert_eq!(*bf, 200.0);
+    assert!(model.is_some_and(|m| m.br != BjtModel::default().br));
+
+    // At its operating point both halves conduct, each LED near
+    // (9 V − 2.05 V − Vce(sat)) / 470 Ω.
+    let r = op(&netlist, &flasher_bench());
+    for led in ["d1", "d2"] {
+        let d = r.component_results.iter().find(|c| c.id == led).unwrap();
+        assert!(
+            (2.0..2.1).contains(&d.voltage_across),
+            "{led}: {}",
+            d.voltage_across
+        );
+        assert!(
+            (13e-3..15e-3).contains(&d.current_through),
+            "{led}: {}",
+            d.current_through
+        );
+    }
+}
+
+#[test]
+fn flasher_without_specs_warns_for_each_defaulted_part() {
+    let imported = flasher(false, "LED").to_circuit(&flasher_bench()).unwrap();
+    let warned: Vec<&str> = imported
+        .warnings
+        .iter()
+        .map(|w| w.component.as_str())
+        .collect();
+    assert_eq!(warned, ["d1", "d2", "q1", "q2"]);
+    assert_eq!(
+        imported.defaulted().collect::<Vec<_>>(),
+        ["d1", "d2", "q1", "q2"]
+    );
+    let q1 = &imported.warnings[2];
+    assert!(q1.message.contains("PMBT3904"), "{q1}");
+    assert!(q1.message.contains("bf = 100"), "{q1}");
+    // Still a circuit: warnings don't stop the import.
+    assert!(simulate(&flasher(false, "LED"), &flasher_bench()).is_ok());
+}
+
+#[test]
+fn led_colour_from_any_case_and_from_the_value() {
+    let led = |c: Component| {
+        let id = c.id.clone();
+        let netlist = Netlist {
+            components: vec![c],
+            nets: vec![
+                Net::new("a", [(id.as_str(), "A")]),
+                Net::new("gnd", [(id.as_str(), "K")]),
+            ],
+        };
+        let imported = netlist.to_circuit(&Bench::new("gnd")).unwrap();
+        let color = match &imported.circuit.components[0] {
+            CircuitElement::Led { color, .. } => color.clone(),
+            other => panic!("{other:?}"),
+        };
+        (
+            color,
+            imported.model_source(&id).unwrap(),
+            imported.warnings,
+        )
+    };
+    let (c, s, w) = led(Component::new("d", ComponentKind::Led).with_param("color", "Amber"));
+    assert_eq!((c.as_str(), s, w.len()), ("amber", ModelSource::Params, 0));
+    let (c, s, _) = led(Component::new("d", ComponentKind::Led).with_value("LED red 3mm"));
+    assert_eq!((c.as_str(), s), ("red", ModelSource::Value));
+    let (c, s, _) = led(Component::new("d", ComponentKind::Led).with_value("ORANGE"));
+    assert_eq!((c.as_str(), s), ("orange", ModelSource::Value));
+    let (c, s, w) = led(Component::new("d", ComponentKind::Led).with_param("color", "ultraviolet"));
+    assert_eq!((c.as_str(), s), ("red", ModelSource::Default));
+    assert!(w[0].message.contains("ultraviolet"));
+}
+
+#[test]
+fn led_through_its_forward_voltage_is_a_fitted_diode() {
+    // 2.05 V at 20 mA: through 350 Ω from 9 V, about 19.9 mA.
+    let netlist = Netlist {
+        components: vec![
+            Component::new("d", ComponentKind::Led)
+                .with_value("Amber")
+                .with_param("vf", Quantity::new(2.05, Unit::Volt))
+                .with_param("if", "20 mA"),
+            Component::new("r", ComponentKind::Resistor).with_value(350.0),
+        ],
+        nets: vec![
+            Net::new("vcc", [("r", "1")]),
+            Net::new("a", [("r", "2"), ("d", "A")]),
+            Net::new("gnd", [("d", "K")]),
+        ],
+    };
+    let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "vcc", 9.0));
+    let imported = simulate(&netlist, &bench).unwrap();
+    assert_eq!(
+        imported.circuit.model_source("d"),
+        Some(ModelSource::Datasheet)
+    );
+    let Simulation::OperatingPoint(r) = imported.result else {
+        panic!()
+    };
+    let v = r.node_voltages["a"];
+    let i = (9.0 - v) / 350.0;
+    // Near 20 mA the fitted LED sits within a few mV of its 2.05 V.
+    assert!((v - 2.05).abs() < 5e-3, "Vf {v} at {i} A");
+}
+
+#[test]
+fn zener_and_mosfet_from_datasheet_figures() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("z", ComponentKind::ZenerDiode)
+                .with_value("BZX84C5V1")
+                .with_param("vz", 5.1)
+                .with_param("iz", 5e-3),
+            Component::new("m", ComponentKind::Nmos)
+                .with_value("2N7002")
+                .with_param("vth", 2.1)
+                .with_param("vth_id", 250e-6)
+                .with_param("rds_on_max", Quantity::new(5.0, Unit::Ohm))
+                .with_param("rds_on_vgs", 10.0),
+        ],
+        nets: vec![
+            Net::new("k", [("z", "K"), ("m", "G"), ("m", "D")]),
+            Net::new("gnd", [("z", "A"), ("m", "S")]),
+        ],
+    };
+    let imported = netlist.to_circuit(&Bench::new("gnd")).unwrap();
+    assert!(imported.warnings.is_empty(), "{:?}", imported.warnings);
+    assert_eq!(imported.model_source("z"), Some(ModelSource::Datasheet));
+    assert_eq!(imported.model_source("m"), Some(ModelSource::Datasheet));
+    let CircuitElement::Mosfet { params, .. } = &imported.circuit.components[1] else {
+        panic!()
+    };
+    assert!(params.vto > 0.0 && params.vto < 2.1, "{params:?}");
+
+    // Half a figure is an error naming what's missing.
+    let mut half = netlist.clone();
+    half.components[1].params.remove("vth_id");
+    assert!(matches!(
+        half.to_circuit(&Bench::new("gnd")),
+        Err(ImportError::MissingValue { component, .. }) if component == "m"
+    ));
+}
+
+#[test]
+fn quantities_carry_their_unit() {
+    let netlist = |temperature: Value| Netlist {
+        components: vec![Component::new("d", ComponentKind::Diode)
+            .with_model(Model::Diode(DiodeModel::default()))
+            .with_param("temperature", temperature)],
+        nets: vec![Net::new("a", [("d", "A")]), Net::new("gnd", [("d", "K")])],
+    };
+    let kelvin = |v: Value| match &netlist(v).to_circuit(&Bench::new("gnd")) {
+        Ok(imported) => match &imported.circuit.components[0] {
+            CircuitElement::Diode { temperature, .. } => Ok(*temperature),
+            _ => unreachable!(),
+        },
+        Err(e) => Err(e.clone()),
+    };
+    assert_eq!(kelvin(Quantity::new(350.0, Unit::Kelvin).into()), Ok(350.0));
+    assert_eq!(kelvin("300 K".into()), Ok(300.0));
+    assert!(matches!(
+        kelvin(Quantity::new(350.0, Unit::Volt).into()),
+        Err(ImportError::BadValue { field, .. }) if field == "temperature"
+    ));
+    assert_eq!(Unit::from_symbol("Ω"), Unit::Ohm);
+    assert_eq!(Unit::from_symbol("1"), Unit::Ratio);
+    assert_eq!(Unit::from_symbol("k"), Unit::Other("k".into()));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn quantities_in_json() {
+    let c: Component = serde_json::from_str(
+        r#"{"id": "q1", "kind": "npn", "value": "PMBT3904",
+            "params": {"hfe": {"value": 200, "unit": "1", "text": "200"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        c.params["hfe"],
+        Value::from(Quantity::new(200.0, Unit::Ratio).with_text("200"))
+    );
+    let back: Component = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+    assert_eq!(back, c);
+    let source: ModelSource = serde_json::from_str(r#""datasheet""#).unwrap();
+    assert_eq!(source, ModelSource::Datasheet);
 }

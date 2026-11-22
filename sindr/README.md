@@ -172,7 +172,7 @@ Both, and the SPDT switch, are solved as those networks: results and ratings com
 
 ```rust,ignore
 CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
-CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"green"|"blue"|"yellow"|"white"
+CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
 CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage at 5 mA
 CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
 CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
@@ -839,10 +839,29 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Netlists as an editor exports them.** `ComponentKind::from_name` reads symbol ids (`resistor-iec`, `capacitor-polarized`, `op-amp`, `push-button`, `switch-spst`, `test-point`, `header-4`). When nets name terminals by id and the names sit in a table on each component, pass the table with `ImportOptions::with_terminal_names` to `Netlist::to_circuit_with` or `import::simulate_with`: a named terminal matches by its name, an unnamed one by its id, so pin `1` of an LED still needs its `Anode` name.
 - **Dual and quad op-amps and comparators.** `dual_op_amp`, `quad_op_amp`, `dual_comparator` and `quad_comparator` (or `op-amp-dual` and the like) are one package whose units share its `V+`/`V-` pins. Each unit becomes its own element, `<id>.a`, `<id>.b` …, with terminals tagged by unit as datasheets write them: `1IN+`, `IN1-`, `INA+`, `-IN B`, `OUT A`, `2OUT`. A spare unit with nothing connected adds no element.
 - **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently.
-- **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
+- **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
+
+### What sindr reads from part data
+
+An editor's parts library knows more about a part than its value: a datasheet's forward voltage, gain, threshold. Export those as parameters and sindr fits its models to them; leave them out and sindr uses its default model for the kind, and says so.
+
+| Kind | Reads | Fitted |
+|---|---|---|
+| `led` | `color`/`colour` (`red`, `orange`, `amber`, `yellow`, `green`, `blue`, `white`, any case), or a colour word in the value (`Amber`, `LED red 3mm`) | the colour's preset (≈ 1.8–3.2 V at 20 mA) |
+| `led` | `vf` (V) at `if` (A), optionally `vf2` at `if2` | a diode through that point (N = 2), with Vf falling 2 mV/K |
+| `diode` | `vf` (V) at `if` (A), optionally `vf2` at `if2` | IS (N = 1), or IS and N through both points |
+| `zener_diode` | `vz` (V) or the value, at `iz` (A) | breakdown so that it carries `iz` at `vz` |
+| `npn`, `pnp` | `hfe` (ratio) at `hfe_ic` (A); `vce_sat` (V) at `vce_sat_ic` and `vce_sat_ib` (A) | `bf` = hFE; BR through Vce(sat) |
+| `nmos`, `pmos` | `vth` (V) at `vth_id` (A); `rds_on` (Ω) at `rds_on_vgs` (V), optionally at `rds_on_id` (A) | Level-1 KP and VTO through both |
+
+- **Min, typ and max.** Each figure (`vf`, `vf2`, `vz`, `hfe`, `vce_sat`, `vth`, `rds_on`) also takes `_min`, `_typ` and `_max` (`hfe_min`, `vce_sat_max`). A fit uses the typical value, else the middle of min and max, else whichever is given. Test conditions (`if`, `iz`, `vth_id` …) are exact.
+- **Units an editor's library has.** Numbers are in base units (V, A, Ω, a plain ratio), as numbers, text (`"20 mA"`, `"0.2 V"`) or typed quantities: `Value::Quantity` holds the number, its `Unit` (`Ohm`, `F`, `H`, `V`, `A`, `W`, `Hz`, `s`, `m`, `K`, `1`) and the text shown, `{"value": 0.02, "unit": "A", "text": "20 mA"}` in JSON. A quantity in the wrong unit for its parameter is an error.
+- **Nothing falls back silently.** `ImportedCircuit::models` records each component's `ModelSource` (model, value, params, datasheet or default), and `ImportedCircuit::warnings` has a warning for every component that got the default: a transistor whose value is only a part number (`PMBT3904`, bf = 100), an LED with no colour (red), a diode with no `vf`. Warnings don't stop the import.
+- **Spaces don't merge.** `parse_value` keeps a number and a unit apart when a space is between them: `"300 K"` is 300 kelvin and `"0.01 1"` the ratio 0.01, while `300K` is still 300 k as a schematic writes it.
+- The constructors are public: `DiodeModel::from_datasheet`, `DiodeModel::led_from_datasheet`, `DiodeModel::zener_from_datasheet`, `BjtModel::from_datasheet` and `MosfetParams::from_datasheet`, with the figures in `sindr::datasheet`.
 
 ## Examples
 
