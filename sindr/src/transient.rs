@@ -2540,8 +2540,16 @@ impl<'a> StepSolver<'a> {
                 newton_raphson::apply_voltage_limiting(&v_new, &v_prev, &self.diode_info);
             let igbt_limited =
                 newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &self.igbt_info);
+            let regulator_limited = crate::stamp::limit_regulator_step(
+                self.circuit,
+                self.node_map,
+                self.num_nodes,
+                &v_prev,
+                &mut v_limited,
+            );
 
             if !igbt_limited
+                && !regulator_limited
                 && newton_raphson::converged(
                     &v_prev,
                     &v_limited,
