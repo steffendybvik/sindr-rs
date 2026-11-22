@@ -684,3 +684,61 @@ fn current_controlled_sources_match_finite_differences() {
     assert_eq!(r.get("F1").unwrap().parameter, SensParameter::CurrentGain);
     assert_matches_finite_differences("CCVS and CCCS", &c, "out", 1e-7);
 }
+
+/// An RC low-pass, H = 1/(1 + jωRC): the AC sensitivity helpers pick out
+/// dH/dR = −jωC/(1 + jωRC)² and dH/dC = −jωR/(1 + jωRC)² at each frequency.
+#[test]
+fn ac_sensitivity_lookups_match_the_rc_closed_form() {
+    use num_complex::Complex64;
+    use sindr::{solve_ac_sensitivity, AcConfig, AcSensConfig, SensParameter, TfOutput};
+
+    let (r, c) = (1e3, 1e-7);
+    let circuit = Circuit::new(
+        "0",
+        vec![
+            CircuitElement::VoltageSource {
+                id: "V1".into(),
+                nodes: ["in".into(), "0".into()],
+                voltage: 0.0,
+                waveform: None,
+            },
+            CircuitElement::Resistor {
+                id: "R1".into(),
+                nodes: ["in".into(), "out".into()],
+                resistance: r,
+            },
+            CircuitElement::Capacitor {
+                id: "C1".into(),
+                nodes: ["out".into(), "0".into()],
+                capacitance: c,
+            },
+        ],
+    );
+    let config = AcSensConfig::new(TfOutput::voltage("out"), AcConfig::new("V1", 100.0, 1e5, 7));
+    let sens = solve_ac_sensitivity(&circuit, &config).unwrap();
+
+    let dr = sens.curve("R1", SensParameter::Resistance);
+    let dc = sens.curve("C1", SensParameter::Capacitance);
+    assert_eq!((dr.len(), dc.len()), (7, 7));
+    for (point, ((f, s_r), (_, s_c))) in sens.points.iter().zip(dr.iter().zip(&dc)) {
+        let jw = Complex64::new(0.0, 2.0 * std::f64::consts::PI * f);
+        let den = (1.0 + jw * r * c).powi(2);
+        let (want_r, want_c) = (-jw * c / den, -jw * r / den);
+        assert!(
+            (s_r - want_r).norm() <= 1e-9 * want_r.norm(),
+            "{f} Hz: {s_r} vs {want_r}"
+        );
+        assert!(
+            (s_c - want_c).norm() <= 1e-9 * want_c.norm(),
+            "{f} Hz: {s_c} vs {want_c}"
+        );
+        let entry = point
+            .get_parameter("R1", SensParameter::Resistance)
+            .unwrap();
+        assert_eq!((entry.value, entry.sensitivity), (r, *s_r));
+    }
+    assert!(sens.points[0]
+        .get_parameter("R1", SensParameter::Capacitance)
+        .is_none());
+    assert!(sens.curve("nope", SensParameter::Resistance).is_empty());
+}
