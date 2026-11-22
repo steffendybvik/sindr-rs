@@ -137,6 +137,23 @@ pub enum SimError {
         temperature: f64,
     },
 
+    /// A transient's step stayed far below `tstep` (three decades or more)
+    /// for thousands of steps in a row, the solution still changing too
+    /// fast to follow. A node driven with no DC path to ground (a current
+    /// source into a capacitor or an open end) ramps without limit like
+    /// this. SPICE's "timestep too small".
+    #[error(
+        "time step too small at t = {time:.3e} s: the step stayed near {step:.1e} s and \
+         the solution still changes too fast to follow. Check for a node driven with no \
+         DC path to ground, such as a current source into a capacitor or an open end."
+    )]
+    TimestepTooSmall {
+        /// Simulated time when the run stopped (s).
+        time: f64,
+        /// The last step taken (s).
+        step: f64,
+    },
+
     /// A [`Measurement`](crate::measure::Measurement) couldn't be taken on
     /// a result: an unknown node or component, a window outside the
     /// result, or a level the signal never crosses.
