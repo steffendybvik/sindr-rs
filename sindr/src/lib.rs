@@ -373,6 +373,16 @@ pub use transient::{solve_transient, IntegrationMethod, TransientConfig, Transie
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
 
+/// This crate's version, as in its `Cargo.toml` (`"0.3.0"`). Record it
+/// next to saved results, so a rerun can tell a change in the design from a
+/// change in the engine. [`devices::VERSION`] is the device crate's.
+///
+/// ```
+/// assert_eq!(sindr::VERSION, env!("CARGO_PKG_VERSION"));
+/// assert!(sindr::VERSION.split('.').all(|part| part.parse::<u32>().is_ok()));
+/// ```
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The device-physics crate, `sindr-devices`, at the version this `sindr`
 /// is built with: every `*Params` struct a [`CircuitElement`] takes.
 pub use sindr_devices as devices;
