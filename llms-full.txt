@@ -1073,7 +1073,7 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Terminals by name, never pin number:** `anode`/`cathode` (or `A`/`K`), `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out` (or `Non-inverting`, `Inverting`, `Output`, `Positive supply`, `Negative supply`), case ignored and `-`, `_` and spaces alike. Unpolarised two-terminal parts also take `1` and `2`. `ComponentKind::terminals` lists each kind's names. A MOSFET's `body` must sit on its source's net; an op-amp's `V+`/`V-` pins set its rails from the bench supplies on those nets.
 - **Netlists as an editor exports them.** `ComponentKind::from_name` reads symbol ids (`resistor-iec`, `capacitor-polarized`, `op-amp`, `push-button`, `switch-spst`, `test-point`, `header-4`). When nets name terminals by id and the names sit in a table on each component, pass the table with `ImportOptions::with_terminal_names` to `Netlist::to_circuit_with` or `import::simulate_with`: a named terminal matches by its name, an unnamed one by its id, so pin `1` of an LED still needs its `Anode` name.
 - **Dual and quad op-amps and comparators.** `dual_op_amp`, `quad_op_amp`, `dual_comparator` and `quad_comparator` (or `op-amp-dual` and the like) are one package whose units share its `V+`/`V-` pins. Each unit becomes its own element, `<id>.a`, `<id>.b` …, with terminals tagged by unit as datasheets write them: `1IN+`, `IN1-`, `INA+`, `-IN B`, `OUT A`, `2OUT`. A spare unit with nothing connected adds no element.
-- **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently.
+- **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently. A net a black box leaves with one element or no path to ground, such as a pull-up into an MCU input or a resistor between two IC pins, is tied to ground through 1 TΩ (`HIGH_IMPEDANCE_OHMS`, an input's leakage and SPICE's gmin) so the rest solves, and listed in `ImportedCircuit::high_impedance`.
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Bench loads** are resistors, capacitors and inductors, plus `LoadKind::CurrentSink` (a constant current drawn from `a` into `b`, such as an IC's supply current; for one that changes with time, use a current `BenchSource` with a waveform) and `LoadKind::TimedSwitch`, which is closed through `on_resistance` until `at` and then open at `off_resistance`, or open then closed with `starts_closed: false`. `LoadKind::released_at(1e-6, 25.0)` is an open-drain output holding a bus line low and letting go at 1 µs, for its rise time through the pull-ups and bus capacitance. The operating point, DC sweeps and AC see it at t = 0; a transient lands a step on `at`, which still sees the old state, as a waveform's jump does.
@@ -4260,6 +4260,10 @@ A part sindr can't simulate, such as an IC, is a
 attach to its terminals. Any other kind sindr doesn't know is refused
 by default; [`UnknownKinds::BlackBox`] makes those black boxes too.
 Either way each one is listed in [`ImportedCircuit::black_boxes`].
+A net a black box leaves floating (a pull-up into an MCU input, a
+resistor between two IC pins) is tied to ground through
+[`HIGH_IMPEDANCE_OHMS`], the pin's leakage, so the rest of the circuit
+solves; each is listed in [`ImportedCircuit::high_impedance`].
 
 ### Models from part data
 
@@ -4955,6 +4959,28 @@ pub struct BlackBoxPart {
     pub terminals: BTreeMap<String, String>,
 }
 
+/// The resistance an import ties a floating net to ground through: an IC
+/// input's leakage, and SPICE's gmin (10⁻¹² S). A 10 kΩ pull-up into it
+/// sits 33 pV below its rail.
+pub const HIGH_IMPEDANCE_OHMS: f64 = 1e12;
+
+/// A net whose only connections, besides at most one element terminal,
+/// are pins of parts sindr doesn't simulate: an MCU input with a pull-up,
+/// an I²C line between two black boxes, a resistor between two IC pins.
+/// Electrically those pins are high impedance, so the net is held where its
+/// one element puts it; for the solver it would be floating. The import
+/// ties it to ground through [`HIGH_IMPEDANCE_OHMS`], as element
+/// [`resistor`](Self::resistor), so the rest of the circuit solves.
+pub struct HighImpedanceNet {
+    /// The node, by its name in the circuit (a net id; see
+    /// [`ImportedCircuit::node`]).
+    pub node: String,
+    /// The id of the tie's resistor in [`ImportedCircuit::circuit`].
+    pub resistor: String,
+    /// The pins of unsimulated parts on the net, in netlist order.
+    pub pins: Vec<Pin>,
+}
+
 /// A [`Circuit`] built from a [`Netlist`], with the map from the caller's
 /// net ids to its node names.
 pub struct ImportedCircuit {
@@ -4975,6 +5001,10 @@ pub struct ImportedCircuit {
     /// Warnings, in netlist order: one for every component whose model is
     /// [`ModelSource::Default`], and any other part data sindr couldn't use.
     pub warnings: Vec<ImportWarning>,
+    /// Nets left floating by parts that simulate nothing, each tied to
+    /// ground through [`HIGH_IMPEDANCE_OHMS`] so the rest of the circuit
+    /// solves. See [`HighImpedanceNet`].
+    pub high_impedance: Vec<HighImpedanceNet>,
 }
 
 impl ImportedCircuit {
