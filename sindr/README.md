@@ -513,6 +513,10 @@ std::fs::write("rc.csv", result.transient.unwrap().to_csv())?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+### Which engine produced a result
+
+`sindr::VERSION` (and `sindr::devices::VERSION`) is the crate's version as a string, such as `"0.3.0"`. Store it with saved results, so a rerun can tell a change in the design from a change in the engine.
+
 ## AC analysis
 
 Small-signal frequency response around the DC operating point. Nonlinear devices are linearised at the operating point, then each frequency is a complex MNA solve.

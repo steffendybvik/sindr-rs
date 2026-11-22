@@ -67,6 +67,13 @@
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
 #![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
+/// This crate's version, as in its `Cargo.toml`.
+///
+/// ```
+/// assert_eq!(sindr_devices::VERSION, env!("CARGO_PKG_VERSION"));
+/// ```
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod battery;
 pub mod bjt;
 pub mod datasheet;
