@@ -202,19 +202,19 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 
 ```toml
 [dependencies]
-sindr = "0.1"
+sindr = "0.2"
 ```
 
 Serde support is on by default. To disable:
 
 ```toml
-sindr = { version = "0.1", default-features = false }
+sindr = { version = "0.2", default-features = false }
 ```
 
 To parse SPICE netlists, enable the optional `spice` feature (off by default):
 
 ```toml
-sindr = { version = "0.1", features = ["spice"] }
+sindr = { version = "0.2", features = ["spice"] }
 ```
 
 ```rust,ignore
@@ -1115,7 +1115,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sindr-devices = "0.1"
+sindr-devices = "0.2"
 ```
 
 Two-terminal companions return `(g_eq, i_eq)`: the linearised conductance (S)
@@ -4719,10 +4719,10 @@ The full list of what sindr doesn't do is in
 
 ```toml
 [dependencies]
-sindr = "0.1"
+sindr = "0.2"
 
 # No serde:
-sindr = { version = "0.1", default-features = false }
+sindr = { version = "0.2", default-features = false }
 ```
 
 ### Transient results
@@ -4792,7 +4792,7 @@ out of the baseline build):
 
 ```toml
 [dependencies]
-sindr = { version = "0.1", features = ["spice"] }
+sindr = { version = "0.2", features = ["spice"] }
 ```
 
 (`no_run`: it reads `amp.cir`, which doesn't exist where doctests run.)
@@ -7026,7 +7026,7 @@ inside every instance instead of taking its prefix.
 analyses with them.
 
 Enable the optional `spice` feature to pull this module in
-(`sindr = { version = "0.1", features = ["spice"] }`); it is off by
+(`sindr = { version = "0.2", features = ["spice"] }`); it is off by
 default so the parser dependencies stay out of the baseline build.
 
 ### Quick start
