@@ -51,8 +51,8 @@ pub struct RegulatorParams {
 }
 
 impl RegulatorParams {
-    /// An LM7805-class 5 V regulator, from the ST L78 and Fairchild LM78xx
-    /// datasheets at 25 °C: 2 V dropout (typical, 1 A), 4.3 mA quiescent
+    /// An LM7805-class 5 V regulator, from typical 78xx datasheets at
+    /// 25 °C: 2 V dropout (typical, 1 A), 4.3 mA quiescent
     /// (typical), 2.2 A peak current, line regulation 3 mV over 7–25 V
     /// (typical), load regulation 100 mV over 5 mA–1.5 A (maximum; no
     /// typical is given). Short-circuit foldback (0.23 A at 35 V in) is not

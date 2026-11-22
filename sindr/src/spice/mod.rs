@@ -203,7 +203,7 @@
 //! one degree over the controls in nondecreasing index order, so for two
 //! `p0 + p1·x1 + p2·x2 + p3·x1² + p4·x1·x2 + p5·x2² + …`. A
 //! one-dimensional `POLY` with one coefficient is its linear term, as in
-//! SPICE2 and PSpice (ngspice refuses it).
+//! SPICE2 (ngspice refuses it).
 //!
 //! The expression runs to the end of the card, braces optional, in the
 //! syntax of [`Expression`](crate::expression::Expression): `v(n)`,
