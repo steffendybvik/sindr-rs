@@ -39,7 +39,8 @@ pub struct BjtParasiticCaps {
 /// Parameters of a [`CircuitElement::Diode`], as a SPICE `.model D` card
 /// gives them: Shockley (IS, N, RS), charge storage (CJO, VJ, M, FC, TT) and
 /// reverse breakdown (BV, IBV). Values are at the nominal 27 °C; the
-/// element's `temperature` scales `is` from there, and only `is`.
+/// element's `temperature` scales `is` from there with `eg` and `xti`, as
+/// SPICE's `IS(T)` does, and only `is`.
 ///
 /// The default is sindr's built-in silicon diode. With serde, a missing field
 /// takes its default, so `{"rs": 0.5}` is a silicon diode with 0.5 Ω in series.
@@ -78,6 +79,12 @@ pub struct DiodeModel {
     pub kf: f64,
     /// Flicker-noise exponent AF, positive. Default 1.
     pub af: f64,
+    /// Bandgap EG (eV), positive: how fast `is` rises with temperature.
+    /// Default 1.11, silicon; a Schottky junction is about 0.69.
+    pub eg: f64,
+    /// Saturation-current temperature exponent XTI, zero or positive.
+    /// Default 3, a pn junction; a Schottky junction is 2.
+    pub xti: f64,
 }
 
 impl Default for DiodeModel {
@@ -95,6 +102,8 @@ impl Default for DiodeModel {
             ibv: 1e-3,
             kf: 0.0,
             af: 1.0,
+            eg: 1.11,
+            xti: 3.0,
         }
     }
 }
@@ -110,7 +119,7 @@ impl DiodeModel {
 /// Ebers–Moll parameters of a [`CircuitElement::Bjt`], as a SPICE
 /// `.model NPN`/`PNP` card gives them. The forward gain is the element's own
 /// `bf`. Values are at the nominal 27 °C; the element's `temperature` scales
-/// `is` from there.
+/// `is` from there with `eg` and `xti`, as SPICE's `IS(T)` does.
 ///
 /// The default is sindr's built-in transistor. With serde, a missing field
 /// takes its default.
@@ -139,6 +148,12 @@ pub struct BjtModel {
     pub kf: f64,
     /// Flicker-noise exponent AF, positive. Default 1.
     pub af: f64,
+    /// Bandgap EG (eV), positive: how fast `is` rises with temperature.
+    /// Default 1.11, silicon.
+    pub eg: f64,
+    /// Saturation-current temperature exponent XTI, zero or positive.
+    /// Default 3.
+    pub xti: f64,
 }
 
 impl Default for BjtModel {
@@ -151,6 +166,8 @@ impl Default for BjtModel {
             vaf: 0.0,
             kf: 0.0,
             af: 1.0,
+            eg: 1.11,
+            xti: 3.0,
         }
     }
 }

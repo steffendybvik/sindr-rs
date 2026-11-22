@@ -20,11 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `to_netlist` writes MOSFETs and JFETs, and they parse back to the same
   circuit. A body diode SPICE's junction can't hold goes out as its own
   `D` line.
-- Diode and BJT `.model` cards that state `EG=1.11`, `XTI=3` or
-  `TNOM=27`, as many vendor cards do, now parse in strict mode: they are
-  the silicon temperature scaling sindr already uses. Other values are
-  still errors in strict mode, and the message says what sindr scales
-  with.
+- `DiodeModel` and `BjtModel` have `eg` and `xti`: the bandgap and
+  exponent `IS` follows temperature with, as SPICE's `IS(T)`. They
+  default to silicon's 1.11 eV and 3, so circuits that leave them out
+  are unchanged. The SPICE parser reads `EG` and `XTI` on any diode or
+  BJT card, a Schottky's `EG=0.69 XTI=2` included, and `to_netlist`
+  writes them when they aren't the defaults. `TNOM=27` parses in strict
+  mode too; another `TNOM` is an error there.
 - A `.model` inside a `.subckt` is read, local to that subcircuit, so
   vendor model files that keep their cards inside the subcircuit load.
   Before, it was ignored with a warning.
@@ -59,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spec on every run, and `ratings_over` checks every part's ratings on
   every run of a Monte Carlo or corner `Sampling`. Each reports its worst
   run with the tolerance values behind it.
+
+### Changed
+
+- **Breaking:** `DiodeModel` and `BjtModel` gained fields, so a struct
+  literal that names every field needs `eg` and `xti` too. One that ends
+  in `..Default::default()` is unaffected.
 
 ## [0.1.0] - 2026-11-21
 

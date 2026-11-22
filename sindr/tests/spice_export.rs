@@ -199,6 +199,8 @@ fn models_round_trip() {
         rs: 0.568,
         kf: 1e-16,
         af: 1.2,
+        eg: 0.69,
+        xti: 2.0,
         ..DiodeModel::default()
     };
     let bjt = BjtModel {
@@ -209,6 +211,8 @@ fn models_round_trip() {
         vaf: 74.03,
         kf: 3e-15,
         af: 1.1,
+        eg: 1.12,
+        xti: 3.5,
     };
     let circuit = Circuit {
         ground_node: "gnd".into(),

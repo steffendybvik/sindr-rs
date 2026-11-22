@@ -1595,6 +1595,55 @@ fn temp_diode_card() {
     check.finish();
 }
 
+/// A Schottky-style card: IS follows EG = 0.69 eV and XTI = 2, so it
+/// rises far more slowly with temperature than silicon's.
+#[test]
+fn temp_schottky_card() {
+    let golden = Golden::load("temp_schottky_card");
+    let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
+    let sweep = temperature_sweep(
+        &parse("temp_schottky_card"),
+        kelvin[0],
+        *kelvin.last().unwrap(),
+        kelvin.len(),
+    )
+    .unwrap();
+    let got: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["out"])
+        .collect();
+    let mut check = Check::new("temp_schottky_card");
+    check.series("v(out)", &kelvin, &got, &golden.column("v(out)"), OP_V);
+    check.finish();
+}
+
+/// A BJT card with its own EG and XTI, biased by a base resistor: Vbe
+/// falls and the collector current rises with temperature as ngspice's.
+#[test]
+fn temp_bjt_card() {
+    let golden = Golden::load("temp_bjt_card");
+    let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
+    let sweep = temperature_sweep(
+        &parse("temp_bjt_card"),
+        kelvin[0],
+        *kelvin.last().unwrap(),
+        kelvin.len(),
+    )
+    .unwrap();
+    let mut check = Check::new("temp_bjt_card");
+    for node in ["b", "c"] {
+        let got: Vec<f64> = sweep
+            .points
+            .iter()
+            .map(|p| p.result.node_voltages[node])
+            .collect();
+        let name = format!("v({node})");
+        check.series(&name, &kelvin, &got, &golden.column(&name), OP_V);
+    }
+    check.finish();
+}
+
 // ---------------------------------------------------------------- diode charge and breakdown
 
 /// A 1N4148 card with CJO, M, TT, BV and IBV, through 1 kΩ, swept past its
