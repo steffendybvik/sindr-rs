@@ -1786,6 +1786,13 @@ pub(crate) fn solve_transient_with(
     Ok(result)
 }
 
+/// How many accepted steps in a row may stay three decades below `tstep`
+/// before a transient gives up with [`SimError::TimestepTooSmall`]. The
+/// sharpest edges in the test suite (flashers, a comparator, a regulator's
+/// hold-up) take up to about 50; a node ramping without limit takes them
+/// for ever (43 million steps for 4 µs before this limit).
+const FLOOR_STEP_LIMIT: usize = 10_000;
+
 /// The stepper behind [`solve_transient`] and the transient
 /// path of [`solve_circuit`](crate::solve_circuit), for a validated circuit
 /// and config.
@@ -1989,6 +1996,8 @@ pub(crate) fn run_transient(
     }
     let mut timesteps = Vec::new();
     let mut stats = TransientStats::default();
+    // Accepted steps in a row far below `tstep` (see FLOOR_STEP_LIMIT).
+    let mut floor_steps = 0usize;
     let mut time = 0.0;
     // Start small: the switch-on at t = 0 is itself a corner.
     let mut h = if config.adaptive {
@@ -2121,6 +2130,20 @@ pub(crate) fn run_transient(
             timesteps.push(snapshot);
         }
         stats.accepted_steps += 1;
+        // Steps that stay three decades below `tstep` get nowhere. A sharp
+        // edge takes a run of them; a circuit that can't be followed at any
+        // step takes them for ever.
+        if config.adaptive && dt < h_max * 1e-3 {
+            floor_steps += 1;
+            if floor_steps > FLOOR_STEP_LIMIT {
+                return Err(SimError::TimestepTooSmall {
+                    time: t_next,
+                    step: dt,
+                });
+            }
+        } else {
+            floor_steps = 0;
+        }
         caps = new_caps;
         inds = new_inds;
         time = t_next;

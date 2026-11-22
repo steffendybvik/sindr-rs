@@ -145,3 +145,39 @@ fn fixed_step_runs_land_on_breakpoints() {
     }
     assert_eq!(tran.stats.lte_rejections, 0);
 }
+
+/// 1 A driven into a ferrite bead whose far end is open: no DC path to
+/// ground, so the driven node ramps without limit and no step follows it.
+/// The run stops with `TimestepTooSmall` instead of taking millions of
+/// steps of 0.1 ps (it took 43 million, three minutes, for 4 µs).
+#[test]
+fn a_node_that_ramps_without_limit_stops_with_timestep_too_small() {
+    let circuit = sindr::Circuit::new(
+        "0",
+        vec![
+            sindr::CircuitElement::CurrentSource {
+                id: "I1".into(),
+                nodes: ["0".into(), "a".into()],
+                current: 1.0,
+                waveform: None,
+            },
+            sindr::CircuitElement::FerriteBead {
+                id: "FB1".into(),
+                nodes: ["a".into(), "open".into()],
+                params: sindr::FerriteBeadParams::from_datasheet(1e3, 0.1),
+            },
+        ],
+    );
+    let started = std::time::Instant::now();
+    let err = sindr::solve_transient(&circuit, &sindr::TransientConfig::new(4e-6, 1e-7))
+        .expect_err("can't be followed");
+    assert!(
+        matches!(err, sindr::SimError::TimestepTooSmall { time, step } if time < 4e-6 && step < 1e-10),
+        "{err:?}"
+    );
+    assert!(
+        started.elapsed().as_secs() < 30,
+        "took {:?}",
+        started.elapsed()
+    );
+}
