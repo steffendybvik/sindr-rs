@@ -1072,6 +1072,7 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently.
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
+- **Bench loads** are resistors, capacitors and inductors, plus `LoadKind::CurrentSink` (a constant current drawn from `a` into `b`, such as an IC's supply current; for one that changes with time, use a current `BenchSource` with a waveform) and `LoadKind::TimedSwitch`, which is closed through `on_resistance` until `at` and then open at `off_resistance`, or open then closed with `starts_closed: false`. `LoadKind::released_at(1e-6, 25.0)` is an open-drain output holding a bus line low and letting go at 1 µs, for its rise time through the pull-ups and bus capacitance. The operating point, DC sweeps and AC see it at t = 0; a transient lands a step on `at`, which still sees the old state, as a waveform's jump does.
 - **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
 
@@ -3976,6 +3977,56 @@ pub enum LoadKind {
     Capacitor(f64),
     /// An inductance (H).
     Inductor(f64),
+    /// A constant current drawn from `a`'s net and returned into `b`'s,
+    /// such as an IC's supply current: `amps` flows into the load at `a`
+    /// and out of it at `b`. For a current that changes with time, use a
+    /// [`SourceKind::Current`] with a waveform, negated: it drives its
+    /// current into `plus`, so a sink at `a` is a source on `a` with a
+    /// negative value.
+    CurrentSink {
+        /// The current drawn (A).
+        amps: f64,
+    },
+    /// A switch between `a` and `b` that changes state once, at `at`: an
+    /// open-drain output holding a line low and then letting go, or a
+    /// short that closes part way through. It is `on_resistance` while
+    /// closed and `off_resistance` (the leakage) while open.
+    ///
+    /// The operating point, a DC sweep and AC take its state at t = 0. A
+    /// transient lands a step on `at`; that step still sees the old state,
+    /// and the next one the new, as a source's waveform jumps. With `at ≤
+    /// 0` it is in its switched state from the start.
+    TimedSwitch {
+        /// Resistance while closed (Ω).
+        on_resistance: f64,
+        /// Resistance while open (Ω). In JSON it defaults to 1 GΩ, as a
+        /// [`Switch`](CircuitElement::Switch) has.
+        #[cfg_attr(feature = "serde", serde(default = "default_off_resistance"))]
+        off_resistance: f64,
+        /// When it switches (s).
+        at: f64,
+        /// Closed until `at` and open after it (`true`, the default in
+        /// JSON), or open until `at` and closed after it.
+        #[cfg_attr(feature = "serde", serde(default = "default_starts_closed"))]
+        starts_closed: bool,
+    },
+}
+
+impl LoadKind {
+    /// A [`CurrentSink`](Self::CurrentSink) drawing `amps`.
+    pub fn current_sink(amps: f64) -> Self { … }
+
+    /// A [`TimedSwitch`](Self::TimedSwitch) closed through `on_resistance`
+    /// until `at`, then open (1 GΩ): a line held low and released.
+    pub fn released_at(at: f64, on_resistance: f64) -> Self { … }
+
+    /// A [`TimedSwitch`](Self::TimedSwitch) open (1 GΩ) until `at`, then
+    /// closed through `on_resistance`.
+    pub fn closed_at(at: f64, on_resistance: f64) -> Self { … }
+
+    /// Sets a [`TimedSwitch`](Self::TimedSwitch)'s off resistance (Ω);
+    /// any other kind is returned unchanged.
+    pub fn with_off_resistance(mut self, ohms: f64) -> Self { … }
 }
 
 /// A load the bench adds: what an output drives, a probe's capacitance.

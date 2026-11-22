@@ -255,6 +255,65 @@ impl Expression {
         }
     }
 
+    /// `v(a, b) · (time < at ? before : after)`: a conductance between `a`
+    /// and `b` that steps from `before` to `after` (S) at `at` (s). Built
+    /// directly rather than parsed, so node names need no quoting.
+    pub(crate) fn timed_conductance(a: &str, b: &str, at: f64, before: f64, after: f64) -> Self {
+        Expression {
+            root: Node::Bin(
+                Op::Mul,
+                Box::new(Node::Var(0)),
+                Box::new(Node::Cond(
+                    Box::new(Node::Bin(
+                        Op::Lt,
+                        Box::new(Node::Var(1)),
+                        Box::new(Node::Num(at)),
+                    )),
+                    Box::new(Node::Num(before)),
+                    Box::new(Node::Num(after)),
+                )),
+            ),
+            variables: vec![
+                Variable::Voltage {
+                    node: a.to_string(),
+                    reference: Some(b.to_string()),
+                },
+                Variable::Time,
+            ],
+        }
+    }
+
+    /// The times a comparison of `time` with a constant (`time < 1u`,
+    /// `2m >= time`) flips at, so a transient can land a step on each.
+    pub(crate) fn time_breakpoints(&self) -> Vec<f64> {
+        fn walk(node: &Node, variables: &[Variable], out: &mut Vec<f64>) {
+            let is_time = |n: &Node| matches!(n, Node::Var(k) if variables[*k] == Variable::Time);
+            match node {
+                Node::Num(_) | Node::Var(_) => {}
+                Node::Neg(a) | Node::Not(a) => walk(a, variables, out),
+                Node::Bin(op, a, b) => {
+                    if matches!(op, Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge) {
+                        match (a.as_ref(), b.as_ref()) {
+                            (t, Node::Num(c)) | (Node::Num(c), t) if is_time(t) => out.push(*c),
+                            _ => {}
+                        }
+                    }
+                    walk(a, variables, out);
+                    walk(b, variables, out);
+                }
+                Node::Call(_, args) => args.iter().for_each(|a| walk(a, variables, out)),
+                Node::Cond(c, a, b) => {
+                    walk(c, variables, out);
+                    walk(a, variables, out);
+                    walk(b, variables, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.root, &self.variables, &mut out);
+        out
+    }
+
     /// The nodes the expression reads, ground references included.
     pub(crate) fn nodes(&self) -> impl Iterator<Item = &String> {
         self.variables.iter().flat_map(|v| match v {
@@ -968,6 +1027,22 @@ mod tests {
 
     fn e(text: &str) -> Expression {
         Expression::parse(text).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    #[test]
+    fn time_comparisons_are_breakpoints() {
+        let x = e("v(a) * (time < 1u ? 1 : 2) + (2m >= time) + u(time - 5)");
+        assert_eq!(x.time_breakpoints(), vec![1e-6, 2e-3]);
+        assert!(e("v(a) < 1").time_breakpoints().is_empty());
+    }
+
+    #[test]
+    fn timed_conductance_steps_at_its_time() {
+        let g = Expression::timed_conductance("a", "b", 1e-6, 0.04, 1e-9);
+        assert_eq!(g.evaluate(&[2.0, 0.0]), 0.08);
+        assert_eq!(g.evaluate(&[2.0, 2e-6]), 2e-9);
+        assert_eq!(g.time_breakpoints(), vec![1e-6]);
+        assert_eq!(e(&g.to_string()), g);
     }
 
     #[test]

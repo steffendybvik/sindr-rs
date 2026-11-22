@@ -1701,8 +1701,10 @@ impl TransientConfig {
 /// devices is solved by Newton–Raphson, warm-started from the previous step.
 /// Steps are at most `tstep` (or `tmax`, if smaller), shortened where the
 /// truncation error is too large (unless `config.adaptive` is off), cut to
-/// land on every source-waveform breakpoint, and halved and retried when
-/// Newton fails. [`SimulationResult::transient`] holds one snapshot per step,
+/// land on every source-waveform breakpoint and every time a behavioural
+/// source compares `time` with a constant (`time < 1u`), and halved and
+/// retried when Newton fails. [`SimulationResult::transient`] holds one
+/// snapshot per step,
 /// the last at `tstop`; the other fields hold the final instant.
 ///
 /// # Errors
@@ -2372,6 +2374,7 @@ fn check_initial_conditions(
 }
 
 /// Every waveform breakpoint of the circuit's sources in `(0, tstop)`,
+/// and every time a behavioural source compares `time` with a constant,
 /// sorted and without near-duplicates.
 ///
 /// A source with more than
@@ -2380,6 +2383,14 @@ fn check_initial_conditions(
 fn waveform_breakpoints(circuit: &Circuit, tstop: f64) -> Result<Vec<f64>, SimError> {
     let mut all = Vec::new();
     for c in &circuit.components {
+        if let CircuitElement::Behavioural { expr, .. } = c {
+            all.extend(
+                expr.time_breakpoints()
+                    .into_iter()
+                    .filter(|t| *t > 0.0 && *t < tstop),
+            );
+            continue;
+        }
         let (CircuitElement::VoltageSource {
             id,
             waveform: Some(w),

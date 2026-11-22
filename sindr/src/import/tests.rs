@@ -2553,3 +2553,240 @@ fn quantities_in_json() {
     let source: ModelSource = serde_json::from_str(r#""datasheet""#).unwrap();
     assert_eq!(source, ModelSource::Datasheet);
 }
+
+// --- current-sink and timed-switch loads ------------------------------
+
+/// An I²C-style bus on 3.3 V: two 4.7 kΩ pull-ups on `sda` (one per
+/// device), one on `scl`, and an LED behind 220 Ω.
+fn i2c_board() -> Netlist {
+    Netlist {
+        components: vec![
+            Component::new("rp1", ComponentKind::Resistor).with_value("4k7"),
+            Component::new("rp2", ComponentKind::Resistor).with_value("4k7"),
+            Component::new("rp3", ComponentKind::Resistor).with_value("4k7"),
+            Component::new("rled", ComponentKind::Resistor).with_value("220"),
+            Component::new("d1", ComponentKind::Led).with_param("color", "green"),
+        ],
+        nets: vec![
+            Net::new(
+                "vdd",
+                [("rp1", "1"), ("rp2", "1"), ("rp3", "1"), ("rled", "1")],
+            ),
+            Net::new("sda", [("rp1", "2"), ("rp2", "2")]),
+            Net::new("scl", [("rp3", "2")]),
+            Net::new("led_a", [("rled", "2"), ("d1", "anode")]),
+            Net::new("gnd", [("d1", "cathode")]),
+        ],
+    }
+}
+
+const VDD: f64 = 3.3;
+const RP: f64 = 4.7e3;
+const C_BUS: f64 = 200e-12;
+const R_ON: f64 = 25.0;
+const SCL_LEAK: f64 = 1e6;
+const I_SUPPLY: f64 = 5e-3;
+const RELEASE: f64 = 1e-6;
+const CLOSE: f64 = 4e-6;
+
+/// The board on its bench: the supply, the IC's supply current, the bus
+/// capacitance, `sda` held low until [`RELEASE`] and `scl` leaking to
+/// ground through 1 MΩ until it is pulled low at [`CLOSE`].
+fn i2c_bench(analysis: Analysis) -> Bench {
+    Bench::new("gnd")
+        .with_source(BenchSource::voltage("v1", "vdd", VDD))
+        .with_load(BenchLoad::new(
+            "u1",
+            LoadKind::current_sink(I_SUPPLY),
+            "vdd",
+        ))
+        .with_load(BenchLoad::new("c_sda", LoadKind::Capacitor(C_BUS), "sda"))
+        .with_load(BenchLoad::new("c_scl", LoadKind::Capacitor(C_BUS), "scl"))
+        .with_load(BenchLoad::new(
+            "sda_drv",
+            LoadKind::released_at(RELEASE, R_ON),
+            "sda",
+        ))
+        .with_load(BenchLoad::new(
+            "scl_drv",
+            LoadKind::closed_at(CLOSE, R_ON).with_off_resistance(SCL_LEAK),
+            "scl",
+        ))
+        .with_analysis(analysis)
+}
+
+fn current(r: &crate::SimulationResult, id: &str) -> f64 {
+    r.component_results
+        .iter()
+        .find(|c| c.id == id)
+        .unwrap_or_else(|| panic!("no result for {id}"))
+        .current_through
+}
+
+/// The green LED's current behind `r` from `vdd`, solving
+/// `I = (vdd − Vf(I)) / r` with `Vf(I) = 2.2 V + n·VT·ln(I / 20 mA)`, the
+/// Shockley curve its model is fitted to (n = 2, 2.2 V at 20 mA).
+fn led_current_by_hand(vdd: f64, r: f64) -> f64 {
+    let vt = 1.380649e-23 * 300.15 / 1.602176634e-19;
+    let mut i: f64 = 5e-3;
+    for _ in 0..50 {
+        i = (vdd - (2.2 + 2.0 * vt * (i / 20e-3).ln())) / r;
+    }
+    i
+}
+
+#[test]
+fn i2c_bus_levels_sink_and_led_at_the_operating_point() {
+    let r = op(&i2c_board(), &i2c_bench(Analysis::OperatingPoint));
+    let v = |n: &str| r.node_voltages[n];
+
+    // sda held low: R_ON under the two pull-ups in parallel.
+    let rp_par = RP / 2.0;
+    let sda_low = VDD * R_ON / (R_ON + rp_par);
+    assert!((v("sda") - sda_low).abs() < 1e-6 * VDD, "sda {}", v("sda"));
+    // scl released, a 1 MΩ leak under its pull-up.
+    let scl_high = VDD * SCL_LEAK / (SCL_LEAK + RP);
+    assert!((v("scl") - scl_high).abs() < 1e-6 * VDD, "scl {}", v("scl"));
+
+    // The sink draws exactly its current, whatever the rail.
+    assert!((current(&r, "u1").abs() - I_SUPPLY).abs() < 1e-12);
+
+    // The LED, against the hand-solved Shockley curve: about 5.3 mA.
+    let i_led = (VDD - v("led_a")) / 220.0;
+    let by_hand = led_current_by_hand(VDD, 220.0);
+    assert!((i_led / by_hand - 1.0).abs() < 1e-6, "{i_led} vs {by_hand}");
+    assert!((current(&r, "d1").abs() - i_led).abs() < 1e-9);
+
+    // The supply carries all of it.
+    let budget = I_SUPPLY + i_led + (VDD - sda_low) / rp_par + (VDD - scl_high) / RP;
+    assert!(
+        (current(&r, "v1").abs() - budget).abs() < 1e-6 * budget,
+        "{} vs {budget}",
+        current(&r, "v1")
+    );
+}
+
+/// The first time `v` crosses `level` rising after `from`, interpolated
+/// between steps.
+fn rising_crossing(r: &crate::SimulationResult, node: &str, level: f64, from: f64) -> f64 {
+    let steps = &r.transient.as_ref().expect("transient").timesteps;
+    steps
+        .windows(2)
+        .filter(|w| w[0].time >= from)
+        .find_map(|w| {
+            let (v0, v1) = (w[0].node_voltages[node], w[1].node_voltages[node]);
+            (v0 < level && v1 >= level)
+                .then(|| w[0].time + (level - v0) / (v1 - v0) * (w[1].time - w[0].time))
+        })
+        .unwrap_or_else(|| panic!("{node} never rises through {level}"))
+}
+
+#[test]
+fn i2c_rise_time_after_the_switch_releases() {
+    let config = TransientConfig::new(6e-6, 5e-9)
+        .with_start(crate::transient::TransientStart::OperatingPoint);
+    let netlist = i2c_board();
+    let bench = i2c_bench(Analysis::Transient(config));
+    let Simulation::Transient(r) = simulate(&netlist, &bench).unwrap().result else {
+        unreachable!()
+    };
+    let steps = &r.transient.as_ref().unwrap().timesteps;
+    let at = |t: f64, node: &str| {
+        steps
+            .iter()
+            .find(|s| (s.time - t).abs() < 1e-15)
+            .unwrap_or_else(|| panic!("no step at {t}"))
+            .node_voltages[node]
+    };
+
+    // A step lands on each switching time, and still sees the old state.
+    let rp_par = RP / 2.0;
+    let sda_low = VDD * R_ON / (R_ON + rp_par);
+    assert!((at(RELEASE, "sda") - sda_low).abs() < 1e-6 * VDD);
+    let scl_high = VDD * SCL_LEAK / (SCL_LEAK + RP);
+    assert!((at(CLOSE, "scl") - scl_high).abs() < 1e-3 * VDD);
+
+    // Released, sda charges through the pull-ups in parallel: 30 % → 70 %
+    // of the rail in ln(7/3)·R·C = 0.8473·R·C, 10 % → 90 % in ln 9·R·C =
+    // 2.197·R·C, here 398 ns and 1.03 µs, both within 0.5 %. The 1 GΩ leak
+    // moves the final level by under 1 ppm.
+    let tau = rp_par * C_BUS;
+    let t30 = rising_crossing(&r, "sda", 0.3 * VDD, RELEASE);
+    let t70 = rising_crossing(&r, "sda", 0.7 * VDD, RELEASE);
+    let t10 = rising_crossing(&r, "sda", 0.1 * VDD, RELEASE);
+    let t90 = rising_crossing(&r, "sda", 0.9 * VDD, RELEASE);
+    let rise_30_70 = t70 - t30;
+    let rise_10_90 = t90 - t10;
+    assert!(
+        (rise_30_70 / ((7.0f64 / 3.0).ln() * tau) - 1.0).abs() < 0.005,
+        "30-70 % {rise_30_70:e} s vs {:e} s",
+        0.8473 * tau
+    );
+    assert!(
+        (rise_10_90 / (9.0f64.ln() * tau) - 1.0).abs() < 0.005,
+        "10-90 % {rise_10_90:e} s vs {:e} s",
+        2.197 * tau
+    );
+    // The edge starts at the release, not before: from the held-low level
+    // to 10 % takes R·C·ln((Vdd − V_low) / (0.9·Vdd)).
+    let to_10 = tau * ((VDD - sda_low) / (0.9 * VDD)).ln();
+    assert!(((t10 - RELEASE) / to_10 - 1.0).abs() < 0.005);
+
+    // scl, pulled low at CLOSE through R_ON (τ = 5 ns), has settled by the
+    // end; the IC's supply current is the same at every step.
+    let scl_low = VDD * R_ON / (R_ON + RP);
+    assert!((r.node_voltages["scl"] - scl_low).abs() < 1e-4);
+    for s in steps {
+        let sink = s.component_results.iter().find(|c| c.id == "u1").unwrap();
+        assert!((sink.current_through.abs() - I_SUPPLY).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn timed_switch_rejects_bad_values() {
+    let bench = |kind| {
+        Bench::new("gnd")
+            .with_source(BenchSource::voltage("v", "in", 1.0))
+            .with_load(BenchLoad::new("sw", kind, "out"))
+    };
+    for (kind, field) in [
+        (LoadKind::released_at(1e-6, 0.0), "on_resistance"),
+        (
+            LoadKind::released_at(1e-6, 10.0).with_off_resistance(f64::NAN),
+            "off_resistance",
+        ),
+        (LoadKind::closed_at(f64::INFINITY, 10.0), "at"),
+    ] {
+        match err(&divider("1k", "1k"), &bench(kind)) {
+            ImportError::BadValue {
+                component,
+                field: f,
+                ..
+            } => assert_eq!((component.as_str(), f.as_str()), ("sw", field)),
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn sink_and_timed_switch_loads_in_json() {
+    let json = r#"[
+        {"id": "u1", "kind": {"current_sink": {"amps": 0.005}}, "a": {"net": "vdd"}},
+        {"id": "drv", "kind": {"timed_switch": {"on_resistance": 25, "at": 1e-6}},
+         "a": {"net": "sda"}},
+        {"id": "short", "kind": {"timed_switch": {"on_resistance": 0.1,
+         "off_resistance": 1e6, "at": 2e-6, "starts_closed": false}},
+         "a": {"net": "a"}, "b": {"net": "b"}}
+    ]"#;
+    let loads: Vec<BenchLoad> = serde_json::from_str(json).unwrap();
+    assert_eq!(loads[0].kind, LoadKind::current_sink(5e-3));
+    assert_eq!(loads[1].kind, LoadKind::released_at(1e-6, 25.0));
+    assert_eq!(
+        loads[2].kind,
+        LoadKind::closed_at(2e-6, 0.1).with_off_resistance(1e6)
+    );
+    let back: Vec<BenchLoad> =
+        serde_json::from_str(&serde_json::to_string(&loads).unwrap()).unwrap();
+    assert_eq!(back, loads);
+}
