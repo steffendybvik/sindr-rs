@@ -2385,6 +2385,29 @@ fn flasher_takes_its_models_from_part_data() {
             d.current_through
         );
     }
+
+    // From rest it flashes, through every edge: the period is near
+    // ln 2 · 47 kΩ · (4.7 µF + 3.3 µF) = 261 ms, about 13 % short of it:
+    // the amber LEDs keep the off collectors well below the rail, and the
+    // edges start below Vbe = 0.6 V (see `tests/multivibrator.rs`).
+    let bench = flasher_bench().with_analysis(Analysis::Transient(TransientConfig::new(1.2, 1e-4)));
+    let Simulation::Transient(r) = simulate(&netlist, &bench).expect("simulates").result else {
+        panic!("not a transient")
+    };
+    let steps = &r.transient.as_ref().unwrap().timesteps;
+    let rises: Vec<f64> = steps
+        .windows(2)
+        .filter(|w| w[0].node_voltages["c2n"] < 4.0 && w[1].node_voltages["c2n"] >= 4.0)
+        .map(|w| w[1].time)
+        .collect();
+    assert!(rises.len() >= 4, "{rises:?}");
+    let period = (rises[rises.len() - 1] - rises[1]) / (rises.len() - 2) as f64;
+    let closed_form = std::f64::consts::LN_2 * 47e3 * (4.7e-6 + 3.3e-6);
+    eprintln!("PERIOD {period} {}", period / closed_form - 1.0);
+    assert!(
+        (0.8..0.95).contains(&(period / closed_form)),
+        "period {period} s"
+    );
 }
 
 #[test]

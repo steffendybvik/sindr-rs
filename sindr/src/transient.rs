@@ -1799,7 +1799,8 @@ pub(crate) fn run_transient(
 ) -> Result<SimulationResult, SimError> {
     let tstop = config.tstop;
     let h_max = config.step();
-    // Newton failures halve the step down to this before giving up.
+    // Newton failures halve the step down to this, then try
+    // pseudo-transient continuation before giving up.
     let h_min = h_max * 1e-6;
 
     check_initial_conditions(circuit, node_map, config)?;
@@ -2052,22 +2053,38 @@ pub(crate) fn run_transient(
             }
             None => (&fixed_step, circuit),
         };
+        // Whether this step jumped an edge (pseudo-transient continuation).
+        let mut jumped = false;
         let next = match step.solve(&integ, t_src, &caps, &inds, &parasitic, &solution) {
             Ok(next) => next,
-            Err(e) if e.is_retryable() => {
+            Err(e) if e.is_retryable() && dt / 2.0 >= h_min => {
                 stats.newton_rejections += 1;
                 h = dt / 2.0;
-                if h < h_min {
-                    return Err(e);
-                }
                 continue;
+            }
+            // Even the shortest step fails: a regenerative edge the node
+            // voltages jump across while the capacitors hold theirs. Follow
+            // the jump in a pseudo time instead.
+            Err(e) if e.is_retryable() => {
+                match step
+                    .solve_by_pseudo_transient(&integ, t_src, &caps, &inds, &parasitic, &solution)
+                {
+                    Ok(next) => {
+                        stats.jumped_steps += 1;
+                        jumped = true;
+                        next
+                    }
+                    Err(_) => return Err(e),
+                }
             }
             Err(e) => return Err(e),
         };
 
         // Accept or reject by local truncation error, and size the next step.
+        // A jump over an edge has no truncation error to speak of: it is
+        // already as short as a step gets.
         let mut grow = 2.0;
-        if config.adaptive {
+        if config.adaptive && !jumped {
             if let Some(ratio) = lte_ratio(&integ, &recent, t_next, &next, num_nodes, opts) {
                 let k = f64::from(integ.order + 1);
                 let factor = 0.9 * ratio.powf(-1.0 / k);
@@ -2115,9 +2132,10 @@ pub(crate) fn run_transient(
             (base * 2.0).min(h_max)
         };
 
-        if on_bp {
-            // A corner in a source: the history before it doesn't predict
-            // what follows, so restart with a short backward-Euler step.
+        if on_bp || jumped {
+            // A corner in a source, or a jump over an edge: the history
+            // before it doesn't predict what follows, so restart with a
+            // short backward-Euler step.
             h_prev = None;
             recent.clear();
             if config.adaptive {
@@ -2305,6 +2323,22 @@ fn operating_point_start(
 /// by this, so the unchecked backward-Euler step that starts the integration
 /// is short.
 const RESTART_FRACTION: f64 = 100.0;
+
+/// Pseudo-steps [`StepSolver::solve_by_pseudo_transient`] takes at most.
+/// An edge takes about a hundred.
+const PSEUDO_TRANSIENT_STEPS: usize = 2000;
+
+/// A pseudo-step that moves no node by this much (V) has settled, so the
+/// next one can be longer.
+const PSEUDO_TRANSIENT_SETTLED: f64 = 1e-3;
+
+/// Below this conductance (S) the pseudo-time term is negligible against
+/// the circuit's own conductances, and plain Newton takes over.
+const PSEUDO_TRANSIENT_GMIN: f64 = 1e-9;
+
+/// Above this conductance (S) a pseudo-step Newton still can't take means
+/// the step has no solution near where the circuit is.
+const PSEUDO_TRANSIENT_GMAX: f64 = 1e8;
 
 /// Rejects an initial condition that would otherwise be ignored or surface
 /// later as a bare `InvalidSolution`: a node or inductor id the circuit
@@ -2509,6 +2543,87 @@ impl<'a> StepSolver<'a> {
         parasitic: &HashMap<String, History>,
         start: &DVector<f64>,
     ) -> Result<DVector<f64>, SimError> {
+        self.newton(integ, t, caps, inds, parasitic, start, None)
+    }
+
+    /// [`solve`](Self::solve) by pseudo-transient continuation, for a step
+    /// plain Newton can't take at any length.
+    ///
+    /// That is a regenerative edge with nothing to slow it down (a
+    /// multivibrator's or a Schmitt trigger's, with no junction charge in
+    /// the transistors): the solution the circuit was on folds away, and
+    /// the one after the edge is far from it, out of Newton's reach. Here
+    /// each node gets a conductance `g` to where the last pseudo-step left
+    /// it, as if it had a capacitor to ground stepped by `C/g` in a pseudo
+    /// time. Each pseudo-step then has a solution close to the last, so the
+    /// node voltages follow the edge as a real circuit's would, held up
+    /// only by capacitance, until they settle past it. A pseudo-step Newton
+    /// can't take is retried with a larger `g` (a shorter pseudo-step); one
+    /// that barely moves the nodes lengthens the next. Once `g` is
+    /// negligible, plain Newton from there gives the answer: the step's own,
+    /// with nothing added.
+    fn solve_by_pseudo_transient(
+        &self,
+        integ: &Integrator,
+        t: f64,
+        caps: &[History],
+        inds: &[History],
+        parasitic: &HashMap<String, History>,
+        start: &DVector<f64>,
+    ) -> Result<DVector<f64>, SimError> {
+        let mut anchor = start.clone();
+        // 1 S is about a transistor's transconductance at tens of mA: the
+        // first pseudo-steps are short against the edge.
+        let mut g = 1.0;
+        let mut last_err = None;
+        for _ in 0..PSEUDO_TRANSIENT_STEPS {
+            match self.newton(integ, t, caps, inds, parasitic, &anchor, Some((g, &anchor))) {
+                Ok(v) => {
+                    let (moved, _) = newton_raphson::max_node_step(&anchor, &v, self.num_nodes);
+                    anchor = v;
+                    if moved >= PSEUDO_TRANSIENT_SETTLED {
+                        continue;
+                    }
+                    g /= 4.0;
+                    if g >= PSEUDO_TRANSIENT_GMIN {
+                        continue;
+                    }
+                    match self.newton(integ, t, caps, inds, parasitic, &anchor, None) {
+                        Ok(v) => return Ok(v),
+                        Err(e) if e.is_retryable() => {
+                            // Not settled after all: keep going from a
+                            // small conductance.
+                            g = PSEUDO_TRANSIENT_GMIN * 1e3;
+                            last_err = Some(e);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(e) if e.is_retryable() && g < PSEUDO_TRANSIENT_GMAX => {
+                    g *= 8.0;
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or(SimError::InvalidSolution))
+    }
+
+    /// Newton–Raphson for the step, from `start`. With `pseudo` as
+    /// `(g, anchor)`, every node also has `g` siemens to its voltage in
+    /// `anchor`: a pseudo-step of
+    /// [`solve_by_pseudo_transient`](Self::solve_by_pseudo_transient).
+    #[allow(clippy::too_many_arguments)]
+    fn newton(
+        &self,
+        integ: &Integrator,
+        t: f64,
+        caps: &[History],
+        inds: &[History],
+        parasitic: &HashMap<String, History>,
+        start: &DVector<f64>,
+        pseudo: Option<(f64, &DVector<f64>)>,
+    ) -> Result<DVector<f64>, SimError> {
         let stamp = |v_prev: &DVector<f64>| -> Result<MnaSystem, SimError> {
             let mut system = MnaSystem::new(self.num_nodes, self.num_vsources);
             stamp_circuit_transient(
@@ -2534,6 +2649,12 @@ impl<'a> StepSolver<'a> {
         for _ in 0..self.opts.max_iterations {
             let mut system = stamp(&v_prev)?;
             newton_raphson::add_gmin_shunts(&mut system, self.num_nodes);
+            if let Some((g, anchor)) = pseudo {
+                for i in 0..self.num_nodes {
+                    system.a[(i, i)] += g;
+                    system.b[i] += g * anchor[i];
+                }
+            }
             let v_new = system.solve()?;
 
             let mut v_limited =

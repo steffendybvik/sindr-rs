@@ -184,6 +184,12 @@ pub struct TransientStats {
     pub lte_rejections: usize,
     /// Steps retried at half the size because Newton–Raphson didn't converge.
     pub newton_rejections: usize,
+    /// Steps Newton–Raphson couldn't take even at the shortest step, solved
+    /// by pseudo-transient continuation instead: regenerative edges the
+    /// node voltages jump across, such as a multivibrator's when its
+    /// transistors have no junction capacitance.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub jumped_steps: usize,
 }
 
 /// Complete simulation output.

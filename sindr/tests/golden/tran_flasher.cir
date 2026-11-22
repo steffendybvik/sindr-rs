@@ -1,0 +1,17 @@
+tran: two-transistor LED flasher (astable multivibrator), red LEDs as D cards
+* LEDs are sindr's DiodeParams::led(1.8), as in op_led. The transistors
+* have no junction capacitance, so every edge is a jump.
+VS vcc 0 9
+D1 vcc a1 dred
+D2 vcc a2 dred
+R1 a1 c1n 470
+R2 a2 c2n 470
+RB1 vcc b1 47k
+RB2 vcc b2 47k
+C1 c1n b2 4.7u
+C2 c2n b1 3.3u
+Q1 c1n b1 0 qn
+Q2 c2n b2 0 qn
+.model dred D(IS=1.5461489461e-17 N=2)
+.model qn NPN(IS=1e-14 BF=200 BR=1)
+.end

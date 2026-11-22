@@ -509,6 +509,10 @@ pub(crate) struct DiodeLimitInfo {
     /// BV of a diode whose breakdown is exponential: its reverse steps are
     /// limited past breakdown as forward ones are, mirrored about `−BV`.
     breakdown: Option<f64>,
+    /// Whether the anode and the cathode are held by voltage sources, as
+    /// [`held_nodes`] finds them. A held terminal is treated like ground
+    /// when a limited step is split between the two.
+    held: [bool; 2],
 }
 
 /// Which node to apply voltage limiting corrections to.
@@ -543,6 +547,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: bv,
                     breakdown: bv,
+                    held: [false; 2],
                 });
             }
             CircuitElement::Led {
@@ -562,6 +567,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
             }
             CircuitElement::ZenerDiode {
@@ -581,6 +587,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: Some(*vz),
                     breakdown: Some(*vz),
+                    held: [false; 2],
                 });
             }
             CircuitElement::SchottkyDiode {
@@ -597,6 +604,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
             }
             CircuitElement::Photodiode {
@@ -617,6 +625,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: false,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
             }
             CircuitElement::Bjt {
@@ -646,6 +655,7 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: true,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
 
                 // B-C junction: correction goes ONLY to the collector node.
@@ -669,13 +679,56 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     is_bjt: true,
                     zener_vz: None,
                     breakdown: None,
+                    held: [false; 2],
                 });
             }
             _ => {}
         }
     }
 
+    let held = held_nodes(circuit, node_map);
+    let is_held = |idx: Option<usize>| idx.is_some_and(|i| held[i]);
+    for junction in &mut info {
+        junction.held = [is_held(junction.anode_idx), is_held(junction.cathode_idx)];
+    }
     info
+}
+
+/// Which nodes a voltage source holds: one whose other terminal is ground
+/// or another held node, as a supply rail is. Newton can't move such a
+/// node (the next linear solve puts it back where the sources say), so
+/// limiting must not move it either.
+fn held_nodes(circuit: &Circuit, node_map: &NodeMap) -> Vec<bool> {
+    let mut held = vec![false; node_map.num_nodes()];
+    let sources: Vec<[Option<usize>; 2]> = circuit
+        .components
+        .iter()
+        .filter_map(|c| match c {
+            CircuitElement::VoltageSource { nodes, .. } => {
+                Some([node_map.index(&nodes[0]), node_map.index(&nodes[1])])
+            }
+            _ => None,
+        })
+        .collect();
+    // Ground is `None`; each pass holds the far end of a source with one
+    // end held, so a stack of n sources takes n passes.
+    let fixed = |held: &[bool], idx: Option<usize>| idx.is_none_or(|i| held[i]);
+    loop {
+        let mut changed = false;
+        for &[a, b] in &sources {
+            for (near, far) in [(a, b), (b, a)] {
+                if let Some(f) = far {
+                    if !held[f] && fixed(&held, near) {
+                        held[f] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return held;
+        }
+    }
 }
 
 /// Apply voltage limiting to all diode/junction node voltages.
@@ -755,13 +808,21 @@ pub(crate) fn apply_voltage_limiting(
             }
             None => {
                 // Standard diode: split adjustment between anode and cathode;
-                // if one is ground, apply the full delta to the non-ground node.
-                let both_present = info.anode_idx.is_some() && info.cathode_idx.is_some();
-                let share = if both_present { 0.5 } else { 1.0 };
-                if let Some(ai) = info.anode_idx {
+                // if one is ground or held by a source, apply the full delta
+                // to the other. Moving a held node would linearise the
+                // junction at a voltage the next solve can't keep, and leave
+                // the free node only half corrected.
+                let anode = info.anode_idx.filter(|_| !info.held[0]);
+                let cathode = info.cathode_idx.filter(|_| !info.held[1]);
+                let share = if anode.is_some() && cathode.is_some() {
+                    0.5
+                } else {
+                    1.0
+                };
+                if let Some(ai) = anode {
                     v_limited[ai] += delta * share;
                 }
-                if let Some(ci) = info.cathode_idx {
+                if let Some(ci) = cathode {
                     v_limited[ci] -= delta * share;
                 }
             }
@@ -1337,6 +1398,39 @@ mod tests {
         }
     }
 
+    /// An LED hanging from a 9 V rail: the limited step goes all to its
+    /// cathode. Split between the two, half of it would land on the rail,
+    /// which the next solve puts straight back at 9 V.
+    #[test]
+    fn limiting_leaves_a_rail_held_by_a_source_alone() {
+        let circuit = Circuit {
+            ground_node: "0".into(),
+            components: vec![
+                vsource("V1", "vcc", 9.0),
+                CircuitElement::Led {
+                    id: "D1".into(),
+                    nodes: ["vcc".into(), "k".into()],
+                    color: "red".into(),
+                    temperature: 300.15,
+                },
+                resistor("R1", "k", "0", 470.0),
+            ],
+            ..Default::default()
+        };
+        let node_map = NodeMap::from_circuit(&circuit);
+        let info = collect_diode_info(&circuit, &node_map);
+        let (vcc, k) = (node_map.index("vcc").unwrap(), node_map.index("k").unwrap());
+        let n = node_map.num_nodes();
+        let mut v_prev = DVector::zeros(n + 1);
+        v_prev[vcc] = 9.0;
+        v_prev[k] = 8.0;
+        let mut v_new = v_prev.clone();
+        v_new[k] = 1.0;
+        let v = apply_voltage_limiting(&v_new, &v_prev, &info);
+        assert_eq!(v[vcc], 9.0);
+        assert!(v[k] > 1.0 && v[k] < 8.0, "cathode {}", v[k]);
+    }
+
     #[test]
     fn forward_schottky_behind_5v_converges() {
         let circuit = junction_behind(CircuitElement::SchottkyDiode {
@@ -1579,6 +1673,7 @@ mod tests {
                 is_bjt: true,
                 zener_vz: None,
                 breakdown: None,
+                held: [false; 2],
             },
             DiodeLimitInfo {
                 anode_idx: Some(0),
@@ -1590,6 +1685,7 @@ mod tests {
                 is_bjt: true,
                 zener_vz: None,
                 breakdown: None,
+                held: [false; 2],
             },
         ];
         let v_prev = DVector::from_vec(vec![0.65, 5.0]);

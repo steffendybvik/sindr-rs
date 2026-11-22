@@ -960,7 +960,7 @@ pub enum SimError {
 | Reactive elements (C, L, Varactor, Transformer, parasitic caps, a diode whose model sets `cjo` or `tt`) or waveform sources | Transient (Gear-2 by default) |
 | Both reactive and nonlinear | Transient with per-step Newton-Raphson |
 
-The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried.
+The transient solver steps up to `tstep` (or `tmax`, if smaller), shortens a step where the local truncation error would exceed SPICE's default tolerances (RELTOL 1e-3, VNTOL 1 µV, TRTOL 7), and lands exactly on every corner of a source waveform. A step whose Newton-Raphson solve fails is halved and retried. One that fails even at a millionth of `tstep` is a regenerative edge with nothing to slow it (a multivibrator's or Schmitt trigger's, transistors without junction capacitance): the node voltages jump while the capacitors hold theirs, and the stepper follows the jump by pseudo-transient continuation, then restarts the integration after it. `stats.jumped_steps` counts those.
 
 ## Performance
 

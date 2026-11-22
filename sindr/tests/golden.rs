@@ -1591,6 +1591,95 @@ fn tran_bjt_switch() {
     check_deck_tran_within("tran_bjt_switch", &["v(c)", "i(vcc)"], 3e-2);
 }
 
+/// Rises of `v` through `level` on the time base `t`, linearly
+/// interpolated.
+fn rising_through(t: &[f64], v: &[f64], level: f64) -> Vec<f64> {
+    (1..t.len())
+        .filter(|&i| v[i - 1] < level && v[i] >= level)
+        .map(|i| t[i - 1] + (level - v[i - 1]) / (v[i] - v[i - 1]) * (t[i] - t[i - 1]))
+        .collect()
+}
+
+/// The two-transistor LED flasher from rest. Its transistors have no
+/// junction charge, so each edge is a jump that sindr takes by
+/// pseudo-transient continuation, and the waveforms can't be compared
+/// point by point (an edge a fraction of a millisecond off is volts off).
+/// What's compared is what the circuit is for: the period, from each
+/// collector's rises through 4 V after the first, to 0.2 %, and the current
+/// in the LED that's on (its peak), to 0.5 %. The golden is ngspice at a
+/// 10 µs TMAX, resampled to 1 ms, which places a rise to about 10 µs.
+#[test]
+fn tran_flasher() {
+    let case = "tran_flasher";
+    let golden = Golden::load(case);
+    let config = sindr::TransientConfig::new(1.2, 1e-4);
+    let tran = sindr::solve_transient(&parse(case), &config)
+        .unwrap_or_else(|e| panic!("{case}: {e}"))
+        .transient
+        .unwrap();
+    let time: Vec<f64> = tran.timesteps.iter().map(|s| s.time).collect();
+    let node =
+        |n: &str| -> Vec<f64> { tran.timesteps.iter().map(|s| s.node_voltages[n]).collect() };
+    let steady_period =
+        |rises: &[f64]| (rises[rises.len() - 1] - rises[1]) / (rises.len() - 2) as f64;
+    let mut check = Check::new(case);
+    for (collector, anode, led) in [("c1n", "a1", "d1"), ("c2n", "a2", "d2")] {
+        let ours = rising_through(&time, &node(collector), 4.0);
+        let theirs = rising_through(
+            &golden.scale(),
+            &golden.column(&format!("v({collector})")),
+            4.0,
+        );
+        assert!(theirs.len() >= 4, "{case}: ngspice rises {theirs:?}");
+        assert_eq!(
+            ours.len(),
+            theirs.len(),
+            "{case}: {collector} rises {ours:?} vs {theirs:?}"
+        );
+        check.value(
+            &format!("period of v({collector})"),
+            steady_period(&ours),
+            steady_period(&theirs),
+            Tol {
+                rel: 2e-3,
+                abs: 0.0,
+            },
+        );
+
+        let peak = |i: Vec<f64>| i.into_iter().fold(0.0, f64::max);
+        let ours = peak(
+            tran.timesteps
+                .iter()
+                .map(|s| {
+                    s.component_results
+                        .iter()
+                        .find(|c| c.id == led)
+                        .unwrap()
+                        .current_through
+                })
+                .collect(),
+        );
+        let theirs = peak(
+            golden
+                .column(&format!("v({anode})"))
+                .iter()
+                .zip(golden.column(&format!("v({collector})")))
+                .map(|(a, c)| (a - c) / 470.0)
+                .collect(),
+        );
+        check.value(
+            &format!("peak i({led})"),
+            ours,
+            theirs,
+            Tol {
+                rel: 5e-3,
+                abs: 0.0,
+            },
+        );
+    }
+    check.finish();
+}
+
 #[test]
 fn tran_rlc_ring() {
     check_deck_tran("tran_rlc_ring", &["v(b)", "i(v1)"]);
