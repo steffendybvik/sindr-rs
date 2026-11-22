@@ -484,6 +484,7 @@ fn op_jfet() {
                     kind: JfetKind::NChannel,
                     idss: 10e-3,
                     vp: -2.0,
+                    parasitic_caps: None,
                 },
             ]),
         ),
@@ -888,9 +889,59 @@ fn ac_jfet() {
             kind: JfetKind::NChannel,
             idss: 10e-3,
             vp: -2.0,
+            parasitic_caps: None,
         },
     ]);
     check_ac("ac_jfet", &circuit, "vin", "d", 5, (0.1, 100e3), JFET.0);
+}
+
+/// A JFET common-source stage driven from 10 kΩ: the input pole of CGS plus
+/// the Miller-multiplied CGD, both at their reverse-biased junction values
+/// (`C0/√(1 − v/PB)`), and the feedforward zero of CGD. Built in Rust and
+/// read from the deck, whose `NJF` card carries `CGS`, `CGD`, `PB` and `FC`.
+#[test]
+fn ac_jfet_caps() {
+    let circuit = circuit(vec![
+        vsource("vdd", "vdd", "0", 12.0),
+        vsource("vin", "in", "0", -1.0),
+        resistor("rsig", "in", "g", 10e3),
+        resistor("rd", "vdd", "d", 1e3),
+        CircuitElement::Jfet {
+            id: "j1".into(),
+            nodes: ["g".into(), "d".into(), "0".into()],
+            kind: JfetKind::NChannel,
+            idss: 10e-3,
+            vp: -2.0,
+            parasitic_caps: Some(sindr::circuit::JfetParasiticCaps {
+                cgs: 10e-12,
+                cgd: 2e-12,
+                pb: 0.8,
+                fc: 0.5,
+                ..Default::default()
+            }),
+        },
+    ]);
+    // The gate is reverse-biased, so ngspice's default gate IS adds next to
+    // nothing and the case holds to the junction devices' 1e-6.
+    let range = (10e3, 1e9);
+    check_ac(
+        "ac_jfet_caps",
+        in_deck("ac_jfet_caps", &circuit),
+        "vin",
+        "d",
+        5,
+        range,
+        OP_V,
+    );
+    let parsed = parse("ac_jfet_caps");
+    assert!(matches!(
+        parsed.components.iter().find(|c| c.id() == "j1"),
+        Some(CircuitElement::Jfet {
+            parasitic_caps: Some(_),
+            ..
+        })
+    ));
+    check_ac("ac_jfet_caps", &parsed, "vin", "d", 5, range, OP_V);
 }
 
 // ------------------------------------------------- M and J lines, parsed
@@ -1316,6 +1367,7 @@ fn exported_fets() -> Circuit {
             kind: JfetKind::NChannel,
             idss: 10e-3,
             vp: -2.0,
+            parasitic_caps: None,
         },
         resistor("rps", "vdd", "ps", 330.0),
         resistor("rpg", "pg", "vdd", 1e6),
@@ -1326,6 +1378,7 @@ fn exported_fets() -> Circuit {
             kind: JfetKind::PChannel,
             idss: 12.5e-3,
             vp: 2.5,
+            parasitic_caps: None,
         },
         vsource("vg1", "g1", "0", 3.0),
         resistor("rd1", "vdd", "d1", 10e3),

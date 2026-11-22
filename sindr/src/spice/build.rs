@@ -30,7 +30,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::circuit::{BjtModel, BjtParasiticCaps, DiodeModel, MosfetParasiticCaps};
+use crate::circuit::{
+    BjtModel, BjtParasiticCaps, DiodeModel, JfetParasiticCaps, MosfetParasiticCaps,
+};
 use crate::design::{Block, Instance};
 use crate::devices::mosfet::MosfetParams;
 use crate::{BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind, Waveform};
@@ -759,10 +761,12 @@ const MOSFET_KEYS: &[&str] = &[
     "cbs", "vj", "m", "fc", "rd", "rs",
 ];
 
-/// `.model NJF`/`PJF` parameters sindr's JFET uses. `is`, `lambda`, `rd`,
-/// `rs`, `cgs`, `cgd` and `b` are read only at the value that leaves
-/// SPICE's model the same as sindr's.
-const JFET_KEYS: &[&str] = &["vto", "beta", "is", "lambda", "rd", "rs", "cgs", "cgd", "b"];
+/// `.model NJF`/`PJF` parameters sindr's JFET uses. `vj` is `PB` under
+/// [`KEY_ALIASES`]. `is`, `lambda`, `rd`, `rs` and `b` are read only at the
+/// value that leaves SPICE's model the same as sindr's.
+const JFET_KEYS: &[&str] = &[
+    "vto", "beta", "is", "lambda", "rd", "rs", "cgs", "cgd", "vj", "m", "fc", "b",
+];
 
 /// MOSFET card parameters sindr's model has no field for, read only at the
 /// value that switches them off in SPICE.
@@ -774,8 +778,6 @@ const JFET_NEUTRAL: &[(&str, f64)] = &[
     ("lambda", 0.0),
     ("rd", 0.0),
     ("rs", 0.0),
-    ("cgs", 0.0),
-    ("cgd", 0.0),
     ("b", 1.0),
 ];
 
@@ -1000,8 +1002,9 @@ fn build_mosfet(
 /// Lower a `J` line onto sindr's JFET: `idss = BETA·VTO²·area`, and the
 /// pinch-off `vp` is `VTO` (default −2 V), signed as sindr's
 /// [`JfetKind`] expects (negative for N-channel, positive for P-channel).
-/// sindr's JFET has no gate junction, channel-length modulation, series
-/// resistance or capacitance, so a card that sets them is refused in
+/// `CGS·area` and `CGD·area` with `PB`, `M` and `FC` are the gate
+/// capacitances. sindr's JFET has no gate junction current, channel-length
+/// modulation or series resistance, so a card that sets them is refused in
 /// strict mode.
 #[allow(clippy::too_many_arguments)]
 fn build_jfet(
@@ -1033,6 +1036,15 @@ fn build_jfet(
             raw.id
         )));
     }
+    let get = |key: &str, default: f64| card.get(key).copied().unwrap_or(default);
+    let defaults = JfetParasiticCaps::default();
+    let caps = JfetParasiticCaps {
+        cgs: get("cgs", 0.0) * area,
+        cgd: get("cgd", 0.0) * area,
+        pb: get("vj", defaults.pb),
+        m: get("m", defaults.m),
+        fc: get("fc", defaults.fc),
+    };
     Ok(CircuitElement::Jfet {
         id: raw.id.clone(),
         nodes: [g, d, s],
@@ -1043,6 +1055,7 @@ fn build_jfet(
         },
         idss: beta * vto * vto * area,
         vp: if pjf { -vto } else { vto },
+        parasitic_caps: caps.stores_charge().then_some(caps),
     })
 }
 

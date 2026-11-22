@@ -6,7 +6,7 @@
 //! Only compiled when the `spice` feature is enabled.
 #![cfg(feature = "spice")]
 
-use sindr::circuit::MosfetParasiticCaps;
+use sindr::circuit::{JfetParasiticCaps, MosfetParasiticCaps};
 use sindr::devices::mosfet::MosfetParams;
 use sindr::spice::{
     parse_str, parse_str_with_options, to_netlist, ExportError, ParseOptions, ParsedNetlist,
@@ -147,7 +147,7 @@ fn what_sindr_cant_model_is_refused_in_strict_and_warned_in_lenient() {
         ("t\nM1 d g s s n TEMP=50\n.model n NMOS\n.end\n", "TEMP"),
         ("t\nJ1 d g s j\n.model j NJF(LAMBDA=0.01)\n.end\n", "LAMBDA"),
         ("t\nJ1 d g s j\n.model j NJF(IS=1f)\n.end\n", "IS"),
-        ("t\nJ1 d g s j\n.model j NJF(CGS=2p)\n.end\n", "CGS"),
+        ("t\nJ1 d g s j\n.model j NJF(RD=10)\n.end\n", "RD"),
         ("t\nJ1 d g s j OFF\n.model j NJF\n.end\n", "OFF"),
     ] {
         let message = strict_error(deck);
@@ -222,6 +222,36 @@ fn jfet_maps_beta_and_vto_onto_idss_and_pinch_off() {
     assert!(close(*idss, 2e-3 * 1.5 * 1.5 * 3.0));
     // sindr signs a P-channel pinch-off positive.
     assert!(close(*vp, 1.5));
+}
+
+/// `CGS` and `CGD` scale with the area factor; `PB` (or `VJ`), `M` and `FC`
+/// grade them. A card that leaves the capacitances out has none.
+#[test]
+fn jfet_card_caps_are_its_gate_junctions() {
+    let deck = "t\n\
+        J1 d g s nj 2\n\
+        J2 d2 g2 s2 pj\n\
+        J3 d3 g3 s3 bare\n\
+        .model nj NJF(CGS=3p CGD=1p PB=0.7 M=0.33 FC=0.4)\n\
+        .model pj PJF(VTO=-1.5 CGD=0.8p)\n\
+        .model bare NJF\n\
+        .end\n";
+    let netlist = parse_str(deck).unwrap();
+    let caps = |id: &str| match find(&netlist.circuit, id) {
+        CircuitElement::Jfet { parasitic_caps, .. } => *parasitic_caps,
+        _ => panic!(),
+    };
+    let j1 = caps("j1").expect("j1 caps");
+    assert!(close(j1.cgs, 6e-12) && close(j1.cgd, 2e-12));
+    assert_eq!((j1.pb, j1.m, j1.fc), (0.7, 0.33, 0.4));
+    assert_eq!(
+        caps("j2"),
+        Some(JfetParasiticCaps {
+            cgd: 0.8e-12,
+            ..Default::default()
+        })
+    );
+    assert_eq!(caps("j3"), None);
 }
 
 #[test]
@@ -351,7 +381,15 @@ fn jfets_round_trip() {
             kind,
             idss,
             vp,
+            parasitic_caps: None,
         });
+        assert!(matches!(
+            find(&back, "j1"),
+            CircuitElement::Jfet {
+                parasitic_caps: None,
+                ..
+            }
+        ));
         let CircuitElement::Jfet {
             kind: k,
             idss: i,
@@ -367,6 +405,36 @@ fn jfets_round_trip() {
 }
 
 #[test]
+fn jfet_gate_caps_round_trip() {
+    for m in [0.5, 0.33] {
+        let caps = JfetParasiticCaps {
+            cgs: 4.7e-12,
+            cgd: 1.2e-12,
+            pb: 0.75,
+            m,
+            fc: 0.3,
+        };
+        let back = round_trip(CircuitElement::Jfet {
+            id: "j1".into(),
+            nodes: ["g".into(), "d".into(), "s".into()],
+            kind: JfetKind::PChannel,
+            idss: 4e-3,
+            vp: 1.7,
+            parasitic_caps: Some(caps),
+        });
+        let CircuitElement::Jfet {
+            parasitic_caps: Some(got),
+            ..
+        } = find(&back, "j1")
+        else {
+            panic!("no caps after the round trip")
+        };
+        assert!(close(got.cgs, caps.cgs) && close(got.cgd, caps.cgd));
+        assert_eq!((got.pb, got.m, got.fc), (caps.pb, caps.m, caps.fc));
+    }
+}
+
+#[test]
 fn n_channel_jfet_pinching_off_above_zero_isnt_written() {
     let circuit = Circuit {
         ground_node: "0".into(),
@@ -376,6 +444,7 @@ fn n_channel_jfet_pinching_off_above_zero_isnt_written() {
             kind: JfetKind::NChannel,
             idss: 1e-3,
             vp: 2.0,
+            parasitic_caps: None,
         }],
         ..Default::default()
     };

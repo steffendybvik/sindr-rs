@@ -94,6 +94,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CircuitElement::Crystal` and `CircuitElement::FerriteBead`, from a
   frequency, ESR and shunt capacitance, or an impedance at 100 MHz and a
   DC resistance.
+- JFET gate capacitances: `CircuitElement::Jfet` has an optional
+  `parasitic_caps` (`JfetParasiticCaps`), SPICE's gate junctions `CGS` and
+  `CGD` graded by `PB`, `M` and `FC`. Transient integrates their charge,
+  and AC and noise use the capacitance at the bias point. The SPICE parser
+  reads `CGS`, `CGD` (times the area factor), `PB`, `M` and `FC` from an
+  `NJF`/`PJF` card, and `to_netlist` writes them back. Checked against
+  ngspice on a common-source stage's Miller pole (`ac_jfet_caps`).
 
 ### Changed
 
@@ -103,6 +110,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `DiodeModel` and `BjtModel` gained fields, so a struct
   literal that names every field needs `eg` and `xti` too. One that ends
   in `..Default::default()` is unaffected.
+- **Breaking:** `CircuitElement::Jfet` has a `parasitic_caps` field, so
+  a literal needs `parasitic_caps: None`. With serde a missing field is
+  `None`.
 
 ### Fixed
 

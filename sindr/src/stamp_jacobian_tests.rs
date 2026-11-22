@@ -299,6 +299,7 @@ fn jfet(kind: JfetKind) -> Circuit {
         kind,
         idss: 10e-3,
         vp: -2.0,
+        parasitic_caps: None,
     })
 }
 

@@ -367,6 +367,16 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
+        CircuitElement::Jfet {
+            parasitic_caps: Some(caps),
+            ..
+        } => {
+            non_negative("parasitic_caps.cgs", caps.cgs, " F")?;
+            non_negative("parasitic_caps.cgd", caps.cgd, " F")?;
+            positive("parasitic_caps.pb", caps.pb, " V")?;
+            within("parasitic_caps.m", caps.m, 0.9)?;
+            within("parasitic_caps.fc", caps.fc, 0.95)
+        }
         // Only the noise fields: the rest of a MOSFET's parameters have
         // never been checked here.
         CircuitElement::Mosfet { params, .. } => {
@@ -512,8 +522,22 @@ mod tests {
                 model: Some(model),
             })
         };
+        let jfet = |caps: crate::circuit::JfetParasiticCaps| {
+            with(CircuitElement::Jfet {
+                id: "J1".into(),
+                nodes: ["b".into(), "a".into(), "0".into()],
+                kind: crate::JfetKind::NChannel,
+                idss: 10e-3,
+                vp: -2.0,
+                parasitic_caps: Some(caps),
+            })
+        };
         let d = crate::DiodeModel::default();
         let q = crate::BjtModel::default();
+        let j = crate::circuit::JfetParasiticCaps {
+            cgs: 1e-12,
+            ..Default::default()
+        };
         let bad = [
             (diode(crate::DiodeModel { n: 0.0, ..d }), "model.n"),
             (diode(crate::DiodeModel { is: -1.0, ..d }), "model.is"),
@@ -541,6 +565,22 @@ mod tests {
             (diode(crate::DiodeModel { xti: -1.0, ..d }), "model.xti"),
             (bjt(crate::BjtModel { eg: f64::NAN, ..q }), "model.eg"),
             (bjt(crate::BjtModel { xti: -0.5, ..q }), "model.xti"),
+            (
+                jfet(crate::circuit::JfetParasiticCaps { cgd: -1e-12, ..j }),
+                "parasitic_caps.cgd",
+            ),
+            (
+                jfet(crate::circuit::JfetParasiticCaps { pb: 0.0, ..j }),
+                "parasitic_caps.pb",
+            ),
+            (
+                jfet(crate::circuit::JfetParasiticCaps { m: 1.0, ..j }),
+                "parasitic_caps.m",
+            ),
+            (
+                jfet(crate::circuit::JfetParasiticCaps { fc: 0.99, ..j }),
+                "parasitic_caps.fc",
+            ),
         ];
         for (circuit, field) in bad {
             match validate_circuit(&circuit) {

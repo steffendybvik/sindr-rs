@@ -121,6 +121,7 @@
 //! | `NMOS`, `PMOS` | `CGSO`, `CGDO`, `CGBO` | [`MosfetParasiticCaps`](crate::circuit::MosfetParasiticCaps) |
 //! | `NMOS`, `PMOS` | `IS`, `CBD`, `PB`, `MJ`, `FC` (the drain–bulk junction) | the element's `body_diode` |
 //! | `NJF`, `PJF` | `VTO`, `BETA` | the element's `idss` and `vp` |
+//! | `NJF`, `PJF` | `CGS`, `CGD`, `PB` (or `VJ`), `M`, `FC` | [`JfetParasiticCaps`](crate::circuit::JfetParasiticCaps) |
 //!
 //! A `.model` inside a `.subckt` belongs to that subcircuit: its elements
 //! use it ahead of a top-level card of the same name, and nothing outside
@@ -149,9 +150,11 @@
 //!
 //! `Jxxx nd ng ns model [area]` gives `idss = BETA·VTO²·area` and a
 //! pinch-off of `VTO` (default −2 V), signed as
-//! [`JfetKind`](crate::JfetKind) expects. sindr's JFET has no gate
-//! junction, channel-length modulation, series resistance or capacitance,
-//! so `IS`, `LAMBDA`, `RD`, `RS`, `CGS` and `CGD` are read only at 0.
+//! [`JfetKind`](crate::JfetKind) expects. `CGS·area` and `CGD·area` are
+//! the gate junction capacitances, graded by `PB`, `M` and `FC` (ngspice
+//! ignores `M` and grades at 0.5). sindr's gate junction conducts no
+//! current and its JFET has no channel-length modulation or series
+//! resistance, so `IS`, `LAMBDA`, `RD` and `RS` are read only at 0.
 //!
 //! sindr's BJT is Ebers–Moll, so its Early effect isn't SPICE's
 //! Gummel–Poon base charge: with `VAF` set, results differ slightly from

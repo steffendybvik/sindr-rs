@@ -649,6 +649,7 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
             idss: 10e-3,
             // SPICE's N-channel VTO is below 0.
             vp: 2.0,
+            parasitic_caps: None,
         },
         CircuitElement::Igbt {
             id: "Z1".into(),

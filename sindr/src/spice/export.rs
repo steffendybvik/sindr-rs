@@ -72,7 +72,7 @@ pub enum ExportError {
 /// | `VoltageSource`, `CurrentSource` | `V`, `I`, with `DC` or a waveform |
 /// | `Diode`, `Bjt` | `D`, `Q`, with a `.model` card |
 /// | `Mosfet` | `M d g s s` with `W=1 L=1`, so a level-1 card's `KP`, `CGSO` and `CGDO` are sindr's values as they are. A body diode with only `IS`, `CJO`, `VJ`, `M` and `FC` is the card's drain–bulk junction; one with more is a `D<name>_body` line beside it, and the card's `IS` is 0 |
-/// | `Jfet` | `J`, with an `NJF`/`PJF` card: `VTO` the pinch-off, `BETA = idss/VTO²`, `IS=0` for sindr's ideal gate |
+/// | `Jfet` | `J`, with an `NJF`/`PJF` card: `VTO` the pinch-off, `BETA = idss/VTO²`, `IS=0` for sindr's ideal gate, and the gate capacitances as `CGS`, `CGD`, `PB`, `FC` (and `M` when it isn't 0.5, which ngspice ignores) |
 /// | `Vcvs`, `Vccs`, `Ccvs`, `Cccs` | `E`, `G`, `H`, `F` |
 /// | `Behavioural` | `B n+ n- V={expr}` or `I={expr}`, its nodes and sources by their deck names |
 /// | `Transformer` | two `L` and a `K` |
@@ -698,6 +698,7 @@ impl<'a> Deck<'a> {
                 kind,
                 idss,
                 vp,
+                parasitic_caps,
                 ..
             } => {
                 // sindr's P-channel JFET pinches off at −|vp| in the mirrored
@@ -712,9 +713,27 @@ impl<'a> Deck<'a> {
                         "SPICE's JFET needs IDSS above 0 and an N-channel pinch-off below 0",
                     ));
                 }
+                // M only when it isn't SPICE's 0.5: ngspice's JFET has no M
+                // and grades its gate junctions at 0.5 regardless.
+                let caps = match parasitic_caps.filter(|c| c.stores_charge()) {
+                    Some(c) => {
+                        let mut caps = format!(
+                            " CGS={} CGD={} PB={} FC={}",
+                            num(id, "parasitic_caps.cgs", c.cgs)?,
+                            num(id, "parasitic_caps.cgd", c.cgd)?,
+                            num(id, "parasitic_caps.pb", c.pb)?,
+                            num(id, "parasitic_caps.fc", c.fc)?,
+                        );
+                        if c.m != 0.5 {
+                            caps += &format!(" M={}", num(id, "parasitic_caps.m", c.m)?);
+                        }
+                        caps
+                    }
+                    None => String::new(),
+                };
                 // IS=0: sindr's gate draws no current, as SPICE's then doesn't.
                 let card = format!(
-                    "{}(VTO={} BETA={} IS=0)",
+                    "{}(VTO={} BETA={} IS=0{caps})",
                     match kind {
                         JfetKind::NChannel => "NJF",
                         JfetKind::PChannel => "PJF",

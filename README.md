@@ -61,13 +61,13 @@ Each analysis is checked against [ngspice](https://ngspice.sourceforge.io/) 47 o
 <!-- accuracy:start -->
 | Analysis | Cases | Worst relative error | Worst other |
 |---|---|---|---|
-| Operating point | 18 | 7e-6 | — |
-| DC sweep | 6 | 4e-5 | — |
-| Temperature sweep | 1 | 6e-7 | — |
-| AC | 12 | 3e-6 | 1e-4° phase |
+| Operating point | 22 | 7e-6 | — |
+| DC sweep | 8 | 4e-5 | — |
+| Temperature sweep | 4 | 8e-7 | — |
+| AC | 15 | 3e-6 | 1e-4° phase |
 | Diode charge (AC) | 2 | 2e-4 | — |
 | Noise | 4 | 7e-7 | — |
-| Transient | 10 | — | 2.6 % of full scale |
+| Transient | 11 | — | 2.6 % of full scale |
 <!-- accuracy:end -->
 
 The transient's worst is a switching BJT's collector on a 3 µs edge, where a 0.4 mV base error becomes 2.6 % of the current; its other cases stay under 0.15 %. Every case, and the tolerance its test holds it to, is in [`docs/ACCURACY.md`](./docs/ACCURACY.md); how the cases are built is in [`sindr/tests/golden/README.md`](./sindr/tests/golden/README.md). Both tables come from the test suite (`scripts/accuracy_table.py`).

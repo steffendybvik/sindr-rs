@@ -524,6 +524,7 @@ fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> V
                 kind,
                 idss,
                 vp,
+                ..
             } => {
                 let [g, d, s] = nodes;
                 let (vg, vd, vs) = (voltage(g), voltage(d), voltage(s));

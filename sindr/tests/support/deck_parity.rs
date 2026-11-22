@@ -235,6 +235,7 @@ pub fn in_deck<'a>(case: &str, deck: &str, circuit: &'a Circuit) -> &'a Circuit 
                 kind,
                 idss,
                 vp,
+                parasitic_caps,
             } => {
                 // `J d g s model`; sindr's nodes are [g, d, s].
                 let words = d.take(case, id);
@@ -255,6 +256,17 @@ pub fn in_deck<'a>(case: &str, deck: &str, circuit: &'a Circuit) -> &'a Circuit 
                     0.0,
                     "{case}: sindr's JFET has no LAMBDA"
                 );
+                // The gate junctions, at SPICE's defaults when the card
+                // leaves them out. ngspice has no M: it grades at 0.5.
+                let caps = parasitic_caps.unwrap_or_default();
+                let get = |k: &str, default: f64| card.get(k).copied().unwrap_or(default);
+                close(case, &format!("{id} CGS"), get("cgs", 0.0), caps.cgs);
+                close(case, &format!("{id} CGD"), get("cgd", 0.0), caps.cgd);
+                if caps.cgs > 0.0 || caps.cgd > 0.0 {
+                    close(case, &format!("{id} PB"), get("pb", 1.0), caps.pb);
+                    close(case, &format!("{id} FC"), get("fc", 0.5), caps.fc);
+                    close(case, &format!("{id} M"), 0.5, caps.m);
+                }
             }
             CircuitElement::Led {
                 id,
