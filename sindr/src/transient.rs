@@ -2538,6 +2538,13 @@ impl<'a> StepSolver<'a> {
                     &self.diode_info,
                     self.opts,
                 )
+                && crate::stamp::regulator_pieces_settled(
+                    self.circuit,
+                    self.node_map,
+                    self.num_nodes,
+                    &v_prev,
+                    &v_limited,
+                )
             {
                 crate::stamp::behavioural_finite_at(self.circuit, self.node_map, &v_limited, t)?;
                 return Ok(v_limited);
