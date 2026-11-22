@@ -197,3 +197,35 @@ fn probe_must_be_a_floating_voltage_source() {
         Err(SimError::InvalidComponent(_))
     ));
 }
+
+#[test]
+fn linear_spacing_spaces_the_points_evenly_and_gain_db_reads_the_magnitude() {
+    let parts = vec![opamp(0.0), probe("fb", "out"), r("RL", "out", "0", 10e3)];
+    let config =
+        LoopGainConfig::new("Vprobe", 1e3, 11e3, 11).with_spacing(sindr::FrequencySpacing::Linear);
+    let lg = solve_loop_gain(&circuit(parts), &config).unwrap();
+
+    let f: Vec<f64> = lg.points.iter().map(|p| p.frequency).collect();
+    assert_eq!(f.len(), 11);
+    for (i, fi) in f.iter().enumerate() {
+        let want = 1e3 + 1e3 * i as f64;
+        assert!((fi - want).abs() < 1e-9 * want, "point {i}: {fi} Hz");
+    }
+    for p in &lg.points {
+        let want = A0 / Complex64::new(1.0, 2.0 * PI * p.frequency * tau());
+        assert!((p.gain_db() - 20.0 * want.norm().log10()).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn probe_with_its_driven_side_on_ground_is_an_error() {
+    // The probe's first node is the side the loop is driven into; on
+    // ground there is nothing to inject into.
+    let parts = vec![opamp(0.0), probe("0", "out"), r("RL", "out", "fb", 10e3)];
+    let err =
+        solve_loop_gain(&circuit(parts), &LoopGainConfig::new("Vprobe", 1.0, 1e3, 3)).unwrap_err();
+    assert!(
+        matches!(&err, SimError::InvalidComponent(m) if m.contains("Vprobe")),
+        "{err:?}"
+    );
+}

@@ -441,3 +441,54 @@ fn reverse_biased_diode_charge_sits_behind_its_series_resistance() {
     );
     assert_roots(&pz.zeros, &[Complex64::new(-1.0 / (rs * cj), 0.0)], 1e-6);
 }
+
+/// Two RC low-passes off one input, read differentially:
+/// H = 1/(1 + sτ1) − 1/(1 + sτ2) = s(τ2 − τ1) / ((1 + sτ1)(1 + sτ2)),
+/// so poles at −1/τ1 and −1/τ2 and a zero at the origin.
+#[test]
+fn differential_output_has_both_poles_and_a_zero_at_the_origin() {
+    let (t1, t2) = (1e3 * 1e-6, 4.7e3 * 1e-6);
+    let parts = vec![
+        v("V1", "in", "0"),
+        r("R1", "in", "a", 1e3),
+        c("C1", "a", "0", 1e-6),
+        r("R2", "in", "b", 4.7e3),
+        c("C2", "b", "0", 1e-6),
+    ];
+    let pz = solve_pz(
+        &circuit(parts),
+        &PzConfig::voltage_gain("in", "0", "a", "b"),
+    )
+    .unwrap();
+    let mut poles: Vec<f64> = pz.poles.iter().map(|p| p.re).collect();
+    poles.sort_by(f64::total_cmp);
+    assert_eq!(poles.len(), 2);
+    assert!((poles[0] + 1.0 / t1).abs() < 1e-9 / t1, "{poles:?}");
+    assert!((poles[1] + 1.0 / t2).abs() < 1e-9 / t2, "{poles:?}");
+    assert_eq!(pz.zeros.len(), 1, "{:?}", pz.zeros);
+    assert!(pz.zeros[0].norm() < 1e-6, "{:?}", pz.zeros);
+}
+
+/// A current driven into `a` and out of `b` across C, with R1 and R2 to
+/// ground: Z = (R1 + R2) ‖ 1/(sC), one pole at −1/((R1 + R2)·C).
+#[test]
+fn transimpedance_between_two_nodes() {
+    let parts = vec![
+        r("R1", "a", "0", 1e3),
+        r("R2", "b", "0", 2e3),
+        c("C1", "a", "b", 1e-6),
+    ];
+    let pz = solve_pz(
+        &circuit(parts),
+        &PzConfig::transimpedance("a", "b", "a", "b"),
+    )
+    .unwrap();
+    assert_eq!(pz.poles.len(), 1, "{:?}", pz.poles);
+    let want = -1.0 / (3e3 * 1e-6);
+    assert!(
+        (pz.poles[0].re - want).abs() < 1e-9 * want.abs() && pz.poles[0].im == 0.0,
+        "{:?}",
+        pz.poles
+    );
+    assert!(pz.zeros.is_empty(), "{:?}", pz.zeros);
+}
