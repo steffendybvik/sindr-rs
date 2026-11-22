@@ -1,0 +1,6 @@
+temp: a vendor-style diode card stating silicon's EG, XTI and TNOM
+V1 in 0 5
+R1 in out 1k
+D1 out 0 dv
+.model dv D(IS=2.52e-9 N=1.752 RS=0.568 EG=1.11 XTI=3 TNOM=27)
+.end

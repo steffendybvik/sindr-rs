@@ -491,10 +491,65 @@ fn ignored_model_parameters_warning_names_the_file() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(
         warnings(&netlist),
-        ["`.model m` parameter EG ignored (sindr's model doesn't use them)"]
+        [
+            "`.model m` parameter EG=1.1 ignored (sindr's model doesn't use them; it scales \
+          IS as silicon, with EG=1.11, XTI=3 and TNOM=27)"
+        ]
     );
     assert_eq!(
         netlist.warnings[0].file.as_deref(),
         Some(main.display().to_string().as_str())
     );
+}
+
+/// `EG`, `XTI` and `TNOM` at silicon's values are what sindr scales IS
+/// with, so a card stating them parses in strict mode, written any way.
+#[test]
+fn silicon_temperature_coefficients_parse_in_strict_mode() {
+    for card in [
+        ".model d1 D(IS=1e-14 EG=1.11 XTI=3 TNOM=27)",
+        ".model d1 D(IS=1e-14 eg=1.110 xti=3.0 tnom=27.0)",
+        ".param bandgap=1.11\n.model d1 D(IS=1e-14 EG={bandgap})",
+    ] {
+        let deck = format!("* t\n{card}\nV1 a 0 1\nR1 a b 1k\nD1 b 0 d1\n.end\n");
+        let netlist = parse_str(&deck).unwrap_or_else(|e| panic!("{card}: {e}"));
+        assert!(
+            netlist.warnings.is_empty(),
+            "{card}: {:?}",
+            warnings(&netlist)
+        );
+        match element(&netlist, "d1") {
+            CircuitElement::Diode { model: Some(m), .. } => assert_eq!(m.is, 1e-14),
+            other => panic!("{other:?}"),
+        }
+    }
+    let deck = "* t\n.model q1 NPN(IS=1e-15 BF=200 EG=1.11 XTI=3 TNOM=27)\n\
+                V1 c 0 5\nR1 c b 100k\nQ1 c b 0 q1\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert!(netlist.warnings.is_empty(), "{:?}", warnings(&netlist));
+}
+
+/// Any other bandgap or exponent changes how IS follows temperature, which
+/// sindr doesn't model: strict says what it scales with instead, lenient
+/// reads the card as silicon and warns.
+#[test]
+fn other_temperature_coefficients_say_what_sindr_scales_with() {
+    let deck = "* t\n.model sk D(IS=1e-8 EG=0.69 XTI=2)\nV1 a 0 1\nR1 a b 1k\nD1 b 0 sk\n.end\n";
+    let err = parse_str(deck).unwrap_err().to_string();
+    assert!(
+        err.contains("EG=0.69") && err.contains("XTI=2") && err.contains("EG=1.11"),
+        "{err}"
+    );
+    let netlist = parse_str_with_options(deck, lenient()).unwrap();
+    assert_eq!(
+        warnings(&netlist),
+        [
+            "`.model sk` parameters EG=0.69, XTI=2 ignored (sindr's model doesn't use them; it \
+          scales IS as silicon, with EG=1.11, XTI=3 and TNOM=27)"
+        ]
+    );
+    // A silicon value next to an unknown parameter: only the unknown is named.
+    let deck = "* t\n.model q1 NPN(IS=1e-15 EG=1.11 IKF=0.1)\nV1 c 0 5\nQ1 c c 0 q1\n.end\n";
+    let err = parse_str(deck).unwrap_err().to_string();
+    assert!(err.contains("IKF") && !err.contains("EG"), "{err}");
 }

@@ -155,8 +155,11 @@
 //!
 //! sindr's BJT is Ebers–Moll, so its Early effect isn't SPICE's
 //! Gummel–Poon base charge: with `VAF` set, results differ slightly from
-//! SPICE's. Any other parameter (`EG`, `XTI`, `CJE`, `VAR`, `IKF`, …) is an
-//! error in strict mode and a warning per card in lenient mode, naming them.
+//! SPICE's. Diode and BJT `IS` follows temperature as silicon's does, so
+//! `EG`, `XTI` and `TNOM` are read at 1.11 eV, 3 and 27 °C (ngspice's
+//! defaults, which many vendor cards state) and are errors at any other
+//! value. Any other parameter (`CJE`, `VAR`, `IKF`, …) is an error in
+//! strict mode and a warning per card in lenient mode, naming them.
 //! Part annotations that don't affect the simulation (`MFG`, `TYPE`,
 //! `VCEO`, `ICRATING`, `IAVE`, `VPK`) are dropped without a word.
 //!

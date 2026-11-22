@@ -350,7 +350,7 @@ fn build_element(
                     bad_span: span_of(raw),
                 });
             }
-            let params = model_params(m, DIODE_KEYS, &scope, strict, warnings)?;
+            let params = model_params(m, DIODE_KEYS, JUNCTION_NEUTRAL, &scope, strict, warnings)?;
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
             let model = (!params.is_empty()).then(|| {
                 let mut model = DiodeModel::default();
@@ -421,7 +421,7 @@ fn build_element(
                 /* collector */ raw.nodes[0].clone(),
                 /* emitter */ raw.nodes[2].clone(),
             ];
-            let params = model_params(m, BJT_KEYS, &scope, strict, warnings)?;
+            let params = model_params(m, BJT_KEYS, JUNCTION_NEUTRAL, &scope, strict, warnings)?;
             let mut bf = 100.0;
             let mut model = None::<BjtModel>;
             for (key, value) in params {
@@ -738,6 +738,11 @@ const KEY_ALIASES: &[(&str, &str)] = &[
     ("mj", "m"),
 ];
 
+/// Diode and BJT card parameters for how `IS` follows temperature, read
+/// only at the values sindr scales it with: silicon's bandgap `EG`, SPICE's
+/// default `XTI`, and a nominal temperature `TNOM` of 27 °C.
+const JUNCTION_NEUTRAL: &[(&str, f64)] = &[("eg", 1.11), ("xti", 3.0), ("tnom", 27.0)];
+
 /// `.model NPN`/`PNP` parameters sindr's Ebers–Moll transistor uses.
 const BJT_KEYS: &[&str] = &["is", "bf", "br", "nf", "nr", "vaf", "kf", "af"];
 
@@ -824,7 +829,7 @@ fn fet_params(
     strict: bool,
     warnings: &mut Vec<ParseWarning>,
 ) -> Result<HashMap<&'static str, f64>, SpiceParseError> {
-    let params: HashMap<_, _> = model_params(m, known, scope, strict, warnings)?
+    let params: HashMap<_, _> = model_params(m, known, &[], scope, strict, warnings)?
         .into_iter()
         .collect();
     for (key, neutral) in neutral {
@@ -1050,18 +1055,28 @@ const ANNOTATION_KEYS: &[&str] = &["mfg", "type", "vceo", "icrating", "iave", "v
 fn model_params(
     m: &RawModel,
     known: &[&'static str],
+    neutral: &[(&str, f64)],
     scope: &ParamScope,
     strict: bool,
     warnings: &mut Vec<ParseWarning>,
 ) -> Result<Vec<(&'static str, f64)>, SpiceParseError> {
     let mut params = Vec::new();
     let mut ignored = Vec::new();
+    let mut off_neutral = false;
     for (key, expr) in &m.params {
         let lower = key.to_ascii_lowercase();
         let lower = KEY_ALIASES
             .iter()
             .find(|(alias, _)| *alias == lower)
             .map_or(lower, |(_, name)| name.to_string());
+        if let Some((_, at)) = neutral.iter().find(|(k, _)| *k == lower) {
+            let value = eval_or_lift(expr, scope)?;
+            if (value - at).abs() > 1e-9 * at.abs() {
+                ignored.push(format!("{}={value}", key.to_ascii_uppercase()));
+                off_neutral = true;
+            }
+            continue;
+        }
         match known.iter().find(|k| **k == lower) {
             Some(k) => params.push((*k, eval_or_lift(expr, scope)?)),
             None if ANNOTATION_KEYS.contains(&lower.as_str()) => {}
@@ -1077,13 +1092,18 @@ fn model_params(
         if ignored.len() == 1 { "" } else { "s" },
         ignored.join(", ")
     );
+    let hint = if off_neutral {
+        "; it scales IS as silicon, with EG=1.11, XTI=3 and TNOM=27"
+    } else {
+        ""
+    };
     if strict {
         return Err(card_error(format!(
-            "{what} not supported by sindr's {} model",
+            "{what} not supported by sindr's {} model{hint}",
             m.kind.to_ascii_uppercase()
         )));
     }
-    let message = format!("{what} ignored (sindr's model doesn't use them)");
+    let message = format!("{what} ignored (sindr's model doesn't use them{hint})");
     if !warnings.iter().any(|w| w.message == message) {
         warnings.push(ParseWarning {
             message,
@@ -2305,12 +2325,12 @@ mod tests {
     fn unused_parameters_are_an_error_in_strict_mode() {
         for (kind, element) in [("D", diode_card("D1", "m")), ("NPN", bjt_card("m"))] {
             let cards = vec![
-                model_card("m", kind, &[("IS", 1e-14), ("XTI", 3.0), ("VAR", 10.0)]),
+                model_card("m", kind, &[("IS", 1e-14), ("XTI", 2.0), ("VAR", 10.0)]),
                 element,
             ];
             let err = build_from_cards(cards).unwrap_err().to_string();
             assert!(
-                err.contains("XTI, VAR") && err.contains("m"),
+                err.contains("XTI=2, VAR") && err.contains("m") && err.contains("as silicon"),
                 "{kind}: {err}"
             );
         }
@@ -2329,7 +2349,10 @@ mod tests {
             .filter(|w| w.message.contains(".model m"))
             .collect();
         assert_eq!(about_card.len(), 1, "{warnings:?}");
-        assert!(about_card[0].message.contains("EG, XTI"), "{warnings:?}");
+        assert!(
+            about_card[0].message.contains("EG=0.69, XTI=2"),
+            "{warnings:?}"
+        );
         // What is used still applies.
         assert!(matches!(
             &netlist.circuit.components[1],

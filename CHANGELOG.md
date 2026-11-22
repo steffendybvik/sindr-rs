@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `to_netlist` writes MOSFETs and JFETs, and they parse back to the same
   circuit. A body diode SPICE's junction can't hold goes out as its own
   `D` line.
+- Diode and BJT `.model` cards that state `EG=1.11`, `XTI=3` or
+  `TNOM=27`, as many vendor cards do, now parse in strict mode: they are
+  the silicon temperature scaling sindr already uses. Other values are
+  still errors in strict mode, and the message says what sindr scales
+  with.
 - A `.model` inside a `.subckt` is read, local to that subcircuit, so
   vendor model files that keep their cards inside the subcircuit load.
   Before, it was ignored with a warning.

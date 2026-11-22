@@ -1571,6 +1571,30 @@ fn temp_diode() {
     check.finish();
 }
 
+/// A vendor-style card stating silicon's EG, XTI and TNOM, with N and RS
+/// off the defaults: it parses in strict mode and follows ngspice across
+/// the sweep, since those are the values sindr scales IS with.
+#[test]
+fn temp_diode_card() {
+    let golden = Golden::load("temp_diode_card");
+    let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
+    let sweep = temperature_sweep(
+        &parse("temp_diode_card"),
+        kelvin[0],
+        *kelvin.last().unwrap(),
+        kelvin.len(),
+    )
+    .unwrap();
+    let got: Vec<f64> = sweep
+        .points
+        .iter()
+        .map(|p| p.result.node_voltages["out"])
+        .collect();
+    let mut check = Check::new("temp_diode_card");
+    check.series("v(out)", &kelvin, &got, &golden.column("v(out)"), OP_V);
+    check.finish();
+}
+
 // ---------------------------------------------------------------- diode charge and breakdown
 
 /// A 1N4148 card with CJO, M, TT, BV and IBV, through 1 kΩ, swept past its
