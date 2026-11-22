@@ -3,7 +3,7 @@
 //! These are returned in [`crate::spice::ParsedNetlist::analyses`]. They map 1-to-1
 //! onto the analyses that `sindr` knows how to run.
 
-/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`).
+/// One analysis request declared in a netlist (`.op`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum AnalysisRequest {
@@ -105,6 +105,22 @@ pub enum AnalysisRequest {
         fstart: f64,
         /// Stop frequency in Hz.
         fstop: f64,
+    },
+    /// `.pz in in_ref out out_ref vol|cur pol|zer|pz` — pole-zero analysis
+    /// of the transfer function from the input pair to the output pair.
+    Pz {
+        /// Positive input node.
+        input: String,
+        /// Negative input node.
+        input_reference: String,
+        /// Positive output node.
+        output: String,
+        /// Negative output node.
+        output_reference: String,
+        /// `vol` (voltage gain) or `cur` (transimpedance).
+        transfer: crate::PzTransfer,
+        /// `pol`, `zer` or `pz`.
+        find: crate::PzFind,
     },
 }
 
@@ -402,6 +418,49 @@ impl AnalysisRequest {
             num_points,
             spacing,
         })
+    }
+
+    /// The [`PzConfig`](crate::PzConfig) for a `.pz` request, to pass to
+    /// [`solve_pz`](crate::solve_pz); `None` for any other analysis.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    ///
+    /// let deck = "* rc\nV1 in 0 0\nR1 in out 1k\nC1 out 0 1u\n.pz in 0 out 0 vol pz\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.analyses[0].pz_config().unwrap();
+    /// let pz = sindr::solve_pz(&netlist.circuit, &config)?;
+    /// // One pole at −1/RC.
+    /// assert!((pz.poles[0].re + 1_000.0).abs() < 1e-9);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn pz_config(&self) -> Option<crate::PzConfig> {
+        let AnalysisRequest::Pz {
+            input,
+            input_reference,
+            output,
+            output_reference,
+            transfer,
+            find,
+        } = self
+        else {
+            return None;
+        };
+        let config = match transfer {
+            crate::PzTransfer::Transimpedance => crate::PzConfig::transimpedance(
+                input.as_str(),
+                input_reference.as_str(),
+                output.as_str(),
+                output_reference.as_str(),
+            ),
+            _ => crate::PzConfig::voltage_gain(
+                input.as_str(),
+                input_reference.as_str(),
+                output.as_str(),
+                output_reference.as_str(),
+            ),
+        };
+        Some(config.with_find(*find))
     }
 
     /// The [`SensConfig`](crate::SensConfig) for a `.sens` request, to pass
@@ -981,7 +1040,7 @@ mod tests {
     fn directives_keep_source_order() {
         let kinds: Vec<&str> = analyses(
             ".ac lin 2 1 2\n.sens v(in)\n.op\n.noise v(in) v1 lin 2 1 2\n.tran 1u 1m\n\
-             .tf v(in) v1\n.dc V1 0 1 1",
+             .tf v(in) v1\n.pz in 0 in 0 vol pz\n.dc V1 0 1 1",
         )
         .iter()
         .map(|a| match a {
@@ -993,9 +1052,13 @@ mod tests {
             AnalysisRequest::Sens { .. } => "sens",
             AnalysisRequest::SensAc { .. } => "sens ac",
             AnalysisRequest::Noise { .. } => "noise",
+            AnalysisRequest::Pz { .. } => "pz",
         })
         .collect();
-        assert_eq!(kinds, ["ac", "sens", "op", "noise", "tran", "tf", "dc"]);
+        assert_eq!(
+            kinds,
+            ["ac", "sens", "op", "noise", "tran", "tf", "pz", "dc"]
+        );
     }
 
     #[test]

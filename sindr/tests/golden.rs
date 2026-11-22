@@ -2217,3 +2217,81 @@ fn sens_ac_linear() {
     );
     check.finish();
 }
+
+/// The poles and zeros in a `.pz` golden: each `pole(k)` / `zero(k)` is a
+/// real and an imaginary column after the scale.
+fn pz_golden(case: &str) -> (Vec<Complex64>, Vec<Complex64>) {
+    let golden = Golden::load(case);
+    let row = &golden.rows[0];
+    let (mut poles, mut zeros) = (Vec::new(), Vec::new());
+    for k in (1..golden.names.len()).step_by(2) {
+        let z = Complex64::new(row[k], row[k + 1]);
+        if golden.names[k].starts_with("pole") {
+            poles.push(z);
+        } else {
+            zeros.push(z);
+        }
+    }
+    (poles, zeros)
+}
+
+/// Each golden root against the nearest of sindr's, to `rel` relative and
+/// `rel·scale` absolute (ngspice writes nine significant digits, and a root
+/// at 0 comes out at round-off of the others' size).
+fn check_roots(
+    check: &mut Check,
+    what: &str,
+    got: &[Complex64],
+    want: &[Complex64],
+    rel: f64,
+    scale: f64,
+) {
+    assert_eq!(got.len(), want.len(), "{what}: {got:?} vs {want:?}");
+    let tol = Tol {
+        rel,
+        abs: rel * scale,
+    };
+    for (k, w) in want.iter().enumerate() {
+        let g = got
+            .iter()
+            .min_by(|a, b| (*a - w).norm().total_cmp(&(*b - w).norm()))
+            .unwrap();
+        check.value(&format!("{what}({}).re", k + 1), g.re, w.re, tol);
+        check.value(&format!("{what}({}).im", k + 1), g.im, w.im, tol);
+    }
+}
+
+fn check_pz(case: &'static str, config: &sindr::PzConfig) {
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    let pz = sindr::solve_pz(&netlist.circuit, config).unwrap();
+    let (poles, zeros) = pz_golden(case);
+    let scale = poles
+        .iter()
+        .chain(&zeros)
+        .map(|z| z.norm())
+        .fold(0.0, f64::max);
+    let mut check = Check::new(case);
+    check_roots(&mut check, "pole", &pz.poles, &poles, 1e-8, scale);
+    check_roots(&mut check, "zero", &pz.zeros, &zeros, 1e-8, scale);
+    check.finish();
+}
+
+/// `.pz … vol pz` through an RLC tank with a capacitor bridging it: a
+/// complex pole pair and a complex zero pair.
+#[test]
+fn pz_rlc_vol() {
+    check_pz(
+        "pz_rlc_vol",
+        &sindr::PzConfig::voltage_gain("in", "0", "a", "0"),
+    );
+}
+
+/// `.pz … cur pz` into an RC-RL ladder: three poles and the inductor's zero
+/// at DC.
+#[test]
+fn pz_ladder_cur() {
+    check_pz(
+        "pz_ladder_cur",
+        &sindr::PzConfig::transimpedance("in", "0", "out", "0"),
+    );
+}

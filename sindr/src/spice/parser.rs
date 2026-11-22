@@ -1298,6 +1298,40 @@ fn parse_card_noise(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ))
 }
 
+/// Parse `.pz in in_ref out out_ref vol|cur pol|zer|pz`.
+fn parse_card_pz(input: &mut Input<'_>) -> ModalResult<RawCard> {
+    let mut nodes: [String; 4] = Default::default();
+    for node in &mut nodes {
+        ws(input)?;
+        *node = node_name(input)?.0;
+    }
+    ws(input)?;
+    let transfer = match ident(input)?.0.as_str() {
+        "vol" => crate::PzTransfer::VoltageGain,
+        "cur" => crate::PzTransfer::Transimpedance,
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    ws(input)?;
+    let find = match ident(input)?.0.as_str() {
+        "pol" => crate::PzFind::Poles,
+        "zer" => crate::PzFind::Zeros,
+        "pz" => crate::PzFind::Both,
+        _ => return Err(ErrMode::from_input(input)),
+    };
+    ws(input)?;
+    if !input.is_empty() {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok(RawCard::Analysis(
+        RawAnalysis::Pz {
+            nodes,
+            transfer,
+            find,
+        },
+        Span::detached(),
+    ))
+}
+
 /// Split a `.meas` card into words: `=` stands alone, and parentheses,
 /// braces and quotes keep what they hold in one word (`v(a, b)`,
 /// `{tstop/2}`). A quoted `'expr'` becomes `{expr}`.
@@ -1628,6 +1662,7 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "tf" => parse_card_tf(&mut input),
             "sens" => parse_card_sens(&mut input),
             "noise" => parse_card_noise(&mut input),
+            "pz" => parse_card_pz(&mut input),
             "meas" | "measure" => {
                 return parse_card_meas(&trimmed[1 + kind_span.end..]).map_err(|message| {
                     LocalError::Syntax {

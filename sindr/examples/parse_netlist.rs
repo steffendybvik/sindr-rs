@@ -93,6 +93,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tf.gain, tf.input_resistance, tf.output_resistance
                 );
             }
+            AnalysisRequest::Pz { .. } => {
+                let config = analysis.pz_config().ok_or("not a .pz")?;
+                let pz = sindr::solve_pz(&netlist.circuit, &config)?;
+                println!("pz: poles {:?}, zeros {:?}", pz.poles, pz.zeros);
+            }
             // Analyses added in later releases.
             other => println!("not run here: {other:?}"),
         }

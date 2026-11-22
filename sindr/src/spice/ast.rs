@@ -230,6 +230,11 @@ pub(crate) enum RawAnalysis {
         fstart: ParamExpr,
         fstop: ParamExpr,
     },
+    Pz {
+        nodes: [String; 4],
+        transfer: crate::PzTransfer,
+        find: crate::PzFind,
+    },
     Noise {
         node: String,
         reference: Option<String>,

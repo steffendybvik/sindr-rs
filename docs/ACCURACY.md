@@ -68,6 +68,8 @@ largest deviation over every quantity and point the case checks;
 | `noise_partial_decade` | Noise | 2e-7 | 1e-6 |
 | `noise_rc_lowpass` | Noise | 2e-7 | 1e-6 |
 | `noise_rc_total` | Noise | 2e-7 | 1e-4 |
+| `pz_ladder_cur` | Pole-zero | 9e-10 | 1e-8 |
+| `pz_rlc_vol` | Pole-zero | 1e-9 | 1e-8 |
 | `tran_behavioural` | Transient | 0.022 % FS | 0.1 % FS |
 | `tran_bjt_switch` | Transient | 2.6 % FS | 3 % FS |
 | `tran_diode_recovery` | Transient | 0.15 % FS | 2 % FS |
@@ -79,3 +81,7 @@ largest deviation over every quantity and point the case checks;
 | `tran_rl_step` | Transient | 0.0048 % FS | 0.1 % FS |
 | `tran_rlc_ring` | Transient | < 0.001 % FS | 0.1 % FS |
 | `tran_tstart` | Transient | 0.0013 % FS | 0.1 % FS |
+| `sens_ac_linear` | Other | 0 | 1e-12 |
+| `sens_dc_bjt` | Other | 1e-6 | 1e-5 |
+| `sens_dc_controlled` | Other | 1e-6 | 1e-6 |
+| `sens_dc_diode_mos` | Other | 3e-7 | 1e-5 |

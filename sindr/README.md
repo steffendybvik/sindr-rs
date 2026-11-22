@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain with stability margins, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -30,7 +30,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist --features spice
@@ -611,6 +611,44 @@ for (source, total) in noise.sources.iter().zip(&noise.source_totals) {
 ```
 
 Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C. Sources, controlled sources, op-amps, comparators, regulators and a diode's series resistance are noiseless.
+
+## Pole-zero
+
+SPICE's `.pz`: the poles and zeros of the transfer function from an input node pair to an output node pair, at the DC operating point. A voltage gain's poles are those of the circuit with the input shorted (by the voltage source already across it, or one the analysis adds); a transimpedance drives a current into the input pair, left open.
+
+```rust,no_run
+# use sindr::*;
+# let mut circuit = Circuit::default();
+use sindr::{solve_pz, PzConfig, PzFind};
+
+// SPICE `.pz in 0 out 0 vol pz`; PzConfig::transimpedance for `cur`.
+let pz = solve_pz(&circuit, &PzConfig::voltage_gain("in", "0", "out", "0"))?;
+for p in &pz.poles {
+    println!("pole {:.4e} {:+.4e}j rad/s", p.re, p.im);
+}
+println!("stable: {}", pz.is_stable());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Roots are in rad/s, finite ones only, sorted by magnitude. They are the generalised eigenvalues of the linearised `G + sC` pencil (and of its bordered form for the zeros): sindr deflates the infinite ones exactly, by orthogonal reductions, then runs QZ, so a well-separated root is accurate to about 1e-12 relative and a repeated one to about √ε. `with_find(PzFind::Poles)` or `PzFind::Zeros` skips the other half. A transimpedance into a pair a voltage source shorts has no response, and is an error.
+
+## Loop gain and stability margins
+
+The loop gain of a feedback loop at a break point, by Tian's double injection: a voltage and a current injected at a probe, a 0 V voltage source in series with the loop with its `nodes[1]` on the driving side (the amplifier output) and `nodes[0]` on the driven side (the feedback network). The loop isn't cut, so both sides keep their loading, and the result is exact for loops that pass signal both ways through the probe.
+
+```rust,no_run
+# use sindr::*;
+# let mut circuit = Circuit::default();
+use sindr::{solve_loop_gain, LoopGainConfig};
+
+// Vprobe: nodes ["fb_in", "out"], 0 V. 801 log-spaced points, 1 Hz to 100 MHz.
+let lg = solve_loop_gain(&circuit, &LoopGainConfig::new("Vprobe", 1.0, 100e6, 801))?;
+println!("crossover {:?} Hz", lg.gain_crossovers);
+println!("phase margin {:?}°, gain margin {:?} dB", lg.phase_margin_deg, lg.gain_margin_db);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`T` is the return ratio, positive at low frequency for negative feedback. Each point has `gain` (complex), `gain_db()` and the phase unwrapped along the sweep, so the sweep must be dense enough that the phase moves less than 180° between points. Crossovers are refined by bisection on `T` itself, so the margins don't depend on the grid. The phase margin is the smallest over every 0 dB crossing, the gain margin the smallest over every −180° crossing; each is `None` when there is no crossing in the sweep.
 
 ## DC sweep
 
