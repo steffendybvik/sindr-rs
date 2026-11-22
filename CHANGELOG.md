@@ -119,6 +119,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads `CGS`, `CGD` (times the area factor), `PB`, `M` and `FC` from an
   `NJF`/`PJF` card, and `to_netlist` writes them back. Checked against
   ngspice on a common-source stage's Miller pole (`ac_jfet_caps`).
+- AC sensitivity: `solve_ac_sensitivity` (and `Solver::ac_sensitivity`)
+  gives, at each frequency of an `AcConfig`, the derivative of a
+  small-signal output phasor with respect to R, C, L, the controlled
+  sources' gains, the stimulus's AC magnitude and device-model
+  parameters, from one adjoint solve per frequency. As in ngspice, the DC
+  operating point is held fixed. The SPICE parser reads `.sens v(out) ac
+  dec 10 1 1meg` into `AnalysisRequest::SensAc`, and
+  `ParsedNetlist::ac_sens_config` drives it from the deck's `AC` spec.
+- `.sens` reports device-model parameters: a diode's IS, N and RS, a
+  BJT's BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA (in
+  AC a diode's CJO and TT as well), from analytic derivatives, IS's
+  temperature scaling included. CCVS transresistance and CCCS current
+  gain get entries too. `SensResult::get_parameter` picks one parameter
+  of a device out. Checked against central differences of full re-solves
+  and against ngspice.
+- `sindr-devices`: `diode_derivatives`, `bjt_derivatives` and
+  `mosfet_derivatives` give the exact derivatives of each model's
+  currents and conductances with respect to its parameters, and
+  `JunctionCharge::depletion_capacitance_slope` the slope of the
+  depletion capacitance.
 
 ### Changed
 

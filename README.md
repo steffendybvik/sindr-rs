@@ -124,7 +124,7 @@ a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics
 | Main input | `Circuit` values or JSON; a SPICE3 subset (feature `spice`) | SPICE netlists in its own dialect |
 | WebAssembly, no C library | Yes | Usually not |
 | Ratings, self-heating, pass/fail specs | Built in | Scripted by hand, if at all |
-| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens`, `.noise`, `.meas` | Those and more: pole-zero, AC sensitivity, Fourier, distortion |
+| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens` (DC and AC), `.noise`, `.meas` | Those and more: pole-zero, Fourier, distortion |
 | Device models | Shockley diode, Ebers–Moll BJT, MOSFET Level 1, JFET, IGBT, op-amp macromodel, and part-level elements (LED, regulator, relay, battery …) | **Far more:** Gummel–Poon, BSIM, transmission lines, behavioural and code models |
 | SPICE dialect coverage | A practical subset | Full |
 

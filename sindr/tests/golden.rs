@@ -17,8 +17,8 @@ use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 use sindr::noise::{solve_noise, NoiseConfig, NoiseResult};
 use sindr::spice::{parse_file, to_netlist};
 use sindr::{
-    dc_sweep, solve_circuit, solve_op, temperature_sweep, Circuit, CircuitElement, JfetKind,
-    MosfetKind, SimulationResult,
+    dc_sweep, solve_ac_sensitivity, solve_circuit, solve_op, solve_sensitivity, temperature_sweep,
+    Circuit, CircuitElement, JfetKind, MosfetKind, SensParameter, SimulationResult,
 };
 use sindr_devices::mosfet::MosfetParams;
 
@@ -2083,4 +2083,137 @@ fn ac_exported_ferrite_bead() {
         (1e5, 1e10),
         AC_LINEAR,
     );
+}
+
+/// The golden vector for a sensitivity entry. Elements, gains and the
+/// stimulus as ngspice's `.sens` names them: an element's own value is its
+/// name, a controlled source's gain `<id>_gain`, a stimulus `<id>_acmag`.
+/// A device-model parameter `<id>_<param>`, the central difference the
+/// case's `.ctl` takes of ngspice's operating point.
+fn sens_vector(id: &str, parameter: SensParameter) -> String {
+    use SensParameter as P;
+    let param = match parameter {
+        P::VoltageGain | P::Transconductance | P::Transresistance | P::CurrentGain => "gain",
+        P::AcMagnitude => "acmag",
+        P::SaturationCurrent => "is",
+        P::EmissionCoefficient => "n",
+        P::SeriesResistance => "rs",
+        P::ForwardBeta => "bf",
+        P::ReverseBeta => "br",
+        P::ForwardEmissionCoefficient => "nf",
+        P::ReverseEmissionCoefficient => "nr",
+        P::EarlyVoltage => "vaf",
+        P::TransconductanceParameter => "kp",
+        P::ThresholdVoltage => "vto",
+        P::ChannelLengthModulation => "lambda",
+        _ => return id.to_string(),
+    };
+    format!("{id}_{param}")
+}
+
+/// A DC `.sens` deck: every vector in its golden against sindr's entry.
+fn check_dc_sens(case: &'static str, tol: Tol) {
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    let config = netlist.analyses[0].sens_config().unwrap();
+    let sens = solve_sensitivity(&netlist.circuit, &config).unwrap();
+    let golden = Golden::load(case);
+    let mut check = Check::new(case);
+    let mut seen = 0;
+    for e in &sens.entries {
+        let name = sens_vector(&e.component_id, e.parameter);
+        // Column 0 is the scale, whatever its name.
+        if !golden.names[1..].contains(&name) {
+            continue;
+        }
+        seen += 1;
+        check.value(&name, e.sensitivity, golden.op(&name), tol);
+    }
+    // The scale column repeats one vector, so it isn't counted.
+    assert_eq!(
+        seen,
+        golden.names.len() - 1,
+        "{case}: vectors without an entry"
+    );
+    check.finish();
+}
+
+/// Device-model parameters against ngspice's own central differences (a
+/// 0.1 % step). ngspice's `.sens` isn't the reference here: it takes its
+/// own finite step, and is 2 % off for a diode's IS and N, and reports 0 for
+/// RS, BF, BR, NF and NR.
+const SENS_DEVICE: Tol = Tol {
+    rel: 1e-5,
+    abs: 1e-9,
+};
+
+/// A diode's IS, N and RS and a MOSFET's KP, VTO and LAMBDA, with the IS
+/// derivative the size of 10¹² V/A.
+#[test]
+fn sens_dc_diode_mos() {
+    check_dc_sens("sens_dc_diode_mos", SENS_DEVICE);
+}
+
+/// A BJT's BF, IS, BR, NF and NR.
+#[test]
+fn sens_dc_bjt() {
+    check_dc_sens("sens_dc_bjt", SENS_DEVICE);
+}
+
+/// E, G, F and H gains, through the controlling branch current for F and H.
+#[test]
+fn sens_dc_controlled() {
+    check_dc_sens(
+        "sens_dc_controlled",
+        Tol {
+            rel: 1e-6,
+            abs: 1e-12,
+        },
+    );
+}
+
+/// AC sensitivity of a linear network to R, C, L, every controlled source's
+/// gain and the stimulus, at 1 kHz. A single frequency: ngspice 47 gets only
+/// a sweep's first point right, and linearises at a zero bias, so the deck
+/// is linear.
+#[test]
+fn sens_ac_linear() {
+    let case = "sens_ac_linear";
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    let config = netlist.ac_sens_config().unwrap().unwrap();
+    let sens = solve_ac_sensitivity(&netlist.circuit, &config).unwrap();
+    let golden = Golden::load(case);
+    let point = &sens.points[0];
+    let mut check = Check::new(case);
+    check.value(
+        "frequency",
+        point.frequency,
+        golden.scale()[0],
+        Tol {
+            rel: 1e-12,
+            abs: 0.0,
+        },
+    );
+    let mut seen = 0;
+    for e in &point.entries {
+        let name = sens_vector(&e.component_id, e.parameter);
+        let Some(i) = golden.names.iter().position(|n| *n == name) else {
+            continue;
+        };
+        seen += 1;
+        let want = Complex64::new(golden.rows[0][i], golden.rows[0][i + 1]);
+        // Both parts to 1e-6 of the phasor's magnitude.
+        let tol = Tol {
+            rel: 0.0,
+            abs: 1e-6 * want.norm(),
+        };
+        check.value(&format!("{name} re"), e.sensitivity.re, want.re, tol);
+        check.value(&format!("{name} im"), e.sensitivity.im, want.im, tol);
+    }
+    // Each vector is two columns (real, imaginary) after the frequency.
+    assert_eq!(
+        seen,
+        (golden.names.len() - 1) / 2,
+        "vectors without an entry"
+    );
+    check.finish();
 }

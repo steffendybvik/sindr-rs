@@ -6,7 +6,7 @@ Status: `0.2.0`, before 1.0. Anything below may change.
 
 ## What sindr is
 
-- DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, temperature sweep
+- DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC and AC sensitivity (`.sens`), DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
 - Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
@@ -55,7 +55,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.noise` (noise analysis) | ✅ | thermal, shot and flicker (`solve_noise`), at 27 °C. Op-amps, regulators, controlled sources and a diode's `RS` are noiseless; no BJT base-resistance noise |
 | `.disto` / harmonic distortion | ❌ | |
 | `.pz` (pole-zero) | ❌ | |
-| `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
+| `.sens` (sensitivity) | ⚠️ | DC (`solve_sensitivity`) and AC (`solve_ac_sensitivity`, `.sens ... ac`), for resistance, source values, all four controlled-source gains, and diode (IS, N, RS), BJT (BF, IS, BR, NF, NR, VAF) and MOSFET (KP, VTO, LAMBDA) model parameters; in AC also C, L, the stimulus's AC magnitude and a diode's CJO and TT. AC holds the bias point fixed, as ngspice does: a parameter's effect through the operating point (and so on every other device's small-signal conductances) is left out, and a source's DC value has no AC entry. No entries for LED, Zener, Schottky, photodiode, JFET or IGBT parameters, a diode's BV/IBV, VJ/M/FC, or a transformer. A self-heated device is held at its balanced junction temperature (the thermal loop's dependence on the parameter is left out) |
 | Monte Carlo / worst-case / corner analysis | ✅ | `variation::monte_carlo` and `variation::corners`, over resistance, capacitance, inductance and source values (uniform or Gaussian, independent, seeded). Specs (`check_specs`) and ratings (`ratings_over`) at their worst run. No correlated tolerances, no device-model parameters, no `.mc` / `.step` cards, no derating or SOA yet |
 | `.fft` on transient output | ❌ | user-side only |
 | `.meas` (measurements) | ⚠️ | `sindr::measure`: statistics, `FIND … AT`, `WHEN`, `TRIG`/`TARG`, plus rise/fall, settling and −3 dB in the API. No `FIND … WHEN`, `DERIV` or `PARAM=`; no currents on AC results |
@@ -91,7 +91,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No checkpointing / restart** of long transient runs.
 - **Large transients are slower than ngspice.** On a 1 000-node RC ladder, 200 steps take 151 ms in sindr and about 29 ms in ngspice's solve (5×, `examples/vs_ngspice.rs`). Each step re-assembles and refactors the matrix. sindr wins up to a few hundred nodes, where ngspice's 14 ms start dominates, and on DC operating points at every size measured (a 3 000-diode chain: 27 ms against 82 ms). Long transients of thousands of nodes are ngspice's ground.
 - **No multithreading** inside one solve. Separate solves do run in parallel threads.
-- **No automatic differentiation.** Adjoint sensitivity exists for DC only, over the parameters in the table above.
+- **No automatic differentiation.** Adjoint sensitivity (DC, and AC at a fixed bias) covers the parameters in the table above, from hand-derived device derivatives.
 - **No interval / affine arithmetic** for guaranteed bounds.
 
 ### Self-heating & thermal

@@ -36,7 +36,7 @@ use crate::dc_sweep::{DcSweepAxis, DcSweepResult, NestedDcSweepResult};
 use crate::error::SimError;
 use crate::noise::{NoiseConfig, NoiseResult};
 use crate::results::SimulationResult;
-use crate::sensitivity::{SensConfig, SensResult};
+use crate::sensitivity::{AcSensConfig, AcSensResult, SensConfig, SensResult};
 use crate::temp_sweep::TempSweepResult;
 use crate::transfer_function::{TfConfig, TfResult};
 use crate::transient::TransientConfig;
@@ -259,6 +259,21 @@ impl Solver {
     ) -> Result<SensResult, SimError> {
         self.options.validate()?;
         crate::sensitivity::solve_sensitivity_with(circuit, config, &self.options)
+    }
+
+    /// As [`solve_ac_sensitivity`](crate::solve_ac_sensitivity).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_ac_sensitivity`](crate::solve_ac_sensitivity), and
+    /// [`SolverOptions::validate`].
+    pub fn ac_sensitivity(
+        &self,
+        circuit: &Circuit,
+        config: &AcSensConfig,
+    ) -> Result<AcSensResult, SimError> {
+        self.options.validate()?;
+        crate::sensitivity::ac::solve_ac_sensitivity_with(circuit, config, &self.options)
     }
 
     /// As [`dc_sweep`](fn@crate::dc_sweep). The nodeset seeds the first point.

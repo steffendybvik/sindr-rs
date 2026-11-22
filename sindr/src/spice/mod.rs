@@ -423,8 +423,47 @@ impl ParsedNetlist {
     /// sindr's AC analysis drives a single voltage source.
     pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> {
         let sweep = self.analyses.iter().find_map(|a| a.ac_config(""))?;
-        let invalid = |msg: String| crate::SimError::InvalidComponent(format!(".ac: {msg}"));
-        Some(match self.ac_stimuli.as_slice() {
+        Some(self.with_ac_stimulus(".ac", sweep))
+    }
+
+    /// The [`AcSensConfig`](crate::AcSensConfig) for the deck's first
+    /// `.sens ... ac`, its stimulus the source whose line carries an `AC`
+    /// spec, as [`ac_config`](Self::ac_config) has it. `None` without one.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    /// use sindr::SensParameter;
+    ///
+    /// let deck = "* rc\nV1 in 0 dc 0 ac 1\nR1 in out 1k\nC1 out 0 1u\n\
+    ///             .sens v(out) ac dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.ac_sens_config().unwrap()?;
+    /// let sens = sindr::solve_ac_sensitivity(&netlist.circuit, &config)?;
+    /// // Well below the pole, V(out) hardly depends on R1 or C1.
+    /// let r1 = sens.points[0].get_parameter("r1", SensParameter::Resistance).unwrap();
+    /// assert!(r1.per_percent.norm() < 1e-4);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The inner `Result` is as for [`ac_config`](Self::ac_config).
+    pub fn ac_sens_config(&self) -> Option<Result<crate::AcSensConfig, crate::SimError>> {
+        let config = self.analyses.iter().find_map(|a| a.ac_sens_config(""))?;
+        Some(
+            self.with_ac_stimulus(".sens ac", config.ac)
+                .map(|ac| crate::AcSensConfig::new(config.output, ac)),
+        )
+    }
+
+    /// `sweep` driving the one source whose line carries an `AC` spec.
+    fn with_ac_stimulus(
+        &self,
+        card: &str,
+        sweep: crate::ac_analysis::AcConfig,
+    ) -> Result<crate::ac_analysis::AcConfig, crate::SimError> {
+        let invalid = |msg: String| crate::SimError::InvalidComponent(format!("{card}: {msg}"));
+        match self.ac_stimuli.as_slice() {
             [] => Err(invalid("no V line carries an `AC` spec to drive".into())),
             [one] if one.current => Err(invalid(format!(
                 "`{}` is a current source; AC analysis drives a voltage source",
@@ -443,7 +482,7 @@ impl ParsedNetlist {
                     .collect::<Vec<_>>()
                     .join(", ")
             ))),
-        })
+        }
     }
 }
 

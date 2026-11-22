@@ -73,6 +73,20 @@ pub enum AnalysisRequest {
         /// The output whose sensitivities are wanted.
         output: crate::TfOutput,
     },
+    /// `.sens v(node[,ref]) ac <sweep> points fstart fstop` or `.sens
+    /// i(vsource) ac ...` — AC sensitivity. The sweep is checked as `.ac`'s.
+    SensAc {
+        /// The output whose sensitivities are wanted.
+        output: crate::TfOutput,
+        /// Sweep style (decade / octave / linear).
+        sweep: AcSweep,
+        /// Points per decade or octave, or the total for linear.
+        points: usize,
+        /// Start frequency in Hz.
+        fstart: f64,
+        /// Stop frequency in Hz.
+        fstop: f64,
+    },
     /// `.noise v(node[,ref]) source <sweep> points fstart fstop` — noise
     /// analysis. The parser checks `points` as `.ac` does, and that
     /// `fstart` is above 0.
@@ -410,6 +424,34 @@ impl AnalysisRequest {
             _ => None,
         }
     }
+
+    /// The [`AcSensConfig`](crate::AcSensConfig) for a `.sens ... ac`
+    /// request, with the AC stimulus on `source_id` at 1 V and 0°, to pass to
+    /// [`solve_ac_sensitivity`](crate::solve_ac_sensitivity); `None` for any
+    /// other analysis. The frequencies are those of the same `.ac` card
+    /// ([`ac_config`](Self::ac_config)).
+    /// [`ParsedNetlist::ac_sens_config`](crate::spice::ParsedNetlist::ac_sens_config)
+    /// takes the stimulus from the deck's `AC` spec instead.
+    pub fn ac_sens_config(&self, source_id: &str) -> Option<crate::AcSensConfig> {
+        let AnalysisRequest::SensAc {
+            output,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        } = self
+        else {
+            return None;
+        };
+        let sweep = AnalysisRequest::Ac {
+            sweep: *sweep,
+            points: *points,
+            fstart: *fstart,
+            fstop: *fstop,
+        };
+        let ac = sweep.ac_config(source_id)?;
+        Some(crate::AcSensConfig::new(output.clone(), ac))
+    }
 }
 
 /// Frequency-axis spacing for an AC sweep.
@@ -692,9 +734,49 @@ mod tests {
     }
 
     #[test]
+    fn ac_sens_card() {
+        use crate::TfOutput;
+        let got = analyses(".sens v(out,in) ac dec 10 1 1meg\n.sens i(v1) ac lin 3 10 30");
+        assert_eq!(
+            got[0],
+            AnalysisRequest::SensAc {
+                output: TfOutput::Voltage {
+                    node: "out".into(),
+                    reference: Some("in".into())
+                },
+                sweep: AcSweep::Dec,
+                points: 10,
+                fstart: 1.0,
+                fstop: 1e6,
+            }
+        );
+        assert!(got[0].sens_config().is_none());
+        let config = got[0].ac_sens_config("v1").unwrap();
+        assert_eq!(
+            (config.ac.num_points, config.ac.source_id.as_str()),
+            (61, "v1")
+        );
+        let config = got[1].ac_sens_config("v1").unwrap();
+        assert_eq!(config.output, TfOutput::current("v1"));
+        assert_eq!(
+            (config.ac.f_start, config.ac.f_stop, config.ac.num_points),
+            (10.0, 30.0, 3)
+        );
+    }
+
+    #[test]
     fn malformed_sens_is_an_error() {
-        // AC sensitivity's form isn't supported, so it must not parse as DC.
-        for card in [".sens", ".sens in", ".sens v(in) ac dec 10 1 1k"] {
+        for card in [
+            ".sens",
+            ".sens in",
+            ".sens v(in) dc",
+            ".sens v(in) ac",
+            ".sens v(in) ac log 10 1 1k",
+            ".sens v(in) ac dec 10 1",
+            ".sens v(in) ac dec 0 1 1k",
+            ".sens v(in) ac dec 10 1k 1",
+            ".sens v(in) ac dec 10 1 1k extra",
+        ] {
             let deck = format!("* sens\nV1 in 0 1\nR1 in 0 1k\n{card}\n.end\n");
             assert!(parse_str(&deck).is_err(), "{card}");
         }
@@ -909,6 +991,7 @@ mod tests {
             AnalysisRequest::Ac { .. } => "ac",
             AnalysisRequest::Tf { .. } => "tf",
             AnalysisRequest::Sens { .. } => "sens",
+            AnalysisRequest::SensAc { .. } => "sens ac",
             AnalysisRequest::Noise { .. } => "noise",
         })
         .collect();

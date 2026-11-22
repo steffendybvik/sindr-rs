@@ -255,6 +255,91 @@ pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> 
     }
 }
 
+/// The derivatives of a MOSFET's drain current, transconductance and output
+/// conductance with respect to one parameter, at fixed terminal voltages, in
+/// the N-channel frame of [`mosfet_companion`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct MosfetDerivative {
+    /// ∂Id/∂p: drain current (A) per unit of the parameter.
+    pub id: f64,
+    /// ∂gm/∂p (S) per unit of the parameter.
+    pub gm: f64,
+    /// ∂gds/∂p (S) per unit of the parameter.
+    pub gds: f64,
+}
+
+/// [`MosfetDerivative`]s with respect to `kp`, `vto` and `lambda`, from
+/// [`mosfet_derivatives`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct MosfetDerivatives {
+    /// With respect to `kp` (per A/V²).
+    pub kp: MosfetDerivative,
+    /// With respect to `vto` (per V) as `params` has it: in the N-channel
+    /// frame, so a PMOS caller negates it for its SPICE-signed VTO.
+    pub vto: MosfetDerivative,
+    /// With respect to `lambda` (per 1/V).
+    pub lambda: MosfetDerivative,
+}
+
+/// The exact derivatives of [`mosfet_companion`]'s `id`, `gm` and `gds` at
+/// `vgs`, `vds`, `vbs` (V, N-channel frame) with respect to `kp`, `vto` and
+/// `lambda`, for sensitivity analysis. All zero in cutoff.
+pub fn mosfet_derivatives(
+    vgs: f64,
+    vds: f64,
+    vbs: f64,
+    params: &MosfetParams,
+) -> MosfetDerivatives {
+    let vov = vgs - threshold_voltage(vbs, params);
+    let (kp, lambda) = (params.kp, params.lambda);
+    let clm = 1.0 + lambda * vds;
+    if vov <= 0.0 {
+        return MosfetDerivatives::default();
+    }
+    if vds < vov {
+        // Id = KP·(vov·vds − vds²/2)·(1 + λ·vds); ∂vov/∂VTO = −1.
+        let shape = vov * vds - vds * vds / 2.0;
+        MosfetDerivatives {
+            kp: MosfetDerivative {
+                id: shape * clm,
+                gm: vds * clm,
+                gds: (vov - vds) * clm + shape * lambda,
+            },
+            vto: MosfetDerivative {
+                id: -kp * vds * clm,
+                gm: 0.0,
+                gds: -kp * clm - kp * vds * lambda,
+            },
+            lambda: MosfetDerivative {
+                id: kp * shape * vds,
+                gm: kp * vds * vds,
+                gds: kp * (vov - vds) * vds + kp * shape,
+            },
+        }
+    } else {
+        // Id = (KP/2)·vov²·(1 + λ·vds).
+        MosfetDerivatives {
+            kp: MosfetDerivative {
+                id: vov * vov / 2.0 * clm,
+                gm: vov * clm,
+                gds: vov * vov / 2.0 * lambda,
+            },
+            vto: MosfetDerivative {
+                id: -kp * vov * clm,
+                gm: -kp * clm,
+                gds: -kp * vov * lambda,
+            },
+            lambda: MosfetDerivative {
+                id: kp / 2.0 * vov * vov * vds,
+                gm: kp * vov * vds,
+                gds: kp / 2.0 * vov * vov,
+            },
+        }
+    }
+}
+
 /// Detect MOSFET operating region from terminal voltages.
 pub fn detect_region(vgs: f64, vds: f64, vth: f64) -> MosfetRegion {
     let vov = vgs - vth;
@@ -406,6 +491,42 @@ mod tests {
                         (analytic - fd).abs() <= tol,
                         "{name} at vgs={vgs}, vds={vds}, vbs={vbs}: analytic={analytic:e}, finite difference={fd:e}"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mosfet_derivatives_match_central_differences() {
+        let params = MosfetParams {
+            kp: 3e-4,
+            vto: 0.9,
+            lambda: 0.03,
+            ..MosfetParams::default_nmos()
+        };
+        type Set = fn(&mut MosfetParams, f64);
+        type Pick = fn(&MosfetDerivatives) -> MosfetDerivative;
+        let cases: [(Set, Pick, f64); 3] = [
+            (|p, x| p.kp = x, |d| d.kp, params.kp),
+            (|p, x| p.vto = x, |d| d.vto, params.vto),
+            (|p, x| p.lambda = x, |d| d.lambda, params.lambda),
+        ];
+        // Saturation, triode, and cutoff.
+        for (vgs, vds) in [(2.0, 3.0), (2.5, 0.4), (0.5, 2.0)] {
+            let d = mosfet_derivatives(vgs, vds, 0.0, &params);
+            for (set, pick, x) in cases {
+                let h = x * 1e-6;
+                let at = |x: f64| {
+                    let mut p = params.clone();
+                    set(&mut p, x);
+                    let c = mosfet_companion(vgs, vds, 0.0, &p);
+                    [c.id, c.gm, c.gds]
+                };
+                let (hi, lo) = (at(x + h), at(x - h));
+                let want = pick(&d);
+                for (k, got) in [want.id, want.gm, want.gds].into_iter().enumerate() {
+                    let fd = (hi[k] - lo[k]) / (2.0 * h);
+                    assert_relative_eq!(got, fd, max_relative = 1e-6, epsilon = 1e-12);
                 }
             }
         }

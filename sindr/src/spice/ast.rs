@@ -222,6 +222,14 @@ pub(crate) enum RawAnalysis {
     Sens {
         output: crate::TfOutput,
     },
+    /// `.sens output ac <sweep> points fstart fstop`.
+    SensAc {
+        output: crate::TfOutput,
+        sweep: AcSweepKind,
+        points: ParamExpr,
+        fstart: ParamExpr,
+        fstop: ParamExpr,
+    },
     Noise {
         node: String,
         reference: Option<String>,

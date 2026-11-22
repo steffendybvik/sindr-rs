@@ -1,10 +1,11 @@
 //! `.sens` against closed-form answers, and against finite differences of
 //! full DC solves, which use only the DC model.
 
-use approx::assert_relative_eq;
+use approx::{assert_relative_eq, relative_eq};
+use sindr::devices::mosfet::MosfetParams;
 use sindr::{
-    solve_circuit, solve_sensitivity, BjtKind, Circuit, CircuitElement, SensConfig, SensParameter,
-    SensResult, SimError, TfOutput,
+    solve_circuit, solve_sensitivity, BjtKind, BjtModel, Circuit, CircuitElement, DiodeModel,
+    MosfetKind, SensConfig, SensParameter, SensResult, SimError, TfOutput,
 };
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
@@ -125,31 +126,75 @@ fn current_source_value() {
     assert_relative_eq!(of(&r, "R1"), 2e-3, max_relative = 1e-12);
 }
 
+/// `circuit` with `parameter` of the component `id` set to `x`.
+fn with_parameter(circuit: &Circuit, id: &str, parameter: SensParameter, x: f64) -> Circuit {
+    use SensParameter as P;
+    let mut c = circuit.clone();
+    let element = c
+        .components
+        .iter_mut()
+        .find(|e| e.id() == id)
+        .unwrap_or_else(|| panic!("no component {id}"));
+    match (element, parameter) {
+        (CircuitElement::Resistor { resistance, .. }, P::Resistance) => *resistance = x,
+        (CircuitElement::Capacitor { capacitance, .. }, P::Capacitance) => *capacitance = x,
+        (CircuitElement::Inductor { inductance, .. }, P::Inductance) => *inductance = x,
+        (CircuitElement::VoltageSource { voltage, .. }, P::Voltage) => *voltage = x,
+        (CircuitElement::CurrentSource { current, .. }, P::Current) => *current = x,
+        (CircuitElement::Vcvs { gain, .. }, P::VoltageGain) => *gain = x,
+        (CircuitElement::Vccs { gm, .. }, P::Transconductance) => *gm = x,
+        (CircuitElement::Ccvs { rm, .. }, P::Transresistance) => *rm = x,
+        (CircuitElement::Cccs { alpha, .. }, P::CurrentGain) => *alpha = x,
+        (CircuitElement::Diode { model, .. }, p) => {
+            let m = model.get_or_insert_with(DiodeModel::default);
+            match p {
+                P::SaturationCurrent => m.is = x,
+                P::EmissionCoefficient => m.n = x,
+                P::SeriesResistance => m.rs = x,
+                P::JunctionCapacitance => m.cjo = x,
+                P::TransitTime => m.tt = x,
+                _ => panic!("diode {p:?}"),
+            }
+        }
+        (CircuitElement::Bjt { bf, .. }, P::ForwardBeta) => *bf = x,
+        (CircuitElement::Bjt { model, .. }, p) => {
+            let m = model.get_or_insert_with(BjtModel::default);
+            match p {
+                P::SaturationCurrent => m.is = x,
+                P::ReverseBeta => m.br = x,
+                P::ForwardEmissionCoefficient => m.nf = x,
+                P::ReverseEmissionCoefficient => m.nr = x,
+                P::EarlyVoltage => m.vaf = x,
+                _ => panic!("BJT {p:?}"),
+            }
+        }
+        (CircuitElement::Mosfet { params, .. }, p) => match p {
+            P::TransconductanceParameter => params.kp = x,
+            P::ThresholdVoltage => params.vto = x,
+            P::ChannelLengthModulation => params.lambda = x,
+            _ => panic!("MOSFET {p:?}"),
+        },
+        (e, p) => panic!("{} has no {p:?}", e.id()),
+    }
+    c
+}
+
 /// Central difference of `output` for a relative nudge of one parameter,
 /// through full DC solves.
 fn finite_difference(
     circuit: &Circuit,
     id: &str,
+    parameter: SensParameter,
     value: f64,
     output: impl Fn(&sindr::SimulationResult) -> f64,
 ) -> f64 {
-    let h = (value.abs() * 1e-5).max(1e-6);
-    let with = |x: f64| {
-        let mut c = circuit.clone();
-        for e in &mut c.components {
-            match e {
-                CircuitElement::Resistor {
-                    id: i, resistance, ..
-                } if i == id => *resistance = x,
-                CircuitElement::VoltageSource { id: i, voltage, .. } if i == id => *voltage = x,
-                CircuitElement::CurrentSource { id: i, current, .. } if i == id => *current = x,
-                CircuitElement::Vcvs { id: i, gain, .. } if i == id => *gain = x,
-                CircuitElement::Vccs { id: i, gm, .. } if i == id => *gm = x,
-                _ => {}
-            }
-        }
-        output(&solve_circuit(&c).unwrap())
-    };
+    let with = |x: f64| output(&solve_circuit(&with_parameter(circuit, id, parameter, x)).unwrap());
+    if value == 0.0 {
+        // A parameter at zero (a diode's RS) can't go below it: one-sided.
+        let h = 1e-6;
+        return (with(h) - with(0.0)) / h;
+    }
+    let h = value.abs() * 1e-5;
     (with(value + h) - with(value - h)) / (2.0 * h)
 }
 
@@ -158,8 +203,19 @@ fn assert_matches_finite_differences(name: &str, c: &Circuit, out: &str, toleran
     let r = sens(c, v_out(out));
     assert!(!r.entries.is_empty(), "{name}");
     for e in &r.entries {
-        let fd = finite_difference(c, &e.component_id, e.value, |s| s.node_voltages[out]);
-        assert_relative_eq!(e.sensitivity, fd, max_relative = tolerance, epsilon = 1e-9);
+        let fd = finite_difference(c, &e.component_id, e.parameter, e.value, |s| {
+            s.node_voltages[out]
+        });
+        // A change below a nanovolt per percent is under the full solves'
+        // resolution (IS of a diode in breakdown).
+        let negligible = e.value != 0.0 && (e.sensitivity - fd).abs() * e.value.abs() < 1e-7;
+        assert!(
+            negligible || relative_eq!(e.sensitivity, fd, max_relative = tolerance, epsilon = 1e-9),
+            "{name}: {} {:?}: {} vs {fd}",
+            e.component_id,
+            e.parameter,
+            e.sensitivity
+        );
     }
 }
 
@@ -393,4 +449,238 @@ fn config_constructor() {
             source_id: "V1".into()
         }
     );
+}
+
+fn diode(id: &str, a: &str, k: &str, temperature: f64, model: DiodeModel) -> CircuitElement {
+    CircuitElement::Diode {
+        id: id.into(),
+        nodes: [a.into(), k.into()],
+        temperature,
+        model: Some(model),
+    }
+}
+
+fn bjt(
+    id: &str,
+    nodes: [&str; 3],
+    kind: BjtKind,
+    temperature: f64,
+    model: BjtModel,
+) -> CircuitElement {
+    CircuitElement::Bjt {
+        id: id.into(),
+        nodes: nodes.map(Into::into),
+        kind,
+        bf: 80.0,
+        temperature,
+        parasitic_caps: None,
+        model: Some(model),
+    }
+}
+
+fn mosfet(id: &str, nodes: [&str; 3], kind: MosfetKind, params: MosfetParams) -> CircuitElement {
+    CircuitElement::Mosfet {
+        id: id.into(),
+        nodes: nodes.map(Into::into),
+        kind,
+        params,
+        parasitic_caps: None,
+        body_diode: None,
+    }
+}
+
+/// The parameters `id` has entries for, in order.
+fn parameters(r: &SensResult, id: &str) -> Vec<SensParameter> {
+    r.entries
+        .iter()
+        .filter(|e| e.component_id == id)
+        .map(|e| e.parameter)
+        .collect()
+}
+
+#[test]
+fn diode_model_parameters_match_finite_differences() {
+    use SensParameter as P;
+    // Away from 27 °C, so IS's temperature scaling (through N too) counts.
+    let model = DiodeModel {
+        is: 5e-15,
+        n: 1.6,
+        rs: 12.0,
+        ..DiodeModel::default()
+    };
+    let c = circuit(vec![
+        vsource("V1", "in", "0", 3.0),
+        resistor("R1", "in", "a", 470.0),
+        diode("D1", "a", "0", 330.0, model),
+    ]);
+    let r = sens(&c, v_out("a"));
+    assert_eq!(
+        parameters(&r, "D1"),
+        [
+            P::SaturationCurrent,
+            P::EmissionCoefficient,
+            P::SeriesResistance
+        ]
+    );
+    assert_matches_finite_differences("diode model", &c, "a", 1e-4);
+}
+
+#[test]
+fn diode_in_breakdown_matches_finite_differences() {
+    // The knee is fitted to IBV, so it moves with IS and N.
+    let model = DiodeModel {
+        is: 1e-14,
+        n: 1.2,
+        rs: 3.0,
+        bv: Some(5.6),
+        ibv: 1e-3,
+        ..DiodeModel::default()
+    };
+    let c = circuit(vec![
+        vsource("V1", "in", "0", 12.0),
+        resistor("R1", "in", "k", 1e3),
+        diode("D1", "0", "k", 300.15, model),
+    ]);
+    let r = sens(&c, v_out("k"));
+    assert!(r.get("D1").is_some());
+    assert_matches_finite_differences("zener", &c, "k", 1e-4);
+}
+
+#[test]
+fn bjt_model_parameters_match_finite_differences() {
+    use SensParameter as P;
+    let model = BjtModel {
+        is: 2e-15,
+        br: 3.0,
+        nf: 1.05,
+        nr: 1.2,
+        vaf: 70.0,
+        ..BjtModel::default()
+    };
+    for kind in [BjtKind::Npn, BjtKind::Pnp] {
+        let s = if kind == BjtKind::Npn { 1.0 } else { -1.0 };
+        let c = circuit(vec![
+            vsource("VCC", "vcc", "0", s * 12.0),
+            vsource("V1", "in", "0", s * 2.0),
+            resistor("RS", "in", "b", 10e3),
+            resistor("RC", "vcc", "c", 2.2e3),
+            resistor("RE", "e", "0", 470.0),
+            bjt("Q1", ["b", "c", "e"], kind, 320.0, model),
+        ]);
+        let r = sens(&c, v_out("c"));
+        assert_eq!(
+            parameters(&r, "Q1"),
+            [
+                P::ForwardBeta,
+                P::SaturationCurrent,
+                P::ReverseBeta,
+                P::ForwardEmissionCoefficient,
+                P::ReverseEmissionCoefficient,
+                P::EarlyVoltage,
+            ],
+        );
+        assert_matches_finite_differences("BJT model", &c, "c", 1e-4);
+    }
+}
+
+#[test]
+fn saturated_bjt_matches_finite_differences() {
+    // A small RC and a big base drive: both junctions forward, so BR and NR
+    // matter as much as BF and NF.
+    let model = BjtModel {
+        br: 2.0,
+        vaf: 40.0,
+        ..BjtModel::default()
+    };
+    let c = circuit(vec![
+        vsource("VCC", "vcc", "0", 5.0),
+        vsource("V1", "in", "0", 5.0),
+        resistor("RB", "in", "b", 2e3),
+        resistor("RC", "vcc", "c", 1e3),
+        bjt("Q1", ["b", "c", "0"], BjtKind::Npn, 300.15, model),
+    ]);
+    let r = sens(&c, v_out("c"));
+    let br = r.get_parameter("Q1", SensParameter::ReverseBeta).unwrap();
+    assert!(br.sensitivity.abs() > 1e-4, "{br:?}");
+    assert_matches_finite_differences("saturated BJT", &c, "c", 1e-4);
+}
+
+#[test]
+fn mosfet_parameters_match_finite_differences() {
+    use SensParameter as P;
+    let nmos = MosfetParams {
+        kp: 4e-4,
+        vto: 1.0,
+        lambda: 0.02,
+        ..MosfetParams::default_nmos()
+    };
+    let pmos = MosfetParams {
+        kp: 2e-4,
+        vto: -0.8,
+        lambda: 0.03,
+        ..MosfetParams::default_pmos()
+    };
+    // Common source in saturation, and a PMOS high-side switch in triode.
+    let saturated = circuit(vec![
+        vsource("VDD", "vdd", "0", 10.0),
+        vsource("VG", "g", "0", 2.0),
+        resistor("RD", "vdd", "d", 10e3),
+        resistor("RS", "s", "0", 1e3),
+        mosfet("M1", ["g", "d", "s"], MosfetKind::Nmos, nmos),
+    ]);
+    let triode = circuit(vec![
+        vsource("VDD", "vdd", "0", 5.0),
+        vsource("VG", "g", "0", 0.0),
+        resistor("RL", "d", "0", 2e3),
+        mosfet("M1", ["g", "d", "vdd"], MosfetKind::Pmos, pmos),
+    ]);
+    for (name, c) in [("saturated NMOS", &saturated), ("triode PMOS", &triode)] {
+        let r = sens(c, v_out("d"));
+        assert_eq!(
+            parameters(&r, "M1"),
+            [
+                P::TransconductanceParameter,
+                P::ThresholdVoltage,
+                P::ChannelLengthModulation,
+            ],
+        );
+        assert_matches_finite_differences(name, c, "d", 1e-4);
+    }
+}
+
+#[test]
+fn current_controlled_sources_match_finite_differences() {
+    let c = circuit(vec![
+        vsource("V1", "in", "0", 2.0),
+        resistor("R1", "in", "x", 1e3),
+        // VS senses R1's current into R2.
+        vsource("VS", "x", "y", 0.0),
+        resistor("R2", "y", "0", 3e3),
+        CircuitElement::Ccvs {
+            id: "H1".into(),
+            nodes: ["h".into(), "0".into()],
+            control_source: "VS".into(),
+            rm: 2e3,
+        },
+        resistor("R3", "h", "out", 1e3),
+        CircuitElement::Cccs {
+            id: "F1".into(),
+            nodes: ["0".into(), "out".into()],
+            control_source: "VS".into(),
+            alpha: 3.0,
+        },
+        resistor("R4", "out", "0", 2e3),
+    ]);
+    let r = sens(&c, v_out("out"));
+    // I(VS) = 0.5 mA, so dV(out)/drm = I(VS) · R4/(R3 + R4) and
+    // dV(out)/dalpha = I(VS) · R3‖R4.
+    let i = 2.0 / 4e3;
+    assert_relative_eq!(of(&r, "H1"), i * 2e3 / 3e3, max_relative = 1e-9);
+    assert_relative_eq!(of(&r, "F1"), i * 2e3 / 3.0, max_relative = 1e-9);
+    assert_eq!(
+        r.get("H1").unwrap().parameter,
+        SensParameter::Transresistance
+    );
+    assert_eq!(r.get("F1").unwrap().parameter, SensParameter::CurrentGain);
+    assert_matches_finite_differences("CCVS and CCCS", &c, "out", 1e-7);
 }

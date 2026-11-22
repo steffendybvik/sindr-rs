@@ -5,6 +5,14 @@
 //! `y = cᵀx`, one adjoint solve `Aᵀλ = c` gives every parameter's derivative
 //! as `dy/dp = λᵀ(∂b/∂p − (∂A/∂p)·x)`, so the cost doesn't grow with the
 //! number of parameters.
+//!
+//! [`solve_ac_sensitivity`] does the same for a small-signal output, one
+//! adjoint solve per frequency.
+
+pub(crate) mod ac;
+mod device;
+
+pub use ac::{solve_ac_sensitivity, AcSensConfig, AcSensEntry, AcSensPoint, AcSensResult};
 
 use nalgebra::DVector;
 use num_complex::Complex64;
@@ -55,6 +63,46 @@ pub enum SensParameter {
     VoltageGain,
     /// A VCCS's transconductance (S).
     Transconductance,
+    /// A CCVS's transresistance `rm` (Ω).
+    Transresistance,
+    /// A CCCS's current gain `alpha` (A/A).
+    CurrentGain,
+    /// A capacitor's capacitance (F). AC only: a capacitor is open at DC.
+    Capacitance,
+    /// An inductor's inductance (H). AC only: an inductor is a short at DC.
+    Inductance,
+    /// The AC magnitude of the stimulus source (V). AC only.
+    AcMagnitude,
+    /// A diode's or BJT's saturation current `IS` (A), as given at 27 °C:
+    /// the derivative carries IS's temperature scaling.
+    SaturationCurrent,
+    /// A diode's emission coefficient `N`. It also sets how IS follows
+    /// temperature, which the derivative carries.
+    EmissionCoefficient,
+    /// A diode's series resistance `RS` (Ω).
+    SeriesResistance,
+    /// A diode's zero-bias junction capacitance `CJO` (F). AC only.
+    JunctionCapacitance,
+    /// A diode's transit time `TT` (s). AC only.
+    TransitTime,
+    /// A BJT's forward current gain `BF` (the element's `bf`).
+    ForwardBeta,
+    /// A BJT's reverse current gain `BR`.
+    ReverseBeta,
+    /// A BJT's forward emission coefficient `NF`.
+    ForwardEmissionCoefficient,
+    /// A BJT's reverse emission coefficient `NR`.
+    ReverseEmissionCoefficient,
+    /// A BJT's forward Early voltage `VAF` (V), reported only while the
+    /// Early effect is on (`vaf` above 0).
+    EarlyVoltage,
+    /// A MOSFET's transconductance parameter `KP` (A/V²), sindr's `kp`
+    /// (SPICE's `KP·W/L`).
+    TransconductanceParameter,
+    /// A MOSFET's threshold voltage `VTO` (V), SPICE-signed.
+    ThresholdVoltage,
+    /// A MOSFET's channel-length modulation `LAMBDA` (1/V).
+    ChannelLengthModulation,
 }
 
 /// The sensitivity of the output to one component parameter.
@@ -89,19 +137,66 @@ pub struct SensResult {
 }
 
 impl SensResult {
-    /// The entry for the component `id`.
+    /// The entry for the component `id`: its first, for a device with
+    /// several parameters (see [`get_parameter`](Self::get_parameter)).
     pub fn get(&self, id: &str) -> Option<&SensEntry> {
         self.entries.iter().find(|e| e.component_id == id)
+    }
+
+    /// The entry for `parameter` of the component `id`.
+    ///
+    /// ```
+    /// use sindr::{solve_sensitivity, Circuit, CircuitElement, SensConfig, SensParameter, TfOutput};
+    ///
+    /// let circuit = Circuit {
+    ///     ground_node: "0".into(),
+    ///     components: vec![
+    ///         CircuitElement::VoltageSource {
+    ///             id: "V1".into(),
+    ///             nodes: ["in".into(), "0".into()],
+    ///             voltage: 5.0,
+    ///             waveform: None,
+    ///         },
+    ///         CircuitElement::Resistor {
+    ///             id: "R1".into(),
+    ///             nodes: ["in".into(), "a".into()],
+    ///             resistance: 1_000.0,
+    ///         },
+    ///         CircuitElement::Diode {
+    ///             id: "D1".into(),
+    ///             nodes: ["a".into(), "0".into()],
+    ///             temperature: 300.15,
+    ///             model: None,
+    ///         },
+    ///     ],
+    ///     ..Default::default()
+    /// };
+    /// let sens = solve_sensitivity(&circuit, &SensConfig::new(TfOutput::voltage("a")))?;
+    /// // A larger IS lowers the forward drop at the same current.
+    /// let is = sens.get_parameter("D1", SensParameter::SaturationCurrent).unwrap();
+    /// assert!(is.sensitivity < 0.0);
+    /// # Ok::<(), sindr::SimError>(())
+    /// ```
+    pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&SensEntry> {
+        self.entries
+            .iter()
+            .find(|e| e.component_id == id && e.parameter == parameter)
     }
 }
 
 /// Runs a DC sensitivity analysis, as SPICE's `.sens`.
 ///
 /// Reports resistors' resistance, voltage and current sources' DC value,
-/// VCVS gain and VCCS transconductance. Other components stay in the
-/// linearised circuit but get no entry: device-model parameters (IS, β, ...),
-/// CCVS and CCCS gains, capacitors and inductors, which have no effect at DC
-/// apart from the 1 TΩ leak a capacitor is given.
+/// VCVS gain, VCCS transconductance, CCVS transresistance and CCCS current
+/// gain, and the device-model parameters: a diode's IS, N and RS, a BJT's
+/// BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA (one entry
+/// each; [`SensResult::get_parameter`] picks one out). The derivative is the
+/// total one: the operating point moves with the parameter. Other
+/// components stay in the linearised circuit but get no entry: other
+/// devices (LED, Zener, Schottky, photodiode, JFET, IGBT), a diode's
+/// breakdown `BV`/`IBV`, capacitors and inductors, which have no effect at
+/// DC apart from the 1 TΩ leak a capacitor is given. A self-heated device
+/// is held at the junction temperature its bias balanced at.
 ///
 /// # Errors
 ///
@@ -162,7 +257,9 @@ pub(crate) fn solve_sensitivity_with(
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     let (node_map, dc_solution, op) = bias_point_with_result(circuit, opts)?;
-    let dc = crate::dc_equivalent(&at_junction_temperatures(circuit, &op));
+    // Each self-heated device at the junction temperature it balanced at.
+    let heated = at_junction_temperatures(circuit, &op);
+    let dc = crate::dc_equivalent(&heated);
     let ss_models = linearize_at_dc(&dc, &node_map, &dc_solution);
     let system = small_signal_system(&dc, &node_map, &dc_solution, &ss_models, 0.0);
 
@@ -174,7 +271,28 @@ pub(crate) fn solve_sensitivity_with(
     let lambda = |n: Option<usize>| n.map_or(0.0, |i| adjoint[i].re);
 
     let mut entries = Vec::new();
-    for component in &circuit.components {
+    let mut push = |id: &str, parameter, value: f64, sensitivity: f64| {
+        entries.push(SensEntry {
+            component_id: id.to_string(),
+            parameter,
+            value,
+            sensitivity,
+            per_percent: sensitivity * value / 100.0,
+        });
+    };
+    // The DC current through each controlling source, for CCVS and CCCS.
+    let control = |id: &String| op.branch_currents.get(id).copied().unwrap_or(0.0);
+    for component in &heated.components {
+        let devices = device::dc_parameters(component, &node_map, &dc_solution);
+        for d in devices {
+            // dy/dp = −λᵀ·∂F/∂p, F being each node's current into the devices.
+            let s = -d
+                .derivative
+                .iter()
+                .map(|&(n, di)| lambda(n) * di)
+                .sum::<f64>();
+            push(component.id(), d.parameter, d.value, s);
+        }
         let (id, parameter, value, sensitivity) = match component {
             CircuitElement::Resistor {
                 id,
@@ -223,15 +341,31 @@ pub(crate) fn solve_sensitivity_with(
                 let s = (lambda(node(&nodes[1])) - lambda(node(&nodes[0]))) * control;
                 (id, SensParameter::Transconductance, *gm, s)
             }
+            CircuitElement::Ccvs {
+                id,
+                control_source,
+                rm,
+                ..
+            } => {
+                let Some(branch) = dc.vsource_branch_index(id) else {
+                    continue;
+                };
+                let s = adjoint[node_map.num_nodes() + branch].re * control(control_source);
+                (id, SensParameter::Transresistance, *rm, s)
+            }
+            CircuitElement::Cccs {
+                id,
+                nodes,
+                control_source,
+                alpha,
+            } => {
+                let s =
+                    (lambda(node(&nodes[1])) - lambda(node(&nodes[0]))) * control(control_source);
+                (id, SensParameter::CurrentGain, *alpha, s)
+            }
             _ => continue,
         };
-        entries.push(SensEntry {
-            component_id: id.clone(),
-            parameter,
-            value,
-            sensitivity,
-            per_percent: sensitivity * value / 100.0,
-        });
+        push(id, parameter, value, sensitivity);
     }
 
     Ok(SensResult {

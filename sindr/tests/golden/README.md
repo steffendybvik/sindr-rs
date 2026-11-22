@@ -70,6 +70,26 @@ SINDR_WRITE_DECKS=1 cargo test -p sindr --all-features --test golden exported
 sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 ```
 
+### Sensitivity decks
+
+The `sens_*` decks carry their `.sens` card, which sindr reads; the `.ctl`
+says what ngspice does instead. ngspice 47's own `.sens` is only trusted
+where it holds up:
+
+- **Elements and controlled sources** (`sens_dc_controlled`,
+  `sens_ac_linear`) come from ngspice's `.sens` (`r1`, `e1_gain`,
+  `v1_acmag`, ...).
+- **Device-model parameters** (`sens_dc_diode_mos`, `sens_dc_bjt`) come
+  from central differences of re-solved ngspice operating points (an
+  `altermod` 0.1 % either side, at `reltol=1e-10`), as `<id>_<param>`.
+  ngspice's `.sens` reports 0 for a diode's RS and a BJT's BF, BR, NF and
+  NR, is 2 % off for a diode's IS and N, and about 6e-4 off for a MOSFET's
+  KP and VTO, against its own differences. No VAF: ngspice's Gummel–Poon
+  Early effect isn't sindr's.
+- **AC** at one frequency of a linear deck: ngspice's AC `.sens` gets only
+  a sweep's first point right, and linearises at a zero bias, so a
+  transistor would be off.
+
 ## Adding a case
 
 1. Write `<case>.cir` (and `.include` files next to it) plus `<case>.ctl`.
@@ -101,6 +121,9 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
   `tran_bjt_switch`'s collector is checked to 3 %: in the active region
   ic = IS·exp(vbe/Vt) turns the base's 0.4 mV error into about 2.7 % of ic
   on an edge that falls 5 V in 3 µs. The base itself is held to 0.1 %.
+- **Sensitivity:** 1e-6 relative for elements and controlled sources,
+  DC and AC (each part of an AC phasor to 1e-6 of its magnitude); 1e-5 for
+  device-model parameters against ngspice's central differences.
 - **AC phase:** ngspice's `cph` unwraps the phase, so sindr's is compared
   a whole number of turns from it, to the magnitude's relative tolerance in
   radians (at least 1e-4°).
@@ -116,6 +139,7 @@ sindr/tests/golden/regen.sh op_exported_controlled ac_exported_transformer
 | Transient | `tran_rc_step`, `tran_rl_step`, `tran_op_start` (operating-point start), `tran_ic_op` and `tran_ic_uic` (`.ic` without and with `UIC`), `tran_tstart`, `tran_halfwave` (sine into a diode and filter cap), `tran_bjt_switch` (pulse through an RC into an NPN; collector to 3 %, see below), `tran_rlc_ring`, `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
 | Noise | `noise_rc_lowpass`, `noise_rc_total`, `noise_bjt_ce`, `noise_partial_decade` (`.noise dec` over 1.7 decades, which stops short of fstop) |
 | Temperature | `temp_diode` |
+| Sensitivity | `sens_dc_controlled` (E, G, F, H gains), `sens_dc_diode_mos` (diode IS, N, RS; MOSFET KP, VTO, LAMBDA), `sens_dc_bjt` (BF, IS, BR, NF, NR), `sens_ac_linear` (R, C, L, E, G, F, H, AC magnitude at 1 kHz) |
 
 None is ignored. `temp_diode` was, until the diode temperature fix; it reads
 its deck and runs like the rest.

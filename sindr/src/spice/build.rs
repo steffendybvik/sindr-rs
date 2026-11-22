@@ -1446,6 +1446,36 @@ fn build_analysis(
         RawAnalysis::Sens { output } => Ok(AnalysisRequest::Sens {
             output: output.clone(),
         }),
+        RawAnalysis::SensAc {
+            output,
+            sweep,
+            points,
+            fstart,
+            fstop,
+        } => {
+            // The same sweep checks as `.ac`.
+            let sweep = RawAnalysis::Ac {
+                sweep: *sweep,
+                points: points.clone(),
+                fstart: fstart.clone(),
+                fstop: fstop.clone(),
+            };
+            match build_analysis(&sweep, scope)? {
+                AnalysisRequest::Ac {
+                    sweep,
+                    points,
+                    fstart,
+                    fstop,
+                } => Ok(AnalysisRequest::SensAc {
+                    output: output.clone(),
+                    sweep,
+                    points,
+                    fstart,
+                    fstop,
+                }),
+                _ => Err(card_error("`.sens ... ac`: not an AC sweep".into())),
+            }
+        }
         RawAnalysis::Tf { output, input } => Ok(AnalysisRequest::Tf {
             output: output.clone(),
             input: input.clone(),

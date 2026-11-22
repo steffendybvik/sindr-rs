@@ -19,8 +19,10 @@
 //!   `.noise`) via [`solve_noise`].
 //! - **Transfer function** — DC small-signal gain, input and output
 //!   resistance (SPICE's `.tf`) via [`solve_tf`].
-//! - **DC sensitivity** — derivative of an output with respect to each
-//!   component parameter (SPICE's `.sens`) via [`solve_sensitivity`].
+//! - **Sensitivity** — derivative of a DC output with respect to each
+//!   component and device-model parameter (SPICE's `.sens`) via
+//!   [`solve_sensitivity`], and of a small-signal output at each frequency
+//!   (`.sens ... ac`) via [`solve_ac_sensitivity`].
 //! - **DC sweep** — operating point at each value of a swept voltage or current source,
 //!   via [`fn@dc_sweep`].
 //! - **Temperature sweep** — operating-point sweep over junction temperature
@@ -75,7 +77,8 @@
 //! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
-//! | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
+//! | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS, VCCS, CCVS and CCCS gains, and diode (IS, N, RS), BJT (BF, IS, BR, NF, NR, VAF) and MOSFET (KP, VTO, LAMBDA) model parameters |
+//! | AC sensitivity (`.sens ... ac`) | [`solve_ac_sensitivity`] | One adjoint solve per frequency: d(output phasor)/d(parameter) for R, C, L, the four controlled-source gains, the stimulus's AC magnitude and the device-model parameters (diode CJO and TT too), with the bias point held fixed, as in ngspice |
 //! | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
 //! | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`); each point an operating point as [`solve_op`] solves it |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
@@ -86,7 +89,7 @@
 //! | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 //!
-//! Not available: distortion, pole-zero, AC sensitivity,
+//! Not available: distortion, pole-zero,
 //! periodic steady state, S-parameters, variable-order integration.
 //!
 //! ## Device models
@@ -354,7 +357,10 @@ pub use results::{
     BjtResult, ComponentResult, ConvergenceAid, InstanceResult, MosfetResult, OpAmpResult,
     RelayResult, SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
-pub use sensitivity::{solve_sensitivity, SensConfig, SensEntry, SensParameter, SensResult};
+pub use sensitivity::{
+    solve_ac_sensitivity, solve_sensitivity, AcSensConfig, AcSensEntry, AcSensPoint, AcSensResult,
+    SensConfig, SensEntry, SensParameter, SensResult,
+};
 pub use solver::{Solver, SolverOptions};
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
 pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};

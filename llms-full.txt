@@ -131,7 +131,7 @@ a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics
 | Main input | `Circuit` values or JSON; a SPICE3 subset (feature `spice`) | SPICE netlists in its own dialect |
 | WebAssembly, no C library | Yes | Usually not |
 | Ratings, self-heating, pass/fail specs | Built in | Scripted by hand, if at all |
-| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens`, `.noise`, `.meas` | Those and more: pole-zero, AC sensitivity, Fourier, distortion |
+| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens` (DC and AC), `.noise`, `.meas` | Those and more: pole-zero, Fourier, distortion |
 | Device models | Shockley diode, Ebers–Moll BJT, MOSFET Level 1, JFET, IGBT, op-amp macromodel, and part-level elements (LED, regulator, relay, battery …) | **Far more:** Gummel–Poon, BSIM, transmission lines, behavioural and code models |
 | SPICE dialect coverage | A practical subset | Full |
 
@@ -194,7 +194,7 @@ conditions.
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -745,7 +745,7 @@ println!("{} V/V, Rin {} Ω, Rout {} Ω", tf.gain, tf.input_resistance, tf.outpu
 
 The input resistance is infinite when the input source draws no small-signal current. Every other independent source is zeroed for the output resistance. A current output (`I(Vx)`) runs from the source's `nodes[0]` through it to `nodes[1]`, as SPICE's.
 
-### DC sensitivity
+### Sensitivity
 
 SPICE's `.sens`: the derivative of one DC output with respect to each component parameter, at the operating point. One adjoint solve covers them all, however many there are.
 
@@ -763,7 +763,25 @@ for e in &sens.entries {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Entries cover resistance, voltage and current source values, VCVS gain and VCCS gm. Other components get no entry: device-model parameters, CCVS and CCCS gains, capacitors and inductors. There is no AC sensitivity.
+Entries cover resistance, voltage and current source values, the gains of all four controlled sources (VCVS, VCCS, CCVS, CCCS), and device-model parameters: a diode's IS, N and RS, a BJT's BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA. A device has an entry per parameter; `sens.get_parameter("D1", SensParameter::SaturationCurrent)` picks one. Each is the total derivative, the operating point moving with the parameter. Capacitors, inductors and the other devices (LED, Zener, Schottky, photodiode, JFET, IGBT) get no entry.
+
+`.sens v(out) ac dec 10 1 1meg` is the AC form: at each frequency, the derivative of the output phasor with respect to R, C, L, the controlled-source gains, the stimulus's AC magnitude and the same device parameters, plus a diode's CJO and TT. One adjoint solve per frequency. As in ngspice, the DC operating point is held fixed: a device parameter's entry is its effect on that device's small-signal conductances and capacitances, not through a shift of the bias, so a source's DC value has no AC entry.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+use sindr::ac_analysis::AcConfig;
+use sindr::{solve_ac_sensitivity, AcSensConfig, SensParameter, TfOutput};
+
+let config = AcSensConfig::new(TfOutput::voltage("out"), AcConfig::new("V1", 10.0, 1e6, 51));
+let sens = solve_ac_sensitivity(&circuit, &config)?;
+for (f, s) in sens.curve("C1", SensParameter::Capacitance) {
+    println!("{f} Hz: dV(out)/dC1 = {s}");
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+For a deck, `ParsedNetlist::ac_sens_config()` builds the `AcSensConfig` from the `.sens ... ac` card and the `AC` spec on the source line.
 
 ### Noise
 
@@ -1271,7 +1289,7 @@ Status: `0.2.0`, before 1.0. Anything below may change.
 
 ### What sindr is
 
-- DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC sensitivity (`.sens`), DC sweep, temperature sweep
+- DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC and AC sensitivity (`.sens`), DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
 - Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
@@ -1320,7 +1338,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.noise` (noise analysis) | ✅ | thermal, shot and flicker (`solve_noise`), at 27 °C. Op-amps, regulators, controlled sources and a diode's `RS` are noiseless; no BJT base-resistance noise |
 | `.disto` / harmonic distortion | ❌ | |
 | `.pz` (pole-zero) | ❌ | |
-| `.sens` (sensitivity) | ⚠️ | DC only (`solve_sensitivity`), for resistance, source values, VCVS gain and VCCS gm. No device-model parameters, CCVS or CCCS gains, or AC sensitivity |
+| `.sens` (sensitivity) | ⚠️ | DC (`solve_sensitivity`) and AC (`solve_ac_sensitivity`, `.sens ... ac`), for resistance, source values, all four controlled-source gains, and diode (IS, N, RS), BJT (BF, IS, BR, NF, NR, VAF) and MOSFET (KP, VTO, LAMBDA) model parameters; in AC also C, L, the stimulus's AC magnitude and a diode's CJO and TT. AC holds the bias point fixed, as ngspice does: a parameter's effect through the operating point (and so on every other device's small-signal conductances) is left out, and a source's DC value has no AC entry. No entries for LED, Zener, Schottky, photodiode, JFET or IGBT parameters, a diode's BV/IBV, VJ/M/FC, or a transformer. A self-heated device is held at its balanced junction temperature (the thermal loop's dependence on the parameter is left out) |
 | Monte Carlo / worst-case / corner analysis | ✅ | `variation::monte_carlo` and `variation::corners`, over resistance, capacitance, inductance and source values (uniform or Gaussian, independent, seeded). Specs (`check_specs`) and ratings (`ratings_over`) at their worst run. No correlated tolerances, no device-model parameters, no `.mc` / `.step` cards, no derating or SOA yet |
 | `.fft` on transient output | ❌ | user-side only |
 | `.meas` (measurements) | ⚠️ | `sindr::measure`: statistics, `FIND … AT`, `WHEN`, `TRIG`/`TARG`, plus rise/fall, settling and −3 dB in the API. No `FIND … WHEN`, `DERIV` or `PARAM=`; no currents on AC results |
@@ -1356,7 +1374,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No checkpointing / restart** of long transient runs.
 - **Large transients are slower than ngspice.** On a 1 000-node RC ladder, 200 steps take 151 ms in sindr and about 29 ms in ngspice's solve (5×, `examples/vs_ngspice.rs`). Each step re-assembles and refactors the matrix. sindr wins up to a few hundred nodes, where ngspice's 14 ms start dominates, and on DC operating points at every size measured (a 3 000-diode chain: 27 ms against 82 ms). Long transients of thousands of nodes are ngspice's ground.
 - **No multithreading** inside one solve. Separate solves do run in parallel threads.
-- **No automatic differentiation.** Adjoint sensitivity exists for DC only, over the parameters in the table above.
+- **No automatic differentiation.** Adjoint sensitivity (DC, and AC at a fixed bias) covers the parameters in the table above, from hand-derived device derivatives.
 - **No interval / affine arithmetic** for guaranteed bounds.
 
 #### Self-heating & thermal
@@ -4665,8 +4683,10 @@ picks the right path automatically:
   `.noise`) via [`solve_noise`].
 - **Transfer function** — DC small-signal gain, input and output
   resistance (SPICE's `.tf`) via [`solve_tf`].
-- **DC sensitivity** — derivative of an output with respect to each
-  component parameter (SPICE's `.sens`) via [`solve_sensitivity`].
+- **Sensitivity** — derivative of a DC output with respect to each
+  component and device-model parameter (SPICE's `.sens`) via
+  [`solve_sensitivity`], and of a small-signal output at each frequency
+  (`.sens ... ac`) via [`solve_ac_sensitivity`].
 - **DC sweep** — operating point at each value of a swept voltage or current source,
   via [`fn@dc_sweep`].
 - **Temperature sweep** — operating-point sweep over junction temperature
@@ -4720,7 +4740,8 @@ hierarchy is [`SimError::Design`].
 | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
 | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
-| DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS gain and VCCS gm. No device-model parameters, no AC sensitivity |
+| DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS, VCCS, CCVS and CCCS gains, and diode (IS, N, RS), BJT (BF, IS, BR, NF, NR, VAF) and MOSFET (KP, VTO, LAMBDA) model parameters |
+| AC sensitivity (`.sens ... ac`) | [`solve_ac_sensitivity`] | One adjoint solve per frequency: d(output phasor)/d(parameter) for R, C, L, the four controlled-source gains, the stimulus's AC magnitude and the device-model parameters (diode CJO and TT too), with the bias point held fixed, as in ngspice |
 | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
 | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`); each point an operating point as [`solve_op`] solves it |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
@@ -4731,7 +4752,7 @@ hierarchy is [`SimError::Design`].
 | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 
-Not available: distortion, pole-zero, AC sensitivity,
+Not available: distortion, pole-zero,
 periodic steady state, S-parameters, variable-order integration.
 
 #### Device models
@@ -6176,6 +6197,173 @@ impl TransientData {
 }
 ```
 
+## `sindr/src/sensitivity/ac.rs`
+
+AC sensitivity, as SPICE's `.sens output ac ...`.
+
+```rust
+/// AC sensitivity configuration. Build one with [`AcSensConfig::new`].
+pub struct AcSensConfig {
+    /// The small-signal output whose sensitivities are wanted.
+    pub output: TfOutput,
+    /// The frequency sweep, and the voltage source that carries the AC
+    /// stimulus, at its magnitude and phase.
+    pub ac: AcConfig,
+}
+
+impl AcSensConfig {
+    /// The sensitivities of `output` over the sweep and stimulus of `ac`,
+    /// as SPICE's `.sens output ac ...` with the stimulus on `ac`'s source.
+    ///
+    /// ```
+    /// use sindr::ac_analysis::AcConfig;
+    /// use sindr::{AcSensConfig, TfOutput};
+    ///
+    /// // SPICE `.sens v(out) ac dec 10 1 100k`, V1 carrying `AC 1`.
+    /// let ac = AcConfig::new("V1", 1.0, 100e3, 51);
+    /// let config = AcSensConfig::new(TfOutput::voltage("out"), ac);
+    /// assert_eq!(config.ac.source_id, "V1");
+    /// ```
+    pub fn new(output: TfOutput, ac: AcConfig) -> Self { … }
+}
+
+/// The sensitivity of the small-signal output to one parameter, at one
+/// frequency.
+pub struct AcSensEntry {
+    /// Id of the component.
+    pub component_id: String,
+    /// Which of its parameters.
+    pub parameter: SensParameter,
+    /// The parameter's value, in its own unit.
+    pub value: f64,
+    /// d(output)/d(parameter), a phasor: the output's unit (V or A) per the
+    /// parameter's unit.
+    pub sensitivity: Complex64,
+    /// Change in the output phasor for a 1 % rise in the parameter:
+    /// `sensitivity · value / 100`.
+    pub per_percent: Complex64,
+}
+
+/// The output and its sensitivities at one frequency.
+pub struct AcSensPoint {
+    /// Frequency (Hz).
+    pub frequency: f64,
+    /// The output phasor (V or A), as [`solve_ac`](crate::ac_analysis::solve_ac)
+    /// gives it.
+    pub output: Complex64,
+    /// One entry per supported parameter, in circuit order.
+    pub entries: Vec<AcSensEntry>,
+}
+
+impl AcSensPoint {
+    /// The entry for the component `id`: its first, for a device with
+    /// several parameters (see [`get_parameter`](Self::get_parameter)).
+    pub fn get(&self, id: &str) -> Option<&AcSensEntry> { … }
+
+    /// The entry for `parameter` of the component `id`.
+    pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&AcSensEntry> { … }
+}
+
+/// Result of an AC sensitivity analysis.
+pub struct AcSensResult {
+    /// One point per frequency of the sweep.
+    pub points: Vec<AcSensPoint>,
+    /// Configuration used to produce this result.
+    pub config: AcSensConfig,
+}
+
+impl AcSensResult {
+    /// `(frequency, sensitivity)` of `parameter` of the component `id` at
+    /// every frequency where it has an entry.
+    pub fn curve(&self, id: &str, parameter: SensParameter) -> Vec<(f64, Complex64)> { … }
+}
+
+/// Runs an AC sensitivity analysis, as SPICE's `.sens output ac ...`.
+///
+/// At each frequency of `config.ac`, the derivative of the small-signal
+/// output phasor with respect to each parameter, from one adjoint solve:
+/// with the AC system `A(ω)·x = b` and the output `y = cᵀx`, `Aᵀλ = c`
+/// gives `dy/dp = λᵀ(∂b/∂p − (∂A/∂p)·x)` for every parameter at once.
+///
+/// **The DC operating point is held fixed**, as in ngspice: a parameter
+/// moves the small-signal circuit it appears in, not the bias the
+/// circuit is linearised at. So a source's DC value has no entry, and a
+/// device parameter's entry is its effect on that device's small-signal
+/// conductances and capacitances at the bias point, not through the shift
+/// of the bias point and every other device's linearisation. For a linear
+/// circuit the two agree. For the total DC effect, see
+/// [`solve_sensitivity`](crate::solve_sensitivity).
+///
+/// Entries: resistance, capacitance and inductance (not of a saturating
+/// inductor), VCVS, VCCS, CCVS and CCCS gains, the stimulus source's AC
+/// magnitude, and the device-model parameters
+/// [`solve_sensitivity`](crate::solve_sensitivity) reports, with a diode's
+/// `CJO` and `TT` as well when it stores charge.
+///
+/// # Errors
+///
+/// - [`SimError::InvalidComponent`] if `config.ac` is invalid (as for
+///   [`solve_ac`](crate::ac_analysis::solve_ac)), if the output node is not
+///   in the circuit, or a current output does not name an independent
+///   voltage source
+/// - Any [`SimError`] from the DC operating-point solve
+/// - [`SimError::SingularMatrix`] if the small-signal system is singular at
+///   any frequency
+///
+/// # Example
+///
+/// ```
+/// use num_complex::Complex64;
+/// use sindr::ac_analysis::AcConfig;
+/// use sindr::{solve_ac_sensitivity, AcSensConfig, Circuit, CircuitElement, SensParameter, TfOutput};
+///
+/// // RC low-pass: V(out) = 1 / (1 + jωRC).
+/// let (r, c) = (1_000.0, 1e-6);
+/// let circuit = Circuit {
+///     ground_node: "0".into(),
+///     components: vec![
+///         CircuitElement::VoltageSource {
+///             id: "V1".into(),
+///             nodes: ["in".into(), "0".into()],
+///             voltage: 0.0,
+///             waveform: None,
+///         },
+///         CircuitElement::Resistor {
+///             id: "R1".into(),
+///             nodes: ["in".into(), "out".into()],
+///             resistance: r,
+///         },
+///         CircuitElement::Capacitor {
+///             id: "C1".into(),
+///             nodes: ["out".into(), "0".into()],
+///             capacitance: c,
+///         },
+///     ],
+///     ..Default::default()
+/// };
+///
+/// let config = AcSensConfig::new(TfOutput::voltage("out"), AcConfig::new("V1", 159.0, 159.0, 1));
+/// let sens = solve_ac_sensitivity(&circuit, &config)?;
+///
+/// // dV(out)/dR = −jωC / (1 + jωRC)².
+/// let jw = Complex64::new(0.0, 2.0 * std::f64::consts::PI * 159.0);
+/// let want = -jw * c / ((1.0 + jw * r * c) * (1.0 + jw * r * c));
+/// let got = sens.points[0].get_parameter("R1", SensParameter::Resistance).unwrap();
+/// assert!((got.sensitivity - want).norm() < 1e-12);
+/// # Ok::<(), sindr::SimError>(())
+/// ```
+pub fn solve_ac_sensitivity(
+    circuit: &Circuit,
+    config: &AcSensConfig,
+) -> Result<AcSensResult, SimError> { … }
+```
+
+## `sindr/src/sensitivity/device.rs`
+
+Device-model parameters for sensitivity analysis: how a diode's, BJT's or
+MOSFET's terminal currents (DC) and small-signal admittances (AC) move
+with each of its parameters, the bias held where it is.
+
 ## `sindr/src/sensitivity.rs`
 
 DC sensitivity analysis, as SPICE's `.sens`.
@@ -6186,7 +6374,12 @@ at the operating point. With the linearised system `A` and the output
 as `dy/dp = λᵀ(∂b/∂p − (∂A/∂p)·x)`, so the cost doesn't grow with the
 number of parameters.
 
+[`solve_ac_sensitivity`] does the same for a small-signal output, one
+adjoint solve per frequency.
+
 ```rust
+pub use ac::{solve_ac_sensitivity, AcSensConfig, AcSensEntry, AcSensPoint, AcSensResult};
+
 /// Sensitivity-analysis configuration. Build one with [`SensConfig::new`].
 pub struct SensConfig {
     /// The output whose sensitivities are wanted.
@@ -6218,6 +6411,46 @@ pub enum SensParameter {
     VoltageGain,
     /// A VCCS's transconductance (S).
     Transconductance,
+    /// A CCVS's transresistance `rm` (Ω).
+    Transresistance,
+    /// A CCCS's current gain `alpha` (A/A).
+    CurrentGain,
+    /// A capacitor's capacitance (F). AC only: a capacitor is open at DC.
+    Capacitance,
+    /// An inductor's inductance (H). AC only: an inductor is a short at DC.
+    Inductance,
+    /// The AC magnitude of the stimulus source (V). AC only.
+    AcMagnitude,
+    /// A diode's or BJT's saturation current `IS` (A), as given at 27 °C:
+    /// the derivative carries IS's temperature scaling.
+    SaturationCurrent,
+    /// A diode's emission coefficient `N`. It also sets how IS follows
+    /// temperature, which the derivative carries.
+    EmissionCoefficient,
+    /// A diode's series resistance `RS` (Ω).
+    SeriesResistance,
+    /// A diode's zero-bias junction capacitance `CJO` (F). AC only.
+    JunctionCapacitance,
+    /// A diode's transit time `TT` (s). AC only.
+    TransitTime,
+    /// A BJT's forward current gain `BF` (the element's `bf`).
+    ForwardBeta,
+    /// A BJT's reverse current gain `BR`.
+    ReverseBeta,
+    /// A BJT's forward emission coefficient `NF`.
+    ForwardEmissionCoefficient,
+    /// A BJT's reverse emission coefficient `NR`.
+    ReverseEmissionCoefficient,
+    /// A BJT's forward Early voltage `VAF` (V), reported only while the
+    /// Early effect is on (`vaf` above 0).
+    EarlyVoltage,
+    /// A MOSFET's transconductance parameter `KP` (A/V²), sindr's `kp`
+    /// (SPICE's `KP·W/L`).
+    TransconductanceParameter,
+    /// A MOSFET's threshold voltage `VTO` (V), SPICE-signed.
+    ThresholdVoltage,
+    /// A MOSFET's channel-length modulation `LAMBDA` (1/V).
+    ChannelLengthModulation,
 }
 
 /// The sensitivity of the output to one component parameter.
@@ -6246,17 +6479,60 @@ pub struct SensResult {
 }
 
 impl SensResult {
-    /// The entry for the component `id`.
+    /// The entry for the component `id`: its first, for a device with
+    /// several parameters (see [`get_parameter`](Self::get_parameter)).
     pub fn get(&self, id: &str) -> Option<&SensEntry> { … }
+
+    /// The entry for `parameter` of the component `id`.
+    ///
+    /// ```
+    /// use sindr::{solve_sensitivity, Circuit, CircuitElement, SensConfig, SensParameter, TfOutput};
+    ///
+    /// let circuit = Circuit {
+    ///     ground_node: "0".into(),
+    ///     components: vec![
+    ///         CircuitElement::VoltageSource {
+    ///             id: "V1".into(),
+    ///             nodes: ["in".into(), "0".into()],
+    ///             voltage: 5.0,
+    ///             waveform: None,
+    ///         },
+    ///         CircuitElement::Resistor {
+    ///             id: "R1".into(),
+    ///             nodes: ["in".into(), "a".into()],
+    ///             resistance: 1_000.0,
+    ///         },
+    ///         CircuitElement::Diode {
+    ///             id: "D1".into(),
+    ///             nodes: ["a".into(), "0".into()],
+    ///             temperature: 300.15,
+    ///             model: None,
+    ///         },
+    ///     ],
+    ///     ..Default::default()
+    /// };
+    /// let sens = solve_sensitivity(&circuit, &SensConfig::new(TfOutput::voltage("a")))?;
+    /// // A larger IS lowers the forward drop at the same current.
+    /// let is = sens.get_parameter("D1", SensParameter::SaturationCurrent).unwrap();
+    /// assert!(is.sensitivity < 0.0);
+    /// # Ok::<(), sindr::SimError>(())
+    /// ```
+    pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&SensEntry> { … }
 }
 
 /// Runs a DC sensitivity analysis, as SPICE's `.sens`.
 ///
 /// Reports resistors' resistance, voltage and current sources' DC value,
-/// VCVS gain and VCCS transconductance. Other components stay in the
-/// linearised circuit but get no entry: device-model parameters (IS, β, ...),
-/// CCVS and CCCS gains, capacitors and inductors, which have no effect at DC
-/// apart from the 1 TΩ leak a capacitor is given.
+/// VCVS gain, VCCS transconductance, CCVS transresistance and CCCS current
+/// gain, and the device-model parameters: a diode's IS, N and RS, a BJT's
+/// BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA (one entry
+/// each; [`SensResult::get_parameter`] picks one out). The derivative is the
+/// total one: the operating point moves with the parameter. Other
+/// components stay in the linearised circuit but get no entry: other
+/// devices (LED, Zener, Schottky, photodiode, JFET, IGBT), a diode's
+/// breakdown `BV`/`IBV`, capacitors and inductors, which have no effect at
+/// DC apart from the 1 TΩ leak a capacitor is given. A self-heated device
+/// is held at the junction temperature its bias balanced at.
 ///
 /// # Errors
 ///
@@ -6468,6 +6744,18 @@ impl Solver {
         config: &SensConfig,
     ) -> Result<SensResult, SimError> { … }
 
+    /// As [`solve_ac_sensitivity`](crate::solve_ac_sensitivity).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_ac_sensitivity`](crate::solve_ac_sensitivity), and
+    /// [`SolverOptions::validate`].
+    pub fn ac_sensitivity(
+        &self,
+        circuit: &Circuit,
+        config: &AcSensConfig,
+    ) -> Result<AcSensResult, SimError> { … }
+
     /// As [`dc_sweep`](fn@crate::dc_sweep). The nodeset seeds the first point.
     ///
     /// # Errors
@@ -6587,6 +6875,20 @@ pub enum AnalysisRequest {
     Sens {
         /// The output whose sensitivities are wanted.
         output: crate::TfOutput,
+    },
+    /// `.sens v(node[,ref]) ac <sweep> points fstart fstop` or `.sens
+    /// i(vsource) ac ...` — AC sensitivity. The sweep is checked as `.ac`'s.
+    SensAc {
+        /// The output whose sensitivities are wanted.
+        output: crate::TfOutput,
+        /// Sweep style (decade / octave / linear).
+        sweep: AcSweep,
+        /// Points per decade or octave, or the total for linear.
+        points: usize,
+        /// Start frequency in Hz.
+        fstart: f64,
+        /// Stop frequency in Hz.
+        fstop: f64,
     },
     /// `.noise v(node[,ref]) source <sweep> points fstart fstop` — noise
     /// analysis. The parser checks `points` as `.ac` does, and that
@@ -6773,6 +7075,15 @@ impl AnalysisRequest {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn sens_config(&self) -> Option<crate::SensConfig> { … }
+
+    /// The [`AcSensConfig`](crate::AcSensConfig) for a `.sens ... ac`
+    /// request, with the AC stimulus on `source_id` at 1 V and 0°, to pass to
+    /// [`solve_ac_sensitivity`](crate::solve_ac_sensitivity); `None` for any
+    /// other analysis. The frequencies are those of the same `.ac` card
+    /// ([`ac_config`](Self::ac_config)).
+    /// [`ParsedNetlist::ac_sens_config`](crate::spice::ParsedNetlist::ac_sens_config)
+    /// takes the stimulus from the deck's `AC` spec instead.
+    pub fn ac_sens_config(&self, source_id: &str) -> Option<crate::AcSensConfig> { … }
 }
 
 /// Frequency-axis spacing for an AC sweep.
@@ -7708,6 +8019,30 @@ impl ParsedNetlist {
     /// unless exactly one source carries an `AC` spec and it's a `V` line:
     /// sindr's AC analysis drives a single voltage source.
     pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> { … }
+
+    /// The [`AcSensConfig`](crate::AcSensConfig) for the deck's first
+    /// `.sens ... ac`, its stimulus the source whose line carries an `AC`
+    /// spec, as [`ac_config`](Self::ac_config) has it. `None` without one.
+    ///
+    /// ```
+    /// use sindr::spice::parse_str;
+    /// use sindr::SensParameter;
+    ///
+    /// let deck = "* rc\nV1 in 0 dc 0 ac 1\nR1 in out 1k\nC1 out 0 1u\n\
+    ///             .sens v(out) ac dec 10 1 100k\n.end\n";
+    /// let netlist = parse_str(deck)?;
+    /// let config = netlist.ac_sens_config().unwrap()?;
+    /// let sens = sindr::solve_ac_sensitivity(&netlist.circuit, &config)?;
+    /// // Well below the pole, V(out) hardly depends on R1 or C1.
+    /// let r1 = sens.points[0].get_parameter("r1", SensParameter::Resistance).unwrap();
+    /// assert!(r1.per_percent.norm() < 1e-4);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The inner `Result` is as for [`ac_config`](Self::ac_config).
+    pub fn ac_sens_config(&self) -> Option<Result<crate::AcSensConfig, crate::SimError>> { … }
 }
 
 /// Knobs controlling parser strictness and include-path resolution.
@@ -8953,6 +9288,44 @@ impl BjtJacobian {
 /// junction voltages `vbe`/`vbc` (V, sign-adjusted for PNP).
 pub fn bjt_terminal_jacobian(vbe: f64, vbc: f64, params: &BjtParams) -> BjtJacobian { … }
 
+/// The derivatives of a BJT's terminal currents and of its terminal Jacobian
+/// with respect to one parameter, at fixed junction voltages, in the NPN
+/// frame: a PNP caller negates the currents and keeps the Jacobian, as for
+/// [`bjt_terminal_currents`] and [`bjt_terminal_jacobian`].
+pub struct BjtDerivative {
+    /// ∂Ib/∂p: base current (A) per unit of the parameter.
+    pub ib: f64,
+    /// ∂Ic/∂p: collector current (A) per unit of the parameter.
+    pub ic: f64,
+    /// ∂J/∂p: each entry of the [`BjtJacobian`] (S) per unit of the
+    /// parameter.
+    pub jacobian: BjtJacobian,
+}
+
+/// [`BjtDerivative`]s with respect to each parameter of [`BjtParams`] the
+/// DC model uses, from [`bjt_derivatives`].
+pub struct BjtDerivatives {
+    /// With respect to `is` (per A).
+    pub is: BjtDerivative,
+    /// With respect to `bf`.
+    pub bf: BjtDerivative,
+    /// With respect to `br`.
+    pub br: BjtDerivative,
+    /// With respect to `nf`.
+    pub nf: BjtDerivative,
+    /// With respect to `nr`.
+    pub nr: BjtDerivative,
+    /// With respect to `vaf` (per V). Zero while the Early effect is off
+    /// (`vaf` of 0 or infinite).
+    pub vaf: BjtDerivative,
+}
+
+/// The exact derivatives of [`bjt_terminal_currents`] and
+/// [`bjt_terminal_jacobian`] at junction voltages `vbe`/`vbc` (V,
+/// sign-adjusted for PNP) with respect to each parameter, for sensitivity
+/// analysis.
+pub fn bjt_derivatives(vbe: f64, vbc: f64, params: &BjtParams) -> BjtDerivatives { … }
+
 /// Detect operating region from junction voltages.
 pub fn detect_region(vbe: f64, vbc: f64) -> BjtRegion { … }
 ```
@@ -9095,6 +9468,10 @@ impl JunctionCharge {
     /// Whether the junction stores any charge at all.
     pub fn is_none(&self) -> bool { … }
 
+    /// The slope dC/dv (F/V) of the depletion capacitance at junction
+    /// voltage `v` (V): the diffusion part, `TT·g_d`, is the caller's.
+    pub fn depletion_capacitance_slope(&self, v: f64) -> f64 { … }
+
     /// Stored charge (C) and capacitance dQ/dV (F) at junction voltage `v`
     /// (V), carrying current `i_d` (A) with conductance `g_d` (S).
     ///
@@ -9134,6 +9511,40 @@ pub fn critical_voltage(is: f64, n: f64, vt: f64) -> f64 { … }
 /// in the Shockley equation from overflowing. `vt` is the thermal voltage at
 /// the junction temperature.
 pub fn limit_voltage(v_new: f64, v_old: f64, v_crit: f64, n: f64, vt: f64) -> f64 { … }
+
+/// The derivatives of a diode's operating point with respect to one of its
+/// parameters, at a fixed terminal voltage: what a sensitivity analysis
+/// needs of the device.
+pub struct DiodeDerivative {
+    /// ∂I/∂p: terminal current (A, anode → cathode) per unit of the
+    /// parameter.
+    pub current: f64,
+    /// ∂v_j/∂p: voltage across the junction behind RS (V) per unit of the
+    /// parameter.
+    pub junction_voltage: f64,
+    /// ∂g_j/∂p: the junction's conductance (S) per unit of the parameter.
+    pub junction_conductance: f64,
+}
+
+/// [`DiodeDerivative`]s with respect to each parameter of [`DiodeParams`]
+/// that shapes the DC curve, from [`diode_derivatives`].
+pub struct DiodeDerivatives {
+    /// With respect to `is` (per A), `n` held.
+    pub is: DiodeDerivative,
+    /// With respect to `n`, `is` held.
+    pub n: DiodeDerivative,
+    /// With respect to `rs` (per Ω).
+    pub rs: DiodeDerivative,
+}
+
+/// The exact derivatives of the diode at terminal voltage `v_d` (V, anode −
+/// cathode) with respect to `params.is`, `params.n` and `params.rs`, the
+/// breakdown branch included: the junction voltage moves with the parameter
+/// so that `v_j + RS·I = v_d` still holds.
+///
+/// `is` and `n` are taken as they are in `params`; a caller whose IS follows
+/// temperature chains through its own scaling.
+pub fn diode_derivatives(v_d: f64, params: &DiodeParams) -> DiodeDerivatives { … }
 ```
 
 ## `sindr-devices/src/igbt.rs`
@@ -9565,6 +9976,40 @@ pub fn threshold_voltage(vbs: f64, params: &MosfetParams) -> f64 { … }
 /// `gmb` is zero once the body is forward-biased past PHI, matching
 /// [`threshold_voltage`].
 pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> MosfetCompanion { … }
+
+/// The derivatives of a MOSFET's drain current, transconductance and output
+/// conductance with respect to one parameter, at fixed terminal voltages, in
+/// the N-channel frame of [`mosfet_companion`].
+pub struct MosfetDerivative {
+    /// ∂Id/∂p: drain current (A) per unit of the parameter.
+    pub id: f64,
+    /// ∂gm/∂p (S) per unit of the parameter.
+    pub gm: f64,
+    /// ∂gds/∂p (S) per unit of the parameter.
+    pub gds: f64,
+}
+
+/// [`MosfetDerivative`]s with respect to `kp`, `vto` and `lambda`, from
+/// [`mosfet_derivatives`].
+pub struct MosfetDerivatives {
+    /// With respect to `kp` (per A/V²).
+    pub kp: MosfetDerivative,
+    /// With respect to `vto` (per V) as `params` has it: in the N-channel
+    /// frame, so a PMOS caller negates it for its SPICE-signed VTO.
+    pub vto: MosfetDerivative,
+    /// With respect to `lambda` (per 1/V).
+    pub lambda: MosfetDerivative,
+}
+
+/// The exact derivatives of [`mosfet_companion`]'s `id`, `gm` and `gds` at
+/// `vgs`, `vds`, `vbs` (V, N-channel frame) with respect to `kp`, `vto` and
+/// `lambda`, for sensitivity analysis. All zero in cutoff.
+pub fn mosfet_derivatives(
+    vgs: f64,
+    vds: f64,
+    vbs: f64,
+    params: &MosfetParams,
+) -> MosfetDerivatives { … }
 
 /// Detect MOSFET operating region from terminal voltages.
 pub fn detect_region(vgs: f64, vds: f64, vth: f64) -> MosfetRegion { … }
