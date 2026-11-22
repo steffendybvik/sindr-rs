@@ -1,6 +1,6 @@
 //! The test bench: what a schematic leaves out, and the analysis to run.
 
-use super::{parse_value, ImportError, ImportedCircuit, Netlist, Pin};
+use super::{parse_value, ImportError, ImportOptions, ImportedCircuit, Netlist, Pin};
 use crate::ac_analysis::{solve_ac, AcConfig, AcResult};
 use crate::circuit::{Circuit, CircuitElement};
 use crate::dc_sweep::{dc_sweep, DcSweepResult};
@@ -401,7 +401,49 @@ pub enum BenchError {
 /// [`BenchError::Import`] when the circuit can't be built,
 /// [`BenchError::Sim`] when it doesn't solve.
 pub fn simulate(netlist: &Netlist, bench: &Bench) -> Result<Imported, BenchError> {
-    let circuit = netlist.to_circuit(bench)?;
+    simulate_with(netlist, bench, &ImportOptions::default())
+}
+
+/// [`simulate`], reading the netlist as `options` say
+/// ([`Netlist::to_circuit_with`]): terminal names from each component's
+/// table, unknown kinds refused or kept as black boxes. The black boxes
+/// are listed in the result's [`ImportedCircuit::black_boxes`].
+///
+/// ```
+/// use sindr::import::{simulate_with, Bench, BenchSource, Component, ComponentKind,
+///                     ImportOptions, Net, Netlist, Simulation};
+///
+/// // An LED whose nets name its terminals by id.
+/// let netlist = Netlist {
+///     components: vec![
+///         Component::new("r1", ComponentKind::from_name("resistor")).with_value("470"),
+///         Component::new("d1", ComponentKind::from_name("led")).with_value("Green"),
+///     ],
+///     nets: vec![
+///         Net::new("vcc", [("r1", "1")]),
+///         Net::new("a", [("r1", "2"), ("d1", "1")]),
+///         Net::new("gnd", [("d1", "2")]),
+///     ],
+/// };
+/// let options = ImportOptions::new().with_terminal_names("d1", [("1", "Anode"), ("2", "Cathode")]);
+/// let bench = Bench::new("gnd").with_source(BenchSource::voltage("vs", "vcc", 5.0));
+///
+/// let Simulation::OperatingPoint(op) = simulate_with(&netlist, &bench, &options)?.result else {
+///     unreachable!()
+/// };
+/// assert!(op.node_voltages["a"] > 1.5 && op.node_voltages["a"] < 2.2);
+/// # Ok::<(), sindr::import::BenchError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`simulate`].
+pub fn simulate_with(
+    netlist: &Netlist,
+    bench: &Bench,
+    options: &ImportOptions,
+) -> Result<Imported, BenchError> {
+    let circuit = netlist.to_circuit_with(bench, options)?;
     let result = match &bench.analysis {
         Analysis::OperatingPoint => Simulation::OperatingPoint(operating_point(&circuit.circuit)?),
         Analysis::Transient(config) => {

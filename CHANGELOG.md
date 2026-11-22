@@ -68,6 +68,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   converter, now draws a magnetising current that climbs once the core
   saturates. AC and noise use the incremental inductance at the DC
   bias. Without it, the transformer is the same linear coupled pair.
+- `sindr::import` takes a netlist as an editor exports it.
+  `ComponentKind::from_name` reads symbol ids, ignoring case and treating
+  `-`, `_` and spaces alike, with aliases such as `resistor-iec`,
+  `op-amp`, `push-button`, `switch-spst` and `header-<n>`; terminal names
+  match the same way, and an op-amp also takes `Non-inverting`,
+  `Inverting`, `Output`, `Positive supply` and `Negative supply`.
+  `ImportOptions::with_terminal_names` passes each component's
+  terminal-name table to `Netlist::to_circuit_with` and
+  `import::simulate_with`, so nets may name terminals by id; a bare pin
+  number still never picks a polarised terminal.
+- `ComponentKind::BlackBox` for parts sindr can't simulate, such as ICs:
+  no element, but its terminals stay bench attach points.
+  `UnknownKinds::BlackBox` imports unknown kinds that way instead of
+  refusing them, which stays the default. `ImportedCircuit::black_boxes`
+  lists every black box with the nets it's on.
+- `ComponentKind::DualOpAmp`, `QuadOpAmp`, `DualComparator` and
+  `QuadComparator`: one package whose two or four units share its supply
+  pins. Each unit imports as its own element, `<id>.a`, `<id>.b` …, with
+  terminals tagged by unit as datasheets write them (`1IN+`, `IN1-`,
+  `INA+`, `-IN B`, `OUT A`, `2OUT`). A spare unit with nothing connected
+  adds no element. `ComponentKind::units` gives a package's unit kind and
+  count.
+- `ComponentKind::Crystal` and `ComponentKind::FerriteBead` import as
+  `CircuitElement::Crystal` and `CircuitElement::FerriteBead`, from a
+  frequency, ESR and shunt capacitance, or an impedance at 100 MHz and a
+  DC resistance.
 
 ### Changed
 

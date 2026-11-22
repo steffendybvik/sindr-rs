@@ -318,8 +318,8 @@ fn every_kind_has_a_name_that_reads_back() {
         assert_eq!(kind.name(), *name);
     }
     assert_eq!(
-        ComponentKind::from_name("crystal"),
-        ComponentKind::Other("crystal".into())
+        ComponentKind::from_name("mcu-qfn32"),
+        ComponentKind::Other("mcu-qfn32".into())
     );
 }
 
@@ -328,13 +328,13 @@ fn passive_and_unknown_kinds_have_no_terminals() {
     for (_, kind) in KINDS {
         assert_eq!(
             kind.terminals().is_empty(),
-            kind.is_passive(),
+            kind.is_passive() || *kind == ComponentKind::BlackBox,
             "{}",
             kind.name()
         );
         assert!(kind.optional_terminals() < kind.terminals().len().max(1));
     }
-    assert!(ComponentKind::Other("crystal".into())
+    assert!(ComponentKind::Other("mcu-qfn32".into())
         .terminals()
         .is_empty());
 }
@@ -348,12 +348,12 @@ fn gnd_bench() -> Bench {
 #[test]
 fn unknown_kind_names_the_component() {
     let mut n = divider("1k", "1k");
-    n.components[1].kind = ComponentKind::from_name("crystal");
+    n.components[1].kind = ComponentKind::from_name("mcu-qfn32");
     assert_eq!(
         err(&n, &gnd_bench()),
         ImportError::UnsupportedKind {
             component: "r2".into(),
-            kind: "crystal".into()
+            kind: "mcu-qfn32".into()
         }
     );
 }
@@ -495,7 +495,8 @@ fn reads_json_and_round_trips() {
             {"id": "c-2", "kind": "led", "params": {"color": "green"}},
             {"id": "c-3", "kind": "npn", "params": {"bf": 150},
              "model": {"type": "bjt", "vaf": 80}},
-            {"id": "c-4", "kind": "crystal", "value": "16MHz"}
+            {"id": "c-4", "kind": "mcu-qfn32", "value": "MCU"},
+            {"id": "c-5", "kind": "Crystal", "value": "16MHz"}
         ],
         "nets": [
             {"id": "n-1", "name": "3V3", "pins": [{"component": "c-1", "terminal": "1"}]}
@@ -504,8 +505,9 @@ fn reads_json_and_round_trips() {
     let netlist: Netlist = serde_json::from_str(json).unwrap();
     assert_eq!(
         netlist.components[3].kind,
-        ComponentKind::Other("crystal".into())
+        ComponentKind::Other("mcu-qfn32".into())
     );
+    assert_eq!(netlist.components[4].kind, ComponentKind::Crystal);
     let Some(Model::Bjt(m)) = &netlist.components[2].model else {
         panic!()
     };
@@ -552,7 +554,7 @@ fn build(component: Component, terminals: &[&str]) -> Result<CircuitElement, Imp
         .circuit
         .components
         .into_iter()
-        .find(|e| e.id() == id)
+        .find(|e| e.id() == id || e.id().starts_with(&format!("{id}.")))
         .expect("the component's element"))
 }
 
@@ -1193,18 +1195,18 @@ fn duplicate_net_id() {
 fn an_unknown_kind_on_no_net_is_still_refused() {
     let mut n = divider("1k", "1k");
     n.components
-        .push(Component::new("y1", ComponentKind::from_name("crystal")));
+        .push(Component::new("u1", ComponentKind::from_name("mcu-qfn32")));
     let e = err(&n, &gnd_bench());
     assert_eq!(
         e,
         ImportError::UnsupportedKind {
-            component: "y1".into(),
-            kind: "crystal".into()
+            component: "u1".into(),
+            kind: "mcu-qfn32".into()
         }
     );
     assert_eq!(
         e.to_string(),
-        "component \"y1\": sindr can't simulate a \"crystal\""
+        "component \"u1\": sindr can't simulate a \"mcu-qfn32\""
     );
 }
 
@@ -1325,7 +1327,7 @@ fn each_kind_takes_only_its_own_parameters() {
     // Every parameter a kind lists is accepted (each given a plausible
     // number, or the type its reader wants).
     for (_, kind) in KINDS {
-        if kind.is_passive() {
+        if kind.is_passive() || *kind == ComponentKind::BlackBox {
             continue;
         }
         let mut c = Component::new("x", kind.clone()).with_value(1.0);
@@ -1453,4 +1455,816 @@ fn loads_name_the_missing_net() {
         err(&divider("1k", "1k"), &bench),
         ImportError::UnknownNet { item, net, .. } if item == "rl" && net == "nowhere"
     ));
+}
+
+// --- netlists as an editor exports them -------------------------------
+
+/// A board drawn in a schematic tool and exported as it stands: symbol ids
+/// for kinds, terminals by id with each component's name table, text
+/// values, and an IC sindr doesn't model on the supply.
+///
+/// A 10 V supply comes in on header J1 (1 = VCC, 2 = GND, 3 = OUT).
+/// R1/R2 (10k/10k) set ref = 5 V; U2, an op-amp wired non-inverting with
+/// Rf = 4k7 and Rg = 10k, gives out = 5 · (1 + 4.7/10) = 7.35 V. R3 (470)
+/// and a green LED hang off out; Q1 sits on a 100k/1k bias; S1, an open
+/// push-button, leaves its 10k pull-down at 0 V; U1 is the IC.
+fn editor_board() -> (Netlist, ImportOptions) {
+    let c = |id: &str, symbol: &str| Component::new(id, ComponentKind::from_name(symbol));
+    let netlist = Netlist {
+        components: vec![
+            c("J1", "header-3"),
+            c("R1", "resistor").with_value("10k"),
+            c("R2", "resistor-iec").with_value("10k"),
+            c("C1", "capacitor").with_value("100nF"),
+            c("C2", "capacitor-polarized").with_value("4.7uF"),
+            c("U2", "op-amp"),
+            c("RF", "resistor").with_value("4k7"),
+            c("RG", "resistor").with_value("10k"),
+            c("R3", "resistor").with_value("470"),
+            c("D1", "led").with_value("Green"),
+            c("RB", "resistor").with_value("100k"),
+            c("RE", "resistor").with_value("1k"),
+            c("Q1", "npn").with_value("PMBT3904"),
+            c("S1", "push-button"),
+            c("RP", "resistor").with_value("10k"),
+            c("TP1", "test-point"),
+            c("U1", "mcu-qfn32").with_value("MCU"),
+        ],
+        nets: vec![
+            Net::new(
+                "net-vcc",
+                [
+                    ("J1", "1"),
+                    ("R1", "1"),
+                    ("C2", "1"),
+                    ("U2", "V+"),
+                    ("RB", "1"),
+                    ("Q1", "3"),
+                    ("S1", "1"),
+                    ("U1", "1"),
+                ],
+            )
+            .with_name("VCC"),
+            Net::new(
+                "net-gnd",
+                [
+                    ("J1", "2"),
+                    ("R2", "2"),
+                    ("C1", "2"),
+                    ("C2", "2"),
+                    ("U2", "V-"),
+                    ("RG", "2"),
+                    ("D1", "2"),
+                    ("RE", "2"),
+                    ("RP", "2"),
+                    ("U1", "2"),
+                ],
+            )
+            .with_name("GND"),
+            Net::new(
+                "net-ref",
+                [("R1", "2"), ("R2", "1"), ("C1", "1"), ("U2", "+")],
+            ),
+            Net::new("net-fb", [("U2", "-"), ("RF", "2"), ("RG", "1")]),
+            Net::new(
+                "net-out",
+                [
+                    ("U2", "OUT"),
+                    ("RF", "1"),
+                    ("R3", "1"),
+                    ("J1", "3"),
+                    ("TP1", "1"),
+                ],
+            ),
+            Net::new("net-led", [("R3", "2"), ("D1", "1")]),
+            Net::new("net-base", [("RB", "2"), ("Q1", "1")]),
+            Net::new("net-emitter", [("Q1", "2"), ("RE", "1")]),
+            Net::new("net-btn", [("S1", "2"), ("RP", "1")]),
+        ],
+    };
+    let options = ImportOptions::new()
+        .with_unknown_kinds(UnknownKinds::BlackBox)
+        .with_terminal_names("C2", [("1", "+"), ("2", "-")])
+        .with_terminal_names(
+            "U2",
+            [
+                ("+", "Non-inverting"),
+                ("-", "Inverting"),
+                ("OUT", "Output"),
+                ("V+", "Positive supply"),
+                ("V-", "Negative supply"),
+            ],
+        )
+        .with_terminal_names("D1", [("1", "Anode"), ("2", "Cathode")])
+        .with_terminal_names("Q1", [("1", "Base"), ("2", "Emitter"), ("3", "Collector")])
+        .with_terminal_names("U1", [("1", "VDD"), ("2", "GND"), ("3", "PA0")]);
+    (netlist, options)
+}
+
+fn editor_bench() -> Bench {
+    Bench::new(Pin::new("J1", "2"))
+        .with_source(BenchSource::voltage("vs", Pin::new("J1", "1"), 10.0))
+        // A probe on the IC's supply pin, by its name.
+        .with_load(BenchLoad::new(
+            "probe",
+            LoadKind::Resistor(1e6),
+            Pin::new("U1", "vdd"),
+        ))
+}
+
+#[test]
+fn an_editor_export_simulates_to_its_hand_checked_operating_point() {
+    let (netlist, options) = editor_board();
+    let imported = simulate_with(&netlist, &editor_bench(), &options).expect("simulates");
+    let Simulation::OperatingPoint(r) = &imported.result else {
+        panic!()
+    };
+    let v = |net: &str| r.node_voltages[net];
+    let current = |id: &str| {
+        r.component_results
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("{id}"))
+            .current_through
+    };
+
+    assert!((v("net-vcc") - 10.0).abs() < 1e-9);
+    // The solver's gmin shunt on each node pulls it off by nanovolts.
+    assert!((v("net-ref") - 5.0).abs() < 1e-6, "ref {}", v("net-ref"));
+    // Gain 1e5: out = A·ref / (1 + A·β), β = 10/14.7.
+    assert!((v("net-out") - 7.35).abs() < 1e-3, "out {}", v("net-out"));
+    assert!((v("net-fb") - 5.0).abs() < 1e-3);
+
+    // The LED, by its Anode/Cathode names, conducts forward.
+    let vf = v("net-led");
+    assert!((1.5..3.0).contains(&vf), "LED forward voltage {vf}");
+    assert!((current("D1") - (v("net-out") - vf) / 470.0).abs() < 1e-9);
+
+    // Q1 by Base/Emitter/Collector: Ie = (bf + 1)·Ib with bf = 100.
+    let vbe = v("net-base") - v("net-emitter");
+    assert!((0.55..0.8).contains(&vbe), "Vbe {vbe}");
+    let ib = (10.0 - v("net-base")) / 100e3;
+    let ie = v("net-emitter") / 1e3;
+    assert!((ie - 101.0 * ib).abs() < 1e-3 * ie, "Ie {ie}, Ib {ib}");
+
+    // The open push-button: 10 V across 1 GΩ and 10 kΩ.
+    assert!(v("net-btn").abs() < 1e-3);
+    // The probe sees the supply through the IC's pin.
+    assert!((current("probe") - 10e-6).abs() < 1e-12);
+
+    // The IC simulated nothing, and is listed with the nets it's on.
+    assert!(r.component_results.iter().all(|c| c.id != "U1"));
+    assert_eq!(
+        imported.circuit.black_boxes,
+        vec![BlackBoxPart {
+            component: "U1".into(),
+            kind: "mcu-qfn32".into(),
+            terminals: BTreeMap::from([
+                ("1".into(), "net-vcc".into()),
+                ("2".into(), "net-gnd".into()),
+            ]),
+        }]
+    );
+}
+
+#[test]
+fn a_strict_import_refuses_the_unknown_ic() {
+    let (netlist, options) = editor_board();
+    let strict = options.clone().with_unknown_kinds(UnknownKinds::Refuse);
+    let e = match simulate_with(&netlist, &editor_bench(), &strict) {
+        Err(BenchError::Import(e)) => e,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        e,
+        ImportError::UnsupportedKind {
+            component: "U1".into(),
+            kind: "mcu-qfn32".into()
+        }
+    );
+    assert_eq!(
+        e.to_string(),
+        "component \"U1\": sindr can't simulate a \"mcu-qfn32\""
+    );
+    // Without the name table, the polarised capacitor's pin number is
+    // refused first.
+    assert!(matches!(
+        simulate(&netlist, &editor_bench()),
+        Err(BenchError::Import(ImportError::UnknownTerminal { component, .. })) if component == "C2"
+    ));
+}
+
+#[test]
+fn an_explicit_black_box_is_kept_by_a_strict_import() {
+    let mut n = divider("1k", "1k");
+    n.components.push(
+        Component::new("u1", ComponentKind::BlackBox)
+            .with_value("MCU")
+            .with_param("anything", 1.0)
+            .with_model(Model::Diode(DiodeModel::default()))
+            .with_part(Part {
+                reference: Some("U1".into()),
+                ..Default::default()
+            }),
+    );
+    n.components
+        .push(Component::new("u2", ComponentKind::from_name("ic")));
+    n.nets[0].pins.push(Pin::new("u1", "VCC"));
+    n.nets[2].pins.push(Pin::new("u1", "GND"));
+    let bench =
+        Bench::new("gnd").with_source(BenchSource::voltage("v", Pin::new("u1", "VCC"), 4.0));
+    let imported = simulate(&n, &bench).unwrap();
+    let Simulation::OperatingPoint(r) = &imported.result else {
+        panic!()
+    };
+    assert!((r.node_voltages["out"] - 2.0).abs() < 1e-9);
+    let boxes = &imported.circuit.black_boxes;
+    assert_eq!(boxes.len(), 2);
+    assert_eq!(boxes[0].component, "u1");
+    assert_eq!(boxes[0].kind, "black_box");
+    assert_eq!(boxes[0].terminals["VCC"], "in");
+    assert_eq!(boxes[0].terminals["GND"], "gnd");
+    // On no net, and still listed.
+    assert_eq!(boxes[1].component, "u2");
+    assert!(boxes[1].terminals.is_empty());
+    // Its part data is kept, as for any component.
+    assert_eq!(
+        imported.circuit.circuit.parts["u1"].reference.as_deref(),
+        Some("U1")
+    );
+}
+
+#[test]
+fn an_unknown_kind_on_no_net_becomes_a_black_box_on_request() {
+    let mut n = divider("1k", "1k");
+    n.components
+        .push(Component::new("u1", ComponentKind::from_name("Custom IC")));
+    let options = ImportOptions::new().with_unknown_kinds(UnknownKinds::BlackBox);
+    let imported = n.to_circuit_with(&gnd_bench(), &options).unwrap();
+    assert_eq!(imported.black_boxes.len(), 1);
+    assert_eq!(imported.black_boxes[0].kind, "Custom IC");
+    assert_eq!(
+        err(&n, &gnd_bench()),
+        ImportError::UnsupportedKind {
+            component: "u1".into(),
+            kind: "Custom IC".into()
+        }
+    );
+}
+
+#[test]
+fn a_black_box_terminal_by_an_ambiguous_name_is_taken_as_given() {
+    // Two pins named GND: the name picks neither, so the bench's "GND"
+    // is a terminal id, which is on no net.
+    let mut n = divider("1k", "1k");
+    n.components
+        .push(Component::new("u1", ComponentKind::BlackBox));
+    n.nets[2].pins.push(Pin::new("u1", "4"));
+    n.nets[2].pins.push(Pin::new("u1", "9"));
+    let options = ImportOptions::new().with_terminal_names("u1", [("4", "GND"), ("9", "GND")]);
+    let bench = Bench::new(Pin::new("u1", "GND"));
+    assert_eq!(
+        n.to_circuit_with(&bench, &options),
+        Err(ImportError::AttachedToUnconnected {
+            item: "ground".into(),
+            component: "u1".into(),
+            terminal: "GND".into(),
+        })
+    );
+    // By either id it's fine.
+    let bench = Bench::new(Pin::new("u1", "9")).with_source(BenchSource::voltage("v", "in", 1.0));
+    assert!(n.to_circuit_with(&bench, &options).is_ok());
+}
+
+#[test]
+fn a_connector_pin_answers_to_its_name() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("J1", ComponentKind::from_name("Header-2")),
+            Component::new("R1", ComponentKind::Resistor).with_value("1k"),
+        ],
+        nets: vec![
+            Net::new("a", [("J1", "1"), ("R1", "1")]),
+            Net::new("b", [("J1", "2"), ("R1", "2")]),
+        ],
+    };
+    let options = ImportOptions::new().with_terminal_names("J1", [("1", "VIN"), ("2", "GND")]);
+    let bench = Bench::new(Pin::new("J1", "gnd")).with_source(BenchSource::current(
+        "i",
+        Pin::new("J1", "Vin"),
+        1e-3,
+    ));
+    let Simulation::OperatingPoint(r) = simulate_with(&netlist, &bench, &options).unwrap().result
+    else {
+        panic!()
+    };
+    assert!((r.node_voltages["a"] - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn symbol_ids_and_aliases_name_kinds() {
+    use ComponentKind as K;
+    for (name, kind) in [
+        ("resistor", K::Resistor),
+        ("Resistor", K::Resistor),
+        ("resistor-iec", K::Resistor),
+        ("resistor_us", K::Resistor),
+        ("capacitor", K::Capacitor),
+        ("capacitor-polarized", K::CapacitorPolarized),
+        ("Capacitor Polarised", K::CapacitorPolarized),
+        ("inductor", K::Inductor),
+        ("led", K::Led),
+        ("diode", K::Diode),
+        ("npn", K::Npn),
+        ("PNP", K::Pnp),
+        ("op-amp", K::OpAmp),
+        ("opamp", K::OpAmp),
+        ("Op Amp", K::OpAmp),
+        ("push-button", K::PushButton),
+        ("pushbutton", K::PushButton),
+        ("switch-spst", K::Switch),
+        ("test-point", K::TestPoint),
+        ("connector", K::Connector),
+        ("header-3", K::Connector),
+        ("header-4", K::Connector),
+        ("header_2x5", K::Connector),
+        ("zener-diode", K::ZenerDiode),
+        ("schottky diode", K::SchottkyDiode),
+        ("  ferrite--bead ", K::FerriteBead),
+        ("crystal", K::Crystal),
+        ("black-box", K::BlackBox),
+    ] {
+        assert_eq!(ComponentKind::from_name(name), kind, "{name}");
+    }
+    // Every alias names its kind, and the kind keeps its canonical name.
+    for (alias, kind) in ALIASES {
+        assert_eq!(ComponentKind::from_name(alias), *kind, "{alias}");
+        assert!(KINDS.iter().any(|(n, _)| *n == kind.name()), "{alias}");
+    }
+    assert_eq!(ComponentKind::from_name("op-amp").name(), "op_amp");
+    // Not a header of any size, and unknown names keep their spelling.
+    for name in ["header-x", "header-", "headers", "Custom IC"] {
+        assert_eq!(
+            ComponentKind::from_name(name),
+            K::Other(name.into()),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn names_compare_without_case_or_separator_style() {
+    assert_eq!(normalise("  Non-Inverting "), "non_inverting");
+    assert_eq!(normalise("positive  supply"), "positive_supply");
+    assert_eq!(normalise("push_-_button"), "push_button");
+    assert_eq!(normalise("V-"), "v_");
+    assert_eq!(normalise("-"), "_");
+    assert_eq!(normalise("IN+"), "in+");
+}
+
+/// Builds `component` alone as [`build`] does, reading it with `options`.
+fn build_with(
+    component: Component,
+    terminals: &[&str],
+    options: &ImportOptions,
+) -> Result<CircuitElement, ImportError> {
+    let id = component.id.clone();
+    let mut nets: Vec<Net> = terminals
+        .iter()
+        .enumerate()
+        .map(|(i, t)| Net::new(format!("n{i}"), [(id.as_str(), *t)]))
+        .collect();
+    nets.push(Net::new("gnd", Vec::<(&str, &str)>::new()));
+    let netlist = Netlist {
+        components: vec![component],
+        nets,
+    };
+    let imported = netlist.to_circuit_with(&Bench::new("gnd"), options)?;
+    Ok(imported
+        .circuit
+        .components
+        .into_iter()
+        .find(|e| e.id() == id || e.id().starts_with(&format!("{id}.")))
+        .expect("the component's element"))
+}
+
+#[test]
+fn an_op_amp_answers_to_its_long_names() {
+    let e = built(
+        Component::new("u", ComponentKind::OpAmp),
+        &[
+            "Non-inverting",
+            "Inverting",
+            "Output",
+            "Positive supply",
+            "Negative supply",
+        ],
+    );
+    let CircuitElement::OpAmp { nodes, .. } = e else {
+        panic!("{e:?}")
+    };
+    assert_eq!(nodes, ns::<3>());
+    // Any separator style.
+    assert!(build(
+        Component::new("u", ComponentKind::Comparator),
+        &[
+            "non_inverting",
+            "INVERTING",
+            "out",
+            "positive-supply",
+            "negative_supply"
+        ],
+    )
+    .is_ok());
+}
+
+#[test]
+fn terminal_names_from_the_table_place_each_terminal() {
+    // Pins by id, in the editor's order: Base, Emitter, Collector.
+    let options = ImportOptions::new()
+        .with_terminal_names("q", [("1", "Base"), ("2", "Emitter"), ("3", "Collector")]);
+    let e = build_with(
+        Component::new("q", ComponentKind::Npn),
+        &["1", "2", "3"],
+        &options,
+    )
+    .unwrap();
+    let CircuitElement::Bjt { nodes, .. } = e else {
+        panic!("{e:?}")
+    };
+    // Element order is base, collector, emitter.
+    assert_eq!(nodes, ["n0", "n2", "n1"].map(String::from));
+}
+
+#[test]
+fn a_terminal_name_wins_over_its_id() {
+    // Pin "1" is the potentiometer's wiper on this symbol, not its top.
+    let options = ImportOptions::new()
+        .with_terminal_names("p", [("1", "Wiper"), ("2", "Top"), ("3", "Bottom")]);
+    let e = build_with(
+        Component::new("p", ComponentKind::Potentiometer).with_value("10k"),
+        &["1", "2", "3"],
+        &options,
+    )
+    .unwrap();
+    let CircuitElement::Potentiometer { nodes, .. } = e else {
+        panic!("{e:?}")
+    };
+    assert_eq!(nodes, ["n1", "n0", "n2"].map(String::from));
+}
+
+#[test]
+fn a_name_that_isnt_a_terminal_falls_back_to_the_id() {
+    let options = ImportOptions::new().with_terminal_names("r", [("1", "Pin one")]);
+    assert!(build_with(
+        Component::new("r", ComponentKind::Resistor).with_value(1.0),
+        &["1", "2"],
+        &options
+    )
+    .is_ok());
+}
+
+#[test]
+fn a_pin_number_without_a_name_still_cant_pick_a_polarity() {
+    for (kind, ids) in [
+        (ComponentKind::Led, ["1", "2"]),
+        (ComponentKind::from_name("capacitor-polarized"), ["1", "2"]),
+    ] {
+        let name = kind.name().to_string();
+        let e = build(Component::new("x", kind.clone()).with_value(1e-6), &ids).unwrap_err();
+        assert!(
+            matches!(&e, ImportError::UnknownTerminal { terminal, kind, .. }
+                if terminal == "1" && *kind == name),
+            "{e:?}"
+        );
+        // A table with names for other parts doesn't help.
+        let other = ImportOptions::new().with_terminal_names("y", [("1", "Anode")]);
+        assert!(build_with(Component::new("x", kind), &ids, &other).is_err());
+    }
+    let e = build(Component::new("x", ComponentKind::Led), &["1", "2"]).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "component \"x\" (led) has no terminal \"1\"; it has \"anode\", \"cathode\""
+    );
+    // With its names, the polarised capacitor is a capacitor.
+    let options = ImportOptions::new().with_terminal_names("x", [("1", "+"), ("2", "-")]);
+    let e = build_with(
+        Component::new("x", ComponentKind::CapacitorPolarized).with_value("4.7uF"),
+        &["2", "1"],
+        &options,
+    )
+    .unwrap();
+    assert!(
+        matches!(&e, CircuitElement::Capacitor { nodes, capacitance, .. }
+            if *nodes == ["n1", "n0"].map(String::from) && (*capacitance - 4.7e-6).abs() < 1e-18),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn an_unknown_terminal_name_is_reported_with_its_id() {
+    let options = ImportOptions::new().with_terminal_names("q", [("1", "Gate")]);
+    let e = build_with(Component::new("q", ComponentKind::Npn), &["1"], &options).unwrap_err();
+    assert_eq!(
+        e,
+        ImportError::UnknownTerminal {
+            component: "q".into(),
+            kind: "npn".into(),
+            terminal: "1 (Gate)".into(),
+            expected: "\"base\", \"collector\", \"emitter\"".into(),
+        }
+    );
+    assert_eq!(
+        e.to_string(),
+        "component \"q\" (npn) has no terminal \"1 (Gate)\"; it has \"base\", \"collector\", \"emitter\""
+    );
+}
+
+#[test]
+fn crystals_and_ferrite_beads_import() {
+    let e = built(
+        Component::new("y", ComponentKind::from_name("crystal")).with_value("16MHz"),
+        &["1", "2"],
+    );
+    assert_eq!(
+        e,
+        CircuitElement::Crystal {
+            id: "y".into(),
+            nodes: ns(),
+            params: CrystalParams::from_datasheet(16e6, 50.0, 5e-12),
+        }
+    );
+    let e = built(
+        Component::new("y", ComponentKind::Crystal)
+            .with_value("X322516MLB4SI")
+            .with_param("frequency", "32.768k")
+            .with_param("esr", "70k")
+            .with_param("c0", "1.3p"),
+        &["a", "b"],
+    );
+    assert_eq!(
+        e,
+        CircuitElement::Crystal {
+            id: "y".into(),
+            nodes: ns(),
+            params: CrystalParams::from_datasheet(32.768e3, 70e3, 1.3e-12),
+        }
+    );
+    let e = built(
+        Component::new("fb", ComponentKind::from_name("ferrite-bead")).with_value("600"),
+        &["1", "2"],
+    );
+    assert_eq!(
+        e,
+        CircuitElement::FerriteBead {
+            id: "fb".into(),
+            nodes: ns(),
+            params: FerriteBeadParams::from_datasheet(600.0, 0.1),
+        }
+    );
+    let e = built(
+        Component::new("fb", ComponentKind::FerriteBead)
+            .with_param("z_100mhz", 120.0)
+            .with_param("r_dc", 0.05),
+        &["1", "2"],
+    );
+    assert_eq!(
+        e,
+        CircuitElement::FerriteBead {
+            id: "fb".into(),
+            nodes: ns(),
+            params: FerriteBeadParams::from_datasheet(120.0, 0.05),
+        }
+    );
+}
+
+#[test]
+fn crystals_and_ferrite_beads_say_what_value_they_need() {
+    assert_eq!(
+        build(
+            Component::new("y", ComponentKind::Crystal).with_value("HC49"),
+            &["1", "2"]
+        ),
+        Err(ImportError::MissingValue {
+            component: "y".into(),
+            what: "a frequency (Hz), as the value or \"frequency\"".into(),
+        })
+    );
+    let e = build(
+        Component::new("fb", ComponentKind::FerriteBead),
+        &["1", "2"],
+    )
+    .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "component \"fb\" needs an impedance at 100 MHz (Ω), as the value or \"z_100mhz\""
+    );
+}
+
+#[test]
+fn a_ferrite_bead_is_its_dc_resistance_at_dc() {
+    // 5 V across a bead with 100 Ω DC resistance and a 100 Ω resistor.
+    let netlist = Netlist {
+        components: vec![
+            Component::new("fb", ComponentKind::FerriteBead)
+                .with_value("600")
+                .with_param("r_dc", 100.0),
+            Component::new("r", ComponentKind::Resistor).with_value(100.0),
+        ],
+        nets: vec![
+            Net::new("in", [("fb", "1")]),
+            Net::new("mid", [("fb", "2"), ("r", "1")]),
+            Net::new("gnd", [("r", "2")]),
+        ],
+    };
+    let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "in", 5.0));
+    assert!((op(&netlist, &bench).node_voltages["mid"] - 2.5).abs() < 1e-6);
+}
+
+#[test]
+fn default_options_read_as_to_circuit_does() {
+    assert_eq!(ImportOptions::new(), ImportOptions::default());
+    assert_eq!(ImportOptions::new().unknown_kinds, UnknownKinds::Refuse);
+    let n = divider("1k", "2k");
+    assert_eq!(
+        n.to_circuit_with(&gnd_bench(), &ImportOptions::new()),
+        n.to_circuit(&gnd_bench())
+    );
+    // Names add up across calls.
+    let o = ImportOptions::new()
+        .with_terminal_names("q", [("1", "Base")])
+        .with_terminal_names("q", [("2", "Emitter")]);
+    assert_eq!(o.terminal_names["q"].len(), 2);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn options_read_from_json() {
+    let json = r#"{
+        "unknown_kinds": "black_box",
+        "terminal_names": {"q1": {"1": "Base", "2": "Emitter", "3": "Collector"}}
+    }"#;
+    let options: ImportOptions = serde_json::from_str(json).unwrap();
+    assert_eq!(options.unknown_kinds, UnknownKinds::BlackBox);
+    assert_eq!(options.terminal_names["q1"]["3"], "Collector");
+    let back: ImportOptions =
+        serde_json::from_str(&serde_json::to_string(&options).unwrap()).unwrap();
+    assert_eq!(back, options);
+    let empty: ImportOptions = serde_json::from_str("{}").unwrap();
+    assert_eq!(empty, ImportOptions::new());
+    assert_eq!(
+        serde_json::to_string(&empty).unwrap(),
+        r#"{"unknown_kinds":"refuse"}"#
+    );
+}
+
+#[test]
+fn multi_unit_kinds_read_from_symbol_names() {
+    use ComponentKind as K;
+    for (name, kind) in [
+        ("dual-op-amp", K::DualOpAmp),
+        ("Op Amp Dual", K::DualOpAmp),
+        ("dual_opamp", K::DualOpAmp),
+        ("quad op-amp", K::QuadOpAmp),
+        ("opamp-quad", K::QuadOpAmp),
+        ("Dual Comparator", K::DualComparator),
+        ("comparator-quad", K::QuadComparator),
+    ] {
+        assert_eq!(ComponentKind::from_name(name), kind, "{name}");
+    }
+    assert_eq!(K::DualOpAmp.units(), Some((K::OpAmp, 2)));
+    assert_eq!(K::QuadComparator.units(), Some((K::Comparator, 4)));
+    assert_eq!(K::OpAmp.units(), None);
+    assert_eq!(K::DualOpAmp.terminals().len(), 8);
+    assert_eq!(K::QuadOpAmp.terminals().len(), 14);
+}
+
+/// A dual op-amp on ±12 V: unit A a follower, unit B an inverting gain
+/// of −2. Unit A's pins are named in three styles, and unit B's by pin
+/// number through a terminal-name table.
+#[test]
+fn dual_op_amp_builds_one_element_per_unit_on_shared_supplies() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("u1", ComponentKind::from_name("dual-op-amp"))
+                .with_model(Model::OpAmp(OpAmpModel::default())),
+            Component::new("rin", ComponentKind::Resistor).with_value("10k"),
+            Component::new("rf", ComponentKind::Resistor).with_value("20k"),
+            Component::new("rl", ComponentKind::Resistor).with_value("10k"),
+            // Supply bleeders, so the rails aren't nets of one source alone.
+            Component::new("rp", ComponentKind::Resistor).with_value("100k"),
+            Component::new("rn", ComponentKind::Resistor).with_value("100k"),
+        ],
+        nets: vec![
+            Net::new("in", [("u1", "1IN+"), ("rin", "1")]),
+            Net::new("outa", [("u1", "OUT A"), ("u1", "in1-"), ("rl", "1")]),
+            Net::new("sum", [("u1", "6"), ("rin", "2"), ("rf", "1")]),
+            Net::new("outb", [("u1", "7"), ("rf", "2")]),
+            Net::new("vcc", [("u1", "8"), ("rp", "1")]),
+            Net::new("vee", [("u1", "4"), ("rn", "1")]),
+            Net::new("gnd", [("u1", "5"), ("rl", "2"), ("rp", "2"), ("rn", "2")]),
+        ],
+    };
+    let options = ImportOptions::new().with_terminal_names(
+        "u1",
+        [
+            ("4", "V-"),
+            ("5", "+IN B"),
+            ("6", "-IN B"),
+            ("7", "OUT B"),
+            ("8", "V+"),
+        ],
+    );
+    let bench = Bench::new("gnd")
+        .with_source(BenchSource::voltage("vp", "vcc", 12.0))
+        .with_source(BenchSource::voltage("vn", "vee", -12.0))
+        .with_source(BenchSource::voltage("vin", "in", 1.5));
+    let imported = netlist.to_circuit_with(&bench, &options).unwrap();
+    for id in ["u1.a", "u1.b"] {
+        let Some(CircuitElement::OpAmp {
+            v_pos,
+            v_neg,
+            model,
+            ..
+        }) = imported.circuit.components.iter().find(|c| c.id() == id)
+        else {
+            panic!("no op-amp {id}")
+        };
+        assert_eq!((*v_pos, *v_neg), (12.0, -12.0), "{id}");
+        assert!(model.is_some(), "{id}");
+    }
+    assert!(imported.circuit.components.iter().all(|c| c.id() != "u1"));
+
+    let r = crate::solve_circuit(&imported.circuit).unwrap();
+    let v = |net: &str| r.node_voltages[imported.node(net).unwrap()];
+    assert!((v("outa") - 1.5).abs() < 1e-3, "follower: {}", v("outa"));
+    assert!((v("outb") + 3.0).abs() < 1e-3, "inverting: {}", v("outb"));
+}
+
+#[test]
+fn a_spare_unit_adds_no_element_and_a_half_wired_one_is_refused() {
+    let quad = |nets: Vec<Net>| Netlist {
+        components: vec![
+            Component::new("u2", ComponentKind::QuadComparator),
+            Component::new("rl", ComponentKind::Resistor).with_value("10k"),
+            Component::new("rp", ComponentKind::Resistor).with_value("100k"),
+        ],
+        nets,
+    };
+    // Only unit C is wired: in+ to a 2 V input, in- to ground.
+    let netlist = quad(vec![
+        Net::new("in", [("u2", "INC+")]),
+        Net::new("out", [("u2", "3OUT"), ("rl", "1")]),
+        Net::new("vcc", [("u2", "VCC"), ("rp", "1")]),
+        Net::new(
+            "gnd",
+            [("u2", "c-"), ("u2", "V-"), ("rl", "2"), ("rp", "2")],
+        ),
+    ]);
+    let bench = Bench::new("gnd")
+        .with_source(BenchSource::voltage("vp", "vcc", 5.0))
+        .with_source(BenchSource::voltage("vin", "in", 2.0));
+    let imported = netlist.to_circuit(&bench).unwrap();
+    let units: Vec<&str> = imported
+        .circuit
+        .components
+        .iter()
+        .map(|c| c.id())
+        .filter(|id| id.starts_with("u2"))
+        .collect();
+    assert_eq!(units, ["u2.c"]);
+    // 2 V above 0 V: unit C drives its grounded load to the 5 V rail.
+    let r = crate::solve_circuit(&imported.circuit).unwrap();
+    assert!(r.node_voltages[imported.node("out").unwrap()] > 4.9);
+
+    // Unit A with its output wired but not its inputs.
+    let half = quad(vec![
+        Net::new("out", [("u2", "1OUT"), ("rl", "1")]),
+        Net::new("gnd", [("rl", "2"), ("rp", "1"), ("rp", "2")]),
+    ]);
+    assert_eq!(
+        err(&half, &Bench::new("gnd")),
+        ImportError::Unconnected {
+            component: "u2.a".into(),
+            terminal: "in+".into(),
+        }
+    );
+}
+
+#[test]
+fn a_unit_id_that_clashes_with_a_component_is_refused() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("u1", ComponentKind::DualOpAmp),
+            Component::new("u1.a", ComponentKind::Resistor).with_value("1k"),
+        ],
+        nets: vec![
+            Net::new("x", [("u1", "a_in+"), ("u1", "a_in-"), ("u1", "a_out")]),
+            Net::new("gnd", [("u1.a", "1"), ("u1.a", "2")]),
+        ],
+    };
+    assert_eq!(
+        err(&netlist, &Bench::new("gnd")),
+        ImportError::DuplicateId { id: "u1.a".into() }
+    );
 }
