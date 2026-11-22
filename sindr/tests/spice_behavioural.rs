@@ -197,7 +197,7 @@ fn exporting_an_expression_that_reads_a_missing_source_is_an_error() {
 }
 
 /// SPICE2's shorthand: a one-dimensional POLY with a single coefficient
-/// is its linear term (ngspice refuses it; SPICE2 and PSpice read it).
+/// is its linear term (ngspice refuses it; SPICE2 reads it).
 #[test]
 fn single_coefficient_poly_is_linear() {
     let result = op("t\nV1 a 0 2\nR1 a 0 1k\nE1 out 0 POLY(1) a 0 3\nR2 out 0 1k\n.end\n");
