@@ -294,6 +294,47 @@ fn ac_and_dc_sweep_name_a_bench_source() {
 }
 
 #[test]
+fn supply_names_say_what_was_assumed_and_what_was_left() {
+    let named = |id: &str, name: &str| Net::new(id, [("r", id)]).with_name(name);
+    let netlist = Netlist {
+        nets: vec![
+            named("a", "3V3"),
+            named("b", "+5V"),
+            named("c", "VCC"),
+            named("d", "3V3_A"),
+            named("e", "GND"),
+            named("f", "AGND"),
+            named("g", "SDA"),
+            named("h", "-12V"),
+            named("i", "VBAT"),
+            named("j", "+12V_IN"),
+            named("k", "AVDD"),
+            named("l", "V+"),
+            named("m", "0V"),
+            Net::new("n", [("r", "n")]),
+        ],
+        ..Default::default()
+    };
+    let names = supply_names(&netlist);
+    let assumed: Vec<(&str, &str, f64)> = names
+        .assumed
+        .iter()
+        .map(|s| (s.net.as_str(), s.name.as_str(), s.volts))
+        .collect();
+    assert_eq!(
+        assumed,
+        [("a", "3V3", 3.3), ("b", "+5V", 5.0), ("h", "-12V", -12.0)]
+    );
+    assert_eq!(names.unresolved, ["c", "d", "i", "j", "k", "l"]);
+    assert_eq!(names.grounds, ["e", "f", "m"]);
+
+    // The bench helper adds exactly the assumed supplies.
+    let bench = Bench::new("e").with_supplies_from_net_names(&netlist);
+    let sources: Vec<&str> = bench.sources.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(sources, ["supply:a", "supply:b", "supply:h"]);
+}
+
+#[test]
 fn power_names_that_state_a_voltage() {
     use super::bench::voltage_from_name;
     for (name, want) in [
@@ -3228,4 +3269,21 @@ fn a_tie_never_takes_an_id_already_in_use() {
         .find(|h| h.node == "alert")
         .unwrap();
     assert_eq!(alert.resistor, "alert.hi_z2");
+}
+
+#[test]
+fn a_net_named_0v_is_a_ground_not_a_supply() {
+    // Before, `0V` read as a 0 V supply, which on the bench's own ground
+    // net put a source between ground and itself.
+    let netlist = Netlist {
+        components: vec![Component::new("r1", ComponentKind::Resistor).with_value("1k")],
+        nets: vec![
+            Net::new("top", [("r1", "1")]).with_name("5V"),
+            Net::new("bottom", [("r1", "2")]).with_name("0V"),
+        ],
+    };
+    let bench = Bench::new("bottom").with_supplies_from_net_names(&netlist);
+    assert_eq!(bench.sources.len(), 1);
+    let r = op(&netlist, &bench);
+    assert!((r.current("r1").unwrap().abs() - 5e-3).abs() < 1e-12);
 }

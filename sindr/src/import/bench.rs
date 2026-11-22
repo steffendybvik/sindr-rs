@@ -462,22 +462,120 @@ impl Bench {
 
     /// Adds a DC supply to ground on every net of `netlist` whose display
     /// name is a voltage: `3V3`, `+5V`, `5V0`, `12V`, `-12V`, `+3.3V`.
-    /// Names that aren't (`VCC`, `VDD`, `GND`) get nothing. Each source's
-    /// id is `supply:` and the net's id. Never done unless called: a power
-    /// port's name is only a hint.
+    /// Names that aren't (`VCC`, `VDD`, `GND`) get nothing, and neither do
+    /// decorated ones (`3V3_A`, `12V_IN`): those are often rails derived
+    /// through a filter or a switch, and a source on them would short it.
+    /// Each source's id is `supply:` and the net's id. Never done unless
+    /// called: a power port's name is only a hint. [`supply_names`] says
+    /// which supplies this assumes and which supply-like names it left for
+    /// the caller to set.
     pub fn with_supplies_from_net_names(mut self, netlist: &Netlist) -> Self {
-        for net in &netlist.nets {
-            let Some(volts) = net.name.as_deref().and_then(voltage_from_name) else {
-                continue;
-            };
+        for supply in supply_names(netlist).assumed {
             self.sources.push(BenchSource::voltage(
-                format!("supply:{}", net.id),
-                Attach::Net(net.id.clone()),
-                volts,
+                format!("supply:{}", supply.net),
+                Attach::Net(supply.net),
+                supply.volts,
             ));
         }
         self
     }
+}
+
+/// What [`Bench::with_supplies_from_net_names`] makes of a netlist's net
+/// names, for a UI to show before simulating ("assumed 3.3 V on 3V3; set
+/// VCC").
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct SupplyNames {
+    /// Nets whose name is a voltage, each getting a supply of that voltage,
+    /// in netlist order.
+    pub assumed: Vec<AssumedSupply>,
+    /// Nets whose name looks like a supply but isn't a plain voltage
+    /// (`VCC`, `VDD`, `VBAT`, `3V3_A`), in netlist order, by net id: they get
+    /// nothing, so the caller sets them or leaves them to the circuit.
+    pub unresolved: Vec<String>,
+    /// Nets named like a ground (`GND`, `AGND`, `0V`), in netlist order, by
+    /// net id. One is the bench's ground; joining the others to it is the
+    /// caller's call, with [`Bench::with_tie`].
+    pub grounds: Vec<String>,
+}
+
+/// A supply assumed from a net's name.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct AssumedSupply {
+    /// The net's id.
+    pub net: String,
+    /// Its display name, which states the voltage.
+    pub name: String,
+    /// The voltage to ground, in volts.
+    pub volts: f64,
+}
+
+/// Reads `netlist`'s net display names as power ports: which state a
+/// voltage, which look like supplies without one, and which are grounds.
+/// Changes nothing; see [`Bench::with_supplies_from_net_names`].
+///
+/// ```
+/// use sindr::import::{supply_names, Net, Netlist};
+///
+/// let netlist = Netlist {
+///     nets: vec![
+///         Net::new("n1", [("r1", "1")]).with_name("3V3"),
+///         Net::new("n2", [("r1", "2")]).with_name("VCC"),
+///         Net::new("n3", [("r2", "1")]).with_name("GND"),
+///     ],
+///     ..Default::default()
+/// };
+/// let names = supply_names(&netlist);
+/// assert_eq!((names.assumed[0].net.as_str(), names.assumed[0].volts), ("n1", 3.3));
+/// assert_eq!(names.unresolved, ["n2"]);
+/// assert_eq!(names.grounds, ["n3"]);
+/// ```
+pub fn supply_names(netlist: &Netlist) -> SupplyNames {
+    let mut names = SupplyNames::default();
+    for net in &netlist.nets {
+        let Some(name) = net.name.as_deref() else {
+            continue;
+        };
+        // A ground first: `0V` states a voltage, but a source on the
+        // ground net would sit between ground and itself.
+        if is_ground_name(name) {
+            names.grounds.push(net.id.clone());
+        } else if let Some(volts) = voltage_from_name(name) {
+            names.assumed.push(AssumedSupply {
+                net: net.id.clone(),
+                name: name.to_string(),
+                volts,
+            });
+        } else if is_supply_like_name(name) {
+            names.unresolved.push(net.id.clone());
+        }
+    }
+    names
+}
+
+/// `GND`, `AGND`, `PGND`, `GND_ISO`, `0V`.
+fn is_ground_name(name: &str) -> bool {
+    let n = name.trim().to_ascii_uppercase();
+    n.contains("GND") || n == "0V" || n == "0"
+}
+
+/// A name a power port would carry without stating a plain voltage:
+/// `VCC`, `VDD`, `VEE`, `VSS`, `VBAT`, `VIN`, `VBUS`, `V+`, `AVDD`,
+/// `+VCC`, or a decorated voltage such as `3V3_A` or `+12V_IN`.
+fn is_supply_like_name(name: &str) -> bool {
+    let n = name.trim().to_ascii_uppercase();
+    let bare = n.trim_start_matches(['+', '-']);
+    let rail = [
+        "VCC", "VDD", "VEE", "VSS", "VBAT", "VIN", "VBUS", "VSYS", "VREF", "VPP",
+    ];
+    (bare.starts_with(|c: char| c.is_ascii_digit()) && bare.contains('V'))
+        || bare.starts_with("V+")
+        || bare.starts_with("V-")
+        || rail
+            .iter()
+            .any(|r| bare.starts_with(r) || bare.ends_with(r))
 }
 
 /// The voltage a power net's name states: `3V3`, `+5V`, `-12V`, `3.3V`.
