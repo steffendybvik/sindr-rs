@@ -91,7 +91,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **No checkpointing / restart** of long transient runs.
 - **Large transients are slower than ngspice.** On a 1 000-node RC ladder, 200 steps take 151 ms in sindr and about 29 ms in ngspice's solve (5×, `examples/vs_ngspice.rs`). Each step re-assembles and refactors the matrix. sindr wins up to a few hundred nodes, where ngspice's 14 ms start dominates, and on DC operating points at every size measured (a 3 000-diode chain: 27 ms against 82 ms). Long transients of thousands of nodes are ngspice's ground.
 - **No multithreading** inside one solve. Separate solves do run in parallel threads.
-- **No automatic differentiation.** Adjoint sensitivity (DC, and AC at a fixed bias) covers the parameters in the table above, from hand-derived device derivatives.
+- **Automatic differentiation for behavioural sources only.** A `Behavioural` source's Jacobian comes from forward-mode automatic differentiation of its expression. Device models are differentiated by hand, and so are the sensitivities: adjoint sensitivity (DC, and AC at a fixed bias) covers the parameters in the table above. There's no differentiation of a whole circuit with respect to arbitrary inputs.
 - **No interval / affine arithmetic** for guaranteed bounds.
 
 ### Self-heating & thermal
