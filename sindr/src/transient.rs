@@ -9,6 +9,7 @@ use nalgebra::DVector;
 
 use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::inductor;
+use sindr_devices::jfet::JfetKind;
 use sindr_devices::mosfet::MosfetKind;
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -355,13 +356,24 @@ fn stamp_circuit_transient(
             }
             // JFET — nonlinear companion in NR transient loop
             CircuitElement::Jfet {
+                id,
                 nodes,
                 kind,
                 idss,
                 vp,
-                ..
+                parasitic_caps,
             } => {
                 stamp_jfet_companion(system, node_map, nodes, *kind, *idss, *vp, v_prev);
+                if let Some(pc) = parasitic_caps {
+                    for (junction, c0, a, b) in jfet_junctions(nodes, pc) {
+                        let v =
+                            node_voltage(&a, node_map, v_prev) - node_voltage(&b, node_map, v_prev);
+                        let (q, c) = jfet_gate_charge(v, *kind, pc, c0);
+                        let history = parasitic_history(parasitic, id, junction);
+                        let (g, i_hist) = integ.charge(q, c, v, &history);
+                        stamp_companion(system, node_map, &[a, b], g, i_hist);
+                    }
+                }
             }
             CircuitElement::Vcvs {
                 nodes,
@@ -1185,6 +1197,7 @@ fn extract_timestep_results(
                 kind,
                 idss,
                 vp,
+                ..
             } => {
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
@@ -1868,6 +1881,18 @@ pub(crate) fn run_transient(
             } => {
                 for (junction, _, a, b) in mosfet_parasitics(nodes, pc) {
                     parasitic.insert(format!("{id}-{junction}"), across(&a, &b));
+                }
+            }
+            CircuitElement::Jfet {
+                id,
+                nodes,
+                kind,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                for (junction, c0, a, b) in jfet_junctions(nodes, pc) {
+                    let (q, _) = jfet_gate_charge(ic(&a) - ic(&b), *kind, pc, c0);
+                    parasitic.insert(format!("{id}-{junction}"), History::at(q));
                 }
             }
             CircuitElement::Diode {
@@ -2580,6 +2605,24 @@ fn update_parasitic_histories(
             }
             continue;
         }
+        if let CircuitElement::Jfet {
+            id,
+            nodes,
+            kind,
+            parasitic_caps: Some(pc),
+            ..
+        } = component
+        {
+            for (junction, c0, a, b) in jfet_junctions(nodes, pc) {
+                let (q, _) = jfet_gate_charge(v(&a) - v(&b), *kind, pc, c0);
+                let history = parasitic_history(parasitic, id, junction);
+                parasitic.insert(
+                    format!("{id}-{junction}"),
+                    history.push(q, integ.charge_current(q, &history)),
+                );
+            }
+            continue;
+        }
         let (id, caps) = match component {
             CircuitElement::Bjt {
                 id,
@@ -2631,6 +2674,46 @@ pub(crate) fn mosfet_parasitics(
         .into_iter()
         .filter(|cap| cap.1 > 0.0)
         .collect()
+}
+
+/// A JFET's gate junctions as `(junction, zero-bias C, terminal, terminal)`:
+/// gate–source and gate–drain, each only if its capacitance is > 0. Their
+/// histories hold charges (C), not voltages.
+pub(crate) fn jfet_junctions(
+    nodes: &[String; 3],
+    pc: &crate::circuit::JfetParasiticCaps,
+) -> Vec<(&'static str, f64, String, String)> {
+    let [g, d, s] = nodes.clone();
+    [("gs", pc.cgs, g.clone(), s), ("gd", pc.cgd, g, d)]
+        .into_iter()
+        .filter(|j| j.1 > 0.0)
+        .collect()
+}
+
+/// Charge (C) on a JFET gate junction of zero-bias capacitance `c0` (F),
+/// gate side positive, and its capacitance (F) at `v` (V), gate minus the
+/// other terminal. A P-channel
+/// part's gate junction points the other way, so its junction voltage and
+/// charge are the negatives; the capacitance is the same.
+pub(crate) fn jfet_gate_charge(
+    v: f64,
+    kind: JfetKind,
+    pc: &crate::circuit::JfetParasiticCaps,
+    c0: f64,
+) -> (f64, f64) {
+    let charge = sindr_devices::diode::JunctionCharge {
+        cjo: c0,
+        vj: pc.pb,
+        m: pc.m,
+        fc: pc.fc,
+        tt: 0.0,
+    };
+    let sign = match kind {
+        JfetKind::NChannel => 1.0,
+        JfetKind::PChannel => -1.0,
+    };
+    let (q, c) = charge.charge(sign * v, 0.0, 0.0);
+    (sign * q, c)
 }
 
 /// The history of component `id`'s parasitic capacitor at `junction`

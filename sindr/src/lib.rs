@@ -97,7 +97,7 @@
 //! | Zener | A SPICE diode with breakdown `BV = vz` at 5 mA and RS = 1 Ω |
 //! | BJT (NPN/PNP) | Ebers–Moll with Early voltage; not Gummel–Poon |
 //! | MOSFET (NMOS/PMOS) | SPICE Level 1 (Shichman–Hodges), body tied to source, SPICE-signed VTO (negative for an enhancement PMOS); no BSIM |
-//! | JFET (N/P) | Shichman–Hodges square law |
+//! | JFET (N/P) | Shichman–Hodges square law; optional CGS/CGD as SPICE gate junctions (transient charge, AC at the bias point) |
 //! | IGBT | MOSFET-like gate control, square-law collector current |
 //! | Varactor | Voltage-dependent junction capacitance (transient; AC at the bias point) |
 //! | Op-amp | VCVS of gain 1e5, or with an [`OpAmpModel`]: single-pole GBW, slew rate, rail clamp, output resistance, offset, bias current |
@@ -147,7 +147,7 @@
 //! `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
 //! `NR`, `VAF`, `KF`, `AF`; level-1 MOSFETs: `KP`, `VTO`, `LAMBDA`, `GAMMA`,
 //! `PHI`, `LD`, `CGSO`, `CGDO`, `CGBO` and the drain–bulk junction; JFETs:
-//! `VTO`, `BETA`), inside a `.subckt` or at the top level. Not read:
+//! `VTO`, `BETA`, `CGS`, `CGD`, `PB`, `M`, `FC`), inside a `.subckt` or at the top level. Not read:
 //! the `TABLE`/`LAPLACE` forms of E/G/F/H, and
 //! couplings of more than two inductors.
 //! [`spice::to_netlist`] writes a [`Circuit`] back out as a deck, controlled

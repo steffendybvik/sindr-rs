@@ -240,6 +240,61 @@ pub struct MosfetParasiticCaps {
     pub cgd: f64,
 }
 
+/// Gate capacitances of a [`CircuitElement::Jfet`], for transient and AC, as
+/// a SPICE `.model NJF`/`PJF` card's `CGS`, `CGD`, `PB`, `M` and `FC` give
+/// them.
+///
+/// Each gate junction is a depletion capacitance
+/// `C = C0 / (1 − v/PB)^M` at junction voltage `v` (`vgs` and `vgd` for an
+/// N-channel part, their negatives for a P-channel one), continued linearly
+/// above `FC·PB` so it stays finite in forward bias, as SPICE's junction
+/// charge. Transient integrates the charge, so it is conserved; AC uses the
+/// capacitance at the bias point. Values are at the nominal 27 °C.
+///
+/// The default is no capacitance with SPICE's `PB = 1`, `M = 0.5` and
+/// `FC = 0.5`. With serde, a missing field takes its default.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JfetParasiticCaps {
+    /// Zero-bias gate–source capacitance CGS (F), zero or positive. Default 0.
+    pub cgs: f64,
+    /// Zero-bias gate–drain capacitance CGD (F), zero or positive; the
+    /// Miller capacitance of a common-source stage. Default 0.
+    pub cgd: f64,
+    /// Gate junction potential PB (V), positive. Default 1.
+    pub pb: f64,
+    /// Grading coefficient M, in `[0, 0.9]`. Default 0.5 (an abrupt
+    /// junction, the only value ngspice's JFET has).
+    pub m: f64,
+    /// Forward-bias depletion coefficient FC, in `[0, 0.95]`: above `FC·PB`
+    /// the capacitance is continued linearly. Default 0.5.
+    pub fc: f64,
+}
+
+impl Default for JfetParasiticCaps {
+    fn default() -> Self {
+        Self {
+            cgs: 0.0,
+            cgd: 0.0,
+            pb: 1.0,
+            m: 0.5,
+            fc: 0.5,
+        }
+    }
+}
+
+impl JfetParasiticCaps {
+    /// Whether either gate junction has a capacitance, which makes the
+    /// circuit reactive.
+    pub fn stores_charge(&self) -> bool {
+        self.cgs > 0.0 || self.cgd > 0.0
+    }
+}
+
 /// What a [`CircuitElement::Behavioural`] source's expression sets.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -605,6 +660,13 @@ pub enum CircuitElement {
         /// Pinch-off voltage (V, negative for N-channel, e.g. -2.0).
         #[cfg_attr(feature = "serde", serde(default = "default_jfet_vp"))]
         vp: f64,
+        /// Optional gate capacitances (CGS, CGD as SPICE junctions). None =
+        /// no capacitance (default).
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        parasitic_caps: Option<JfetParasiticCaps>,
     },
 
     /// Voltage-Controlled Voltage Source: V_out = mu * V_control.
@@ -1506,7 +1568,7 @@ impl Circuit {
     }
 
     /// Returns true if the circuit contains any reactive elements (Capacitor, Inductor, or
-    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET with non-zero parasitic caps,
+    /// Relay with inductance > 0, or Transformer, or BJT/MOSFET/JFET with non-zero parasitic caps,
     /// or a diode whose model stores charge).
     pub fn has_reactive_elements(&self) -> bool {
         self.components.iter().any(|c| match c {
@@ -1527,6 +1589,10 @@ impl Circuit {
             CircuitElement::Diode {
                 model: Some(model), ..
             } => model.stores_charge(),
+            CircuitElement::Jfet {
+                parasitic_caps: Some(caps),
+                ..
+            } => caps.stores_charge(),
             _ => false,
         })
     }
@@ -2057,6 +2123,7 @@ mod tests {
                 kind: JfetKind::NChannel,
                 idss: 1e-3,
                 vp: -2.0,
+                parasitic_caps: None,
             },
             CircuitElement::Vcvs {
                 id: "E".into(),
@@ -2263,6 +2330,26 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
+    fn jfet_gate_caps_left_out_of_json_take_spice_defaults() {
+        let json = r#"{"type": "jfet", "id": "J1", "nodes": ["g", "d", "s"],
+                       "kind": "pchannel", "parasitic_caps": {"cgs": 5e-12}}"#;
+        let CircuitElement::Jfet { parasitic_caps, .. } = serde_json::from_str(json).unwrap()
+        else {
+            panic!("not a JFET");
+        };
+        assert_eq!(
+            parasitic_caps,
+            Some(JfetParasiticCaps {
+                cgs: 5e-12,
+                ..Default::default()
+            })
+        );
+        let caps = parasitic_caps.unwrap();
+        assert_eq!((caps.cgd, caps.pb, caps.m, caps.fc), (0.0, 1.0, 0.5, 0.5));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
     fn fields_left_out_of_json_take_their_documented_defaults() {
         let json = r#"{
             "ground_node": "0",
@@ -2303,6 +2390,7 @@ mod tests {
                 kind: JfetKind::NChannel,
                 idss: 10e-3,
                 vp: -2.0,
+                parasitic_caps: None,
             },
             // No flicker noise unless asked: kf 0, af 1.
             CircuitElement::Mosfet {

@@ -1672,6 +1672,7 @@ fn build_element(
                 },
                 idss: r.param_or("idss", 10e-3)?,
                 vp: r.param_or("vp", if n { -2.0 } else { 2.0 })?,
+                parasitic_caps: None,
             }
         }
         K::Igbt => CircuitElement::Igbt {

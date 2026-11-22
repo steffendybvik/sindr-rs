@@ -791,6 +791,7 @@ fn transistors_take_their_defaults_and_models() {
             kind: JfetKind::NChannel,
             idss: 10e-3,
             vp: -2.0,
+            parasitic_caps: None,
         }
     );
     assert_eq!(
@@ -804,6 +805,7 @@ fn transistors_take_their_defaults_and_models() {
             kind: JfetKind::PChannel,
             idss: 5e-3,
             vp: 2.0,
+            parasitic_caps: None,
         }
     );
     let ip = IgbtParams {

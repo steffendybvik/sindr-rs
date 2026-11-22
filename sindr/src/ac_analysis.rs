@@ -699,6 +699,24 @@ pub(crate) fn small_signal_system(
                     stamp_complex_conductance(&mut a, q, p, -y);
                 }
             }
+            CircuitElement::Jfet {
+                nodes,
+                kind,
+                parasitic_caps: Some(pc),
+                ..
+            } => {
+                // Each gate junction's capacitance at the DC bias.
+                for (_, c0, p, q) in crate::transient::jfet_junctions(nodes, pc) {
+                    let v = |n: &String| node_map.index(n).map_or(0.0, |i| dc_solution[i]);
+                    let (_, c) = crate::transient::jfet_gate_charge(v(&p) - v(&q), *kind, pc, c0);
+                    let y = j_omega * c;
+                    let (p, q) = (node_map.index(&p), node_map.index(&q));
+                    stamp_complex_conductance(&mut a, p, p, y);
+                    stamp_complex_conductance(&mut a, q, q, y);
+                    stamp_complex_conductance(&mut a, p, q, -y);
+                    stamp_complex_conductance(&mut a, q, p, -y);
+                }
+            }
             CircuitElement::Varactor { nodes, params, .. } => {
                 // Small-signal capacitance at the DC bias.
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
@@ -1723,6 +1741,7 @@ mod tests {
                         kind,
                         idss: 10e-3,
                         vp,
+                        parasitic_caps: None,
                     },
                 ])
             };
