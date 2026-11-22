@@ -1476,6 +1476,18 @@ fn build_analysis(
                 _ => Err(card_error("`.sens ... ac`: not an AC sweep".into())),
             }
         }
+        RawAnalysis::Pz {
+            nodes,
+            transfer,
+            find,
+        } => Ok(AnalysisRequest::Pz {
+            input: nodes[0].clone(),
+            input_reference: nodes[1].clone(),
+            output: nodes[2].clone(),
+            output_reference: nodes[3].clone(),
+            transfer: *transfer,
+            find: *find,
+        }),
         RawAnalysis::Tf { output, input } => Ok(AnalysisRequest::Tf {
             output: output.clone(),
             input: input.clone(),

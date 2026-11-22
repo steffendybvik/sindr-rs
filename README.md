@@ -47,7 +47,7 @@ More in [`sindr/examples/`](./sindr/examples): RC transient, BJT amplifier, Bode
 
 | Crate | Purpose |
 |-------|---------|
-| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.meas`, ratings checks, SPICE front end |
+| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.pz`, loop gain, `.meas`, ratings checks, SPICE front end |
 | [`sindr-devices`](./sindr-devices) | Device physics: diode family, BJT, MOSFET, JFET, IGBT, varactor, thermistor and photoresistor models |
 
 `sindr` depends on `sindr-devices`. The split lets you use the device-physics models with your own solver, without the `nalgebra` linear-algebra stack.
@@ -67,6 +67,7 @@ Each analysis is checked against [ngspice](https://ngspice.sourceforge.io/) 47 o
 | AC | 15 | 3e-6 | 1e-4° phase |
 | Diode charge (AC) | 2 | 2e-4 | — |
 | Noise | 4 | 7e-7 | — |
+| Pole-zero | 2 | 1e-9 | — |
 | Transient | 11 | — | 2.6 % of full scale |
 <!-- accuracy:end -->
 
@@ -124,7 +125,7 @@ a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics
 | Main input | `Circuit` values or JSON; a SPICE3 subset (feature `spice`) | SPICE netlists in its own dialect |
 | WebAssembly, no C library | Yes | Usually not |
 | Ratings, self-heating, pass/fail specs | Built in | Scripted by hand, if at all |
-| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens` (DC and AC), `.noise`, `.meas` | Those and more: pole-zero, Fourier, distortion |
+| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens` (DC and AC), `.noise`, `.pz`, loop gain, `.meas` | Those and more: Fourier, distortion |
 | Device models | Shockley diode, Ebers–Moll BJT, MOSFET Level 1, JFET, IGBT, op-amp macromodel, and part-level elements (LED, regulator, relay, battery …) | **Far more:** Gummel–Poon, BSIM, transmission lines, behavioural and code models |
 | SPICE dialect coverage | A practical subset | Full |
 
@@ -144,7 +145,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 

@@ -1,0 +1,7 @@
+* Pole-zero, transimpedance: RC-RL ladder driven by a current
+R1 in 0 1k
+C1 in 0 1u
+R2 in out 1k
+C2 out 0 100n
+L1 out 0 10m
+.end

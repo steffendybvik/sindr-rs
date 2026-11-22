@@ -56,7 +56,7 @@
 //! let netlist = parse_file("amp.cir")?;
 //! println!("parsed `{}` ({} components)", netlist.title, netlist.circuit.components.len());
 //!
-//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf` / `.sens` / `.noise`
+//! // `netlist.analyses` carries the deck's `.op` / `.tran` / `.dc` / `.ac` / `.tf` / `.sens` / `.noise` / `.pz`
 //! // directives, in source order. The parser does not run them — you do.
 //! for analysis in &netlist.analyses {
 //!     match analysis {
@@ -100,6 +100,10 @@
 //!         AnalysisRequest::Tf { .. } => {
 //!             let tf = sindr::solve_tf(&netlist.circuit, &analysis.tf_config().unwrap())?;
 //!             println!("tf: gain {}, rin {} Ω, rout {} Ω", tf.gain, tf.input_resistance, tf.output_resistance);
+//!         }
+//!         AnalysisRequest::Pz { .. } => {
+//!             let pz = sindr::solve_pz(&netlist.circuit, &analysis.pz_config().unwrap())?;
+//!             println!("pz: {} poles, {} zeros", pz.poles.len(), pz.zeros.len());
 //!         }
 //!         // `AnalysisRequest` is non-exhaustive: later releases add analyses.
 //!         other => println!("not run here: {other:?}"),

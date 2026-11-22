@@ -311,6 +311,7 @@ mod device_params;
 pub mod error;
 pub mod import;
 mod integration;
+pub mod loop_gain;
 pub mod measure;
 // The matrix type is public only for sindr's own `mna_solve` bench, behind
 // the unstable `internals` feature.
@@ -324,6 +325,7 @@ mod newton_raphson;
 mod node_map;
 pub mod noise;
 mod op_amp;
+pub mod pole_zero;
 pub mod ratings;
 pub mod results;
 pub mod sensitivity;
@@ -350,8 +352,10 @@ pub use circuit::{
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::{SimError, SolvePoint};
+pub use loop_gain::{solve_loop_gain, LoopGainConfig, LoopGainPoint, LoopGainResult};
 pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
 pub use noise::{solve_noise, NoiseConfig, NoiseResult};
+pub use pole_zero::{solve_pz, PzConfig, PzFind, PzResult, PzTransfer};
 pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 pub use results::{
     BjtResult, ComponentResult, ConvergenceAid, InstanceResult, MosfetResult, OpAmpResult,

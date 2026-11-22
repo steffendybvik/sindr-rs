@@ -1,0 +1,8 @@
+* Pole-zero, voltage gain: RLC tank with a bridging capacitor
+V1 in 0 dc 0 ac 1
+R1 in a 10
+L1 a b 1m
+C1 b 0 1u
+R2 b 0 1k
+Cf in b 10n
+.end

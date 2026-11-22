@@ -246,6 +246,35 @@ impl Solver {
         crate::transfer_function::solve_tf_with(circuit, config, &self.options)
     }
 
+    /// As [`solve_pz`](crate::solve_pz).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_pz`](crate::solve_pz), and [`SolverOptions::validate`].
+    pub fn pz(
+        &self,
+        circuit: &Circuit,
+        config: &crate::PzConfig,
+    ) -> Result<crate::PzResult, SimError> {
+        self.options.validate()?;
+        crate::pole_zero::solve_pz_with(circuit, config, &self.options)
+    }
+
+    /// As [`solve_loop_gain`](crate::solve_loop_gain).
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_loop_gain`](crate::solve_loop_gain), and
+    /// [`SolverOptions::validate`].
+    pub fn loop_gain(
+        &self,
+        circuit: &Circuit,
+        config: &crate::LoopGainConfig,
+    ) -> Result<crate::LoopGainResult, SimError> {
+        self.options.validate()?;
+        crate::loop_gain::solve_loop_gain_with(circuit, config, &self.options)
+    }
+
     /// As [`solve_sensitivity`](crate::solve_sensitivity).
     ///
     /// # Errors
