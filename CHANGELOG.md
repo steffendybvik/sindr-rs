@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0]
+## [0.2.0] - 2026-11-22
 
 ### Added
 
@@ -198,6 +198,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `import::Value::Quantity`: a typed quantity as a parts library stores
   it, a number in base units with its `Unit` and the text shown. Its unit
   is checked against the parameter's.
+- `sindr_devices::regulator::regulator_edges`: the signed distances from
+  a regulator's operating point to the edges between the pieces of its
+  characteristic.
+- `TransientStats::jumped_steps` counts the regenerative edges a
+  transient jumped (see Fixed).
 
 ### Changed
 
@@ -233,6 +238,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across a space: `"0.01 1"` (a ratio) is 0.01, not 0.011, and `"300 K"`
   is 300 kelvin, not 300 k. `300K` is still 300 k.
 - An LED whose colour was capitalised (`"Green"`) or amber came out red.
+- A linear regulator fed through an inductor or an LC input filter now
+  simulates in transient, from switch-on and on a hot-plugged input.
+  Newton failed to converge at the first step, because each step crossed
+  every edge of the regulator's piecewise characteristic at once; a step
+  now moves a regulator one piece at a time.
+- A two-transistor LED flasher, and other regenerative circuits whose
+  transistors have no junction capacitance, run their transient through
+  every switching edge instead of stopping with `ConvergenceFailed`. A
+  step that fails at the shortest length follows the jump by
+  pseudo-transient continuation and ends on a plain solve, so the answer
+  has nothing added. Junction limiting no longer moves a node a voltage
+  source holds, which kept an LED off the supply rail at switch-on. The
+  flasher's period matches ngspice to 0.006 % (`tran_flasher`).
 
 ## [0.1.0] - 2026-11-21
 
