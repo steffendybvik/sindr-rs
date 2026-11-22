@@ -51,10 +51,10 @@ fn main() {
     for net in &netlist.nets {
         let node = imported.circuit.node(&net.id).unwrap_or(&net.id);
         let label = net.name.as_deref().unwrap_or(&net.id);
-        println!("{label:>6}: {:7.3} V", op.node_voltages[node]);
+        println!("{label:>6}: {:7.3} V", op.voltage(node).unwrap_or(f64::NAN));
     }
     for id in ["R1", "D1", "R2"] {
-        if let Some(c) = op.component_results.iter().find(|c| c.id == id) {
+        if let Some(c) = op.component(id) {
             println!(
                 "{id:>6}: {:7.3} mA, {:6.2} mW",
                 c.current_through * 1e3,

@@ -125,6 +125,17 @@ pub struct AcPoint {
 }
 
 impl AcPoint {
+    /// The complex voltage at `node` (V), or `None` when there's no such
+    /// node. Ground reads 0.
+    pub fn voltage(&self, node: &str) -> Option<Complex64> {
+        self.node_voltages.get(node).copied()
+    }
+
+    /// The magnitude of the voltage at `node`, `|V(node)|` (V).
+    pub fn magnitude(&self, node: &str) -> Option<f64> {
+        self.voltage(node).map(|v| v.norm())
+    }
+
     /// Gain in dB for a node: `20·log10(|V(node)| / source_magnitude)`, a
     /// voltage ratio. `source_magnitude` is in volts, normally
     /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
@@ -157,6 +168,45 @@ pub struct AcResult {
 }
 
 impl AcResult {
+    /// A node's complex voltage as `(frequency in Hz, V)` pairs, one per
+    /// point. Empty when there's no such node.
+    ///
+    /// ```
+    /// use sindr::{solve_ac, AcConfig, Circuit, CircuitElement};
+    ///
+    /// // RC low-pass, corner at 1/(2π·1k·1µ) ≈ 159 Hz.
+    /// let circuit = Circuit::new("0", vec![
+    ///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None },
+    ///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
+    ///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+    /// ]);
+    /// let ac = solve_ac(&circuit, &AcConfig::new("V1", 1.0, 1e5, 51))?;
+    ///
+    /// let first = &ac.points[0];
+    /// assert!((first.magnitude("out").unwrap() - 1.0).abs() < 1e-3);
+    /// let (f, v) = *ac.node_voltage_curve("out").last().unwrap();
+    /// assert_eq!(f, 1e5);
+    /// assert!(v.norm() < 0.01);
+    /// assert_eq!(ac.magnitude_curve("out").len(), 51);
+    /// assert!(ac.node_voltage_curve("nope").is_empty());
+    /// # Ok::<(), sindr::SimError>(())
+    /// ```
+    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, Complex64)> {
+        self.points
+            .iter()
+            .filter_map(|p| p.voltage(node).map(|v| (p.frequency, v)))
+            .collect()
+    }
+
+    /// A node's voltage magnitude as `(frequency in Hz, |V| in V)` pairs,
+    /// one per point; [`AcResult::gain_curve`] has it in dB.
+    pub fn magnitude_curve(&self, node: &str) -> Vec<(f64, f64)> {
+        self.points
+            .iter()
+            .filter_map(|p| p.magnitude(node).map(|m| (p.frequency, m)))
+            .collect()
+    }
+
     /// The gain curve for a node as `(frequency in Hz, gain in dB)` pairs,
     /// one per point, using [`AcConfig::ac_magnitude`].
     pub fn gain_curve(&self, node: &str) -> Vec<(f64, f64)> {

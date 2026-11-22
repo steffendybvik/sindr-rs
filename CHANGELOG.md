@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Results are read by name: `SimulationResult::voltage`, `current`,
+  `branch_current` and `component`, and `bjt`, `mosfet`, `op_amp` and
+  `relay` for device results, each `None` for a name the result doesn't
+  have. Ground reads `0.0`. `TimestepSnapshot` has `voltage`, `current`
+  and `component`.
+- `SimulationResult::instance("X1")` reads inside a block instance or
+  SPICE subcircuit by its instance path: `instance("X1").voltage("sw")`
+  is node `X1.sw`. `instance` chains (`instance("X1").instance("X2")`)
+  or takes a nested path (`"X1.X2"`); `InstanceResult::name` gives the
+  flat name for the curve accessors.
+- `TransientData::node_voltage_curve` and `component_current_curve`
+  give a waveform as `(t, value)` pairs, and `voltage_at` and
+  `current_at` a value at any time, interpolated between steps.
+- `AcPoint::voltage` and `magnitude`, and `AcResult::node_voltage_curve`
+  (complex) and `magnitude_curve`, next to the existing gain and phase
+  helpers.
+- `TempSweepResult::node_voltage_curve` and `component_current_curve`,
+  as `DcSweepResult` has.
 - The SPICE parser reads `M` and `J` lines with level-1 `NMOS`/`PMOS`
   and `NJF`/`PJF` cards. `kp` is `KP·W/(L − 2·LD)·M`, the overlap
   capacitances become the gate caps, and the drain–bulk junction becomes

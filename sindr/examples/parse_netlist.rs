@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Solve the operating point directly.
     let op = sindr::solve_circuit(&netlist.circuit)?;
-    println!("V(n2) = {:.3} V", op.node_voltages["n2"]);
+    println!("V(n2) = {:.3} V", op.voltage("n2").unwrap_or(f64::NAN));
 
     // 3. Dispatch each parsed directive to the matching sindr routine.
     for analysis in &netlist.analyses {
