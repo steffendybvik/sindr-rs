@@ -3317,6 +3317,10 @@ pub struct CurrentSource {
 }
 ```
 
+## `sindr/src/element/dc_stamp.rs`
+
+What an element's DC stamp writes into and reads from.
+
 ## `sindr/src/element/diode.rs`
 
 A junction diode with a SPICE diode model.

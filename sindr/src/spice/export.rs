@@ -14,8 +14,9 @@ use thiserror::Error;
 
 use crate::circuit::{BjtModel, DiodeModel};
 use crate::design::{DesignError, Instance};
+use crate::element::photoresistor::ldr_resistance;
 use crate::expression::Variable;
-use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
+use crate::stamp::{SWITCH_R_CLOSED, SWITCH_R_OPEN};
 use crate::{
     device_params, BehaviouralOutput, BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind,
     Waveform,

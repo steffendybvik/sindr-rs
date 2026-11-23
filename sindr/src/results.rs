@@ -23,8 +23,9 @@ use sindr_devices::mosfet::MosfetKind;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
+use crate::element::photoresistor::ldr_resistance;
 use crate::node_map::NodeMap;
-use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
+use crate::stamp::{SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
 /// Per-component voltage, current, and power.
 ///
@@ -643,10 +644,12 @@ pub(crate) fn behavioural_result(
         node_voltage(&nodes[0], node_map, solution) - node_voltage(&nodes[1], node_map, solution);
     let current = match output {
         crate::BehaviouralOutput::Current => {
-            crate::stamp::behavioural_linearisation(circuit, node_map, id, expr, solution, t)
-                .map_or(f64::NAN, |(jacobian, c)| {
-                    c + jacobian.iter().map(|(k, j)| j * solution[*k]).sum::<f64>()
-                })
+            crate::element::behavioural::behavioural_linearisation(
+                circuit, node_map, id, expr, solution, t,
+            )
+            .map_or(f64::NAN, |(jacobian, c)| {
+                c + jacobian.iter().map(|(k, j)| j * solution[*k]).sum::<f64>()
+            })
         }
         _ => solution[branch],
     };
@@ -668,7 +671,8 @@ pub(crate) fn regulator_result(
     branch: usize,
 ) -> ComponentResult {
     let (vin, vout, iout) =
-        crate::stamp::regulator_state(node_map, nodes, branch, Some(solution)).unwrap_or_default();
+        crate::element::voltage_regulator::regulator_state(node_map, nodes, branch, Some(solution))
+            .unwrap_or_default();
     let params = model.unwrap_or_default();
     ComponentResult {
         id: id.to_string(),

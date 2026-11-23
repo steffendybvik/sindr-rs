@@ -1032,7 +1032,7 @@ fn build_small_signal(
             CircuitElement::Photoresistor(Photoresistor {
                 nodes, light_level, ..
             }) => {
-                use crate::stamp::ldr_resistance;
+                use crate::element::photoresistor::ldr_resistance;
                 let r = ldr_resistance(*light_level);
                 let g = Complex64::new(1.0 / r, 0.0);
                 let p = node_map.index(&nodes[0]);
@@ -1079,7 +1079,7 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
                 // Contact: open or closed as at the DC bias point.
-                let r = crate::stamp::relay_contact_resistance(
+                let r = crate::element::relay::relay_contact_resistance(
                     node_map,
                     nodes,
                     *pickup_voltage,
@@ -1362,7 +1362,7 @@ fn build_small_signal(
                 // Its Jacobian at the bias point; the constant term is a DC
                 // source and drops out of the small-signal system. `circuit`
                 // was checked by the bias solve, so this can't fail here.
-                let (jacobian, _) = crate::stamp::behavioural_linearisation(
+                let (jacobian, _) = crate::element::behavioural::behavioural_linearisation(
                     circuit,
                     node_map,
                     id,
@@ -1426,7 +1426,7 @@ fn build_small_signal(
                 ..
             }) => {
                 let branch = num_nodes + vsource_index;
-                let piece = crate::stamp::regulator_piece_at(
+                let piece = crate::element::voltage_regulator::regulator_piece_at(
                     node_map,
                     nodes,
                     *voltage,
@@ -1453,9 +1453,13 @@ fn build_small_signal(
                 // The quiescent current is fixed above dropout; below it, it
                 // ramps with the input, a conductance from input to ground.
                 if let Some(params) = model {
-                    let vin =
-                        crate::stamp::regulator_state(node_map, nodes, branch, Some(dc_solution))
-                            .map_or(0.0, |(vin, _, _)| vin);
+                    let vin = crate::element::voltage_regulator::regulator_state(
+                        node_map,
+                        nodes,
+                        branch,
+                        Some(dc_solution),
+                    )
+                    .map_or(0.0, |(vin, _, _)| vin);
                     let (_, g_q) =
                         sindr_devices::regulator::regulator_quiescent(params, *voltage, vin);
                     for (r, col, sign) in [

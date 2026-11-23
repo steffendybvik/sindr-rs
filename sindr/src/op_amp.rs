@@ -27,7 +27,7 @@ use crate::circuit::{CircuitElement, OpAmpModel};
 use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
-use crate::stamp::stamp_current_source;
+use crate::stamp::stamp_current_source_at;
 
 /// Width of the clamp's knee (V): within a few of these of a rail the
 /// output bends over smoothly instead of with a kink Newton can't follow.
@@ -57,6 +57,15 @@ pub(crate) struct OpAmpStamp<'a> {
     pub branch: usize,
 }
 
+/// An op-amp's or comparator's terminals as matrix indices (`None` is
+/// ground).
+pub(crate) struct Pins {
+    /// `[in_plus, in_minus, out]`.
+    pub(crate) nodes: [Option<usize>; 3],
+    /// The circuit's ground, which the output is relative to.
+    pub(crate) ground: Option<usize>,
+}
+
 /// `w · ln(1 + e^(z/w))` without overflow, and its derivative.
 fn softplus(z: f64) -> (f64, f64) {
     let t = z / KNEE;
@@ -77,30 +86,51 @@ impl<'a> OpAmpStamp<'a> {
     /// op-amp with a model, or a comparator. `None` for anything else.
     /// `branch` is its first MNA branch slot.
     pub(crate) fn of(element: &'a CircuitElement, ground: &'a str, branch: usize) -> Option<Self> {
-        let (model, nodes, v_pos, v_neg) = match element {
-            CircuitElement::OpAmp(OpAmp {
-                nodes,
-                v_pos,
-                v_neg,
-                model: Some(model),
-                ..
-            }) => (model, nodes, *v_pos, *v_neg),
-            CircuitElement::Comparator(Comparator {
-                nodes,
-                v_pos,
-                v_neg,
-                ..
-            }) => (&COMPARATOR, nodes, *v_pos, *v_neg),
-            _ => return None,
-        };
+        match element {
+            CircuitElement::OpAmp(op_amp) => Self::of_op_amp(op_amp, ground, branch),
+            CircuitElement::Comparator(comparator) => {
+                Some(Self::of_comparator(comparator, ground, branch))
+            }
+            _ => None,
+        }
+    }
+
+    /// [`of`](Self::of) an op-amp: `None` without a model.
+    pub(crate) fn of_op_amp(op_amp: &'a OpAmp, ground: &'a str, branch: usize) -> Option<Self> {
+        let model = op_amp.model.as_ref()?;
         Some(Self {
             model,
-            nodes,
+            nodes: &op_amp.nodes,
             ground,
-            v_pos,
-            v_neg,
+            v_pos: op_amp.v_pos,
+            v_neg: op_amp.v_neg,
             branch,
         })
+    }
+
+    /// [`of`](Self::of) a comparator.
+    pub(crate) fn of_comparator(
+        comparator: &'a Comparator,
+        ground: &'a str,
+        branch: usize,
+    ) -> Self {
+        Self {
+            model: &COMPARATOR,
+            nodes: &comparator.nodes,
+            ground,
+            v_pos: comparator.v_pos,
+            v_neg: comparator.v_neg,
+            branch,
+        }
+    }
+
+    /// `[in_plus, in_minus, out]` and the ground as matrix indices.
+    fn pins(&self, node_map: &NodeMap) -> Pins {
+        let [p, m, o] = &self.nodes;
+        Pins {
+            nodes: [node_map.index(p), node_map.index(m), node_map.index(o)],
+            ground: node_map.index(self.ground),
+        }
     }
 
     fn stage(&self) -> usize {
@@ -132,8 +162,13 @@ impl<'a> OpAmpStamp<'a> {
 
     /// `v₊ − v₋` at the node voltages in `v`.
     fn vd(&self, node_map: &NodeMap, v: &DVector<f64>) -> f64 {
-        let at = |n: &String| node_map.index(n).map_or(0.0, |i| v[i]);
-        at(&self.nodes[0]) - at(&self.nodes[1])
+        Self::vd_at(&self.pins(node_map), v)
+    }
+
+    /// [`vd`](Self::vd) with the pins resolved.
+    fn vd_at(pins: &Pins, v: &DVector<f64>) -> f64 {
+        let at = |i: Option<usize>| i.map_or(0.0, |i| v[i]);
+        at(pins.nodes[0]) - at(pins.nodes[1])
     }
 
     /// The stage's right-hand side `F = D(u − x) + K·(sat(x) − x)` at
@@ -164,13 +199,13 @@ impl<'a> OpAmpStamp<'a> {
 
     /// The output row, the bias currents, and the KCL entries of the output
     /// current, linearised at stage voltage `x0`.
-    fn stamp_output(&self, system: &mut MnaSystem, node_map: &NodeMap, x0: f64) {
+    fn stamp_output(&self, system: &mut MnaSystem, pins: &Pins, x0: f64) {
         let br = self.branch;
-        if let Some(o) = node_map.index(&self.nodes[2]) {
+        if let Some(o) = pins.nodes[2] {
             system.a[(o, br)] += 1.0;
             system.a[(br, o)] += 1.0;
         }
-        if let Some(g) = node_map.index(self.ground) {
+        if let Some(g) = pins.ground {
             system.a[(g, br)] -= 1.0;
             system.a[(br, g)] -= 1.0;
         }
@@ -181,32 +216,20 @@ impl<'a> OpAmpStamp<'a> {
         system.b[br] += s0 - ds * x0;
         let ib = self.model.bias_current;
         if ib != 0.0 {
-            for input in &self.nodes[..2] {
-                stamp_current_source(
-                    system,
-                    node_map,
-                    &[input.clone(), self.ground.to_string()],
-                    ib,
-                );
+            for &input in &pins.nodes[..2] {
+                stamp_current_source_at(system, [input, pins.ground], ib);
             }
         }
     }
 
     /// Stage row `c_x · x − c_u · (v₊ − v₋) = rhs`.
-    fn stamp_stage(
-        &self,
-        system: &mut MnaSystem,
-        node_map: &NodeMap,
-        c_x: f64,
-        c_u: f64,
-        rhs: f64,
-    ) {
+    fn stamp_stage(&self, system: &mut MnaSystem, pins: &Pins, c_x: f64, c_u: f64, rhs: f64) {
         let x = self.stage();
         system.a[(x, x)] += c_x;
-        if let Some(p) = node_map.index(&self.nodes[0]) {
+        if let Some(p) = pins.nodes[0] {
             system.a[(x, p)] -= c_u;
         }
-        if let Some(m) = node_map.index(&self.nodes[1]) {
+        if let Some(m) = pins.nodes[1] {
             system.a[(x, m)] += c_u;
         }
         system.b[x] += rhs;
@@ -220,11 +243,21 @@ impl<'a> OpAmpStamp<'a> {
         node_map: &NodeMap,
         v_prev: Option<&DVector<f64>>,
     ) {
-        let (x0, vd0) = v_prev.map_or((0.0, 0.0), |v| (v[self.stage()], self.vd(node_map, v)));
-        self.stamp_output(system, node_map, x0);
+        self.stamp_dc_at(system, &self.pins(node_map), v_prev);
+    }
+
+    /// [`stamp_dc`](Self::stamp_dc) with the pins resolved.
+    pub(crate) fn stamp_dc_at(
+        &self,
+        system: &mut MnaSystem,
+        pins: &Pins,
+        v_prev: Option<&DVector<f64>>,
+    ) {
+        let (x0, vd0) = v_prev.map_or((0.0, 0.0), |v| (v[self.stage()], Self::vd_at(pins, v)));
+        self.stamp_output(system, pins, x0);
         let (f0, c_x, c_u) = self.stage_rate(x0, vd0);
         // F0 − c_x·(x − x0) + c_u·(vd − vd0) = 0
-        self.stamp_stage(system, node_map, c_x, c_u, f0 + c_x * x0 - c_u * vd0);
+        self.stamp_stage(system, pins, c_x, c_u, f0 + c_x * x0 - c_u * vd0);
     }
 
     /// One transient step: `τ·(g·x + h) = F(x, vd)`, with `(g, h)` the
@@ -241,14 +274,15 @@ impl<'a> OpAmpStamp<'a> {
         let Some(tau) = self.tau() else {
             return self.stamp_dc(system, node_map, Some(v_prev));
         };
+        let pins = self.pins(node_map);
         let x0 = v_prev[self.stage()];
-        let vd0 = self.vd(node_map, v_prev);
-        self.stamp_output(system, node_map, x0);
+        let vd0 = Self::vd_at(&pins, v_prev);
+        self.stamp_output(system, &pins, x0);
         let (f0, c_x, c_u) = self.stage_rate(x0, vd0);
         let (g, h) = integ.capacitor(1.0, history);
         self.stamp_stage(
             system,
-            node_map,
+            &pins,
             tau * g + c_x,
             c_u,
             -tau * h + f0 + c_x * x0 - c_u * vd0,

@@ -2,7 +2,7 @@
 
 use crate::error::SimError;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
 /// solves DC as a single algebraic step, not as t→∞ of a transient);
@@ -32,6 +32,12 @@ pub struct Inductor {
 
 impl Device for Inductor {
     device_identity!();
+
+    fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
+        // Nothing of its own: the DC analyses short it with a 0 V source
+        // first (`dc_equivalent`).
+        Ok(())
+    }
 
     fn inductor_histories(&self) -> usize {
         1

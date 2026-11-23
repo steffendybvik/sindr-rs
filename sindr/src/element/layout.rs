@@ -33,7 +33,6 @@ use crate::circuit::Circuit;
 /// [`Device::branches`]: super::Device::branches
 /// [`Device::capacitor_histories`]: super::Device::capacitor_histories
 /// [`Device::inductor_histories`]: super::Device::inductor_histories
-#[cfg_attr(not(test), expect(dead_code, reason = "the analyses don't use it yet"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Layout {
     /// Per element: first branch, capacitor and inductor slot. One more
@@ -48,7 +47,6 @@ struct Slots {
     inductor: usize,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "the analyses don't use it yet"))]
 impl Layout {
     /// Numbers the branch rows and history slots of `circuit`'s elements.
     pub(crate) fn new(circuit: &Circuit) -> Self {
@@ -80,6 +78,10 @@ impl Layout {
     /// # Panics
     ///
     /// If `k` is past the last element.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the transient doesn't use it yet")
+    )]
     pub(crate) fn capacitor(&self, k: usize) -> usize {
         self.slots(k).capacitor
     }
@@ -89,21 +91,37 @@ impl Layout {
     /// # Panics
     ///
     /// If `k` is past the last element.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the transient doesn't use it yet")
+    )]
     pub(crate) fn inductor(&self, k: usize) -> usize {
         self.slots(k).inductor
     }
 
     /// Branch rows in the whole circuit.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the transient doesn't use it yet")
+    )]
     pub(crate) fn branches(&self) -> usize {
         self.totals().branch
     }
 
     /// Capacitor histories in the whole circuit.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the transient doesn't use it yet")
+    )]
     pub(crate) fn capacitors(&self) -> usize {
         self.totals().capacitor
     }
 
     /// Inductor histories in the whole circuit.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the transient doesn't use it yet")
+    )]
     pub(crate) fn inductors(&self) -> usize {
         self.totals().inductor
     }

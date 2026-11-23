@@ -2,8 +2,9 @@
 //! it with its equivalent circuit before solving.
 
 use crate::circuit::CrystalParams;
+use crate::error::SimError;
 
-use super::Device;
+use super::{stamped_as_parts, DcStamp, Device};
 
 /// Quartz crystal: the Butterworth–Van Dyke model ([`CrystalParams`]).
 /// An open circuit at DC. Its result's `power` is what the motional
@@ -23,4 +24,8 @@ pub struct Crystal {
 
 impl Device for Crystal {
     device_identity!();
+
+    fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
+        Err(stamped_as_parts(&self.id))
+    }
 }

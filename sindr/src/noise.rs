@@ -473,7 +473,7 @@ fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> V
                 nodes,
                 light_level,
             }) => {
-                let r = crate::stamp::ldr_resistance(*light_level);
+                let r = crate::element::photoresistor::ldr_resistance(*light_level);
                 out.push(thermal(id, "", &nodes[0], &nodes[1], r, T_NOISE));
             }
             CircuitElement::Diode(Diode {

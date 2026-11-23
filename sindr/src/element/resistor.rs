@@ -1,8 +1,9 @@
 //! A linear resistor.
 
 use crate::error::SimError;
+use crate::stamp::stamp_resistor_at;
 
-use super::Device;
+use super::{DcStamp, Device};
 
 /// Resistor between two nodes.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -19,6 +20,15 @@ pub struct Resistor {
 
 impl Device for Resistor {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        if self.resistance <= 0.0 {
+            return Err(SimError::InvalidResistance(self.id.clone()));
+        }
+        let nodes = s.nodes();
+        stamp_resistor_at(s.system, nodes, self.resistance);
+        Ok(())
+    }
 
     fn validate(&self) -> Result<(), SimError> {
         if self.resistance.is_finite() && self.resistance > 0.0 {

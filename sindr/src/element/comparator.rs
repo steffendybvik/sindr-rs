@@ -1,8 +1,9 @@
 //! A comparator: the op-amp macromodel with no pole, its output clamped.
 
 use crate::error::SimError;
+use crate::op_amp::{OpAmpStamp, Pins};
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Comparator, output referred to ground: gain 1e5 from `v₊ − v₋` with
 /// no frequency response, its output clamped to `[v_neg, v_pos]`. It is
@@ -29,6 +30,16 @@ pub struct Comparator {
 
 impl Device for Comparator {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let pins = Pins {
+            nodes: s.nodes(),
+            ground: s.node_map.index(&s.circuit.ground_node),
+        };
+        OpAmpStamp::of_comparator(self, &s.circuit.ground_node, s.branch)
+            .stamp_dc_at(s.system, &pins, s.v_prev);
+        Ok(())
+    }
 
     /// Its output current, then its gain-stage voltage, as a modelled
     /// op-amp.

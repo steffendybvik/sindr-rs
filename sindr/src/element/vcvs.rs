@@ -1,8 +1,9 @@
 //! A voltage-controlled voltage source, SPICE's `E`.
 
 use crate::error::SimError;
+use crate::stamp::stamp_vcvs_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Voltage-Controlled Voltage Source: V_out = mu * V_control.
 /// nodes: [out+, out-], control_nodes: [ctrl+, ctrl-]
@@ -22,6 +23,14 @@ pub struct Vcvs {
 
 impl Device for Vcvs {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let [cp, cq] = &self.control_nodes;
+        let control = [s.node_map.index(cp), s.node_map.index(cq)];
+        let nodes = s.nodes();
+        stamp_vcvs_at(s.system, nodes, control, self.gain, s.branch);
+        Ok(())
+    }
 
     fn all_nodes(&self) -> Vec<&String> {
         let [a, b] = &self.nodes;
