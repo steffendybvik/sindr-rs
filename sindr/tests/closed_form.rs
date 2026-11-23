@@ -15,6 +15,7 @@ use std::f64::consts::PI;
 use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::DcSweepAxis;
 use sindr::{
     dc_sweep, solve_transient, Circuit, CircuitElement, IntegrationMethod, TransientConfig,
     TransientData,
@@ -77,7 +78,7 @@ fn dc_sweep_follows_superposition() {
         resistor("R2", "b", "out", r2),
         resistor("R3", "out", "0", r3),
     ]);
-    let sweep = dc_sweep(&network, "V1", -10.0, 10.0, 21).unwrap();
+    let sweep = dc_sweep(&network, &DcSweepAxis::new("V1", -10.0, 10.0, 21)).unwrap();
     assert_eq!(sweep.points.len(), 21);
     for p in &sweep.points {
         let v1 = p.sweep_value;
@@ -108,7 +109,7 @@ fn dc_sweep_diode_matches_shockley_root() {
             model: None,
         }),
     ]);
-    let sweep = dc_sweep(&network, "V1", -2.0, 10.0, 25).unwrap();
+    let sweep = dc_sweep(&network, &DcSweepAxis::new("V1", -2.0, 10.0, 25)).unwrap();
     for p in &sweep.points {
         let vs = p.sweep_value;
         let got = p.result.node_voltages["out"];

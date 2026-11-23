@@ -325,7 +325,7 @@ impl Measurable for TempSweepResult {
         let trace = self
             .points
             .iter()
-            .map(|p| Ok((p.temperature_kelvin, op_value(&p.result, signal)?)))
+            .map(|p| Ok((p.temperature, op_value(&p.result, signal)?)))
             .collect::<Result<Vec<_>, String>>()?;
         Ok(ascending(trace))
     }
@@ -1136,7 +1136,9 @@ mod tests {
     use crate::circuit::{Circuit, CircuitElement};
     use crate::element::{Capacitor, CurrentSource, Diode, Resistor, VoltageSource};
     use crate::waveform::Waveform;
-    use crate::{dc_sweep, solve_circuit, solve_transient, TransientConfig};
+    use crate::{
+        dc_sweep, solve_circuit, solve_transient, DcSweepAxis, TempSweepConfig, TransientConfig,
+    };
 
     struct Points(Vec<(f64, f64)>);
 
@@ -1431,7 +1433,7 @@ mod tests {
         assert_eq!(report.unmeasured().len(), 1);
 
         // Swept from high to low: the trace still runs in ascending x.
-        let sweep = dc_sweep(&divider, "V1", 10.0, 0.0, 11).unwrap();
+        let sweep = dc_sweep(&divider, &DcSweepAxis::new("V1", 10.0, 0.0, 11)).unwrap();
         let half = Measurement::new(
             "half",
             Measure::When(Crossing::new(Signal::v("out"), 2.5).rising()),
@@ -1559,7 +1561,7 @@ mod tests {
 
     #[test]
     fn sweeps_propagate_an_unreadable_signal() {
-        let sweep = dc_sweep(&divider(), "V1", 0.0, 1.0, 3).unwrap();
+        let sweep = dc_sweep(&divider(), &DcSweepAxis::new("V1", 0.0, 1.0, 3)).unwrap();
         let err = Measurement::new("m", Measure::stat(Signal::v("nope"), Stat::Max)).on(&sweep);
         assert_eq!(reason(err), "no node `nope` in the result");
     }
@@ -1585,7 +1587,8 @@ mod tests {
                 }),
             ],
         );
-        let sweep = crate::temperature_sweep(&circuit, 250.0, 350.0, 5).unwrap();
+        let sweep =
+            crate::temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 350.0, 5)).unwrap();
         let coldest = Measurement::new("vmax", Measure::find(Signal::v("a"), 250.0))
             .on(&sweep)
             .unwrap();

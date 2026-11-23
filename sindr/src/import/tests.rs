@@ -286,12 +286,9 @@ fn ac_and_dc_sweep_name_a_bench_source() {
 
     let sweep = Bench::new("gnd")
         .with_source(BenchSource::voltage("sig", "in", 0.0))
-        .with_analysis(Analysis::DcSweep {
-            source: "sig".into(),
-            start: 0.0,
-            stop: 4.0,
-            points: 5,
-        });
+        .with_analysis(Analysis::DcSweep(crate::DcSweepAxis::new(
+            "sig", 0.0, 4.0, 5,
+        )));
     let Simulation::DcSweep(r) = simulate(&netlist, &sweep).unwrap().result else {
         panic!()
     };

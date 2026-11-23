@@ -693,7 +693,7 @@ Sweep a voltage or current source across a range and collect operating points at
 # let mut circuit = Circuit::default();
 use sindr::{Circuit, CircuitElement, dc_sweep};
 
-let sweep = dc_sweep(&circuit, "V1", 0.0, 5.0, 51)?;
+let sweep = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 5.0, 51))?;
 
 let v_curve = sweep.node_voltage_curve("n2");
 let i_curve = sweep.component_current_curve("D1");
@@ -732,29 +732,29 @@ use sindr::{Circuit, temperature_sweep, TempSweepResult};
 
 // All junction devices (BJT, diode, LED, Zener, Schottky, Photodiode) have their
 // temperature field overridden at each step.
-let result = temperature_sweep(&circuit, 250.0, 350.0, 11)?; // 250 K → 350 K, 11 points
+let result = temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 350.0, 11))?; // 250 K → 350 K, 11 points
 
 for point in &result.points {
     let ic = point.result.bjt("Q1").map_or(0.0, |b| b.ic);
-    println!("T = {:.1} K, Ic = {:.3} mA", point.temperature_kelvin, ic * 1000.0);
+    println!("T = {:.1} K, Ic = {:.3} mA", point.temperature, ic * 1000.0);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ```rust,ignore
 pub struct TempSweepResult {
-    pub temp_start: f64,              // K
-    pub temp_end:   f64,              // K
-    pub points:     Vec<TempSweepPoint>,
+    pub start:  f64,                 // K
+    pub stop:   f64,                 // K
+    pub points: Vec<TempSweepPoint>,
 }
 
 pub struct TempSweepPoint {
-    pub temperature_kelvin: f64,
-    pub result:             SimulationResult, // the full operating point at this temperature
+    pub temperature: f64,              // K
+    pub result:      SimulationResult, // the full operating point at this temperature
 }
 ```
 
-`num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
+`num_points` must be ≥ 2, and both temperatures finite and above 0 K.
 
 ## Self-heating
 

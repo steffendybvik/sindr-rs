@@ -25,6 +25,7 @@ use sindr::{
     dc_sweep, solve_ac_sensitivity, solve_circuit, solve_op, solve_sensitivity, temperature_sweep,
     Circuit, CircuitElement, JfetKind, MosfetKind, SensParameter, SimulationResult,
 };
+use sindr::{DcSweepAxis, TempSweepConfig};
 use sindr_devices::mosfet::MosfetParams;
 
 #[path = "support/deck_parity.rs"]
@@ -566,7 +567,7 @@ fn op_photodiode() {
 #[test]
 fn dc_reactive() {
     let golden = Golden::load("dc_reactive");
-    let sweep = dc_sweep(&parse("dc_reactive"), "v1", 0.0, 2.0, 5).unwrap();
+    let sweep = dc_sweep(&parse("dc_reactive"), &DcSweepAxis::new("v1", 0.0, 2.0, 5)).unwrap();
     let scale = golden.scale();
     let column = |node: &str| -> Vec<f64> {
         sweep
@@ -593,7 +594,7 @@ fn dc_reactive() {
 #[test]
 fn dc_diode_iv() {
     let golden = Golden::load("dc_diode_iv");
-    let sweep = dc_sweep(&parse("dc_diode_iv"), "v1", 0.0, 1.0, 21).unwrap();
+    let sweep = dc_sweep(&parse("dc_diode_iv"), &DcSweepAxis::new("v1", 0.0, 1.0, 21)).unwrap();
     let scale = golden.scale();
     let vb: Vec<f64> = sweep
         .points
@@ -616,7 +617,11 @@ fn dc_diode_iv() {
 #[test]
 fn dc_diode_1n4148() {
     let golden = Golden::load("dc_diode_1n4148");
-    let sweep = dc_sweep(&parse("dc_diode_1n4148"), "v1", 0.0, 2.0, 21).unwrap();
+    let sweep = dc_sweep(
+        &parse("dc_diode_1n4148"),
+        &DcSweepAxis::new("v1", 0.0, 2.0, 21),
+    )
+    .unwrap();
     let scale = golden.scale();
     let vb: Vec<f64> = sweep
         .points
@@ -1018,8 +1023,11 @@ fn op_pjf() {
 fn check_dc_deck(case: &'static str, source: &str, from: f64, to: f64) {
     let golden = Golden::load(case);
     let scale = golden.scale();
-    let sweep = dc_sweep(&parse(case), source, from, to, scale.len())
-        .unwrap_or_else(|e| panic!("{case}: {e}"));
+    let sweep = dc_sweep(
+        &parse(case),
+        &DcSweepAxis::new(source, from, to, scale.len()),
+    )
+    .unwrap_or_else(|e| panic!("{case}: {e}"));
     let mut check = Check::new(case);
     for name in golden.names.iter().skip(1) {
         let inner = &name[2..name.len() - 1];
@@ -1064,7 +1072,11 @@ fn dc_power_mosfet_body() {
 #[test]
 fn dc_mosfet_body_diode_deck_parses() {
     let golden = Golden::load("dc_mosfet_body_diode");
-    let sweep = dc_sweep(&parse("dc_mosfet_body_diode"), "v1", -5.0, 5.0, 41).unwrap();
+    let sweep = dc_sweep(
+        &parse("dc_mosfet_body_diode"),
+        &DcSweepAxis::new("v1", -5.0, 5.0, 41),
+    )
+    .unwrap();
     let vd: Vec<f64> = sweep
         .points
         .iter()
@@ -1704,9 +1716,7 @@ fn temp_diode() {
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
     let sweep = temperature_sweep(
         &parse("temp_diode"),
-        kelvin[0],
-        *kelvin.last().unwrap(),
-        kelvin.len(),
+        &TempSweepConfig::new(kelvin[0], *kelvin.last().unwrap(), kelvin.len()),
     )
     .unwrap();
     let got: Vec<f64> = sweep
@@ -1728,9 +1738,7 @@ fn temp_diode_card() {
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
     let sweep = temperature_sweep(
         &parse("temp_diode_card"),
-        kelvin[0],
-        *kelvin.last().unwrap(),
-        kelvin.len(),
+        &TempSweepConfig::new(kelvin[0], *kelvin.last().unwrap(), kelvin.len()),
     )
     .unwrap();
     let got: Vec<f64> = sweep
@@ -1751,9 +1759,7 @@ fn temp_schottky_card() {
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
     let sweep = temperature_sweep(
         &parse("temp_schottky_card"),
-        kelvin[0],
-        *kelvin.last().unwrap(),
-        kelvin.len(),
+        &TempSweepConfig::new(kelvin[0], *kelvin.last().unwrap(), kelvin.len()),
     )
     .unwrap();
     let got: Vec<f64> = sweep
@@ -1774,9 +1780,7 @@ fn temp_bjt_card() {
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
     let sweep = temperature_sweep(
         &parse("temp_bjt_card"),
-        kelvin[0],
-        *kelvin.last().unwrap(),
-        kelvin.len(),
+        &TempSweepConfig::new(kelvin[0], *kelvin.last().unwrap(), kelvin.len()),
     )
     .unwrap();
     let mut check = Check::new("temp_bjt_card");
@@ -1801,7 +1805,11 @@ fn temp_bjt_card() {
 #[test]
 fn dc_diode_breakdown() {
     let golden = Golden::load("dc_diode_breakdown");
-    let sweep = dc_sweep(&parse("dc_diode_breakdown"), "v1", 0.0, -150.0, 31).unwrap();
+    let sweep = dc_sweep(
+        &parse("dc_diode_breakdown"),
+        &DcSweepAxis::new("v1", 0.0, -150.0, 31),
+    )
+    .unwrap();
     let scale = golden.scale();
     let vb: Vec<f64> = sweep
         .points
@@ -1847,7 +1855,7 @@ fn dc_zener() {
             temperature: 300.15,
         }),
     ]);
-    let sweep = dc_sweep(&circuit, "v1", -2.0, 12.0, 29).unwrap();
+    let sweep = dc_sweep(&circuit, &DcSweepAxis::new("v1", -2.0, 12.0, 29)).unwrap();
     let scale = golden.scale();
     let vb: Vec<f64> = sweep
         .points
@@ -1907,7 +1915,7 @@ fn dc_mosfet_body_diode() {
             body_diode: Some(body),
         }),
     ]);
-    let sweep = dc_sweep(&circuit, "v1", -5.0, 5.0, 41).unwrap();
+    let sweep = dc_sweep(&circuit, &DcSweepAxis::new("v1", -5.0, 5.0, 41)).unwrap();
     let scale = golden.scale();
     let vd: Vec<f64> = sweep
         .points

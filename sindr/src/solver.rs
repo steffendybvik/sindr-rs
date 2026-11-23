@@ -337,13 +337,10 @@ impl Solver {
     pub fn dc_sweep(
         &self,
         circuit: &Circuit,
-        source_id: &str,
-        start: f64,
-        stop: f64,
-        num_points: usize,
+        axis: &DcSweepAxis,
     ) -> Result<DcSweepResult, SimError> {
         self.options.validate()?;
-        crate::dc_sweep::dc_sweep_with(circuit, source_id, start, stop, num_points, &self.options)
+        crate::dc_sweep::dc_sweep_with(circuit, axis, &self.options)
     }
 
     /// As [`dc_sweep_nested`](crate::dc_sweep_nested). The nodeset seeds the
@@ -372,17 +369,9 @@ impl Solver {
     pub fn temperature_sweep(
         &self,
         circuit: &Circuit,
-        temp_start: f64,
-        temp_end: f64,
-        num_steps: usize,
+        config: &crate::temp_sweep::TempSweepConfig,
     ) -> Result<TempSweepResult, SimError> {
         self.options.validate()?;
-        crate::temp_sweep::temperature_sweep_with(
-            circuit,
-            temp_start,
-            temp_end,
-            num_steps,
-            &self.options,
-        )
+        crate::temp_sweep::temperature_sweep_with(circuit, config, &self.options)
     }
 }

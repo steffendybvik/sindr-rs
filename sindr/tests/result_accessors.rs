@@ -8,6 +8,7 @@ use sindr::{
     dc_sweep, solve_ac, solve_circuit, solve_transient, temperature_sweep, AcConfig, BjtKind,
     Block, Circuit, CircuitElement, Instance, MosfetKind, TransientConfig,
 };
+use sindr::{DcSweepAxis, TempSweepConfig};
 use sindr_devices::mosfet::MosfetParams;
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
@@ -329,7 +330,7 @@ fn ac_points_and_curves() {
 
 #[test]
 fn sweep_points_use_the_same_accessors() {
-    let sweep = dc_sweep(&divider(), "V1", 0.0, 10.0, 11).unwrap();
+    let sweep = dc_sweep(&divider(), &DcSweepAxis::new("V1", 0.0, 10.0, 11)).unwrap();
     let curve = sweep.node_voltage_curve("out");
     assert_eq!(curve.len(), 11);
     for (p, (x, vout)) in sweep.points.iter().zip(&curve) {
@@ -339,7 +340,7 @@ fn sweep_points_use_the_same_accessors() {
     }
     assert!(sweep.node_voltage_curve("missing").is_empty());
 
-    let temps = temperature_sweep(&divider(), 250.0, 350.0, 3).unwrap();
+    let temps = temperature_sweep(&divider(), &TempSweepConfig::new(250.0, 350.0, 3)).unwrap();
     let curve = temps.node_voltage_curve("out");
     assert_eq!(curve.len(), temps.points.len());
     assert_eq!(curve[0].0, 250.0);

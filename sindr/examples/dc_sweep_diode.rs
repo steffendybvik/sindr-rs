@@ -10,6 +10,7 @@
 //   Forward-bias (V > ~0.5): exponential current turn-on
 
 use sindr::element::{Diode, Resistor, VoltageSource};
+use sindr::DcSweepAxis;
 use sindr::{dc_sweep, Circuit, CircuitElement};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Sweep V1 from -1 V to +1 V in 101 points
-    let sweep = dc_sweep(&circuit, "V1", -1.0, 1.0, 101)?;
+    let sweep = dc_sweep(&circuit, &DcSweepAxis::new("V1", -1.0, 1.0, 101))?;
 
     println!("V_applied(V)\tI_diode(A)");
     for (v, i) in sweep.component_current_curve("D1") {

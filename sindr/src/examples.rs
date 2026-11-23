@@ -540,7 +540,8 @@ mod tests {
 
     #[test]
     fn led_example_blocks_below_its_forward_voltage() {
-        let sweep = crate::dc_sweep(&led_circuit(), "V1", 0.0, 9.0, 10).unwrap();
+        let sweep =
+            crate::dc_sweep(&led_circuit(), &crate::DcSweepAxis::new("V1", 0.0, 9.0, 10)).unwrap();
         let curve = sweep.component_current_curve("LED1");
         let at = |v: f64| curve.iter().find(|(x, _)| (x - v).abs() < 1e-9).unwrap().1;
         // No current at 0 V and essentially none below a red LED's ~1.8 V.

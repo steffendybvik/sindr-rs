@@ -71,9 +71,7 @@
 //!                     println!("dc sweep of {source}: {} curves", sweep.curves.len());
 //!                 }
 //!                 (axis, None) => {
-//!                     let sweep = sindr::dc_sweep(
-//!                         &netlist.circuit, &axis.source_id, axis.start, axis.stop, axis.num_points,
-//!                     )?;
+//!                     let sweep = sindr::dc_sweep(&netlist.circuit, &axis)?;
 //!                     println!("dc sweep of {source}: {} points", sweep.points.len());
 //!                 }
 //!             }

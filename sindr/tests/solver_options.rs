@@ -5,6 +5,7 @@ use sindr::element::{Bjt, Capacitor, Diode, Resistor, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::dc_sweep::DcSweepAxis;
+use sindr::TempSweepConfig;
 use sindr::{
     solve_ac_sensitivity, solve_circuit, solve_loop_gain, solve_pz, solve_transient, AcSensConfig,
     BjtKind, Circuit, CircuitElement, ConvergenceAid, LoopGainConfig, NoiseConfig, PzConfig,
@@ -437,7 +438,9 @@ fn every_analysis(solver: &Solver, c: &Circuit) -> Vec<(&'static str, Result<(),
         ),
         (
             "dc_sweep",
-            solver.dc_sweep(c, "V1", 5.0, 5.001, 2).map(drop),
+            solver
+                .dc_sweep(c, &DcSweepAxis::new("V1", 5.0, 5.001, 2))
+                .map(drop),
         ),
         (
             "dc_sweep_nested",
@@ -445,7 +448,9 @@ fn every_analysis(solver: &Solver, c: &Circuit) -> Vec<(&'static str, Result<(),
         ),
         (
             "temperature_sweep",
-            solver.temperature_sweep(c, 300.15, 300.25, 2).map(drop),
+            solver
+                .temperature_sweep(c, &TempSweepConfig::new(300.15, 300.25, 2))
+                .map(drop),
         ),
     ]
 }

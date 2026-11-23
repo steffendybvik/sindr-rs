@@ -46,13 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             AnalysisRequest::Dc { source, .. } => {
                 let (axis, _outer) = analysis.dc_axes().ok_or("not a .dc")??;
-                let sweep = sindr::dc_sweep(
-                    &netlist.circuit,
-                    &axis.source_id,
-                    axis.start,
-                    axis.stop,
-                    axis.num_points,
-                )?;
+                let sweep = sindr::dc_sweep(&netlist.circuit, &axis)?;
                 let curve = sweep.node_voltage_curve("n2");
                 println!(
                     "dc sweep of {source}: {} points, V(n2) {:.3}..{:.3} V",

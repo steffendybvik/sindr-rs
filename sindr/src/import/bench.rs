@@ -3,7 +3,7 @@
 use super::{parse_value, ImportError, ImportOptions, ImportedCircuit, Netlist, Pin, Value};
 use crate::ac_analysis::{solve_ac, AcConfig, AcResult};
 use crate::circuit::{BehaviouralOutput, Circuit, CircuitElement};
-use crate::dc_sweep::{dc_sweep, DcSweepResult};
+use crate::dc_sweep::{dc_sweep, DcSweepAxis, DcSweepResult};
 use crate::element::{Behavioural, Capacitor, CurrentSource, Inductor, Resistor, VoltageSource};
 use crate::expression::Expression;
 use crate::results::SimulationResult;
@@ -389,17 +389,8 @@ pub enum Analysis {
     /// A small-signal frequency sweep, as [`solve_ac`]. `source_id` names
     /// a bench source.
     Ac(AcConfig),
-    /// A DC sweep of one source's value, as [`dc_sweep`].
-    DcSweep {
-        /// The bench source to sweep.
-        source: String,
-        /// First value (V or A).
-        start: f64,
-        /// Last value (V or A).
-        stop: f64,
-        /// Number of points, both ends included.
-        points: usize,
-    },
+    /// A DC sweep of one bench source's value, as [`dc_sweep`].
+    DcSweep(DcSweepAxis),
 }
 
 /// What a schematic leaves out: the ground net, the sources and loads that
@@ -692,12 +683,7 @@ pub fn simulate_with(
             Simulation::Transient(solve_transient(&circuit.circuit, config)?)
         }
         Analysis::Ac(config) => Simulation::Ac(solve_ac(&circuit.circuit, config)?),
-        Analysis::DcSweep {
-            source,
-            start,
-            stop,
-            points,
-        } => Simulation::DcSweep(dc_sweep(&circuit.circuit, source, *start, *stop, *points)?),
+        Analysis::DcSweep(axis) => Simulation::DcSweep(dc_sweep(&circuit.circuit, axis)?),
     };
     Ok(Imported { circuit, result })
 }

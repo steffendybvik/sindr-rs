@@ -155,7 +155,7 @@ fn seeded_points_match_independent_solves() {
             }),
         ],
     );
-    let sweep = dc_sweep(&circuit, "V1", -1.0, 5.0, 25).unwrap();
+    let sweep = dc_sweep(&circuit, &DcSweepAxis::new("V1", -1.0, 5.0, 25)).unwrap();
     for point in &sweep.points {
         let mut alone = circuit.clone();
         if let CircuitElement::VoltageSource(VoltageSource { voltage, .. }) =
