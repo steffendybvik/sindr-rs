@@ -4,52 +4,56 @@
 //! path into validation and the solver.
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{
+    Capacitor, CurrentSource, Inductor, OpAmp, Resistor, Transformer, Vccs, VoltageSource,
+    ZenerDiode,
+};
 use sindr::{
     dc_sweep, solve_circuit, solve_transient, validate_circuit, Circuit, CircuitElement, SimError,
     TransientConfig,
 };
 
 fn r(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn v(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn i(id: &str, from: &str, to: &str, current: f64) -> CircuitElement {
-    CircuitElement::CurrentSource {
+    CircuitElement::CurrentSource(CurrentSource {
         id: id.into(),
         nodes: [from.into(), to.into()],
         current,
         waveform: None,
-    }
+    })
 }
 
 fn c(id: &str, a: &str, b: &str, capacitance: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance,
-    }
+    })
 }
 
 fn l(id: &str, a: &str, b: &str, inductance: f64) -> CircuitElement {
-    CircuitElement::Inductor {
+    CircuitElement::Inductor(Inductor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         inductance,
         saturation: None,
-    }
+    })
 }
 
 /// Runs `circuit` through DC, transient, AC and a DC sweep of `V1`, and
@@ -321,12 +325,12 @@ fn inductance_that_is_zero_negative_or_not_finite() {
 
 #[test]
 fn controlled_source_gain_that_is_not_finite() {
-    let circuit = divider_with(CircuitElement::Vccs {
+    let circuit = divider_with(CircuitElement::Vccs(Vccs {
         id: "G1".into(),
         nodes: ["b".into(), "0".into()],
         control_nodes: ["a".into(), "0".into()],
         gm: f64::NAN,
-    });
+    }));
     every_analysis_fails(&circuit, expect_invalid_component("`G1`: gm"));
 }
 
@@ -337,14 +341,14 @@ fn transformer_inductance_that_is_zero() {
         vec![
             v("V1", "a", "0", 1.0),
             r("R1", "a", "p", 1.0),
-            CircuitElement::Transformer {
+            CircuitElement::Transformer(Transformer {
                 id: "T1".into(),
                 nodes: ["p".into(), "0".into(), "s".into(), "0".into()],
                 l1: 0.0,
                 l2: 1.0,
                 k: 0.999,
                 saturation: None,
-            },
+            }),
             r("R2", "s", "0", 100.0),
         ],
     );
@@ -363,12 +367,12 @@ fn zener_without_a_breakdown_voltage_is_rejected() {
             vec![
                 v("V1", "in", "0", 12.0),
                 r("R1", "in", "k", 1e3),
-                CircuitElement::ZenerDiode {
+                CircuitElement::ZenerDiode(ZenerDiode {
                     id: "DZ1".into(),
                     nodes: ["0".into(), "k".into()],
                     vz,
                     temperature: 300.15,
-                },
+                }),
             ],
         );
         every_analysis_fails(&circuit, |analysis, err| match err {
@@ -390,13 +394,13 @@ fn op_amp_rails_must_not_cross() {
             "0",
             vec![
                 v("V1", "in", "0", 1.0),
-                CircuitElement::OpAmp {
+                CircuitElement::OpAmp(OpAmp {
                     id: "U1".into(),
                     nodes: ["in".into(), "out".into(), "out".into()],
                     v_pos,
                     v_neg,
                     model: Some(sindr::OpAmpModel::default()),
-                },
+                }),
                 r("RL", "out", "0", 1e3),
             ],
         );

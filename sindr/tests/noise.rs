@@ -2,6 +2,10 @@
 //! breakdown, and input-referred noise for a current input.
 
 use sindr::ac_analysis::FrequencySpacing;
+use sindr::element::{
+    Bjt, CurrentSource, Diode, Jfet, Led, Mosfet, Photodiode, Photoresistor, Potentiometer,
+    Resistor, SchottkyDiode, Thermistor, VoltageSource, ZenerDiode,
+};
 use sindr::noise::{solve_noise, NoiseConfig, NoiseKind, NoiseResult};
 use sindr::{
     solve_op, BjtKind, BjtModel, Circuit, CircuitElement, DiodeModel, JfetKind, MosfetKind,
@@ -14,30 +18,30 @@ const Q: f64 = 1.602_176_634e-19;
 const T_NOM: f64 = 300.15;
 
 fn vsrc(id: &str, p: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), "0".into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn res(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 /// `I1` pushing `amps` from ground into `node`.
 fn isrc(node: &str, amps: f64) -> CircuitElement {
-    CircuitElement::CurrentSource {
+    CircuitElement::CurrentSource(CurrentSource {
         id: "I1".into(),
         nodes: ["0".into(), node.into()],
         current: amps,
         waveform: None,
-    }
+    })
 }
 
 /// `x` within `rel` of `want`.
@@ -54,18 +58,18 @@ fn biased_diode(kf: f64) -> Circuit {
     Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "a".into()],
                 resistance: 10e3,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 300.15,
@@ -74,7 +78,7 @@ fn biased_diode(kf: f64) -> Circuit {
                     af: 1.0,
                     ..DiodeModel::default()
                 }),
-            },
+            }),
         ],
     )
 }
@@ -116,17 +120,17 @@ fn current_input_refers_noise_in_amps() {
     let circuit = Circuit::new(
         "0",
         vec![
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 id: "I1".into(),
                 nodes: ["0".into(), "out".into()],
                 current: 0.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["out".into(), "0".into()],
                 resistance: 1e3,
-            },
+            }),
         ],
     );
     let noise = solve_noise(&circuit, &config("out", "I1", (10.0, 1e3), 3)).unwrap();
@@ -215,12 +219,12 @@ fn potentiometer_halves_are_two_thermal_sources() {
         "0",
         vec![
             vsrc("V1", "in", 0.0),
-            CircuitElement::Potentiometer {
+            CircuitElement::Potentiometer(Potentiometer {
                 id: "P1".into(),
                 nodes: ["in".into(), "w".into(), "0".into()],
                 resistance: 10e3,
                 position: 0.3,
-            },
+            }),
             res("RL", "w", "0", 10e3),
         ],
     );
@@ -250,19 +254,19 @@ fn potentiometer_halves_are_two_thermal_sources() {
 fn thermistor_and_photoresistor_noise_is_4ktr() {
     let cases = [
         (
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id: "TH1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 330.0,
-            },
+            }),
             330.0,
         ),
         (
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 id: "LDR1".into(),
                 nodes: ["a".into(), "0".into()],
                 light_level: 0.4,
-            },
+            }),
             T_NOM,
         ),
     ];
@@ -286,29 +290,29 @@ fn thermistor_and_photoresistor_noise_is_4ktr() {
 fn junction_shot_noise_is_2qi() {
     let nodes = || ["a".to_string(), "0".to_string()];
     let devices = [
-        CircuitElement::Led {
+        CircuitElement::Led(Led {
             id: "D1".into(),
             nodes: nodes(),
             color: "red".into(),
             temperature: T_NOM,
-        },
-        CircuitElement::SchottkyDiode {
+        }),
+        CircuitElement::SchottkyDiode(SchottkyDiode {
             id: "D1".into(),
             nodes: nodes(),
             temperature: T_NOM,
-        },
-        CircuitElement::Photodiode {
+        }),
+        CircuitElement::Photodiode(Photodiode {
             id: "D1".into(),
             nodes: nodes(),
             irradiance: 0.0,
             temperature: T_NOM,
-        },
-        CircuitElement::ZenerDiode {
+        }),
+        CircuitElement::ZenerDiode(ZenerDiode {
             id: "D1".into(),
             nodes: nodes(),
             vz: 5.1,
             temperature: T_NOM,
-        },
+        }),
     ];
     for device in devices {
         let name = format!("{device:?}");
@@ -337,7 +341,7 @@ fn bjt_flicker_rides_on_the_base_current() {
             vsrc("VIN", "in", 5.0),
             res("RB", "in", "b", 430e3),
             res("RC", "vcc", "c", 1e3),
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "0".into()],
                 kind: BjtKind::Npn,
@@ -349,7 +353,7 @@ fn bjt_flicker_rides_on_the_base_current() {
                     af,
                     ..BjtModel::default()
                 }),
-            },
+            }),
         ],
     );
     let ib = solve_op(&circuit).unwrap().bjt_results[0].ib;
@@ -406,7 +410,7 @@ fn mosfet_channel_and_flicker_noise() {
                 vsrc("VDD", "vdd", 10.0),
                 vsrc("VIN", "g", 1.2),
                 res("RD", "vdd", "d", rd),
-                CircuitElement::Mosfet {
+                CircuitElement::Mosfet(Mosfet {
                     id: "M1".into(),
                     nodes: ["g".into(), "d".into(), "0".into()],
                     kind: MosfetKind::Nmos,
@@ -418,7 +422,7 @@ fn mosfet_channel_and_flicker_noise() {
                     },
                     parasitic_caps: None,
                     body_diode: None,
-                },
+                }),
             ],
         )
     };
@@ -446,14 +450,14 @@ fn jfet_channel_noise() {
             vsrc("VDD", "vdd", 12.0),
             vsrc("VIN", "g", -0.5),
             res("RD", "vdd", "d", 1e3),
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "0".into()],
                 kind: JfetKind::NChannel,
                 idss: 10e-3,
                 vp: -2.0,
                 parasitic_caps: None,
-            },
+            }),
         ],
     );
     let noise = assert_channel_noise("JFET", &circuit);
@@ -469,13 +473,13 @@ fn mosfet_flicker_parameters_are_validated() {
         Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["d".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Mosfet {
+                }),
+                CircuitElement::Mosfet(Mosfet {
                     id: "M1".into(),
                     nodes: ["d".into(), "d".into(), "0".into()],
                     kind: MosfetKind::Nmos,
@@ -486,7 +490,7 @@ fn mosfet_flicker_parameters_are_validated() {
                     },
                     parasitic_caps: None,
                     body_diode: None,
-                },
+                }),
             ],
         )
     };

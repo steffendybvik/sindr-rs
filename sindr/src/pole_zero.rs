@@ -41,6 +41,7 @@
 //! root more than about 1e13 times `ω₀` is treated as infinite and dropped.
 //! Poles and zeros that cancel are both reported, as SPICE does.
 
+use crate::element::VoltageSource;
 use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 
@@ -210,27 +211,28 @@ impl PzResult {
 /// ```
 /// use sindr::{Circuit, CircuitElement};
 /// use sindr::pole_zero::{solve_pz, PzConfig};
+/// use sindr::element::{Capacitor, Resistor, VoltageSource};
 ///
 /// // RC low-pass, 1 kΩ and 1 µF: one pole at −1/RC = −1000 rad/s.
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["in".into(), "0".into()],
 ///             voltage: 0.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["in".into(), "out".into()],
 ///             resistance: 1_000.0,
-///         },
-///         CircuitElement::Capacitor {
+///         }),
+///         CircuitElement::Capacitor(Capacitor {
 ///             id: "C1".into(),
 ///             nodes: ["out".into(), "0".into()],
 ///             capacitance: 1e-6,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -241,6 +243,7 @@ impl PzResult {
 /// assert!(pz.zeros.is_empty());
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_pz(circuit: &Circuit, config: &PzConfig) -> Result<PzResult, SimError> {
     solve_pz_with(circuit, config, &crate::SolverOptions::default())
 }
@@ -266,7 +269,7 @@ pub(crate) fn solve_pz_with(
     let b = match config.transfer {
         PzTransfer::VoltageGain => {
             let existing = circuit.components.iter().find_map(|e| match e {
-                CircuitElement::VoltageSource { id, nodes, .. }
+                CircuitElement::VoltageSource(VoltageSource { id, nodes, .. })
                     if same_pair(nodes, &config.input, &config.input_reference) =>
                 {
                     pencil.vsource_branches.get(id).copied()

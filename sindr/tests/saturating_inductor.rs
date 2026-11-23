@@ -2,6 +2,7 @@
 //! `λ(i) = L_sat·i + (L0 − L_sat)·I_sat·tanh(i/I_sat)`.
 
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::element::{Inductor, Resistor, VoltageSource};
 use sindr::{
     solve_transient, validate_circuit, Circuit, CircuitElement, IntegrationMethod, SimError,
     TransientConfig,
@@ -15,21 +16,21 @@ const SAT: InductorSaturation = InductorSaturation {
 };
 
 fn inductor(a: &str, b: &str, saturation: Option<InductorSaturation>) -> CircuitElement {
-    CircuitElement::Inductor {
+    CircuitElement::Inductor(Inductor {
         id: "L1".into(),
         nodes: [a.into(), b.into()],
         inductance: L0,
         saturation,
-    }
+    })
 }
 
 fn vsource(p: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: "V1".into(),
         nodes: [p.into(), "0".into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn current_at(tran: &sindr::TransientData, t: f64) -> f64 {
@@ -96,11 +97,11 @@ fn rl_charge_matches_the_integrated_ode() {
             "0",
             vec![
                 vsource("a", v),
-                CircuitElement::Resistor {
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["a".into(), "b".into()],
                     resistance: r,
-                },
+                }),
                 inductor("b", "0", saturation),
             ],
         )
@@ -136,11 +137,11 @@ fn ac_uses_the_incremental_inductance_at_the_bias() {
         vec![
             vsource("a", 2.0 * r),
             inductor("a", "b", Some(SAT)),
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["b".into(), "0".into()],
                 resistance: r,
-            },
+            }),
         ],
     );
     let l_inc = incremental_inductance(2.0, L0, &SAT);
@@ -186,11 +187,11 @@ fn saturation_parameters_are_validated() {
             "0",
             vec![
                 vsource("a", 1.0),
-                CircuitElement::Resistor {
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["a".into(), "b".into()],
                     resistance: 1.0,
-                },
+                }),
                 inductor("b", "0", Some(sat)),
             ],
         );

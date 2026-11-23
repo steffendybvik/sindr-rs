@@ -5,6 +5,7 @@
 #![cfg(feature = "spice")]
 
 use miette::Diagnostic;
+use sindr::element::{Capacitor, Diode};
 use sindr::spice::{parse_file, parse_str, SpiceParseError};
 
 /// The text each label of `err` covers in `deck`.
@@ -234,7 +235,7 @@ fn a_suffix_is_atto() {
         .components
         .iter()
         .find_map(|c| match c {
-            sindr::CircuitElement::Capacitor { capacitance, .. } => Some(*capacitance),
+            sindr::CircuitElement::Capacitor(Capacitor { capacitance, .. }) => Some(*capacitance),
             _ => None,
         })
         .unwrap();
@@ -310,7 +311,7 @@ fn model_card_parameters_may_be_comma_separated() {
         .components
         .iter()
         .find_map(|c| match c {
-            sindr::CircuitElement::Diode { model, .. } => *model,
+            sindr::CircuitElement::Diode(Diode { model, .. }) => *model,
             _ => None,
         })
         .expect("D1 has a model");

@@ -32,14 +32,15 @@
 //! ```
 //! use sindr::measure::{check_specs, Measure, Measurement, Signal, Spec, Stat};
 //! use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+//! use sindr::element::{Capacitor, Resistor, VoltageSource};
 //!
 //! // RC low-pass, τ = 1 ms, charging towards 5 V.
 //! let circuit = Circuit::new(
 //!     "0",
 //!     vec![
-//!         CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 5.0, waveform: None },
-//!         CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
-//!         CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+//!         CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 5.0, waveform: None }),
+//!         CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 }),
+//!         CircuitElement::Capacitor(Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 }),
 //!     ],
 //! );
 //! let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 10e-6))?;
@@ -56,6 +57,7 @@
 //! assert!((rise - 2.197e-3).abs() < 0.05e-3);
 //! # Ok::<(), sindr::SimError>(())
 //! ```
+//!
 
 use num_complex::Complex64;
 
@@ -1119,6 +1121,7 @@ mod tests {
     use super::*;
     use crate::ac_analysis::{solve_ac, AcConfig};
     use crate::circuit::{Circuit, CircuitElement};
+    use crate::element::{Capacitor, CurrentSource, Diode, Resistor, VoltageSource};
     use crate::waveform::Waveform;
     use crate::{dc_sweep, solve_circuit, solve_transient, TransientConfig};
 
@@ -1300,23 +1303,23 @@ mod tests {
         Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     // A waveform adds to the DC value.
                     voltage: if waveform.is_some() { 0.0 } else { 1.0 },
                     waveform,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["in".into(), "out".into()],
                     resistance: 1e3,
-                },
-                CircuitElement::Capacitor {
+                }),
+                CircuitElement::Capacitor(Capacitor {
                     id: "C1".into(),
                     nodes: ["out".into(), "0".into()],
                     capacitance: 1e-6,
-                },
+                }),
             ],
         )
     }
@@ -1359,22 +1362,22 @@ mod tests {
         let divider = Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: 10.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["in".into(), "out".into()],
                     resistance: 1e3,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R2".into(),
                     nodes: ["out".into(), "0".into()],
                     resistance: 1e3,
-                },
+                }),
             ],
         );
         let op = solve_circuit(&divider).unwrap();
@@ -1498,22 +1501,22 @@ mod tests {
         Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: 10.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["in".into(), "out".into()],
                     resistance: 1e3,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R2".into(),
                     nodes: ["out".into(), "0".into()],
                     resistance: 1e3,
-                },
+                }),
             ],
         )
     }
@@ -1555,18 +1558,18 @@ mod tests {
         let circuit = Circuit::new(
             "0",
             vec![
-                CircuitElement::CurrentSource {
+                CircuitElement::CurrentSource(CurrentSource {
                     id: "I1".into(),
                     nodes: ["0".into(), "a".into()],
                     current: 1e-3,
                     waveform: None,
-                },
-                CircuitElement::Diode {
+                }),
+                CircuitElement::Diode(Diode {
                     id: "D1".into(),
                     nodes: ["a".into(), "0".into()],
                     temperature: 300.15,
                     model: None,
-                },
+                }),
             ],
         );
         let sweep = crate::temperature_sweep(&circuit, 250.0, 350.0, 5).unwrap();

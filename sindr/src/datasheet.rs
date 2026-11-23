@@ -263,6 +263,7 @@ impl BjtModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::element::{Bjt, CurrentSource, VoltageSource};
     use crate::{solve_op, BjtKind, Circuit, CircuitElement};
     use sindr_devices::diode::T_NOM;
 
@@ -323,14 +324,14 @@ mod tests {
         let circuit = Circuit::new(
             "0",
             vec![
-                CircuitElement::CurrentSource {
+                CircuitElement::CurrentSource(CurrentSource {
                     id: "ib".into(),
                     nodes: ["0".into(), "b".into()],
                     current: ib,
                     waveform: None,
-                },
+                }),
                 collector,
-                CircuitElement::Bjt {
+                CircuitElement::Bjt(Bjt {
                     id: "q".into(),
                     nodes: ["b".into(), "c".into(), "0".into()],
                     kind: BjtKind::Npn,
@@ -338,7 +339,7 @@ mod tests {
                     temperature: T_NOM,
                     parasitic_caps: None,
                     model: Some(model),
-                },
+                }),
             ],
         );
         let r = solve_op(&circuit).unwrap();
@@ -361,24 +362,24 @@ mod tests {
         let (bf, model) = BjtModel::from_datasheet(&ds).unwrap();
         assert_eq!(bf, 200.0);
 
-        let supply = CircuitElement::VoltageSource {
+        let supply = CircuitElement::VoltageSource(VoltageSource {
             id: "vc".into(),
             nodes: ["c".into(), "0".into()],
             voltage: 5.0,
             waveform: None,
-        };
+        });
         let ib = 20e-6;
         let r = solve_op(&Circuit::new(
             "0",
             vec![
-                CircuitElement::CurrentSource {
+                CircuitElement::CurrentSource(CurrentSource {
                     id: "ib".into(),
                     nodes: ["0".into(), "b".into()],
                     current: ib,
                     waveform: None,
-                },
+                }),
                 supply,
-                CircuitElement::Bjt {
+                CircuitElement::Bjt(Bjt {
                     id: "q".into(),
                     nodes: ["b".into(), "c".into(), "0".into()],
                     kind: BjtKind::Npn,
@@ -386,7 +387,7 @@ mod tests {
                     temperature: T_NOM,
                     parasitic_caps: None,
                     model: Some(model),
-                },
+                }),
             ],
         ))
         .unwrap();
@@ -398,12 +399,12 @@ mod tests {
             .current_through;
         assert!((ic.abs() / ib / 200.0 - 1.0).abs() < 1e-6, "Ic {ic}");
 
-        let forced = CircuitElement::CurrentSource {
+        let forced = CircuitElement::CurrentSource(CurrentSource {
             id: "ic".into(),
             nodes: ["0".into(), "c".into()],
             current: 10e-3,
             waveform: None,
-        };
+        });
         let (vce, _) = bjt_op(bf, model, 1e-3, forced);
         assert!((vce - 0.2).abs() < 5e-4, "Vce(sat) {vce}");
     }

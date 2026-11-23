@@ -3,6 +3,7 @@
 //! starts from vce > 0, the limiter walks vce down; a limited step must
 //! never count as converged.
 
+use sindr::element::{Igbt, Resistor, VoltageSource};
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
@@ -18,20 +19,20 @@ fn solve_seeded(
 }
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 /// `vs` through 1 kΩ into the collector of an IGBT whose gate is held at
@@ -42,11 +43,11 @@ fn reverse_igbt(vs: f64) -> Circuit {
             vsource("V1", "s", "0", vs),
             vsource("VG", "g", "0", 15.0),
             resistor("R1", "s", "c", 1e3),
-            CircuitElement::Igbt {
+            CircuitElement::Igbt(Igbt {
                 id: "Q1".into(),
                 nodes: ["g".into(), "c".into(), "e".into()],
                 params: IgbtParams::default(),
-            },
+            }),
             resistor("RE", "e", "0", 1e-3),
         ],
         ground_node: "0".into(),
@@ -69,7 +70,9 @@ fn reverse_blocking_from_a_forward_nodeset() {
 #[test]
 fn transient_follows_the_source_below_zero() {
     let mut circuit = reverse_igbt(0.0);
-    if let CircuitElement::VoltageSource { waveform, .. } = &mut circuit.components[0] {
+    if let CircuitElement::VoltageSource(VoltageSource { waveform, .. }) =
+        &mut circuit.components[0]
+    {
         *waveform = Some(Waveform::Sine {
             amplitude: 5.0,
             frequency: 1e3,

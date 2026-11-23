@@ -112,6 +112,12 @@ pub use bench::{
 };
 pub use value::parse_value;
 
+use crate::element::{
+    Battery, Bjt, Capacitor, Comparator, Crystal, CurrentSource, Diode, FerriteBead, Fuse, Igbt,
+    Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor, Potentiometer, Pushbutton,
+    Relay, Resistor, SchottkyDiode, Switch, Thermistor, Transformer, Varactor, VoltageRegulator,
+    VoltageSource, ZenerDiode,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::circuit::{
@@ -1463,11 +1469,11 @@ fn tie_high_impedance_nets(
             resistor = format!("{node}.hi_z{k}");
             k += 1;
         }
-        circuit.components.push(CircuitElement::Resistor {
+        circuit.components.push(CircuitElement::Resistor(Resistor {
             id: resistor.clone(),
             nodes: [node.clone(), ground.clone()],
             resistance: HIGH_IMPEDANCE_OHMS,
-        });
+        }));
         tied.push(HighImpedanceNet {
             node,
             resistor,
@@ -2246,22 +2252,22 @@ fn build_element(
     };
 
     let element = match kind {
-        K::Resistor => CircuitElement::Resistor {
+        K::Resistor => CircuitElement::Resistor(Resistor {
             id,
             nodes: n2(),
             resistance: r.required_value("a resistance (Ω)")?,
-        },
-        K::Capacitor | K::CapacitorPolarized => CircuitElement::Capacitor {
+        }),
+        K::Capacitor | K::CapacitorPolarized => CircuitElement::Capacitor(Capacitor {
             id,
             nodes: n2(),
             capacitance: r.required_value("a capacitance (F)")?,
-        },
-        K::Inductor => CircuitElement::Inductor {
+        }),
+        K::Inductor => CircuitElement::Inductor(Inductor {
             id,
             nodes: n2(),
             inductance: r.required_value("an inductance (H)")?,
             saturation: None,
-        },
+        }),
         K::Diode => {
             let model = match model {
                 Some(Model::Diode(m)) => {
@@ -2280,31 +2286,31 @@ fn build_element(
                     }
                 },
             };
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id,
                 nodes: n2(),
                 temperature: temperature()?,
                 model,
-            }
+            })
         }
         K::SchottkyDiode => {
             source =
                 defaulted("the built-in Schottky diode; sindr reads no model for this kind".into());
-            CircuitElement::SchottkyDiode {
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 id,
                 nodes: n2(),
                 temperature: temperature()?,
-            }
+            })
         }
         K::Photodiode => {
             source =
                 defaulted("the built-in photodiode; sindr reads no model for this kind".into());
-            CircuitElement::Photodiode {
+            CircuitElement::Photodiode(Photodiode {
                 id,
                 nodes: n2(),
                 irradiance: r.param_or("irradiance", 0.0)?,
                 temperature: temperature()?,
-            }
+            })
         }
         K::ZenerDiode => {
             let (vz, from) = match r.spec("vz")? {
@@ -2331,24 +2337,24 @@ fn build_element(
                     vz.require("vz").map_err(|e| r.datasheet(e))?
                 }
             };
-            CircuitElement::ZenerDiode {
+            CircuitElement::ZenerDiode(ZenerDiode {
                 id,
                 nodes: n2(),
                 vz,
                 temperature: temperature()?,
-            }
+            })
         }
         K::Led => match diode_datasheet(&r)? {
             // An LED through its own Vf is a diode with that model: the LED
             // element knows only its colour's preset.
             Some(ds) => {
                 source = ModelSource::Datasheet;
-                CircuitElement::Diode {
+                CircuitElement::Diode(Diode {
                     id,
                     nodes: n2(),
                     temperature: temperature()?,
                     model: Some(DiodeModel::led_from_datasheet(&ds).map_err(|e| r.datasheet(e))?),
-                }
+                })
             }
             None => {
                 let given = r.text(&["color", "colour"])?;
@@ -2378,12 +2384,12 @@ fn build_element(
                         "red"
                     }
                 };
-                CircuitElement::Led {
+                CircuitElement::Led(Led {
                     id,
                     nodes: n2(),
                     color: color.to_string(),
                     temperature: temperature()?,
-                }
+                })
             }
         },
         K::Varactor => {
@@ -2391,14 +2397,14 @@ fn build_element(
                 Some(Model::Varactor(_)) => ModelSource::Model,
                 _ => defaulted("the built-in varactor".into()),
             };
-            CircuitElement::Varactor {
+            CircuitElement::Varactor(Varactor {
                 id,
                 nodes: n2(),
                 params: match model {
                     Some(Model::Varactor(p)) => p.clone(),
                     _ => VaractorParams::default(),
                 },
-            }
+            })
         }
         K::Npn | K::Pnp => {
             let npn = *kind == K::Npn;
@@ -2452,7 +2458,7 @@ fn build_element(
                 };
                 (bf, given)
             };
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id,
                 nodes: n3(),
                 kind: if npn { BjtKind::Npn } else { BjtKind::Pnp },
@@ -2460,7 +2466,7 @@ fn build_element(
                 temperature: temperature()?,
                 parasitic_caps: None,
                 model: bjt_model,
-            }
+            })
         }
         K::Nmos | K::Pmos => {
             if let Some(body) = node(3) {
@@ -2471,7 +2477,7 @@ fn build_element(
                 }
             }
             let nmos = *kind == K::Nmos;
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id,
                 nodes: n3(),
                 kind: if nmos {
@@ -2513,7 +2519,7 @@ fn build_element(
                 },
                 parasitic_caps: None,
                 body_diode: None,
-            }
+            })
         }
         K::Njfet | K::Pjfet => {
             let n = *kind == K::Njfet;
@@ -2523,7 +2529,7 @@ fn build_element(
                     if n { "−2" } else { "2" }
                 ));
             }
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id,
                 nodes: n3(),
                 kind: if n {
@@ -2534,21 +2540,21 @@ fn build_element(
                 idss: r.param_or("idss", 10e-3)?,
                 vp: r.param_or("vp", if n { -2.0 } else { 2.0 })?,
                 parasitic_caps: None,
-            }
+            })
         }
         K::Igbt => {
             source = match model {
                 Some(Model::Igbt(_)) => ModelSource::Model,
                 _ => defaulted("the built-in IGBT".into()),
             };
-            CircuitElement::Igbt {
+            CircuitElement::Igbt(Igbt {
                 id,
                 nodes: n3(),
                 params: match model {
                     Some(Model::Igbt(p)) => p.clone(),
                     _ => IgbtParams::default(),
                 },
-            }
+            })
         }
         K::OpAmp | K::Comparator => {
             let rail = |name: &str, slot: usize, default: f64| -> Result<f64, ImportError> {
@@ -2570,7 +2576,7 @@ fn build_element(
                 _ => defaulted("the built-in comparator (gain 1e5, clamped to its rails)".into()),
             };
             if *kind == K::OpAmp {
-                CircuitElement::OpAmp {
+                CircuitElement::OpAmp(OpAmp {
                     id,
                     nodes: n3(),
                     v_pos,
@@ -2579,54 +2585,54 @@ fn build_element(
                         Some(Model::OpAmp(m)) => Some(*m),
                         _ => None,
                     },
-                }
+                })
             } else {
-                CircuitElement::Comparator {
+                CircuitElement::Comparator(Comparator {
                     id,
                     nodes: n3(),
                     v_pos,
                     v_neg,
-                }
+                })
             }
         }
-        K::Potentiometer => CircuitElement::Potentiometer {
+        K::Potentiometer => CircuitElement::Potentiometer(Potentiometer {
             id,
             nodes: n3(),
             resistance: r.required_value("an end-to-end resistance (Ω)")?,
             position: r.param_or("position", 0.5)?,
-        },
-        K::Switch => CircuitElement::Switch {
+        }),
+        K::Switch => CircuitElement::Switch(Switch {
             id,
             nodes: n2(),
             closed: r.flag("closed")?,
-        },
-        K::PushButton => CircuitElement::Pushbutton {
+        }),
+        K::PushButton => CircuitElement::Pushbutton(Pushbutton {
             id,
             nodes: n2(),
             closed: r.flag("closed")?,
-        },
-        K::Fuse => CircuitElement::Fuse {
+        }),
+        K::Fuse => CircuitElement::Fuse(Fuse {
             id,
             nodes: n2(),
             rating: r.value()?.unwrap_or(1.0),
             blown: r.flag("blown")?,
-        },
-        K::Relay => CircuitElement::Relay {
+        }),
+        K::Relay => CircuitElement::Relay(Relay {
             id,
             nodes: n4(),
             coil_resistance: r.param_or("coil_resistance", 500.0)?,
             pickup_voltage: r.required_param("pickup_voltage", "a pickup voltage (V)")?,
             inductance: r.param_or("inductance", 0.0)?,
-        },
-        K::Transformer => CircuitElement::Transformer {
+        }),
+        K::Transformer => CircuitElement::Transformer(Transformer {
             id,
             nodes: n4(),
             l1: r.required_param("l1", "a primary inductance (H)")?,
             l2: r.required_param("l2", "a secondary inductance (H)")?,
             k: r.param_or("k", 0.999)?,
             saturation: None,
-        },
-        K::Regulator => CircuitElement::VoltageRegulator {
+        }),
+        K::Regulator => CircuitElement::VoltageRegulator(VoltageRegulator {
             id,
             nodes: n3(),
             voltage: match r.param(&["voltage"])? {
@@ -2646,8 +2652,8 @@ fn build_element(
                     None
                 }
             },
-        },
-        K::Crystal => CircuitElement::Crystal {
+        }),
+        K::Crystal => CircuitElement::Crystal(Crystal {
             id,
             nodes: n2(),
             params: CrystalParams::from_datasheet(
@@ -2661,8 +2667,8 @@ fn build_element(
                 r.param_or("esr", 50.0)?,
                 r.param_or("c0", 5e-12)?,
             ),
-        },
-        K::FerriteBead => CircuitElement::FerriteBead {
+        }),
+        K::FerriteBead => CircuitElement::FerriteBead(FerriteBead {
             id,
             nodes: n2(),
             params: FerriteBeadParams::from_datasheet(
@@ -2675,8 +2681,8 @@ fn build_element(
                 },
                 r.param_or("r_dc", 0.1)?,
             ),
-        },
-        K::Battery => CircuitElement::Battery {
+        }),
+        K::Battery => CircuitElement::Battery(Battery {
             id,
             nodes: n2(),
             params: match model {
@@ -2691,38 +2697,38 @@ fn build_element(
                 ),
             },
             state_of_charge: r.param_or("state_of_charge", 1.0)?,
-        },
+        }),
         K::Thermistor => {
             source = defaulted(
                 "the built-in 10 kΩ NTC (β = 3950); sindr reads no model for this kind".into(),
             );
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id,
                 nodes: n2(),
                 temperature: r.param_or("temperature", 298.15)?,
-            }
+            })
         }
         K::Photoresistor => {
             source =
                 defaulted("the built-in photoresistor; sindr reads no model for this kind".into());
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 id,
                 nodes: n2(),
                 light_level: r.param_or("light_level", 0.0)?,
-            }
+            })
         }
-        K::VoltageSource => CircuitElement::VoltageSource {
+        K::VoltageSource => CircuitElement::VoltageSource(VoltageSource {
             id,
             nodes: n2(),
             voltage: r.required_value("a voltage (V)")?,
             waveform: None,
-        },
-        K::CurrentSource => CircuitElement::CurrentSource {
+        }),
+        K::CurrentSource => CircuitElement::CurrentSource(CurrentSource {
             id,
             nodes: n2(),
             current: r.required_value("a current (A)")?,
             waveform: None,
-        },
+        }),
         K::Connector | K::TestPoint | K::NetTie | K::MountingHole | K::BlackBox | K::Other(_) => {
             return Ok(Built::default())
         }

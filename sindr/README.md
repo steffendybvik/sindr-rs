@@ -43,26 +43,27 @@ cargo run --example parse_netlist --features spice
 ```rust,no_run
 # use sindr::*;
 use sindr::{Circuit, CircuitElement, solve_circuit};
+use sindr::element::{Resistor, VoltageSource};
 
 let circuit = Circuit {
     ground_node: "gnd".into(),
     components: vec![
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: "V1".into(),
             nodes: ["n1".into(), "gnd".into()],
             voltage: 10.0,
             waveform: None,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: "R1".into(),
             nodes: ["n1".into(), "n2".into()],
             resistance: 1_000.0,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: "R2".into(),
             nodes: ["n2".into(), "gnd".into()],
             resistance: 2_000.0,
-        },
+        }),
     ],
     ..Default::default()
 };
@@ -81,9 +82,10 @@ Every component has an `id` (arbitrary string) and `nodes` (node names as string
 ### Passive components
 
 ```rust,ignore
-CircuitElement::Resistor   { id, nodes: [String; 2], resistance: f64 }
-CircuitElement::Capacitor  { id, nodes: [String; 2], capacitance: f64 }
-CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64, saturation: Option<InductorSaturation> }
+use sindr::element::{Capacitor, Inductor, Resistor};
+CircuitElement::Resistor(Resistor { id, nodes: [String; 2], resistance: f64 })
+CircuitElement::Capacitor(Capacitor { id, nodes: [String; 2], capacitance: f64 })
+CircuitElement::Inductor(Inductor { id, nodes: [String; 2], inductance: f64, saturation: Option<InductorSaturation> })
 ```
 
 Capacitors and inductors trigger transient analysis automatically. In pure DC (no reactive elements, no waveforms), they are treated as open circuits.
@@ -92,22 +94,24 @@ An inductor with `saturation: Some(InductorSaturation { i_sat, l_sat })` has a c
 
 ```rust,no_run
 # use sindr::*;
+# use sindr::element::Inductor;
 use sindr_devices::inductor::InductorSaturation;
 
 // 10 µH that saturates around 3 A, keeping 1 µH when saturated.
-let l1 = CircuitElement::Inductor {
+let l1 = CircuitElement::Inductor(Inductor {
     id: "L1".into(),
     nodes: ["sw".into(), "out".into()],
     inductance: 10e-6,
     saturation: Some(InductorSaturation { i_sat: 3.0 / 0.6, l_sat: 1e-6 }),
-};
+});
 ```
 
 ### Sources
 
 ```rust,ignore
-CircuitElement::VoltageSource { id, nodes: [String; 2], voltage: f64, waveform: Option<Waveform> }
-CircuitElement::CurrentSource { id, nodes: [String; 2], current: f64, waveform: Option<Waveform> }
+use sindr::element::{CurrentSource, VoltageSource};
+CircuitElement::VoltageSource(VoltageSource { id, nodes: [String; 2], voltage: f64, waveform: Option<Waveform> })
+CircuitElement::CurrentSource(CurrentSource { id, nodes: [String; 2], current: f64, waveform: Option<Waveform> })
 ```
 
 `nodes[0]` is the positive terminal for voltage sources. A current source's current flows through it from `nodes[0]` to `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`, as SPICE's `I` does.
@@ -117,7 +121,8 @@ A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers tr
 ### Battery
 
 ```rust,ignore
-CircuitElement::Battery { id, nodes: [String; 2], params: BatteryParams, state_of_charge: f64 }
+use sindr::element::Battery;
+CircuitElement::Battery(Battery { id, nodes: [String; 2], params: BatteryParams, state_of_charge: f64 })
 ```
 
 `nodes` are `[positive, negative]`. The cell is an equivalent circuit: open-circuit voltage by state of charge (`params.ocv`, interpolated), behind a series resistance `r_series` and an optional RC pair (`params.rc`) for the slow sag after a load step and the recovery after it. Its terminal voltage is `OCV(SoC) − R0·i − v1`.
@@ -131,27 +136,30 @@ CircuitElement::Battery { id, nodes: [String; 2], params: BatteryParams, state_o
 ```rust,no_run
 # use sindr::*;
 use sindr::battery::BatteryParams;
+use sindr::element::Battery;
 
 // A 500 mAh LiPo at 80 %, 0.15 Ω.
-let cell = CircuitElement::Battery {
+let cell = CircuitElement::Battery(Battery {
     id: "B1".into(),
     nodes: ["vbat".into(), "0".into()],
     params: BatteryParams::lithium_ion(0.5, 0.15),
     state_of_charge: 0.8,
-};
+});
 ```
 
 ### Switches
 
 ```rust,ignore
-CircuitElement::Switch     { id, nodes: [String; 2], closed: bool }
-CircuitElement::Pushbutton { id, nodes: [String; 2], closed: bool }
+use sindr::element::{Pushbutton, Switch};
+CircuitElement::Switch(Switch { id, nodes: [String; 2], closed: bool })
+CircuitElement::Pushbutton(Pushbutton { id, nodes: [String; 2], closed: bool })
 ```
 
 Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 
 ```rust,ignore
-CircuitElement::SwitchSpdt { id, nodes: [String; 3], position: SpdtPosition }  // [common, a, b]
+use sindr::element::SwitchSpdt;
+CircuitElement::SwitchSpdt(SwitchSpdt { id, nodes: [String; 3], position: SpdtPosition })  // [common, a, b]
 ```
 
 A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default) or to `b`, each path a `Switch`. Its result is the path in use: common minus the selected throw, and the current from common into it.
@@ -159,8 +167,9 @@ A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default
 ### Crystal and ferrite bead
 
 ```rust,ignore
-CircuitElement::Crystal     { id, nodes: [String; 2], params: CrystalParams }
-CircuitElement::FerriteBead { id, nodes: [String; 2], params: FerriteBeadParams }
+use sindr::element::{Crystal, FerriteBead};
+CircuitElement::Crystal(Crystal { id, nodes: [String; 2], params: CrystalParams })
+CircuitElement::FerriteBead(FerriteBead { id, nodes: [String; 2], params: FerriteBeadParams })
 ```
 
 - **Crystal:** the Butterworth–Van Dyke model, `Rm`–`Lm`–`Cm` in series beside `C0`, with `Lm` set by the series-resonant `frequency`. `CrystalParams::from_datasheet(frequency, esr, c0)` takes `Cm = C0/250`, typical of AT-cut crystals; set `cm` when you know it. Open at DC. Its result's `power` is what `Rm` dissipates, the drive level, which `Ratings::power` limits. The load capacitance a datasheet names is the two capacitors on your board, not part of the crystal.
@@ -171,11 +180,12 @@ Both, and the SPDT switch, are solved as those networks: results and ratings com
 ### Diodes
 
 ```rust,ignore
-CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
-CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
-CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage at 5 mA
-CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
-CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
+use sindr::element::{Diode, Led, Photodiode, SchottkyDiode, ZenerDiode};
+CircuitElement::Diode(Diode { id, nodes: [String; 2], model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
+CircuitElement::Led(Led { id, nodes: [String; 2], color: String }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
+CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [String; 2], vz: f64 })   // breakdown voltage at 5 mA
+CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [String; 2] })            // Vf ≈ 0.3 V
+CircuitElement::Photodiode(Photodiode { id, nodes: [String; 2], irradiance: f64 }) // irradiance in W
 ```
 
 All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
@@ -183,11 +193,12 @@ All diodes use Newton-Raphson automatically when present. `Diode`'s optional `mo
 ### Varactor diode
 
 ```rust,ignore
-CircuitElement::Varactor {
+use sindr::element::Varactor;
+CircuitElement::Varactor(Varactor {
     id: String,
     nodes: [String; 2],  // [anode, cathode]
     params: VaractorParams, // { cj0, phi, m }
-}
+})
 ```
 
 Varactors are purely reactive — treated as open circuit in DC, as their junction capacitance at the bias point in AC, and stamped as a voltage-dependent capacitor `C_j(V) = cj0 / (1 - V/phi)^m` each transient timestep. Always triggers transient analysis.
@@ -195,8 +206,9 @@ Varactors are purely reactive — treated as open circuit in DC, as their juncti
 ### Transistors
 
 ```rust,ignore
+use sindr::element::{Bjt, Igbt, Jfet, Mosfet};
 // BJT — nodes: [base, collector, emitter]
-CircuitElement::Bjt {
+CircuitElement::Bjt(Bjt {
     id,
     nodes: [String; 3],
     kind: BjtKind,                          // BjtKind::Npn or BjtKind::Pnp
@@ -204,34 +216,34 @@ CircuitElement::Bjt {
     temperature: f64,                       // junction temp (K), default 300.15 K
     parasitic_caps: Option<BjtParasiticCaps>, // { cbe, cbc } in Farads; None = disabled
     model: Option<BjtModel>,                // IS, BR, NF, NR, VAF; None = built-in defaults
-}
+})
 
 // MOSFET — nodes: [gate, drain, source]; body tied to source
-CircuitElement::Mosfet {
+CircuitElement::Mosfet(Mosfet {
     id,
     nodes: [String; 3],
     kind: MosfetKind,                          // MosfetKind::Nmos or MosfetKind::Pmos
     params: MosfetParams,                      // KP, VTO, LAMBDA, GAMMA, PHI; VTO SPICE-signed (negative for PMOS)
     parasitic_caps: Option<MosfetParasiticCaps>, // { cgs, cgd } in Farads; None = disabled
     body_diode: Option<DiodeModel>,            // power MOSFET's body diode; None = none
-}
+})
 
 // IGBT — nodes: [gate, collector, emitter]
-CircuitElement::Igbt {
+CircuitElement::Igbt(Igbt {
     id,
     nodes: [String; 3],
     params: IgbtParams, // { vth, k, vce_sat }
-}
+})
 
 // JFET — nodes: [gate, drain, source]
-CircuitElement::Jfet {
+CircuitElement::Jfet(Jfet {
     id,
     nodes: [String; 3],
     kind: JfetKind, // JfetKind::NChannel or JfetKind::PChannel
     idss: f64,      // drain saturation current at Vgs = 0 (A)
     vp: f64,        // pinch-off voltage (V), negative for N-channel
     parasitic_caps: Option<JfetParasiticCaps>, // { cgs, cgd, pb, m, fc } gate junctions; None = disabled
-}
+})
 ```
 
 A JFET's `parasitic_caps` are SPICE's gate junctions: CGS and CGD at zero bias, each `C0/(1 − v/PB)^M` at its junction voltage and continued linearly above `FC·PB`, with SPICE's defaults `PB = 1`, `M = 0.5`, `FC = 0.5`. Transient integrates their charge; AC and noise take the capacitance at the bias point.
@@ -247,20 +259,21 @@ When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as c
 ```rust,no_run
 # use sindr::*;
 use sindr::{Circuit, CircuitElement, BjtKind, solve_circuit};
+use sindr::element::{Bjt, Resistor, VoltageSource};
 
 let circuit = Circuit {
     ground_node: "0".into(),
     components: vec![
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: "Vcc".into(), nodes: ["vcc".into(), "0".into()], voltage: 10.0, waveform: None,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: "Rc".into(), nodes: ["vcc".into(), "collector".into()], resistance: 1_000.0,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: "Rb".into(), nodes: ["vcc".into(), "base".into()], resistance: 470_000.0,
-        },
-        CircuitElement::Bjt {
+        }),
+        CircuitElement::Bjt(Bjt {
             id: "Q1".into(),
             nodes: ["base".into(), "collector".into(), "0".into()],
             kind: BjtKind::Npn,
@@ -268,7 +281,7 @@ let circuit = Circuit {
             temperature: 300.15,
             parasitic_caps: None,
             model: None,
-        },
+        }),
     ],
     ..Default::default()
 };
@@ -284,13 +297,14 @@ println!("Vbe = {:.3} V, Vce = {:.3} V, Ic = {:.3} mA, region = {}",
 ### Transformer (coupled inductors)
 
 ```rust,ignore
-CircuitElement::Transformer {
+use sindr::element::Transformer;
+CircuitElement::Transformer(Transformer {
     id: String,
     nodes: [String; 4],  // [p1, q1, p2, q2] — primary (p1,q1), secondary (p2,q2)
     l1: f64,             // primary inductance (H)
     l2: f64,             // secondary inductance (H)
     k: f64,              // coupling coefficient [0, 0.999]; default 0.999 (near-ideal)
-}
+})
 ```
 
 Mutual inductance M = k·√(L1·L2). In DC analysis both windings are short circuits. In AC and transient, two branch current unknowns (one per winding) are added to the MNA system, so the windings are coupled through M. k=1 is mathematically singular — use k≤0.999.
@@ -298,20 +312,21 @@ Mutual inductance M = k·√(L1·L2). In DC analysis both windings are short cir
 ### Controlled sources
 
 ```rust,ignore
+use sindr::element::{Behavioural, Cccs, Ccvs, Vccs, Vcvs};
 // Voltage-controlled voltage source: V_out = gain × V_ctrl
-CircuitElement::Vcvs { id, nodes: [out+, out-], control_nodes: [ctrl+, ctrl-], gain: f64 }
+CircuitElement::Vcvs(Vcvs { id, nodes: [out+, out-], control_nodes: [ctrl+, ctrl-], gain: f64 })
 
 // Voltage-controlled current source: I_out = gm × V_ctrl
-CircuitElement::Vccs { id, nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-], gm: f64 }
+CircuitElement::Vccs(Vccs { id, nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-], gm: f64 })
 
 // Current-controlled voltage source: V_out = rm × I_ctrl
-CircuitElement::Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 }
+CircuitElement::Ccvs(Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 })
 
 // Current-controlled current source: I_out = alpha × I_ctrl
-CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 }
+CircuitElement::Cccs(Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 })
 
 // Behavioural source (SPICE's B): a voltage or current set by an expression
-CircuitElement::Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression }
+CircuitElement::Behavioural(Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression })
 ```
 
 A behavioural source's `expr` is `Expression::parse("v(a)*v(b)")?` and the like: `v(n)`, `v(n,m)`, `i(source)` (the branch current of a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source), `time`, arithmetic, comparisons, `c ? a : b` and ngspice's functions (`exp`, `tanh`, `limit`, `min`, `u`, …). `BehaviouralOutput::Voltage` holds `V(n+) − V(n-)` at the expression; `Current` drives it from `n+` to `n-`. Newton gets the exact Jacobian by automatic differentiation; AC linearises at the bias point. In JSON the expression is its text: `{"type": "behavioural", "output": "voltage", "expr": "v(a)*v(b)", …}`.
@@ -323,23 +338,25 @@ The current sources follow SPICE's `G` and `F` and sindr's own `CurrentSource`: 
 ### Op-amp / Comparator
 
 ```rust,ignore
+use sindr::element::{Comparator, OpAmp};
 // nodes: [in_plus, in_minus, out]
-CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> } // rails, default ±15 V
-CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // output high / low, default ±15 V
+CircuitElement::OpAmp(OpAmp { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> }) // rails, default ±15 V
+CircuitElement::Comparator(Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 }) // output high / low, default ±15 V
 ```
 
 With `model: None` the op-amp is a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. A comparator has the same gain and no frequency response, but its output is clamped to `v_neg`/`v_pos`, so overdrive beyond `v_pos / 1e5` (50 µV for a 5 V rail) pins it to a rail in DC, transient and AC (where its gain at a rail is zero). It has no hysteresis or open-collector output; `v_pos` must be above `v_neg`. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
 
 ```rust
 use sindr::{CircuitElement, OpAmpModel};
+use sindr::element::OpAmp;
 
-let u1 = CircuitElement::OpAmp {
+let u1 = CircuitElement::OpAmp(OpAmp {
     id: "U1".into(),
     nodes: ["in".into(), "fb".into(), "out".into()],
     v_pos: 12.0,
     v_neg: -12.0,
     model: Some(OpAmpModel { gbw: Some(3e6), slew_rate: Some(13e6), r_out: 50.0, ..OpAmpModel::default() }),
-};
+});
 ```
 
 The pole and slew limit act in transient and AC runs. An op-amp doesn't count as reactive, so `solve_circuit` still runs DC for a circuit whose only dynamics are op-amps; call `solve_transient` to see them.
@@ -347,18 +364,19 @@ The pole and slew limit act in transient and AC runs. An op-amp doesn't count as
 ### Sensors / misc
 
 ```rust,ignore
-CircuitElement::Photoresistor { id, nodes: [String; 2], light_level: f64 } // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
-CircuitElement::Thermistor    { id, nodes: [String; 2], temperature: f64 } // Kelvin, default 298.15 K (25 °C)
-CircuitElement::Potentiometer { id, nodes: [top, wiper, bottom], resistance: f64, position: f64 } // position 0.0–1.0
-CircuitElement::Relay {
+use sindr::element::{Fuse, Photoresistor, Potentiometer, Relay, Thermistor, VoltageRegulator};
+CircuitElement::Photoresistor(Photoresistor { id, nodes: [String; 2], light_level: f64 }) // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
+CircuitElement::Thermistor(Thermistor { id, nodes: [String; 2], temperature: f64 }) // Kelvin, default 298.15 K (25 °C)
+CircuitElement::Potentiometer(Potentiometer { id, nodes: [top, wiper, bottom], resistance: f64, position: f64 }) // position 0.0–1.0
+CircuitElement::Relay(Relay {
     id,
     nodes: [String; 4],     // [coil+, coil-, contact1, contact2]
     coil_resistance: f64,
     pickup_voltage: f64,
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
-}
-CircuitElement::Fuse             { id, nodes: [String; 2], rating: f64, blown: bool } // 1 mΩ intact, 1 GΩ blown; rating is display-only
-CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> }
+})
+CircuitElement::Fuse(Fuse { id, nodes: [String; 2], rating: f64, blown: bool }) // 1 mΩ intact, 1 GΩ blown; rating is display-only
+CircuitElement::VoltageRegulator(VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> })
 ```
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
@@ -371,21 +389,22 @@ A `Block` is a reusable definition, what `.subckt` is in SPICE. An `Instance` pl
 
 ```rust,ignore
 use sindr::{Block, Circuit, CircuitElement, Instance, Part};
+use sindr::element::{Resistor, VoltageSource};
 
-let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor(Resistor {
     id: id.into(),
     nodes: [a.into(), b.into()],
     resistance: 1e3,
-};
+});
 
 let mut circuit = Circuit::new(
     "0",
-    vec![CircuitElement::VoltageSource {
+    vec![CircuitElement::VoltageSource(VoltageSource {
         id: "V1".into(),
         nodes: ["in".into(), "0".into()],
         voltage: 10.0,
         waveform: None,
-    }],
+    })],
 );
 circuit.blocks.insert(
     "divider".into(),

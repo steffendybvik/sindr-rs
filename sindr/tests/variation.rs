@@ -3,6 +3,7 @@
 //! distribution, and the extremes of a divider at its corners.
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{Capacitor, CurrentSource, Resistor, VoltageSource};
 use sindr::measure::{Measure, Measurement, Signal, Stat};
 use sindr::variation::{
     corners, monte_carlo, Corner, Corners, Distribution, MonteCarloConfig, Parameter, Tolerance,
@@ -10,20 +11,20 @@ use sindr::variation::{
 use sindr::{solve_op, Block, Circuit, CircuitElement, Instance, SimError};
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn v(id: &str, p: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), "0".into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 /// 10 V across r1 (10 k) over r2 (10 k).
@@ -87,12 +88,12 @@ fn gaussian_spread_matches_its_sigma() {
     let circuit = Circuit::new(
         "0",
         vec![
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 id: "i1".into(),
                 nodes: ["0".into(), "a".into()],
                 current: 1e-3,
                 waveform: None,
-            },
+            }),
             r("r1", "a", "0", 1e3),
         ],
     );
@@ -162,11 +163,11 @@ fn wraps_an_ac_analysis() {
         vec![
             v("vin", "in", 0.0),
             r("r1", "in", "out", 1e3),
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 id: "c1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 100e-9,
-            },
+            }),
         ],
     );
     let config = MonteCarloConfig::new(
@@ -191,7 +192,7 @@ fn failed_runs_are_recorded_not_fatal() {
     let picky = |c: &Circuit| {
         let r1 = c.components.iter().find(|e| e.id() == "r1").unwrap();
         match r1 {
-            CircuitElement::Resistor { resistance, .. } if *resistance > 10e3 => {
+            CircuitElement::Resistor(Resistor { resistance, .. }) if *resistance > 10e3 => {
                 Err(SimError::InvalidComponent("too big".to_string()))
             }
             _ => solve_op(c),

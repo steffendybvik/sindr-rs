@@ -7,11 +7,12 @@
 //!
 //! ```
 //! use sindr::{Circuit, CircuitElement, Solver, SolverOptions};
+//! use sindr::element::{Diode, Resistor, VoltageSource};
 //!
 //! let circuit = Circuit::new("0", vec![
-//!     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "0".into()], voltage: 5.0, waveform: None },
-//!     CircuitElement::Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 1_000.0 },
-//!     CircuitElement::Diode { id: "D1".into(), nodes: ["a".into(), "0".into()], temperature: 300.15, model: None },
+//!     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "0".into()], voltage: 5.0, waveform: None }),
+//!     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 1_000.0 }),
+//!     CircuitElement::Diode(Diode { id: "D1".into(), nodes: ["a".into(), "0".into()], temperature: 300.15, model: None }),
 //! ]);
 //!
 //! let mut options = SolverOptions::default();

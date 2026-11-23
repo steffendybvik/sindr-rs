@@ -11,6 +11,7 @@
 //! term or a clamp that changes the slope but not the current all show up.
 
 use crate::circuit::{Circuit, CircuitElement};
+use crate::element::{Bjt, Diode, Igbt, Jfet, Led, Mosfet, Photodiode, SchottkyDiode, ZenerDiode};
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
 use crate::stamp::stamp_circuit;
@@ -126,12 +127,12 @@ const DIODE_BIASES: &[f64] = &[-2.0, -0.3, 0.0, 0.3, 0.6, 0.7, 0.8];
 #[test]
 fn diode_stamp_is_newton_consistent() {
     for temperature in [250.0, 300.15, 400.0] {
-        let circuit = circuit_of(CircuitElement::Diode {
+        let circuit = circuit_of(CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["a".into(), "k".into()],
             temperature,
             model: None,
-        });
+        }));
         assert_consistent(circuit, &as_slices(&two_terminal(DIODE_BIASES)));
     }
 }
@@ -139,12 +140,12 @@ fn diode_stamp_is_newton_consistent() {
 #[test]
 fn led_stamp_is_newton_consistent() {
     for color in ["red", "green", "blue"] {
-        let circuit = circuit_of(CircuitElement::Led {
+        let circuit = circuit_of(CircuitElement::Led(Led {
             id: "D1".into(),
             nodes: ["a".into(), "k".into()],
             color: color.into(),
             temperature: 300.15,
-        });
+        }));
         assert_consistent(
             circuit,
             &as_slices(&two_terminal(&[-2.0, 0.0, 1.0, 1.8, 2.5, 3.2])),
@@ -154,11 +155,11 @@ fn led_stamp_is_newton_consistent() {
 
 #[test]
 fn schottky_stamp_is_newton_consistent() {
-    let circuit = circuit_of(CircuitElement::SchottkyDiode {
+    let circuit = circuit_of(CircuitElement::SchottkyDiode(SchottkyDiode {
         id: "D1".into(),
         nodes: ["a".into(), "k".into()],
         temperature: 300.15,
-    });
+    }));
     assert_consistent(
         circuit,
         &as_slices(&two_terminal(&[-2.0, 0.0, 0.2, 0.35, 0.5])),
@@ -167,24 +168,24 @@ fn schottky_stamp_is_newton_consistent() {
 
 #[test]
 fn photodiode_stamp_is_newton_consistent() {
-    let circuit = circuit_of(CircuitElement::Photodiode {
+    let circuit = circuit_of(CircuitElement::Photodiode(Photodiode {
         id: "D1".into(),
         nodes: ["a".into(), "k".into()],
         irradiance: 1e-3,
         temperature: 300.15,
-    });
+    }));
     assert_consistent(circuit, &as_slices(&two_terminal(DIODE_BIASES)));
 }
 
 #[test]
 fn zener_stamp_is_newton_consistent() {
     for temperature in [250.0, 300.15, 400.0] {
-        let circuit = circuit_of(CircuitElement::ZenerDiode {
+        let circuit = circuit_of(CircuitElement::ZenerDiode(ZenerDiode {
             id: "D1".into(),
             nodes: ["a".into(), "k".into()],
             vz: 5.1,
             temperature,
-        });
+        }));
         // Breakdown, reverse, zero, forward, and past the exponential clamp.
         assert_consistent(
             circuit,
@@ -194,7 +195,7 @@ fn zener_stamp_is_newton_consistent() {
 }
 
 fn bjt(kind: BjtKind, temperature: f64) -> Circuit {
-    circuit_of(CircuitElement::Bjt {
+    circuit_of(CircuitElement::Bjt(Bjt {
         id: "Q1".into(),
         nodes: ["b".into(), "c".into(), "e".into()],
         kind,
@@ -202,7 +203,7 @@ fn bjt(kind: BjtKind, temperature: f64) -> Circuit {
         temperature,
         parasitic_caps: None,
         model: None,
-    })
+    }))
 }
 
 /// NPN biases `(vb, vc, ve)` with every terminal off ground; PNP uses them negated.
@@ -245,14 +246,14 @@ fn bjt_stamp_past_conductance_cap_is_newton_consistent() {
 }
 
 fn mosfet(kind: MosfetKind, params: MosfetParams) -> Circuit {
-    circuit_of(CircuitElement::Mosfet {
+    circuit_of(CircuitElement::Mosfet(Mosfet {
         id: "M1".into(),
         nodes: ["g".into(), "d".into(), "s".into()],
         kind,
         params,
         parasitic_caps: None,
         body_diode: None,
-    })
+    }))
 }
 
 /// NMOS biases `(vg, vd, vs)` relative to a 1 V offset; PMOS uses them negated.
@@ -293,14 +294,14 @@ fn pmos_stamp_is_newton_consistent() {
 }
 
 fn jfet(kind: JfetKind) -> Circuit {
-    circuit_of(CircuitElement::Jfet {
+    circuit_of(CircuitElement::Jfet(Jfet {
         id: "J1".into(),
         nodes: ["g".into(), "d".into(), "s".into()],
         kind,
         idss: 10e-3,
         vp: -2.0,
         parasitic_caps: None,
-    })
+    }))
 }
 
 /// N-channel biases `(vg, vd, vs)` relative to a 1 V offset; P-channel uses them negated.
@@ -337,11 +338,11 @@ fn p_jfet_stamp_is_newton_consistent() {
 
 #[test]
 fn igbt_stamp_is_newton_consistent() {
-    let circuit = circuit_of(CircuitElement::Igbt {
+    let circuit = circuit_of(CircuitElement::Igbt(Igbt {
         id: "Z1".into(),
         nodes: ["g".into(), "c".into(), "e".into()],
         params: IgbtParams::default(),
-    });
+    }));
     let biases: Vec<Vec<(&str, f64)>> = [[3.0, 10.0, 0.0], [8.0, 10.0, 0.0], [8.0, 1.0, 0.0]]
         .iter()
         .map(|[g, c, e]| vec![("g", g + 1.0), ("c", c + 1.0), ("e", e + 1.0)])

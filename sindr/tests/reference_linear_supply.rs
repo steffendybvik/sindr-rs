@@ -40,6 +40,7 @@
 //! a real board, not here), and the load-step response is the same with
 //! or without it. Start-up follows the input ramp with no soft-start.
 
+use sindr::element::{Capacitor, Diode, Resistor, VoltageRegulator, VoltageSource};
 use sindr::measure::{Signal, SpecStatus, Stat};
 use sindr::regulator::RegulatorParams;
 use sindr::{
@@ -67,11 +68,11 @@ const U2_RTH_JC: f64 = 15.0;
 const U2_RTH_CA: f64 = 45.0;
 
 fn cap(id: &str, node: &str, farads: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [node.into(), "0".into()],
         capacitance: farads,
-    }
+    })
 }
 
 fn regulator(
@@ -81,12 +82,12 @@ fn regulator(
     volts: f64,
     p: RegulatorParams,
 ) -> CircuitElement {
-    CircuitElement::VoltageRegulator {
+    CircuitElement::VoltageRegulator(VoltageRegulator {
         id: id.into(),
         nodes: [input.into(), output.into(), "0".into()],
         voltage: volts,
         model: Some(p),
-    }
+    })
 }
 
 fn rated(ratings: Ratings) -> Part {
@@ -119,23 +120,23 @@ fn design() -> Circuit {
     let mut c = Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["vin".into(), "0".into()],
                 voltage: 12.0,
                 waveform: None,
-            },
+            }),
             cap("C1", "vin", 0.33e-6),
             regulator("U1", "vin", "v5", 5.0, RegulatorParams::lm7805()),
             cap("C2", "v5", 0.1e-6),
             cap("C3", "v5", 10e-6),
             regulator("U2", "v5", "v3v3", 3.3, RegulatorParams::ams1117()),
             cap("C4", "v3v3", 22e-6),
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id: "RL".into(),
                 nodes: ["v3v3".into(), "0".into()],
                 resistance: R_LOAD,
-            },
+            }),
         ],
     );
     let parts = [
@@ -193,9 +194,9 @@ fn element_mut<'a>(c: &'a mut Circuit, id: &str) -> &'a mut CircuitElement {
 }
 
 fn set_input(c: &mut Circuit, volts: f64, ramp: Option<Waveform>) {
-    if let CircuitElement::VoltageSource {
+    if let CircuitElement::VoltageSource(VoltageSource {
         voltage, waveform, ..
-    } = element_mut(c, "V1")
+    }) = element_mut(c, "V1")
     {
         *voltage = volts;
         *waveform = ramp;
@@ -204,7 +205,7 @@ fn set_input(c: &mut Circuit, volts: f64, ramp: Option<Waveform>) {
 
 fn without_capacitors(mut c: Circuit) -> Circuit {
     c.components
-        .retain(|e| !matches!(e, CircuitElement::Capacitor { .. }));
+        .retain(|e| !matches!(e, CircuitElement::Capacitor(Capacitor { .. })));
     for id in ["C1", "C2", "C3", "C4"] {
         c.parts.remove(id);
     }
@@ -282,16 +283,16 @@ fn every_regulator_has_its_input_and_output_capacitors() {
         c.components
             .iter()
             .filter_map(|e| match e {
-                CircuitElement::Capacitor {
+                CircuitElement::Capacitor(Capacitor {
                     nodes, capacitance, ..
-                } if nodes[0] == node && nodes[1] == "0" => Some(*capacitance),
+                }) if nodes[0] == node && nodes[1] == "0" => Some(*capacitance),
                 _ => None,
             })
             .sum()
     };
     let mut seen = 0;
     for e in &c.components {
-        if let CircuitElement::VoltageRegulator { id, nodes, .. } = e {
+        if let CircuitElement::VoltageRegulator(VoltageRegulator { id, nodes, .. }) = e {
             let (cin, cout) = match id.as_str() {
                 "U1" => (0.33e-6, 0.1e-6),
                 "U2" => (10e-6, 22e-6),
@@ -509,7 +510,9 @@ fn broken_no_heatsink_overheats_the_7805() {
 #[test]
 fn broken_ams1117_fed_12_v_overheats_but_is_inside_its_input_rating() {
     let mut c = design();
-    if let CircuitElement::VoltageRegulator { nodes, .. } = element_mut(&mut c, "U2") {
+    if let CircuitElement::VoltageRegulator(VoltageRegulator { nodes, .. }) =
+        element_mut(&mut c, "U2")
+    {
         nodes[0] = "vin".into();
     }
     let r = solve_op(&c).unwrap();
@@ -595,12 +598,12 @@ fn broken_capacitors_missing_lose_the_hold_up() {
             }),
         );
         element_mut(&mut c, "V1").nodes_mut()[0] = "src".into();
-        c.components.push(CircuitElement::Diode {
+        c.components.push(CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["src".into(), "vin".into()],
             temperature: 300.15,
             model: None,
-        });
+        }));
         let config =
             TransientConfig::new(cut + 50e-6, 0.1e-6).with_start(TransientStart::OperatingPoint);
         let tran = solve_transient(&c, &config).unwrap().transient.unwrap();

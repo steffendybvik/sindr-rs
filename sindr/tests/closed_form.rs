@@ -7,6 +7,9 @@
 //! sindr's stamps, so a wrong stamp or companion can't agree with them by
 //! construction.
 
+use sindr::element::{
+    Capacitor, Diode, Inductor, Relay, Resistor, Transformer, Vcvs, VoltageSource,
+};
 use std::f64::consts::PI;
 
 use nalgebra::{DMatrix, DVector};
@@ -26,37 +29,37 @@ fn circuit(components: Vec<CircuitElement>) -> Circuit {
 }
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn capacitor(id: &str, a: &str, b: &str, capacitance: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance,
-    }
+    })
 }
 
 fn inductor(id: &str, a: &str, b: &str, inductance: f64) -> CircuitElement {
-    CircuitElement::Inductor {
+    CircuitElement::Inductor(Inductor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         inductance,
         saturation: None,
-    }
+    })
 }
 
 // ----------------------------------------------------------------- DC sweep
@@ -98,12 +101,12 @@ fn dc_sweep_diode_matches_shockley_root() {
     let network = circuit(vec![
         vsource("V1", "in", "0", 0.0),
         resistor("R1", "in", "out", r),
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
             model: None,
-        },
+        }),
     ]);
     let sweep = dc_sweep(&network, "V1", -2.0, 10.0, 25).unwrap();
     for p in &sweep.points {
@@ -279,14 +282,14 @@ fn ac_loaded_transformer_matches_transfer_function() {
     let (rs, rl, l1, l2, k): (f64, f64, f64, f64, f64) = (50.0, 1e3, 10e-3, 40e-3, 0.95);
     let m = k * (l1 * l2).sqrt();
     let xfmr = circuit(vec![
-        CircuitElement::Transformer {
+        CircuitElement::Transformer(Transformer {
             id: "T1".into(),
             nodes: ["p".into(), "0".into(), "out".into(), "0".into()],
             l1,
             l2,
             k,
             saturation: None,
-        },
+        }),
         vsource("V1", "in", "0", 0.0),
         resistor("RS", "in", "p", rs),
         resistor("RL", "out", "0", rl),
@@ -308,12 +311,12 @@ fn ac_sallen_key_lowpass_matches_transfer_function() {
         resistor("R2", "a", "b", r2),
         capacitor("C1", "a", "out", c1),
         capacitor("C2", "b", "0", c2),
-        CircuitElement::Vcvs {
+        CircuitElement::Vcvs(Vcvs {
             id: "E1".into(),
             nodes: ["out".into(), "0".into()],
             control_nodes: ["b".into(), "0".into()],
             gain: 1.0,
-        },
+        }),
     ]);
     let h = |w: f64| 1.0 / (1.0 + J * w * c2 * (r1 + r2) - w * w * r1 * r2 * c1 * c2);
     assert_transfer(&sallen_key, "out", (10.0, 1e6), h);
@@ -700,13 +703,13 @@ fn relay_coil_matches_series_resistor_and_inductor() {
     };
     let mut relay = drive();
     relay.extend([
-        CircuitElement::Relay {
+        CircuitElement::Relay(Relay {
             id: "k1".into(),
             nodes: ["coil".into(), "0".into(), "c1".into(), "c2".into()],
             coil_resistance: 500.0,
             pickup_voltage: 5.0,
             inductance: 0.1,
-        },
+        }),
         resistor("rc1", "c1", "0", 1e3),
         resistor("rc2", "c2", "0", 1e3),
     ]);

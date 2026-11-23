@@ -6,6 +6,12 @@
 //! 3. Building a complex-valued MNA system at each frequency
 //! 4. Solving for node voltages as complex phasors
 
+use crate::element::{
+    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, Diode,
+    FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor,
+    Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt, Thermistor,
+    Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -173,12 +179,13 @@ impl AcResult {
     ///
     /// ```
     /// use sindr::{solve_ac, AcConfig, Circuit, CircuitElement};
+    /// use sindr::element::{Capacitor, Resistor, VoltageSource};
     ///
     /// // RC low-pass, corner at 1/(2π·1k·1µ) ≈ 159 Hz.
     /// let circuit = Circuit::new("0", vec![
-    ///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None },
-    ///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
-    ///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+    ///     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None }),
+    ///     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 }),
+    ///     CircuitElement::Capacitor(Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 }),
     /// ]);
     /// let ac = solve_ac(&circuit, &AcConfig::new("V1", 1.0, 1e5, 51))?;
     ///
@@ -191,6 +198,7 @@ impl AcResult {
     /// assert!(ac.node_voltage_curve("nope").is_empty());
     /// # Ok::<(), sindr::SimError>(())
     /// ```
+    ///
     pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, Complex64)> {
         self.points
             .iter()
@@ -246,12 +254,12 @@ pub(crate) fn linearize_at_dc(
 
     for component in &circuit.components {
         match component {
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 model,
                 nodes,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
                 let vp = p.map_or(0.0, |i| dc_solution[i]);
@@ -265,12 +273,12 @@ pub(crate) fn linearize_at_dc(
                     conductances: vec![(p, p, g_d), (q, q, g_d), (p, q, -g_d), (q, p, -g_d)],
                 });
             }
-            CircuitElement::Led {
+            CircuitElement::Led(Led {
                 nodes,
                 color,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
                 let vp = p.map_or(0.0, |i| dc_solution[i]);
@@ -284,14 +292,14 @@ pub(crate) fn linearize_at_dc(
                     conductances: vec![(p, p, g_d), (q, q, g_d), (p, q, -g_d), (q, p, -g_d)],
                 });
             }
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 model,
                 nodes,
                 kind,
                 bf,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let b = node_map.index(&nodes[0]);
                 let c = node_map.index(&nodes[1]);
                 let e = node_map.index(&nodes[2]);
@@ -328,32 +336,32 @@ pub(crate) fn linearize_at_dc(
                     conductances: conds,
                 });
             }
-            CircuitElement::ZenerDiode {
+            CircuitElement::ZenerDiode(ZenerDiode {
                 nodes,
                 vz,
                 temperature,
                 ..
-            } => {
+            }) => {
                 // Same parameters as the DC stamp, including the IS scaling.
                 let params = device_params::zener_diode(*vz, *temperature);
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
                 let (g_d, _) = diode::diode_companion(v_d, &params);
                 models.push(two_terminal(nodes, node_map, g_d));
             }
-            CircuitElement::SchottkyDiode {
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 nodes, temperature, ..
-            } => {
+            }) => {
                 let params = device_params::schottky(*temperature);
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
                 let (g_d, _) = diode::diode_companion(v_d, &params);
                 models.push(two_terminal(nodes, node_map, g_d));
             }
-            CircuitElement::Photodiode {
+            CircuitElement::Photodiode(Photodiode {
                 nodes,
                 irradiance,
                 temperature,
                 ..
-            } => {
+            }) => {
                 // The photocurrent is a constant source: no AC part.
                 let params = device_params::photodiode(*temperature);
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
@@ -361,13 +369,13 @@ pub(crate) fn linearize_at_dc(
                     sindr_devices::photodiode::photodiode_companion(v_d, *irradiance, &params);
                 models.push(two_terminal(nodes, node_map, g_d));
             }
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 nodes,
                 kind,
                 idss,
                 vp,
                 ..
-            } => {
+            }) => {
                 let g = node_map.index(&nodes[0]);
                 let d = node_map.index(&nodes[1]);
                 let s = node_map.index(&nodes[2]);
@@ -388,7 +396,7 @@ pub(crate) fn linearize_at_dc(
                     ],
                 });
             }
-            CircuitElement::Igbt { nodes, params, .. } => {
+            CircuitElement::Igbt(Igbt { nodes, params, .. }) => {
                 let g = node_map.index(&nodes[0]);
                 let c = node_map.index(&nodes[1]);
                 let e = node_map.index(&nodes[2]);
@@ -408,12 +416,12 @@ pub(crate) fn linearize_at_dc(
                     ],
                 });
             }
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 nodes,
                 kind,
                 params,
                 ..
-            } => {
+            }) => {
                 let g = node_map.index(&nodes[0]);
                 let d = node_map.index(&nodes[1]);
                 let s = node_map.index(&nodes[2]);
@@ -472,7 +480,7 @@ pub(crate) fn validate_stimulus(circuit: &Circuit, config: &AcConfig) -> Result<
     let drives_a_voltage_source = circuit
         .components
         .iter()
-        .any(|c| matches!(c, CircuitElement::VoltageSource { id, .. } if *id == config.source_id));
+        .any(|c| matches!(c, CircuitElement::VoltageSource(VoltageSource { id, .. }) if *id == config.source_id));
     if !drives_a_voltage_source {
         return Err(SimError::InvalidComponent(format!(
             "AC sweep: source_id '{}' is not a voltage source in the circuit",
@@ -592,26 +600,26 @@ pub(crate) fn at_junction_temperatures<'a>(
 pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationResult) -> Circuit {
     let mut out = circuit.clone();
     for element in &mut out.components {
-        if let CircuitElement::Inductor {
+        if let CircuitElement::Inductor(Inductor {
             id,
             inductance,
             saturation,
             ..
-        } = element
+        }) = element
         {
             if let Some(sat) = saturation.take() {
                 let i = dc.branch_currents.get(id.as_str()).copied().unwrap_or(0.0);
                 *inductance = sindr_devices::inductor::incremental_inductance(i, *inductance, &sat);
             }
         }
-        if let CircuitElement::Transformer {
+        if let CircuitElement::Transformer(Transformer {
             id,
             l1,
             l2,
             k,
             saturation,
             ..
-        } = element
+        }) = element
         {
             if let Some(sat) = saturation.take() {
                 let current = |w: &str| dc.branch_currents.get(w).copied().unwrap_or(0.0);
@@ -647,7 +655,7 @@ pub(crate) fn bias_point_with_result(
     }
     // A regulator's piece depends on its output current, its branch row.
     for element in &circuit.components {
-        if let CircuitElement::VoltageRegulator { id, .. } = element {
+        if let CircuitElement::VoltageRegulator(VoltageRegulator { id, .. }) = element {
             if let (Some(k), Some(&i)) = (
                 circuit.vsource_branch_index(id),
                 dc_result.branch_currents.get(id),
@@ -772,11 +780,11 @@ pub(crate) fn small_signal_pencil(
 /// [`build_small_signal`].
 fn pencil_rows(element: &CircuitElement) -> usize {
     match element {
-        CircuitElement::Inductor { .. } => 1,
-        CircuitElement::Battery { params, .. } if params.rc.is_some() => 2,
-        CircuitElement::Diode {
+        CircuitElement::Inductor(Inductor { .. }) => 1,
+        CircuitElement::Battery(Battery { params, .. }) if params.rc.is_some() => 2,
+        CircuitElement::Diode(Diode {
             model, temperature, ..
-        } if device_params::diode_charge(model.as_ref()).is_some()
+        }) if device_params::diode_charge(model.as_ref()).is_some()
             && device_params::diode(model.as_ref(), *temperature).rs > 0.0 =>
         {
             1
@@ -815,12 +823,12 @@ fn build_small_signal(
     for component in &circuit.components {
         match component {
             // Split into their parts by `solver_circuit` first.
-            CircuitElement::SwitchSpdt { .. }
-            | CircuitElement::Crystal { .. }
-            | CircuitElement::FerriteBead { .. } => {}
-            CircuitElement::Resistor {
+            CircuitElement::SwitchSpdt(SwitchSpdt { .. })
+            | CircuitElement::Crystal(Crystal { .. })
+            | CircuitElement::FerriteBead(FerriteBead { .. }) => {}
+            CircuitElement::Resistor(Resistor {
                 nodes, resistance, ..
-            } => {
+            }) => {
                 let g = Complex64::new(1.0 / resistance, 0.0);
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
@@ -829,9 +837,9 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
             }
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 nodes, capacitance, ..
-            } => {
+            }) => {
                 let y = j_omega * *capacitance; // Y = j*omega*C
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
@@ -840,11 +848,11 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, p, q, -y);
                 stamp_complex_conductance(&mut a, q, p, -y);
             }
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 nodes,
                 parasitic_caps: Some(pc),
                 ..
-            } => {
+            }) => {
                 for (_, c, p, q) in crate::transient::bjt_parasitics(nodes, pc) {
                     let y = j_omega * c;
                     let (p, q) = (node_map.index(&p), node_map.index(&q));
@@ -854,11 +862,11 @@ fn build_small_signal(
                     stamp_complex_conductance(&mut a, q, p, -y);
                 }
             }
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 nodes,
                 parasitic_caps: Some(pc),
                 ..
-            } => {
+            }) => {
                 for (_, c, p, q) in crate::transient::mosfet_parasitics(nodes, pc) {
                     let y = j_omega * c;
                     let (p, q) = (node_map.index(&p), node_map.index(&q));
@@ -868,12 +876,12 @@ fn build_small_signal(
                     stamp_complex_conductance(&mut a, q, p, -y);
                 }
             }
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 nodes,
                 kind,
                 parasitic_caps: Some(pc),
                 ..
-            } => {
+            }) => {
                 // Each gate junction's capacitance at the DC bias.
                 for (_, c0, p, q) in crate::transient::jfet_junctions(nodes, pc) {
                     let v = |n: &String| node_map.index(n).map_or(0.0, |i| dc_solution[i]);
@@ -886,7 +894,7 @@ fn build_small_signal(
                     stamp_complex_conductance(&mut a, q, p, -y);
                 }
             }
-            CircuitElement::Varactor { nodes, params, .. } => {
+            CircuitElement::Varactor(Varactor { nodes, params, .. }) => {
                 // Small-signal capacitance at the DC bias.
                 let v_d = junction_voltage(nodes, node_map, dc_solution);
                 let c = sindr_devices::varactor::junction_capacitance(v_d, params);
@@ -898,7 +906,9 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, p, q, -y);
                 stamp_complex_conductance(&mut a, q, p, -y);
             }
-            CircuitElement::Battery { nodes, params, .. } if pencil && params.rc.is_some() => {
+            CircuitElement::Battery(Battery { nodes, params, .. })
+                if pencil && params.rc.is_some() =>
+            {
                 // Z = R0 + R1‖C1 as a branch current `i` through R0 into an
                 // internal node `m`, then R1‖C1 from `m` to nodes[1].
                 let Some(pair) = params.rc else { continue };
@@ -921,7 +931,7 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, m, q, -y);
                 stamp_complex_conductance(&mut a, q, m, -y);
             }
-            CircuitElement::Battery { nodes, params, .. } => {
+            CircuitElement::Battery(Battery { nodes, params, .. }) => {
                 // Its open-circuit voltage is a DC source, zero in AC; what
                 // is left is Z = R0 + R1‖C1.
                 let mut z = Complex64::new(params.r_series, 0.0);
@@ -937,9 +947,9 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, p, q, -y);
                 stamp_complex_conductance(&mut a, q, p, -y);
             }
-            CircuitElement::Inductor {
+            CircuitElement::Inductor(Inductor {
                 nodes, inductance, ..
-            } if pencil => {
+            }) if pencil => {
                 // Branch form, V_p − V_q = sL·i, which is affine in s.
                 let i = aux;
                 aux += 1;
@@ -954,9 +964,9 @@ fn build_small_signal(
                 }
                 a[(i, i)] -= s * *inductance;
             }
-            CircuitElement::Inductor {
+            CircuitElement::Inductor(Inductor {
                 nodes, inductance, ..
-            } => {
+            }) => {
                 // Y = 1/(j*omega*L)
                 let y = if s.norm() > 1e-15 {
                     Complex64::new(1.0, 0.0) / (j_omega * *inductance)
@@ -971,7 +981,7 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, p, q, -y);
                 stamp_complex_conductance(&mut a, q, p, -y);
             }
-            CircuitElement::VoltageSource { id, nodes, .. } => {
+            CircuitElement::VoltageSource(VoltageSource { id, nodes, .. }) => {
                 let branch = num_nodes + vsource_index;
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
@@ -989,12 +999,12 @@ fn build_small_signal(
                 vsource_branches.insert(id.clone(), branch);
                 vsource_index += 1;
             }
-            CircuitElement::CurrentSource { nodes, .. } => {
+            CircuitElement::CurrentSource(CurrentSource { nodes, .. }) => {
                 // AC current source: zero AC (unless specified)
                 // For now, independent current sources contribute 0 to AC
                 let _ = nodes;
             }
-            CircuitElement::Switch { nodes, closed, .. } => {
+            CircuitElement::Switch(Switch { nodes, closed, .. }) => {
                 let r = if *closed { 0.01 } else { 1e9 };
                 let g = Complex64::new(1.0 / r, 0.0);
                 let p = node_map.index(&nodes[0]);
@@ -1004,7 +1014,7 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
             }
-            CircuitElement::Pushbutton { nodes, closed, .. } => {
+            CircuitElement::Pushbutton(Pushbutton { nodes, closed, .. }) => {
                 let r = if *closed { 0.01 } else { 1e9 };
                 let g = Complex64::new(1.0 / r, 0.0);
                 let p = node_map.index(&nodes[0]);
@@ -1014,9 +1024,9 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
             }
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 nodes, light_level, ..
-            } => {
+            }) => {
                 use crate::stamp::ldr_resistance;
                 let r = ldr_resistance(*light_level);
                 let g = Complex64::new(1.0 / r, 0.0);
@@ -1027,12 +1037,12 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, p, q, -g);
                 stamp_complex_conductance(&mut a, q, p, -g);
             }
-            CircuitElement::Potentiometer {
+            CircuitElement::Potentiometer(Potentiometer {
                 nodes,
                 resistance,
                 position,
                 ..
-            } => {
+            }) => {
                 let pos = position.clamp(0.001, 0.999);
                 let r_top = resistance * pos;
                 let r_bot = resistance * (1.0 - pos);
@@ -1050,12 +1060,12 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, w, q, -g_bot);
                 stamp_complex_conductance(&mut a, q, w, -g_bot);
             }
-            CircuitElement::Relay {
+            CircuitElement::Relay(Relay {
                 nodes,
                 coil_resistance,
                 pickup_voltage,
                 ..
-            } => {
+            }) => {
                 let g = Complex64::new(1.0 / coil_resistance, 0.0);
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
@@ -1079,9 +1089,9 @@ fn build_small_signal(
                 stamp_complex_conductance(&mut a, c2, c1, -g);
             }
             // Thermistor: passive resistor with temperature-dependent resistance
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 nodes, temperature, ..
-            } => {
+            }) => {
                 let r = crate::device_params::thermistor_resistance(*temperature);
                 let g = Complex64::new(1.0 / r, 0.0);
                 let p = node_map.index(&nodes[0]);
@@ -1095,12 +1105,12 @@ fn build_small_signal(
             // behind RS; the small-signal model below already stamps its
             // ω = 0 conductance g_d, so this adds the rest of
             // 1/(RS + 1/(g_j + jωC_j)).
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 model,
                 nodes,
                 temperature,
                 ..
-            } => {
+            }) => {
                 if let Some(charge) = device_params::diode_charge(model.as_ref()) {
                     let params = device_params::diode(model.as_ref(), *temperature);
                     let v_d = junction_voltage(nodes, node_map, dc_solution);
@@ -1142,21 +1152,21 @@ fn build_small_signal(
                 }
             }
             // Nonlinear elements: handled via small-signal models below
-            CircuitElement::Led { .. }
-            | CircuitElement::Bjt { .. }
-            | CircuitElement::Mosfet { .. }
-            | CircuitElement::ZenerDiode { .. }
-            | CircuitElement::SchottkyDiode { .. }
-            | CircuitElement::Photodiode { .. }
-            | CircuitElement::Jfet { .. }
-            | CircuitElement::Igbt { .. } => {}
+            CircuitElement::Led(Led { .. })
+            | CircuitElement::Bjt(Bjt { .. })
+            | CircuitElement::Mosfet(Mosfet { .. })
+            | CircuitElement::ZenerDiode(ZenerDiode { .. })
+            | CircuitElement::SchottkyDiode(SchottkyDiode { .. })
+            | CircuitElement::Photodiode(Photodiode { .. })
+            | CircuitElement::Jfet(Jfet { .. })
+            | CircuitElement::Igbt(Igbt { .. }) => {}
             // Transformer: coupled inductors with a branch current per
             // winding (I1 into p1, I2 into p2), as in transient:
             //   V1 = jω·L1·I1 + jω·M·I2,  V2 = jω·M·I1 + jω·L2·I2,
             // with M = k·√(L1·L2). At ω = 0 both windings are shorts.
-            CircuitElement::Transformer {
+            CircuitElement::Transformer(Transformer {
                 nodes, l1, l2, k, ..
-            } => {
+            }) => {
                 let m = *k * (*l1 * *l2).sqrt();
                 let z = [[j_omega * *l1, j_omega * m], [j_omega * m, j_omega * *l2]];
                 let rows = [num_nodes + vsource_index, num_nodes + vsource_index + 1];
@@ -1178,7 +1188,8 @@ fn build_small_signal(
             }
             // Modelled op-amp or comparator, linearised at the bias point:
             // see `op_amp`.
-            CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. } => {
+            CircuitElement::OpAmp(OpAmp { model: Some(_), .. })
+            | CircuitElement::Comparator(Comparator { .. }) => {
                 let branch = num_nodes + vsource_index;
                 vsource_index += 2;
                 let Some(op) =
@@ -1207,7 +1218,7 @@ fn build_small_signal(
                 }
             }
             // Unmodelled op-amp: high-gain VCVS (gain=1e5), linear.
-            CircuitElement::OpAmp { nodes, .. } => {
+            CircuitElement::OpAmp(OpAmp { nodes, .. }) => {
                 let branch = num_nodes + vsource_index;
                 let p = node_map.index(&nodes[2]); // out, referred to ground
                 let cp = node_map.index(&nodes[0]); // in+
@@ -1229,12 +1240,12 @@ fn build_small_signal(
             }
 
             // Dependent sources in AC
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 nodes,
                 control_nodes,
                 gain,
                 ..
-            } => {
+            }) => {
                 let branch = num_nodes + vsource_index;
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
@@ -1263,12 +1274,12 @@ fn build_small_signal(
                 }
                 vsource_index += 1;
             }
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 nodes,
                 control_nodes,
                 gm,
                 ..
-            } => {
+            }) => {
                 let from = node_map.index(&nodes[0]);
                 let to = node_map.index(&nodes[1]);
                 let cp = node_map.index(&control_nodes[0]);
@@ -1289,12 +1300,12 @@ fn build_small_signal(
                     a[(ti, cqi)] += g;
                 }
             }
-            CircuitElement::Ccvs {
+            CircuitElement::Ccvs(Ccvs {
                 nodes,
                 control_source,
                 rm,
                 ..
-            } => {
+            }) => {
                 let branch = num_nodes + vsource_index;
                 let p = node_map.index(&nodes[0]);
                 let q = node_map.index(&nodes[1]);
@@ -1318,12 +1329,12 @@ fn build_small_signal(
                 }
                 vsource_index += 1;
             }
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 nodes,
                 control_source,
                 alpha,
                 ..
-            } => {
+            }) => {
                 let from = node_map.index(&nodes[0]);
                 let to = node_map.index(&nodes[1]);
                 let gain = Complex64::new(*alpha, 0.0);
@@ -1337,12 +1348,12 @@ fn build_small_signal(
                     }
                 }
             }
-            CircuitElement::Behavioural {
+            CircuitElement::Behavioural(Behavioural {
                 id,
                 nodes,
                 output,
                 expr,
-            } => {
+            }) => {
                 // Its Jacobian at the bias point; the constant term is a DC
                 // source and drops out of the small-signal system. `circuit`
                 // was checked by the bias solve, so this can't fail here.
@@ -1388,7 +1399,7 @@ fn build_small_signal(
                 vsource_index += component.branch_slots();
             }
             // Fuse: stamp as resistor (intact=0.001 Ohm, blown=1e9 Ohm) in AC
-            CircuitElement::Fuse { nodes, blown, .. } => {
+            CircuitElement::Fuse(Fuse { nodes, blown, .. }) => {
                 let r = if *blown { 1e9_f64 } else { 0.001_f64 };
                 let g = Complex64::new(1.0 / r, 0.0);
                 let p = node_map.index(&nodes[0]);
@@ -1403,12 +1414,12 @@ fn build_small_signal(
             // it in dropout), and load current through the output
             // resistance. The quiescent current only matters below dropout, where it
             // ramps with the input.
-            CircuitElement::VoltageRegulator {
+            CircuitElement::VoltageRegulator(VoltageRegulator {
                 nodes,
                 voltage,
                 model,
                 ..
-            } => {
+            }) => {
                 let branch = num_nodes + vsource_index;
                 let piece = crate::stamp::regulator_piece_at(
                     node_map,
@@ -1505,27 +1516,28 @@ fn build_small_signal(
 /// ```
 /// use sindr::{Circuit, CircuitElement};
 /// use sindr::ac_analysis::{solve_ac, AcConfig};
+/// use sindr::element::{Capacitor, Resistor, VoltageSource};
 ///
 /// // Simple RC low-pass: V1 -> R1 -> n_out -> C1 -> gnd
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["n_in".into(), "0".into()],
 ///             voltage: 0.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["n_in".into(), "n_out".into()],
 ///             resistance: 1_000.0,
-///         },
-///         CircuitElement::Capacitor {
+///         }),
+///         CircuitElement::Capacitor(Capacitor {
 ///             id: "C1".into(),
 ///             nodes: ["n_out".into(), "0".into()],
 ///             capacitance: 1e-6,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -1540,6 +1552,7 @@ fn build_small_signal(
 /// let gain = result.gain_curve("n_out");
 /// let phase = result.phase_curve("n_out");
 /// ```
+///
 pub fn solve_ac(circuit: &Circuit, config: &AcConfig) -> Result<AcResult, SimError> {
     solve_ac_with(circuit, config, &crate::SolverOptions::default())
 }
@@ -1632,22 +1645,22 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 1.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     resistance: 1000.0,
-                },
-                CircuitElement::Capacitor {
+                }),
+                CircuitElement::Capacitor(Capacitor {
                     id: "C1".into(),
                     nodes: ["n2".into(), "0".into()],
                     capacitance: 1e-6,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -1695,22 +1708,22 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 1.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     resistance: 1000.0,
-                },
-                CircuitElement::Capacitor {
+                }),
+                CircuitElement::Capacitor(Capacitor {
                     id: "C1".into(),
                     nodes: ["n2".into(), "0".into()],
                     capacitance: 1e-6,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -1730,22 +1743,22 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 1.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     resistance: 1000.0,
-                },
-                CircuitElement::Capacitor {
+                }),
+                CircuitElement::Capacitor(Capacitor {
                     id: "C1".into(),
                     nodes: ["n2".into(), "0".into()],
                     capacitance: 1e-6,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -1795,34 +1808,34 @@ mod tests {
         Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "VIN".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: vin,
                     waveform: None,
-                },
-                CircuitElement::VoltageSource {
+                }),
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "VCC".into(),
                     nodes: ["vcc".into(), "0".into()],
                     voltage: vcc,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "RB".into(),
                     nodes: ["in".into(), "b".into()],
                     resistance: 10_000.0,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "RC".into(),
                     nodes: ["c".into(), rc_to.into()],
                     resistance: 1_000.0,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "RE".into(),
                     nodes: ["e".into(), re_to.into()],
                     resistance: 100.0,
-                },
-                CircuitElement::Bjt {
+                }),
+                CircuitElement::Bjt(Bjt {
                     id: "Q1".into(),
                     nodes: ["b".into(), "c".into(), "e".into()],
                     kind,
@@ -1830,7 +1843,7 @@ mod tests {
                     temperature,
                     parasitic_caps: None,
                     model: None,
-                },
+                }),
             ],
             ..Default::default()
         }
@@ -1912,20 +1925,20 @@ mod tests {
     }
 
     fn vsrc(id: &str, p: &str, v: f64) -> CircuitElement {
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: id.into(),
             nodes: [p.into(), "0".into()],
             voltage: v,
             waveform: None,
-        }
+        })
     }
 
     fn res(id: &str, a: &str, b: &str, r: f64) -> CircuitElement {
-        CircuitElement::Resistor {
+        CircuitElement::Resistor(Resistor {
             id: id.into(),
             nodes: [a.into(), b.into()],
             resistance: r,
-        }
+        })
     }
 
     fn with(components: Vec<CircuitElement>) -> Circuit {
@@ -1950,14 +1963,14 @@ mod tests {
                     vsrc("VIN", "g", vin),
                     res("RD", "vdd", "d", 1_000.0),
                     res("RS", "s", "0", 100.0),
-                    CircuitElement::Jfet {
+                    CircuitElement::Jfet(Jfet {
                         id: "J1".into(),
                         nodes: ["g".into(), "d".into(), "s".into()],
                         kind,
                         idss: 10e-3,
                         vp,
                         parasitic_caps: None,
-                    },
+                    }),
                 ])
             };
             assert_ac_matches_dc_slope(&format!("{kind:?}"), stage, sign * -0.8, "d");
@@ -1975,35 +1988,35 @@ mod tests {
                 ])
             }
         };
-        let zener = CircuitElement::ZenerDiode {
+        let zener = CircuitElement::ZenerDiode(ZenerDiode {
             id: "D1".into(),
             nodes: ["0".into(), "out".into()],
             vz: 5.1,
             temperature: 300.15,
-        };
+        });
         assert_ac_matches_dc_slope("zener in breakdown", behind(zener, 1_000.0), 10.0, "out");
 
-        let schottky = CircuitElement::SchottkyDiode {
+        let schottky = CircuitElement::SchottkyDiode(SchottkyDiode {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
-        };
+        });
         assert_ac_matches_dc_slope("schottky", behind(schottky, 1_000.0), 2.0, "out");
 
-        let lit = CircuitElement::Photodiode {
+        let lit = CircuitElement::Photodiode(Photodiode {
             id: "D1".into(),
             nodes: ["0".into(), "out".into()],
             irradiance: 1e-4,
             temperature: 300.15,
-        };
+        });
         assert_ac_matches_dc_slope("photodiode, reverse", behind(lit, 10_000.0), 5.0, "out");
 
-        let forward = CircuitElement::Photodiode {
+        let forward = CircuitElement::Photodiode(Photodiode {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             irradiance: 0.0,
             temperature: 300.15,
-        };
+        });
         assert_ac_matches_dc_slope("photodiode, forward", behind(forward, 1_000.0), 2.0, "out");
     }
 
@@ -2029,7 +2042,7 @@ mod tests {
         let circuit = with(vec![
             vsrc("VIN", "in", 3.0),
             res("R1", "in", "out", r),
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["0".into(), "out".into()],
                 temperature: 300.15,
@@ -2037,7 +2050,7 @@ mod tests {
                     cjo,
                     ..Default::default()
                 }),
-            },
+            }),
         ]);
         let v = ac_at(&circuit, f_c)["out"];
         assert!(
@@ -2058,12 +2071,12 @@ mod tests {
         let circuit = with(vec![
             vsrc("VIN", "in", 0.0),
             res("R1", "in", "out", r),
-            CircuitElement::Inductor {
+            CircuitElement::Inductor(Inductor {
                 id: "L1".into(),
                 nodes: ["out".into(), "0".into()],
                 inductance: l,
                 saturation: None,
-            },
+            }),
         ]);
         let config = AcConfig::new("VIN", 0.0, f_c, 2).with_spacing(FrequencySpacing::Linear);
         let points = solve_ac(&circuit, &config).unwrap().points;
@@ -2087,13 +2100,13 @@ mod tests {
             res("R1", "in", "fb", r1),
             res("RF", "fb", "out", rf),
             res("RL", "out", "0", 10e3),
-            CircuitElement::OpAmp {
+            CircuitElement::OpAmp(OpAmp {
                 id: "U1".into(),
                 nodes: ["0".into(), "fb".into(), "out".into()],
                 v_pos: 15.0,
                 v_neg: -15.0,
                 model: Some(model),
-            },
+            }),
         ]);
         let fp = model.gbw.unwrap() / model.gain;
         for f in [1.0, 1e3] {
@@ -2119,11 +2132,11 @@ mod tests {
         let circuit = with(vec![
             vsrc("VIN", "in", 3.0),
             res("R1", "in", "out", r),
-            CircuitElement::Varactor {
+            CircuitElement::Varactor(Varactor {
                 id: "D1".into(),
                 nodes: ["0".into(), "out".into()],
                 params,
-            },
+            }),
         ]);
         let config = AcConfig::new("VIN", f_c, f_c, 1).with_spacing(FrequencySpacing::Linear);
         let v = solve_ac(&circuit, &config).unwrap().points[0].node_voltages["out"];
@@ -2150,7 +2163,7 @@ mod tests {
                 vsrc("VIN", "in", 0.0),
                 res("RB", "vcc", "b", 470_000.0),
                 res("RC", if reactive { "x" } else { "vcc" }, "c", 1_000.0),
-                CircuitElement::Bjt {
+                CircuitElement::Bjt(Bjt {
                     id: "Q1".into(),
                     nodes: ["b".into(), "c".into(), "0".into()],
                     kind: BjtKind::Npn,
@@ -2158,20 +2171,20 @@ mod tests {
                     temperature: 300.15,
                     parasitic_caps: None,
                     model: None,
-                },
+                }),
             ];
             if reactive {
-                c.push(CircuitElement::Capacitor {
+                c.push(CircuitElement::Capacitor(Capacitor {
                     id: "CIN".into(),
                     nodes: ["in".into(), "b".into()],
                     capacitance: 10e-6,
-                });
-                c.push(CircuitElement::Inductor {
+                }));
+                c.push(CircuitElement::Inductor(Inductor {
                     id: "L1".into(),
                     nodes: ["vcc".into(), "x".into()],
                     inductance: 1e-3,
                     saturation: None,
-                });
+                }));
             } else {
                 // Keep `in` connected so both circuits have the same nodes.
                 c.push(res("RIN", "in", "0", 1_000.0));

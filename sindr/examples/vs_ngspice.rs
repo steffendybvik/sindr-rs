@@ -18,6 +18,7 @@
 //! op point in one ngspice process (the fastest way to drive it from batch
 //! mode).
 
+use sindr::element::Resistor;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -233,7 +234,7 @@ fn monte_carlo_values(n: usize) -> Vec<f64> {
 fn with_rb(base: &Circuit, rb: f64) -> Circuit {
     let mut c = base.clone();
     for e in &mut c.components {
-        if let CircuitElement::Resistor { id, resistance, .. } = e {
+        if let CircuitElement::Resistor(Resistor { id, resistance, .. }) = e {
             if id.eq_ignore_ascii_case("rb") {
                 *resistance = rb;
             }

@@ -1,6 +1,7 @@
 //! Invalid sweep configs must return `Err`, never panic or yield NaN.
 
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::element::{Capacitor, Resistor, VoltageSource};
 use sindr::{dc_sweep, temperature_sweep, Circuit, CircuitElement, SimError};
 
 /// V1 -> R1 -> out -> C1 -> gnd.
@@ -8,22 +9,22 @@ fn rc_lowpass() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "out".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     }

@@ -2,6 +2,7 @@
 //! requested span and step are honoured, sources are sampled at the end of
 //! each step, and SPICE `.tran` cards map onto the config.
 
+use sindr::element::{Capacitor, Diode, Resistor, Transformer, VoltageRegulator, VoltageSource};
 use std::f64::consts::PI;
 
 use sindr::{
@@ -10,20 +11,20 @@ use sindr::{
 };
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 /// 1 V into 1 kΩ / 1 µF: τ = 1 ms.
@@ -33,11 +34,11 @@ fn rc() -> Circuit {
         components: vec![
             vsource("V1", "in", "0", 1.0),
             resistor("R1", "in", "out", 1e3),
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -195,7 +196,9 @@ fn sources_are_sampled_at_the_end_of_each_step() {
         ],
         ..Default::default()
     };
-    if let CircuitElement::VoltageSource { waveform, .. } = &mut divider.components[0] {
+    if let CircuitElement::VoltageSource(VoltageSource { waveform, .. }) =
+        &mut divider.components[0]
+    {
         *waveform = Some(Waveform::Sine {
             amplitude,
             frequency,
@@ -242,22 +245,24 @@ fn nonlinear_transient_honours_the_config() {
         ground_node: "0".into(),
         components: vec![
             vsource("V1", "in", "0", 0.0),
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["in".into(), "out".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
             resistor("RL", "out", "0", 10e3),
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     };
-    if let CircuitElement::VoltageSource { waveform, .. } = &mut circuit.components[0] {
+    if let CircuitElement::VoltageSource(VoltageSource { waveform, .. }) =
+        &mut circuit.components[0]
+    {
         *waveform = Some(Waveform::Sine {
             amplitude: 5.0,
             frequency: 50.0,
@@ -286,28 +291,28 @@ fn nonlinear_transient_honours_the_config() {
 fn transient_ignores_component_order() {
     let components = vec![
         vsource("VIN", "in", "0", 12.0),
-        CircuitElement::VoltageRegulator {
+        CircuitElement::VoltageRegulator(VoltageRegulator {
             id: "U1".into(),
             nodes: ["in".into(), "reg".into(), "0".into()],
             voltage: 5.0,
             model: None,
-        },
+        }),
         resistor("RREG", "reg", "0", 1e3),
         vsource("VAC", "p", "0", 0.0),
-        CircuitElement::Transformer {
+        CircuitElement::Transformer(Transformer {
             id: "T1".into(),
             nodes: ["p".into(), "0".into(), "s".into(), "0".into()],
             l1: 10e-3,
             l2: 10e-3,
             k: 0.99,
             saturation: None,
-        },
-        CircuitElement::Diode {
+        }),
+        CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["s".into(), "out".into()],
             temperature: 300.15,
             model: None,
-        },
+        }),
         resistor("RL", "out", "0", 100.0),
     ];
     let mut forward = Circuit {
@@ -315,7 +320,9 @@ fn transient_ignores_component_order() {
         components,
         ..Default::default()
     };
-    if let CircuitElement::VoltageSource { waveform, .. } = &mut forward.components[3] {
+    if let CircuitElement::VoltageSource(VoltageSource { waveform, .. }) =
+        &mut forward.components[3]
+    {
         *waveform = Some(Waveform::Sine {
             amplitude: 5.0,
             frequency: 1e3,

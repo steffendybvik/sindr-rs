@@ -1,5 +1,11 @@
 use super::*;
 use crate::ac_analysis::AcConfig;
+use crate::element::{
+    Battery, Bjt, Capacitor, Comparator, Crystal, CurrentSource, Diode, FerriteBead, Fuse, Igbt,
+    Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor, Potentiometer, Pushbutton,
+    Relay, Resistor, SchottkyDiode, Switch, Thermistor, Transformer, Varactor, VoltageRegulator,
+    VoltageSource, ZenerDiode,
+};
 use crate::waveform::Waveform;
 use crate::TransientConfig;
 
@@ -146,7 +152,7 @@ fn op_amp_rails_come_from_supplies_on_its_pins() {
         .with_source(BenchSource::voltage("vsupply", "vdd", 5.0))
         .with_source(BenchSource::voltage("vin", "src", 8.0));
     let imported = netlist.to_circuit(&bench).unwrap();
-    let Some(CircuitElement::OpAmp { v_pos, v_neg, .. }) =
+    let Some(CircuitElement::OpAmp(OpAmp { v_pos, v_neg, .. })) =
         imported.circuit.components.iter().find(|c| c.id() == "u1")
     else {
         panic!("no op-amp")
@@ -615,66 +621,66 @@ fn two_terminal_passives_take_their_value() {
             Component::new("c1", ComponentKind::CapacitorPolarized).with_value("10uF"),
             &["+", "NEG"]
         ),
-        CircuitElement::Capacitor {
+        CircuitElement::Capacitor(Capacitor {
             id: "c1".into(),
             nodes: ns(),
             capacitance: 10e-6,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("l1", ComponentKind::Inductor).with_value(String::from("2.2mH")),
             &["a", "b"]
         ),
-        CircuitElement::Inductor {
+        CircuitElement::Inductor(Inductor {
             id: "l1".into(),
             nodes: ns(),
             inductance: 2.2e-3,
             saturation: None,
-        }
+        })
     );
     assert_eq!(
         built(Component::new("t1", ComponentKind::Thermistor), &["1", "2"]),
-        CircuitElement::Thermistor {
+        CircuitElement::Thermistor(Thermistor {
             id: "t1".into(),
             nodes: ns(),
             temperature: 298.15,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("p1", ComponentKind::Photoresistor).with_param("light_level", 0.4),
             &["1", "2"]
         ),
-        CircuitElement::Photoresistor {
+        CircuitElement::Photoresistor(Photoresistor {
             id: "p1".into(),
             nodes: ns(),
             light_level: 0.4,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("v1", ComponentKind::VoltageSource).with_value("3V3"),
             &["pos", "n"]
         ),
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: "v1".into(),
             nodes: ns(),
             voltage: 3.3,
             waveform: None,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("i1", ComponentKind::CurrentSource).with_value("2mA"),
             &["from", "to"]
         ),
-        CircuitElement::CurrentSource {
+        CircuitElement::CurrentSource(CurrentSource {
             id: "i1".into(),
             nodes: ns(),
             current: 2e-3,
             waveform: None,
-        }
+        })
     );
 }
 
@@ -688,39 +694,39 @@ fn diodes_take_temperature_irradiance_and_breakdown() {
                 .with_model(Model::Diode(dm)),
             &["anode", "k"]
         ),
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             id: "d1".into(),
             nodes: ns(),
             temperature: 350.0,
             model: Some(dm),
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("d2", ComponentKind::SchottkyDiode),
             &["a", "c"]
         ),
-        CircuitElement::SchottkyDiode {
+        CircuitElement::SchottkyDiode(SchottkyDiode {
             id: "d2".into(),
             nodes: ns(),
             temperature: NOMINAL_K,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("d3", ComponentKind::Photodiode).with_param("irradiance", "1m"),
             &["a", "k"]
         ),
-        CircuitElement::Photodiode {
+        CircuitElement::Photodiode(Photodiode {
             id: "d3".into(),
             nodes: ns(),
             irradiance: 1e-3,
             temperature: NOMINAL_K,
-        }
+        })
     );
     // The breakdown is the value, or `vz`, which wins over it.
     let zener = |c: Component| match built(c, &["a", "k"]) {
-        CircuitElement::ZenerDiode { vz, .. } => vz,
+        CircuitElement::ZenerDiode(ZenerDiode { vz, .. }) => vz,
         other => panic!("{other:?}"),
     };
     assert_eq!(
@@ -737,12 +743,12 @@ fn diodes_take_temperature_irradiance_and_breakdown() {
     );
     assert_eq!(
         built(Component::new("led", ComponentKind::Led), &["a", "k"]),
-        CircuitElement::Led {
+        CircuitElement::Led(Led {
             id: "led".into(),
             nodes: ns(),
             color: "red".into(),
             temperature: NOMINAL_K,
-        }
+        })
     );
     let vp = VaractorParams {
         cj0: 50e-12,
@@ -753,19 +759,19 @@ fn diodes_take_temperature_irradiance_and_breakdown() {
             Component::new("cv", ComponentKind::Varactor).with_model(Model::Varactor(vp.clone())),
             &["a", "k"]
         ),
-        CircuitElement::Varactor {
+        CircuitElement::Varactor(Varactor {
             id: "cv".into(),
             nodes: ns(),
             params: vp,
-        }
+        })
     );
     assert_eq!(
         built(Component::new("cv", ComponentKind::Varactor), &["a", "k"]),
-        CircuitElement::Varactor {
+        CircuitElement::Varactor(Varactor {
             id: "cv".into(),
             nodes: ns(),
             params: VaractorParams::default(),
-        }
+        })
     );
 }
 
@@ -782,7 +788,7 @@ fn transistors_take_their_defaults_and_models() {
                 .with_model(Model::Bjt(bm)),
             &["b", "c", "e"]
         ),
-        CircuitElement::Bjt {
+        CircuitElement::Bjt(Bjt {
             id: "q1".into(),
             nodes: ns(),
             kind: BjtKind::Pnp,
@@ -790,24 +796,24 @@ fn transistors_take_their_defaults_and_models() {
             temperature: NOMINAL_K,
             parasitic_caps: None,
             model: Some(bm),
-        }
+        })
     );
     match built(Component::new("q2", ComponentKind::Npn), &["b", "c", "e"]) {
-        CircuitElement::Bjt { bf, kind, .. } => assert_eq!((bf, kind), (100.0, BjtKind::Npn)),
+        CircuitElement::Bjt(Bjt { bf, kind, .. }) => assert_eq!((bf, kind), (100.0, BjtKind::Npn)),
         other => panic!("{other:?}"),
     }
 
     // A MOSFET's body may be left off; it is tied to the source.
     assert_eq!(
         built(Component::new("m1", ComponentKind::Pmos), &["g", "d", "s"]),
-        CircuitElement::Mosfet {
+        CircuitElement::Mosfet(Mosfet {
             id: "m1".into(),
             nodes: ns(),
             kind: MosfetKind::Pmos,
             params: MosfetParams::default_pmos(),
             parasitic_caps: None,
             body_diode: None,
-        }
+        })
     );
     let mp = MosfetParams {
         vto: 1.5,
@@ -817,7 +823,7 @@ fn transistors_take_their_defaults_and_models() {
         Component::new("m2", ComponentKind::Nmos).with_model(Model::Mosfet(mp.clone())),
         &["g", "d", "s"],
     ) {
-        CircuitElement::Mosfet { params, kind, .. } => {
+        CircuitElement::Mosfet(Mosfet { params, kind, .. }) => {
             assert_eq!((params, kind), (mp, MosfetKind::Nmos))
         }
         other => panic!("{other:?}"),
@@ -826,28 +832,28 @@ fn transistors_take_their_defaults_and_models() {
     // A JFET's pinch-off defaults to the sign of its channel.
     assert_eq!(
         built(Component::new("j1", ComponentKind::Njfet), &["g", "d", "s"]),
-        CircuitElement::Jfet {
+        CircuitElement::Jfet(Jfet {
             id: "j1".into(),
             nodes: ns(),
             kind: JfetKind::NChannel,
             idss: 10e-3,
             vp: -2.0,
             parasitic_caps: None,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("j2", ComponentKind::Pjfet).with_param("idss", "5mA"),
             &["g", "d", "s"]
         ),
-        CircuitElement::Jfet {
+        CircuitElement::Jfet(Jfet {
             id: "j2".into(),
             nodes: ns(),
             kind: JfetKind::PChannel,
             idss: 5e-3,
             vp: 2.0,
             parasitic_caps: None,
-        }
+        })
     );
     let ip = IgbtParams {
         vth: 6.0,
@@ -858,14 +864,14 @@ fn transistors_take_their_defaults_and_models() {
             Component::new("g1", ComponentKind::Igbt).with_model(Model::Igbt(ip.clone())),
             &["gate", "collector", "emitter"]
         ),
-        CircuitElement::Igbt {
+        CircuitElement::Igbt(Igbt {
             id: "g1".into(),
             nodes: ns(),
             params: ip,
-        }
+        })
     );
     match built(Component::new("g2", ComponentKind::Igbt), &["g", "c", "e"]) {
-        CircuitElement::Igbt { params, .. } => assert_eq!(params, IgbtParams::default()),
+        CircuitElement::Igbt(Igbt { params, .. }) => assert_eq!(params, IgbtParams::default()),
         other => panic!("{other:?}"),
     }
 }
@@ -878,12 +884,12 @@ fn comparator_rails_default_to_15_volts_or_take_parameters() {
             Component::new("u1", ComponentKind::Comparator),
             &["in+", "in-", "out"]
         ),
-        CircuitElement::Comparator {
+        CircuitElement::Comparator(Comparator {
             id: "u1".into(),
             nodes: ns(),
             v_pos: 15.0,
             v_neg: -15.0,
-        }
+        })
     );
     // Parameters win over any supply on the pins.
     match built(
@@ -892,12 +898,12 @@ fn comparator_rails_default_to_15_volts_or_take_parameters() {
             .with_param("v_neg", 0.0),
         &["+", "-", "out", "v+", "v-"],
     ) {
-        CircuitElement::OpAmp {
+        CircuitElement::OpAmp(OpAmp {
             v_pos,
             v_neg,
             model,
             ..
-        } => assert_eq!((v_pos, v_neg, model), (3.3, 0.0, None)),
+        }) => assert_eq!((v_pos, v_neg, model), (3.3, 0.0, None)),
         other => panic!("{other:?}"),
     }
 }
@@ -920,7 +926,7 @@ fn a_supply_not_returned_to_ground_is_no_rail() {
         .with_source(BenchSource::voltage("vs", "vdd", 5.0).with_minus("vref"))
         .with_source(BenchSource::voltage("vr", "vref", 1.0));
     let imported = netlist.to_circuit(&bench).unwrap();
-    let Some(CircuitElement::OpAmp { v_pos, v_neg, .. }) =
+    let Some(CircuitElement::OpAmp(OpAmp { v_pos, v_neg, .. })) =
         imported.circuit.components.iter().find(|c| c.id() == "u1")
     else {
         panic!("no op-amp")
@@ -942,19 +948,19 @@ fn switches_fuses_relays_and_transformers() {
             Component::new("s1", ComponentKind::Switch).with_param("closed", true),
             &["1", "2"]
         ),
-        CircuitElement::Switch {
+        CircuitElement::Switch(Switch {
             id: "s1".into(),
             nodes: ns(),
             closed: true,
-        }
+        })
     );
     assert_eq!(
         built(Component::new("s2", ComponentKind::PushButton), &["1", "2"]),
-        CircuitElement::Pushbutton {
+        CircuitElement::Pushbutton(Pushbutton {
             id: "s2".into(),
             nodes: ns(),
             closed: false,
-        }
+        })
     );
     // A fuse's rating defaults to 1 A, and a part number in its value
     // is ignored rather than refused.
@@ -965,18 +971,20 @@ fn switches_fuses_relays_and_transformers() {
                 .with_param("blown", true),
             &["1", "2"]
         ),
-        CircuitElement::Fuse {
+        CircuitElement::Fuse(Fuse {
             id: "f1".into(),
             nodes: ns(),
             rating: 1.0,
             blown: true,
-        }
+        })
     );
     match built(
         Component::new("f2", ComponentKind::Fuse).with_value("500mA"),
         &["1", "2"],
     ) {
-        CircuitElement::Fuse { rating, blown, .. } => assert_eq!((rating, blown), (0.5, false)),
+        CircuitElement::Fuse(Fuse { rating, blown, .. }) => {
+            assert_eq!((rating, blown), (0.5, false))
+        }
         other => panic!("{other:?}"),
     }
     assert_eq!(
@@ -984,13 +992,13 @@ fn switches_fuses_relays_and_transformers() {
             Component::new("k1", ComponentKind::Relay).with_param("pickup_voltage", "3V5"),
             &["a1", "a2", "com", "no"]
         ),
-        CircuitElement::Relay {
+        CircuitElement::Relay(Relay {
             id: "k1".into(),
             nodes: ns(),
             coil_resistance: 500.0,
             pickup_voltage: 3.5,
             inductance: 0.0,
-        }
+        })
     );
     assert_eq!(
         built(
@@ -999,14 +1007,14 @@ fn switches_fuses_relays_and_transformers() {
                 .with_param("l2", "1mH"),
             &["p1", "q1", "sec+", "sec-"]
         ),
-        CircuitElement::Transformer {
+        CircuitElement::Transformer(Transformer {
             id: "tr1".into(),
             nodes: ns(),
             l1: 10e-3,
             l2: 1e-3,
             k: 0.999,
             saturation: None,
-        }
+        })
     );
 }
 
@@ -1021,18 +1029,18 @@ fn regulators_and_batteries() {
                 .with_model(Model::Regulator(rp)),
             &["in", "out", "gnd"]
         ),
-        CircuitElement::VoltageRegulator {
+        CircuitElement::VoltageRegulator(VoltageRegulator {
             id: "u1".into(),
             nodes: ns(),
             voltage: 5.0,
             model: Some(rp),
-        }
+        })
     );
     match built(
         Component::new("u2", ComponentKind::Regulator).with_value("3V3"),
         &["vin", "vout", "com"],
     ) {
-        CircuitElement::VoltageRegulator { voltage, model, .. } => {
+        CircuitElement::VoltageRegulator(VoltageRegulator { voltage, model, .. }) => {
             assert_eq!((voltage, model), (3.3, None))
         }
         other => panic!("{other:?}"),
@@ -1045,12 +1053,12 @@ fn regulators_and_batteries() {
                 .with_param("state_of_charge", 0.8),
             &["+", "-"]
         ),
-        CircuitElement::Battery {
+        CircuitElement::Battery(Battery {
             id: "b1".into(),
             nodes: ns(),
             params: BatteryParams::constant(9.0, 0.5, 0.1),
             state_of_charge: 0.8,
-        }
+        })
     );
     // A model stands in for the value.
     let li = BatteryParams::lithium_ion(2.0, 0.05);
@@ -1059,12 +1067,12 @@ fn regulators_and_batteries() {
             Component::new("b2", ComponentKind::Battery).with_model(Model::Battery(li.clone())),
             &["+", "-"]
         ),
-        CircuitElement::Battery {
+        CircuitElement::Battery(Battery {
             id: "b2".into(),
             nodes: ns(),
             params: li,
             state_of_charge: 1.0,
-        }
+        })
     );
 }
 
@@ -1186,20 +1194,20 @@ fn loads_become_elements_between_their_nets() {
     };
     assert_eq!(
         element("cl"),
-        CircuitElement::Capacitor {
+        CircuitElement::Capacitor(Capacitor {
             id: "cl".into(),
             nodes: ["out".into(), "gnd".into()],
             capacitance: 1e-6,
-        }
+        })
     );
     assert_eq!(
         element("ll"),
-        CircuitElement::Inductor {
+        CircuitElement::Inductor(Inductor {
             id: "ll".into(),
             nodes: ["out".into(), "gnd".into()],
             inductance: 1e-3,
             saturation: None,
-        }
+        })
     );
     assert!(op(&netlist, &reactive).node_voltages["out"].abs() < 1e-6);
 }
@@ -1916,7 +1924,7 @@ fn an_op_amp_answers_to_its_long_names() {
             "Negative supply",
         ],
     );
-    let CircuitElement::OpAmp { nodes, .. } = e else {
+    let CircuitElement::OpAmp(OpAmp { nodes, .. }) = e else {
         panic!("{e:?}")
     };
     assert_eq!(nodes, ns::<3>());
@@ -1945,7 +1953,7 @@ fn terminal_names_from_the_table_place_each_terminal() {
         &options,
     )
     .unwrap();
-    let CircuitElement::Bjt { nodes, .. } = e else {
+    let CircuitElement::Bjt(Bjt { nodes, .. }) = e else {
         panic!("{e:?}")
     };
     // Element order is base, collector, emitter.
@@ -1963,7 +1971,7 @@ fn a_terminal_name_wins_over_its_id() {
         &options,
     )
     .unwrap();
-    let CircuitElement::Potentiometer { nodes, .. } = e else {
+    let CircuitElement::Potentiometer(Potentiometer { nodes, .. }) = e else {
         panic!("{e:?}")
     };
     assert_eq!(nodes, ["n1", "n0", "n2"].map(String::from));
@@ -2011,7 +2019,7 @@ fn a_pin_number_without_a_name_still_cant_pick_a_polarity() {
     )
     .unwrap();
     assert!(
-        matches!(&e, CircuitElement::Capacitor { nodes, capacitance, .. }
+        matches!(&e, CircuitElement::Capacitor(Capacitor { nodes, capacitance, .. })
             if *nodes == ["n1", "n0"].map(String::from) && (*capacitance - 4.7e-6).abs() < 1e-18),
         "{e:?}"
     );
@@ -2044,11 +2052,11 @@ fn crystals_and_ferrite_beads_import() {
     );
     assert_eq!(
         e,
-        CircuitElement::Crystal {
+        CircuitElement::Crystal(Crystal {
             id: "y".into(),
             nodes: ns(),
             params: CrystalParams::from_datasheet(16e6, 50.0, 5e-12),
-        }
+        })
     );
     let e = built(
         Component::new("y", ComponentKind::Crystal)
@@ -2060,11 +2068,11 @@ fn crystals_and_ferrite_beads_import() {
     );
     assert_eq!(
         e,
-        CircuitElement::Crystal {
+        CircuitElement::Crystal(Crystal {
             id: "y".into(),
             nodes: ns(),
             params: CrystalParams::from_datasheet(32.768e3, 70e3, 1.3e-12),
-        }
+        })
     );
     let e = built(
         Component::new("fb", ComponentKind::from_name("ferrite-bead")).with_value("600"),
@@ -2072,11 +2080,11 @@ fn crystals_and_ferrite_beads_import() {
     );
     assert_eq!(
         e,
-        CircuitElement::FerriteBead {
+        CircuitElement::FerriteBead(FerriteBead {
             id: "fb".into(),
             nodes: ns(),
             params: FerriteBeadParams::from_datasheet(600.0, 0.1),
-        }
+        })
     );
     let e = built(
         Component::new("fb", ComponentKind::FerriteBead)
@@ -2086,11 +2094,11 @@ fn crystals_and_ferrite_beads_import() {
     );
     assert_eq!(
         e,
-        CircuitElement::FerriteBead {
+        CircuitElement::FerriteBead(FerriteBead {
             id: "fb".into(),
             nodes: ns(),
             params: FerriteBeadParams::from_datasheet(120.0, 0.05),
-        }
+        })
     );
 }
 
@@ -2237,12 +2245,12 @@ fn dual_op_amp_builds_one_element_per_unit_on_shared_supplies() {
         .with_source(BenchSource::voltage("vin", "in", 1.5));
     let imported = netlist.to_circuit_with(&bench, &options).unwrap();
     for id in ["u1.a", "u1.b"] {
-        let Some(CircuitElement::OpAmp {
+        let Some(CircuitElement::OpAmp(OpAmp {
             v_pos,
             v_neg,
             model,
             ..
-        }) = imported.circuit.components.iter().find(|c| c.id() == id)
+        })) = imported.circuit.components.iter().find(|c| c.id() == id)
         else {
             panic!("no op-amp {id}")
         };
@@ -2402,8 +2410,8 @@ fn flasher_takes_its_models_from_part_data() {
             .find(|e| e.id() == id)
             .unwrap()
     };
-    assert!(matches!(element("d1"), CircuitElement::Led { color, .. } if color == "amber"));
-    let CircuitElement::Bjt { bf, model, .. } = element("q1") else {
+    assert!(matches!(element("d1"), CircuitElement::Led(Led { color, .. }) if color == "amber"));
+    let CircuitElement::Bjt(Bjt { bf, model, .. }) = element("q1") else {
         panic!()
     };
     // hFE 100–300 is 200 nominal; BR is fitted to Vce(sat).
@@ -2484,7 +2492,7 @@ fn led_colour_from_any_case_and_from_the_value() {
         };
         let imported = netlist.to_circuit(&Bench::new("gnd")).unwrap();
         let color = match &imported.circuit.components[0] {
-            CircuitElement::Led { color, .. } => color.clone(),
+            CircuitElement::Led(Led { color, .. }) => color.clone(),
             other => panic!("{other:?}"),
         };
         (
@@ -2560,7 +2568,7 @@ fn zener_and_mosfet_from_datasheet_figures() {
     assert!(imported.warnings.is_empty(), "{:?}", imported.warnings);
     assert_eq!(imported.model_source("z"), Some(ModelSource::Datasheet));
     assert_eq!(imported.model_source("m"), Some(ModelSource::Datasheet));
-    let CircuitElement::Mosfet { params, .. } = &imported.circuit.components[1] else {
+    let CircuitElement::Mosfet(Mosfet { params, .. }) = &imported.circuit.components[1] else {
         panic!()
     };
     assert!(params.vto > 0.0 && params.vto < 2.1, "{params:?}");
@@ -2584,7 +2592,7 @@ fn quantities_carry_their_unit() {
     };
     let kelvin = |v: Value| match &netlist(v).to_circuit(&Bench::new("gnd")) {
         Ok(imported) => match &imported.circuit.components[0] {
-            CircuitElement::Diode { temperature, .. } => Ok(*temperature),
+            CircuitElement::Diode(Diode { temperature, .. }) => Ok(*temperature),
             _ => unreachable!(),
         },
         Err(e) => Err(e.clone()),
@@ -3003,7 +3011,7 @@ fn a_bare_diode_warns_it_got_the_default_model() {
         warning.to_string(),
         "component \"d\": no model data; using the built-in silicon diode (IS = 1e-14 A, N = 1)"
     );
-    let CircuitElement::Diode { model, .. } = &imported.circuit.components[0] else {
+    let CircuitElement::Diode(Diode { model, .. }) = &imported.circuit.components[0] else {
         panic!()
     };
     assert_eq!(*model, None);
@@ -3016,7 +3024,7 @@ fn a_bjt_model_without_a_gain_gets_bf_100() {
     assert_eq!(imported.model_source("q"), Some(ModelSource::Model));
     assert_eq!(imported.warnings.len(), 1);
     assert!(imported.warnings[0].message.contains("bf = 100"));
-    let CircuitElement::Bjt { bf, model, .. } = &imported.circuit.components[0] else {
+    let CircuitElement::Bjt(Bjt { bf, model, .. }) = &imported.circuit.components[0] else {
         panic!()
     };
     assert_eq!((*bf, *model), (100.0, Some(BjtModel::default())));
@@ -3036,7 +3044,7 @@ fn figures_take_min_and_max_forms_only_where_they_are_figures() {
         let imported = import(c).unwrap();
         assert_eq!(imported.model_source("d"), Some(ModelSource::Datasheet));
         match &imported.circuit.components[0] {
-            CircuitElement::Diode { model, .. } => model.unwrap(),
+            CircuitElement::Diode(Diode { model, .. }) => model.unwrap(),
             other => panic!("{other:?}"),
         }
     };
@@ -3188,7 +3196,7 @@ fn nets_that_only_reach_ic_pins_are_tied_high_impedance() {
         .unwrap();
     assert!(matches!(
         tie,
-        CircuitElement::Resistor { nodes, resistance, .. }
+        CircuitElement::Resistor(Resistor { nodes, resistance, .. })
             if nodes == &["alert".to_string(), "gnd".to_string()] && *resistance == HIGH_IMPEDANCE_OHMS
     ));
 

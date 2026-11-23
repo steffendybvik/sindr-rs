@@ -11,6 +11,7 @@
 //! - For KCL: at node `n`, current is leaving via component terminal `n0=n`
 //!   (subtract) and entering via terminal `n1=n` (add).
 
+use sindr::element::{Capacitor, CurrentSource, Diode, Inductor, Led, Resistor, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::{solve_circuit, Circuit, CircuitElement, SimulationResult};
@@ -38,12 +39,12 @@ fn kcl_residuals(circuit: &Circuit, result: &SimulationResult) -> HashMap<String
     let mut sums: HashMap<String, f64> = HashMap::new();
     for el in &circuit.components {
         let (id, n0, n1): (&String, &String, &String) = match el {
-            CircuitElement::Resistor { id, nodes, .. }
-            | CircuitElement::VoltageSource { id, nodes, .. }
-            | CircuitElement::Diode { id, nodes, .. }
-            | CircuitElement::Led { id, nodes, .. }
-            | CircuitElement::Capacitor { id, nodes, .. }
-            | CircuitElement::Inductor { id, nodes, .. } => (id, &nodes[0], &nodes[1]),
+            CircuitElement::Resistor(Resistor { id, nodes, .. })
+            | CircuitElement::VoltageSource(VoltageSource { id, nodes, .. })
+            | CircuitElement::Diode(Diode { id, nodes, .. })
+            | CircuitElement::Led(Led { id, nodes, .. })
+            | CircuitElement::Capacitor(Capacitor { id, nodes, .. })
+            | CircuitElement::Inductor(Inductor { id, nodes, .. }) => (id, &nodes[0], &nodes[1]),
             _ => continue, // multi-terminal devices not used in these tests
         };
         let i = match by_id.get(id.as_str()) {
@@ -76,23 +77,23 @@ fn diode_resistor(vsource: f64, r_ohms: f64) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: vsource,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: r_ohms,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -106,27 +107,27 @@ fn three_resistor_divider() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 12.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["n2".into(), "n3".into()],
                 resistance: 2_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R3".into(),
                 nodes: ["n3".into(), "0".into()],
                 resistance: 3_000.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -340,16 +341,17 @@ fn assert_power_balance(circuit: &Circuit, result: &SimulationResult, tol_watts:
 
     for el in &circuit.components {
         match el {
-            CircuitElement::VoltageSource { id, .. } | CircuitElement::CurrentSource { id, .. } => {
+            CircuitElement::VoltageSource(VoltageSource { id, .. })
+            | CircuitElement::CurrentSource(CurrentSource { id, .. }) => {
                 // For a source, `power` (= V·I in n0→n1 convention) is
                 // negative when delivering. Track delivered power as +.
                 if let Some(c) = by_id.get(id.as_str()) {
                     source_power += -c.power;
                 }
             }
-            CircuitElement::Resistor { id, .. }
-            | CircuitElement::Diode { id, .. }
-            | CircuitElement::Led { id, .. } => {
+            CircuitElement::Resistor(Resistor { id, .. })
+            | CircuitElement::Diode(Diode { id, .. })
+            | CircuitElement::Led(Led { id, .. }) => {
                 if let Some(c) = by_id.get(id.as_str()) {
                     passive_power += c.power;
                 }
@@ -395,28 +397,28 @@ fn two_voltage_sources_in_series_satisfy_kcl_and_power() {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["a".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["a".into(), "mid".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["mid".into(), "b".into()],
                 resistance: 2_000.0,
-            },
-            CircuitElement::VoltageSource {
+            }),
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V2".into(),
                 nodes: ["b".into(), "0".into()],
                 voltage: 4.0,
                 waveform: None,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -443,32 +445,32 @@ fn wheatstone_bridge_balances() {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["src".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["src".into(), "a".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["a".into(), "0".into()],
                 resistance: 2_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R3".into(),
                 nodes: ["src".into(), "b".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R4".into(),
                 nodes: ["b".into(), "0".into()],
                 resistance: 2_000.0,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -497,23 +499,23 @@ fn reverse_biased_diode_carries_negligible_current() {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 100.0,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["0".into(), "n2".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -552,29 +554,29 @@ fn two_diodes_in_parallel_split_current_and_obey_shockley() {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 100.0,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D2".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -649,22 +651,22 @@ fn capacitor_is_open_circuit_in_dc() {
     let with_cap = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "0".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["n1".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     };

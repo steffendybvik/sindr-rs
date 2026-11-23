@@ -373,6 +373,7 @@ mod tests {
     }
 
     mod props {
+        use crate::element::VoltageSource;
         use crate::spice::parse_str;
         use crate::CircuitElement;
         use proptest::prelude::*;
@@ -470,7 +471,7 @@ mod tests {
             let deck = format!("* p\n.param p = {{{text}}}\nV1 a 0 {{p}}\nR1 a 0 1k\n.end\n");
             let netlist = parse_str(&deck).unwrap_or_else(|e| panic!("{text}: {e}"));
             match &netlist.circuit.components[0] {
-                CircuitElement::VoltageSource { voltage, .. } => *voltage,
+                CircuitElement::VoltageSource(VoltageSource { voltage, .. }) => *voltage,
                 other => panic!("expected V1, got {other:?}"),
             }
         }

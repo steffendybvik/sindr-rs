@@ -27,12 +27,13 @@ How much current does a red LED draw from 5 V through 220 Ω?
 
 ```rust
 use sindr::{solve_circuit, Circuit, CircuitElement};
+use sindr::element::{Led, Resistor, VoltageSource};
 
 fn main() -> Result<(), sindr::SimError> {
     let circuit = Circuit::new("gnd", vec![
-        CircuitElement::VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "gnd".into()], voltage: 5.0, waveform: None },
-        CircuitElement::Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 220.0 },
-        CircuitElement::Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 },
+        CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "gnd".into()], voltage: 5.0, waveform: None }),
+        CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 220.0 }),
+        CircuitElement::Led(Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 }),
     ]);
     let result = solve_circuit(&circuit)?;
     let led = result.component("D1").expect("D1 is in the circuit");

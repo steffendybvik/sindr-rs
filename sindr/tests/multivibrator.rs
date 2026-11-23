@@ -8,6 +8,7 @@
 //! `T ≈ ln 2 · RB · (C1 + C2)`, and each half period against the RC charge
 //! of the base it times.
 
+use sindr::element::{Bjt, Capacitor, Diode, Led, Resistor, VoltageSource};
 use sindr::{
     solve_transient, BjtKind, Circuit, CircuitElement, TransientConfig, TransientData,
     TransientStart,
@@ -22,47 +23,53 @@ const C2: f64 = 3.3e-6;
 /// when `color` is `None`.
 fn flasher(color: Option<&str>) -> Circuit {
     let junction = |id: &str, k: &str| match color {
-        Some(color) => CircuitElement::Led {
+        Some(color) => CircuitElement::Led(Led {
             id: id.into(),
             nodes: ["vcc".into(), k.into()],
             color: color.into(),
             temperature: 300.15,
-        },
-        None => CircuitElement::Diode {
+        }),
+        None => CircuitElement::Diode(Diode {
             id: id.into(),
             nodes: ["vcc".into(), k.into()],
             model: None,
             temperature: 300.15,
-        },
+        }),
     };
-    let resistor = |id: &str, a: &str, b: &str, resistance: f64| CircuitElement::Resistor {
-        id: id.into(),
-        nodes: [a.into(), b.into()],
-        resistance,
+    let resistor = |id: &str, a: &str, b: &str, resistance: f64| {
+        CircuitElement::Resistor(Resistor {
+            id: id.into(),
+            nodes: [a.into(), b.into()],
+            resistance,
+        })
     };
-    let capacitor = |id: &str, a: &str, b: &str, capacitance: f64| CircuitElement::Capacitor {
-        id: id.into(),
-        nodes: [a.into(), b.into()],
-        capacitance,
+    let capacitor = |id: &str, a: &str, b: &str, capacitance: f64| {
+        CircuitElement::Capacitor(Capacitor {
+            id: id.into(),
+            nodes: [a.into(), b.into()],
+            capacitance,
+        })
     };
-    let npn = |id: &str, b: &str, c: &str| CircuitElement::Bjt {
-        id: id.into(),
-        nodes: [b.into(), c.into(), "0".into()],
-        kind: BjtKind::Npn,
-        bf: 200.0,
-        temperature: 300.15,
-        parasitic_caps: None,
-        model: None,
+    let npn = |id: &str, b: &str, c: &str| {
+        CircuitElement::Bjt(Bjt {
+            id: id.into(),
+            nodes: [b.into(), c.into(), "0".into()],
+            kind: BjtKind::Npn,
+            bf: 200.0,
+            temperature: 300.15,
+            parasitic_caps: None,
+            model: None,
+        })
     };
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "vs".into(),
                 nodes: ["vcc".into(), "0".into()],
                 voltage: VCC,
                 waveform: None,
-            },
+            }),
             junction("d1", "a1"),
             junction("d2", "a2"),
             resistor("r1", "a1", "c1n", 470.0),

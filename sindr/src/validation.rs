@@ -8,6 +8,12 @@
 //! by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 //! [`validate_circuit`].
 
+use crate::element::{
+    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, CurrentSource, Diode, Fuse,
+    Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor, Potentiometer, Relay, Resistor,
+    SchottkyDiode, Thermistor, Transformer, Vccs, Vcvs, VoltageRegulator, VoltageSource,
+    ZenerDiode,
+};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -153,7 +159,7 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     // Check 6: what a behavioural source's expression reads exists
     // ------------------------------------------------------------------
     for comp in &circuit.components {
-        if let CircuitElement::Behavioural { id, expr, .. } = comp {
+        if let CircuitElement::Behavioural(Behavioural { id, expr, .. }) = comp {
             for variable in expr.variables() {
                 if let crate::expression::Variable::Current { source } = variable {
                     if circuit.vsource_branch_index(source).is_none() {
@@ -219,11 +225,11 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
         }
     };
     match comp {
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             temperature,
             model: Some(model),
             ..
-        } => {
+        }) => {
             positive("temperature", *temperature, " K")?;
             positive("model.is", model.is, " A")?;
             positive("model.n", model.n, "")?;
@@ -243,20 +249,20 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             non_negative("model.xti", model.xti, "")?;
             Ok(())
         }
-        CircuitElement::Diode { temperature, .. }
-        | CircuitElement::Led { temperature, .. }
-        | CircuitElement::ZenerDiode { temperature, .. }
-        | CircuitElement::SchottkyDiode { temperature, .. }
-        | CircuitElement::Thermistor { temperature, .. }
-        | CircuitElement::Photodiode { temperature, .. } => {
+        CircuitElement::Diode(Diode { temperature, .. })
+        | CircuitElement::Led(Led { temperature, .. })
+        | CircuitElement::ZenerDiode(ZenerDiode { temperature, .. })
+        | CircuitElement::SchottkyDiode(SchottkyDiode { temperature, .. })
+        | CircuitElement::Thermistor(Thermistor { temperature, .. })
+        | CircuitElement::Photodiode(Photodiode { temperature, .. }) => {
             positive("temperature", *temperature, " K")
         }
-        CircuitElement::Bjt {
+        CircuitElement::Bjt(Bjt {
             bf,
             temperature,
             model,
             ..
-        } => {
+        }) => {
             positive("temperature", *temperature, " K")?;
             positive("bf", *bf, "")?;
             if let Some(model) = model {
@@ -272,12 +278,12 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
-        CircuitElement::OpAmp {
+        CircuitElement::OpAmp(OpAmp {
             v_pos,
             v_neg,
             model: Some(model),
             ..
-        } => {
+        }) => {
             finite("v_pos", *v_pos, " V")?;
             finite("v_neg", *v_neg, " V")?;
             if v_pos <= v_neg {
@@ -303,7 +309,7 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             finite("model.offset_voltage", model.offset_voltage, " V")?;
             finite("model.bias_current", model.bias_current, " A")
         }
-        CircuitElement::VoltageRegulator { voltage, model, .. } => {
+        CircuitElement::VoltageRegulator(VoltageRegulator { voltage, model, .. }) => {
             // Negative for a 79xx-style regulator; zero regulates nothing.
             if !voltage.is_finite() || *voltage == 0.0 {
                 return Err(SimError::InvalidComponent(format!(
@@ -323,11 +329,11 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
-        CircuitElement::Battery {
+        CircuitElement::Battery(Battery {
             params,
             state_of_charge,
             ..
-        } => {
+        }) => {
             positive("params.capacity", params.capacity, " Ah")?;
             positive("params.r_series", params.r_series, " Ω")?;
             if let Some(pair) = params.rc {
@@ -349,11 +355,11 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             within("state_of_charge", *state_of_charge, 1.0)
         }
-        CircuitElement::Inductor {
+        CircuitElement::Inductor(Inductor {
             inductance,
             saturation: Some(sat),
             ..
-        } => {
+        }) => {
             positive("inductance", *inductance, " H")?;
             positive("saturation.i_sat", sat.i_sat, " A")?;
             positive("saturation.l_sat", sat.l_sat, " H")?;
@@ -367,10 +373,10 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
-        CircuitElement::Jfet {
+        CircuitElement::Jfet(Jfet {
             parasitic_caps: Some(caps),
             ..
-        } => {
+        }) => {
             non_negative("parasitic_caps.cgs", caps.cgs, " F")?;
             non_negative("parasitic_caps.cgd", caps.cgd, " F")?;
             positive("parasitic_caps.pb", caps.pb, " V")?;
@@ -379,59 +385,65 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
         }
         // Only the noise fields: the rest of a MOSFET's parameters have
         // never been checked here.
-        CircuitElement::Mosfet { params, .. } => {
+        CircuitElement::Mosfet(Mosfet { params, .. }) => {
             non_negative("params.kf", params.kf, "")?;
             positive("params.af", params.af, "")
         }
-        CircuitElement::Resistor { id, resistance, .. } => {
+        CircuitElement::Resistor(Resistor { id, resistance, .. }) => {
             if resistance.is_finite() && *resistance > 0.0 {
                 Ok(())
             } else {
                 Err(SimError::InvalidResistance(id.clone()))
             }
         }
-        CircuitElement::VoltageSource { voltage, .. } => finite("voltage", *voltage, " V"),
-        CircuitElement::CurrentSource { current, .. } => finite("current", *current, " A"),
+        CircuitElement::VoltageSource(VoltageSource { voltage, .. }) => {
+            finite("voltage", *voltage, " V")
+        }
+        CircuitElement::CurrentSource(CurrentSource { current, .. }) => {
+            finite("current", *current, " A")
+        }
         // A zero capacitor is an open circuit, as in SPICE; a zero inductor
         // would divide by zero in its companion model.
-        CircuitElement::Capacitor { capacitance, .. } => {
+        CircuitElement::Capacitor(Capacitor { capacitance, .. }) => {
             non_negative("capacitance", *capacitance, " F")
         }
-        CircuitElement::Inductor { inductance, .. } => positive("inductance", *inductance, " H"),
-        CircuitElement::Vcvs { gain, .. } => finite("gain", *gain, ""),
-        CircuitElement::Vccs { gm, .. } => finite("gm", *gm, " S"),
-        CircuitElement::Ccvs { rm, .. } => finite("rm", *rm, " Ω"),
-        CircuitElement::Cccs { alpha, .. } => finite("alpha", *alpha, ""),
-        CircuitElement::Relay {
+        CircuitElement::Inductor(Inductor { inductance, .. }) => {
+            positive("inductance", *inductance, " H")
+        }
+        CircuitElement::Vcvs(Vcvs { gain, .. }) => finite("gain", *gain, ""),
+        CircuitElement::Vccs(Vccs { gm, .. }) => finite("gm", *gm, " S"),
+        CircuitElement::Ccvs(Ccvs { rm, .. }) => finite("rm", *rm, " Ω"),
+        CircuitElement::Cccs(Cccs { alpha, .. }) => finite("alpha", *alpha, ""),
+        CircuitElement::Relay(Relay {
             coil_resistance,
             pickup_voltage,
             inductance,
             ..
-        } => {
+        }) => {
             positive("coil_resistance", *coil_resistance, " Ω")?;
             positive("pickup_voltage", *pickup_voltage, " V")?;
             non_negative("inductance", *inductance, " H")
         }
         // Light level, wiper position and coupling are clamped into range
         // by the models, so only a non-finite value is refused.
-        CircuitElement::Photoresistor { light_level, .. } => {
+        CircuitElement::Photoresistor(Photoresistor { light_level, .. }) => {
             finite("light_level", *light_level, "")
         }
-        CircuitElement::Potentiometer {
+        CircuitElement::Potentiometer(Potentiometer {
             resistance,
             position,
             ..
-        } => {
+        }) => {
             positive("resistance", *resistance, " Ω")?;
             finite("position", *position, "")
         }
-        CircuitElement::Transformer {
+        CircuitElement::Transformer(Transformer {
             l1,
             l2,
             k,
             saturation,
             ..
-        } => {
+        }) => {
             positive("l1", *l1, " H")?;
             positive("l2", *l2, " H")?;
             finite("k", *k, "")?;
@@ -456,8 +468,8 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
-        CircuitElement::Fuse { rating, .. } => positive("rating", *rating, " A"),
-        CircuitElement::Comparator { v_pos, v_neg, .. } => {
+        CircuitElement::Fuse(Fuse { rating, .. }) => positive("rating", *rating, " A"),
+        CircuitElement::Comparator(Comparator { v_pos, v_neg, .. }) => {
             finite("v_pos", *v_pos, " V")?;
             finite("v_neg", *v_neg, " V")?;
             if v_pos <= v_neg {
@@ -468,7 +480,7 @@ fn check_values(comp: &CircuitElement) -> Result<(), SimError> {
             }
             Ok(())
         }
-        CircuitElement::OpAmp { v_pos, v_neg, .. } => {
+        CircuitElement::OpAmp(OpAmp { v_pos, v_neg, .. }) => {
             finite("v_pos", *v_pos, " V")?;
             finite("v_neg", *v_neg, " V")
         }
@@ -488,31 +500,31 @@ mod tests {
         let with = |component: CircuitElement| Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["a".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["a".into(), "b".into()],
                     resistance: 1e3,
-                },
+                }),
                 component,
             ],
             ..Default::default()
         };
         let diode = |model: crate::DiodeModel| {
-            with(CircuitElement::Diode {
+            with(CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["b".into(), "0".into()],
                 temperature: 300.15,
                 model: Some(model),
-            })
+            }))
         };
         let bjt = |model: crate::BjtModel| {
-            with(CircuitElement::Bjt {
+            with(CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "a".into(), "0".into()],
                 kind: crate::BjtKind::Npn,
@@ -520,17 +532,17 @@ mod tests {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: Some(model),
-            })
+            }))
         };
         let jfet = |caps: crate::circuit::JfetParasiticCaps| {
-            with(CircuitElement::Jfet {
+            with(CircuitElement::Jfet(Jfet {
                 id: "J1".into(),
                 nodes: ["b".into(), "a".into(), "0".into()],
                 kind: crate::JfetKind::NChannel,
                 idss: 10e-3,
                 vp: -2.0,
                 parasitic_caps: Some(caps),
-            })
+            }))
         };
         let d = crate::DiodeModel::default();
         let q = crate::BjtModel::default();
@@ -597,23 +609,23 @@ mod tests {
         let diode = |temperature: f64| Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["a".into(), "0".into()],
                     voltage: 1.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["a".into(), "b".into()],
                     resistance: 1e3,
-                },
-                CircuitElement::Diode {
+                }),
+                CircuitElement::Diode(Diode {
                     id: "D1".into(),
                     nodes: ["b".into(), "0".into()],
                     temperature,
                     model: None,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -628,7 +640,7 @@ mod tests {
         assert!(validate_circuit(&diode(300.15)).is_ok());
 
         let mut bjt = diode(300.15);
-        bjt.components[2] = CircuitElement::Bjt {
+        bjt.components[2] = CircuitElement::Bjt(Bjt {
             id: "Q1".into(),
             nodes: ["b".into(), "a".into(), "0".into()],
             kind: crate::BjtKind::Npn,
@@ -636,7 +648,7 @@ mod tests {
             temperature: 300.15,
             parasitic_caps: None,
             model: None,
-        };
+        });
         match validate_circuit(&bjt) {
             Err(SimError::InvalidComponent(msg)) => {
                 assert!(msg.contains("Q1") && msg.contains("bf"), "{msg}");
@@ -650,17 +662,17 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n2".into(), "n3".into()],
                     resistance: 1000.0,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -675,22 +687,22 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "0".into()],
                     resistance: 1000.0,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R2".into(),
                     nodes: ["n3".into(), "n4".into()],
                     resistance: 1000.0,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -708,17 +720,17 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     resistance: 1000.0,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -733,17 +745,17 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "0".into()],
                     resistance: 1000.0,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -758,18 +770,18 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::VoltageSource {
+                }),
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V2".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 10.0,
                     waveform: None,
-                },
+                }),
             ],
             ..Default::default()
         };

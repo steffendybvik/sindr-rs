@@ -10,6 +10,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{Capacitor, Diode, Resistor, VoltageSource};
 use sindr::{
     solve_circuit, solve_transient, solve_transient_with_progress, Circuit, CircuitElement, Flow,
     SimError, TransientConfig,
@@ -21,28 +22,28 @@ fn circuit() -> Circuit {
     Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "a".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["a".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
     )
 }

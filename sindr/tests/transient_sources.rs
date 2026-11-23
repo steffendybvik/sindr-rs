@@ -2,25 +2,26 @@
 //! snapshots report each source's waveform value, and initial conditions
 //! that name nothing in the circuit are errors.
 
+use sindr::element::{Capacitor, CurrentSource, Inductor, Resistor, Transformer, VoltageSource};
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use sindr::{solve_transient, Circuit, CircuitElement, SimError, TransientConfig, Waveform};
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn capacitor(id: &str, a: &str, b: &str, capacitance: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance,
-    }
+    })
 }
 
 /// `waveform` into 1 kΩ / 100 nF (τ = 100 µs).
@@ -28,12 +29,12 @@ fn rc(waveform: Waveform) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
                 waveform: Some(waveform),
-            },
+            }),
             resistor("R1", "in", "out", 1e3),
             capacitor("C1", "out", "0", 100e-9),
         ],
@@ -136,7 +137,7 @@ fn sources_report_their_waveform_value() {
     let i1 = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 id: "I1".into(),
                 nodes: ["0".into(), "out".into()],
                 current: 0.0,
@@ -146,7 +147,7 @@ fn sources_report_their_waveform_value() {
                     offset: 0.0,
                     phase: 0.0,
                 }),
-            },
+            }),
             resistor("R1", "out", "0", 1e3),
             capacitor("C1", "out", "0", 100e-9),
         ],
@@ -176,21 +177,23 @@ fn assert_rejected(circuit: &Circuit, config: TransientConfig, needle: &str) {
 #[test]
 fn initial_conditions_that_name_nothing_are_errors() {
     let mut circuit = rc(square());
-    circuit.components.push(CircuitElement::Inductor {
+    circuit.components.push(CircuitElement::Inductor(Inductor {
         id: "L1".into(),
         nodes: ["out".into(), "m".into()],
         inductance: 1e-3,
         saturation: None,
-    });
+    }));
     circuit.components.push(resistor("R2", "m", "0", 1e3));
-    circuit.components.push(CircuitElement::Transformer {
-        id: "T1".into(),
-        nodes: ["out".into(), "0".into(), "s".into(), "0".into()],
-        l1: 1e-3,
-        l2: 1e-3,
-        k: 0.99,
-        saturation: None,
-    });
+    circuit
+        .components
+        .push(CircuitElement::Transformer(Transformer {
+            id: "T1".into(),
+            nodes: ["out".into(), "0".into(), "s".into(), "0".into()],
+            l1: 1e-3,
+            l2: 1e-3,
+            k: 0.99,
+            saturation: None,
+        }));
     circuit.components.push(resistor("RS", "s", "0", 1e3));
     let base = || TransientConfig::new(1e-3, 10e-6);
     let volts = |node: &str, v: f64| HashMap::from([(node.to_string(), v)]);

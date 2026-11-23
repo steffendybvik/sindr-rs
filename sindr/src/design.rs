@@ -14,18 +14,19 @@
 //!
 //! ```
 //! use sindr::{Block, Circuit, CircuitElement, Instance};
+//! use sindr::element::{Resistor, VoltageSource};
 //!
 //! let divider = Block {
 //!     ports: vec!["top".into(), "out".into()],
 //!     components: vec![
-//!         CircuitElement::Resistor { id: "R1".into(), nodes: ["top".into(), "out".into()], resistance: 1e3 },
-//!         CircuitElement::Resistor { id: "R2".into(), nodes: ["out".into(), "0".into()], resistance: 1e3 },
+//!         CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["top".into(), "out".into()], resistance: 1e3 }),
+//!         CircuitElement::Resistor(Resistor { id: "R2".into(), nodes: ["out".into(), "0".into()], resistance: 1e3 }),
 //!     ],
 //!     ..Block::default()
 //! };
 //! let mut circuit = Circuit::new(
 //!     "0",
-//!     vec![CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 10.0, waveform: None }],
+//!     vec![CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 10.0, waveform: None })],
 //! );
 //! circuit.blocks.insert("divider".into(), divider);
 //! circuit.instances.push(Instance::new("X1", "divider", ["in", "mid"]));
@@ -35,6 +36,7 @@
 //! assert_eq!(flat.components[1].id(), "X1.R1");
 //! assert_eq!(flat.components[2].nodes(), ["mid", "0"]);
 //! ```
+//!
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -497,13 +499,14 @@ fn check_unique(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::element::{Cccs, Resistor, Vcvs};
 
     fn r(id: &str, a: &str, b: &str) -> CircuitElement {
-        CircuitElement::Resistor {
+        CircuitElement::Resistor(Resistor {
             id: id.into(),
             nodes: [a.into(), b.into()],
             resistance: 1e3,
-        }
+        })
     }
 
     /// `stage(p, q)` holds `inner(a, b)` plus R3; `inner` is a two-resistor
@@ -591,18 +594,18 @@ mod tests {
             Block {
                 ports: vec!["in".into()],
                 components: vec![
-                    CircuitElement::Vcvs {
+                    CircuitElement::Vcvs(Vcvs {
                         id: "E1".into(),
                         nodes: ["o".into(), "0".into()],
                         control_nodes: ["in".into(), "x".into()],
                         gain: 2.0,
-                    },
-                    CircuitElement::Cccs {
+                    }),
+                    CircuitElement::Cccs(Cccs {
                         id: "F1".into(),
                         nodes: ["o".into(), "0".into()],
                         control_source: "E1".into(),
                         alpha: 1.0,
-                    },
+                    }),
                 ],
                 ..Block::default()
             },
@@ -611,7 +614,9 @@ mod tests {
         let flat = c.flatten().unwrap();
         assert_eq!(flat.components[0].all_nodes(), ["X1.o", "0", "top", "X1.x"]);
         match &flat.components[1] {
-            CircuitElement::Cccs { control_source, .. } => assert_eq!(control_source, "X1.E1"),
+            CircuitElement::Cccs(Cccs { control_source, .. }) => {
+                assert_eq!(control_source, "X1.E1")
+            }
             other => panic!("unexpected {other:?}"),
         }
     }

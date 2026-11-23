@@ -9,29 +9,30 @@
 //   The forward drop falls by about 1.7 mV/K as the junction warms
 //   (~0.77 V at −23 °C down to ~0.53 V at 127 °C).
 
+use sindr::element::{Diode, Resistor, VoltageSource};
 use sindr::{temperature_sweep, Circuit, CircuitElement};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "out".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["out".into(), "0".into()],
                 temperature: 300.15, // overridden at each sweep point
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     };

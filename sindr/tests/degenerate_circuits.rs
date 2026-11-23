@@ -1,6 +1,7 @@
 //! Circuits with nothing to solve still give an answer or a typed error,
 //! never a panic.
 
+use sindr::element::Resistor;
 use sindr::{
     solve_ac, solve_circuit, solve_transient, AcConfig, Circuit, CircuitElement, TransientConfig,
 };
@@ -9,11 +10,11 @@ use sindr::{
 fn ground_only() -> Circuit {
     Circuit::new(
         "0",
-        vec![CircuitElement::Resistor {
+        vec![CircuitElement::Resistor(Resistor {
             id: "R1".into(),
             nodes: ["0".into(), "0".into()],
             resistance: 1e3,
-        }],
+        })],
     )
 }
 

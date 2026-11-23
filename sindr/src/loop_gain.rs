@@ -27,6 +27,7 @@
 //! `T` is the return ratio: positive at low frequency for negative feedback,
 //! and the closed-loop response goes as `1/(1 + T)`.
 
+use crate::element::VoltageSource;
 use num_complex::Complex64;
 
 use crate::ac_analysis::{
@@ -170,30 +171,31 @@ pub struct LoopGainResult {
 /// ```
 /// use sindr::{Circuit, CircuitElement, OpAmpModel};
 /// use sindr::loop_gain::{solve_loop_gain, LoopGainConfig};
+/// use sindr::element::{OpAmp, Resistor, VoltageSource};
 ///
 /// // A follower on a single-pole op-amp (100 dB, 1 MHz GBW), broken at
 /// // its output: T = A(s), phase margin just over 90°.
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::OpAmp {
+///         CircuitElement::OpAmp(OpAmp {
 ///             id: "U1".into(),
 ///             nodes: ["0".into(), "fb".into(), "out".into()],
 ///             v_pos: 15.0,
 ///             v_neg: -15.0,
 ///             model: Some(OpAmpModel::default()),
-///         },
-///         CircuitElement::VoltageSource {
+///         }),
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "Vprobe".into(),
 ///             nodes: ["fb".into(), "out".into()],
 ///             voltage: 0.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "RL".into(),
 ///             nodes: ["out".into(), "0".into()],
 ///             resistance: 10e3,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -205,6 +207,7 @@ pub struct LoopGainResult {
 /// assert!(lg.gain_margin_db.is_none());
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_loop_gain(
     circuit: &Circuit,
     config: &LoopGainConfig,
@@ -226,7 +229,9 @@ pub(crate) fn solve_loop_gain_with(
         .components
         .iter()
         .find_map(|c| match c {
-            CircuitElement::VoltageSource { id, nodes, .. } if *id == config.probe => {
+            CircuitElement::VoltageSource(VoltageSource { id, nodes, .. })
+                if *id == config.probe =>
+            {
                 Some(nodes.clone())
             }
             _ => None,

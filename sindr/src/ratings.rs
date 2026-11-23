@@ -38,12 +38,13 @@
 //!
 //! ```
 //! use sindr::{check_ratings, solve_circuit, Circuit, CircuitElement, Part, Ratings};
+//! use sindr::element::{Resistor, VoltageSource};
 //!
 //! let mut circuit = Circuit::new(
 //!     "0",
 //!     vec![
-//!         CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 12.0, waveform: None },
-//!         CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "0".into()], resistance: 100.0 },
+//!         CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 12.0, waveform: None }),
+//!         CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "0".into()], resistance: 100.0 }),
 //!     ],
 //! );
 //! // A 1/8 W resistor across 12 V dissipates 1.44 W.
@@ -59,7 +60,13 @@
 //! assert!((r1.worst.unwrap() - 1.44).abs() < 1e-9);
 //! assert!(!report.is_safe());
 //! ```
+//!
 
+use crate::element::{
+    Bjt, Capacitor, Crystal, Diode, FerriteBead, Igbt, Inductor, Jfet, Led, Mosfet, Photodiode,
+    Photoresistor, Potentiometer, Resistor, SchottkyDiode, Thermistor, Varactor, VoltageRegulator,
+    ZenerDiode,
+};
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -235,25 +242,27 @@ impl RatingsReport {
 fn needed(element: &CircuitElement) -> &'static [RatingKind] {
     use RatingKind::*;
     match element {
-        CircuitElement::Resistor { .. }
-        | CircuitElement::Potentiometer { .. }
-        | CircuitElement::Thermistor { .. }
-        | CircuitElement::Photoresistor { .. } => &[Power],
-        CircuitElement::Capacitor { .. } => &[Voltage],
-        CircuitElement::Inductor { .. } => &[Current],
-        CircuitElement::Diode { .. }
-        | CircuitElement::SchottkyDiode { .. }
-        | CircuitElement::Led { .. }
-        | CircuitElement::Photodiode { .. } => &[ReverseVoltage, ForwardCurrent, Power],
-        CircuitElement::ZenerDiode { .. } => &[Power],
-        CircuitElement::Varactor { .. } => &[ReverseVoltage],
-        CircuitElement::Bjt { .. } => &[Vce, Vcb, Veb, Ic, Power],
-        CircuitElement::Mosfet { .. } | CircuitElement::Jfet { .. } => &[Vds, Vgs, Id, Power],
-        CircuitElement::Igbt { .. } => &[Vce, Vgs, Ic, Power],
-        CircuitElement::VoltageRegulator { .. } => &[Voltage, Current, Power],
+        CircuitElement::Resistor(Resistor { .. })
+        | CircuitElement::Potentiometer(Potentiometer { .. })
+        | CircuitElement::Thermistor(Thermistor { .. })
+        | CircuitElement::Photoresistor(Photoresistor { .. }) => &[Power],
+        CircuitElement::Capacitor(Capacitor { .. }) => &[Voltage],
+        CircuitElement::Inductor(Inductor { .. }) => &[Current],
+        CircuitElement::Diode(Diode { .. })
+        | CircuitElement::SchottkyDiode(SchottkyDiode { .. })
+        | CircuitElement::Led(Led { .. })
+        | CircuitElement::Photodiode(Photodiode { .. }) => &[ReverseVoltage, ForwardCurrent, Power],
+        CircuitElement::ZenerDiode(ZenerDiode { .. }) => &[Power],
+        CircuitElement::Varactor(Varactor { .. }) => &[ReverseVoltage],
+        CircuitElement::Bjt(Bjt { .. }) => &[Vce, Vcb, Veb, Ic, Power],
+        CircuitElement::Mosfet(Mosfet { .. }) | CircuitElement::Jfet(Jfet { .. }) => {
+            &[Vds, Vgs, Id, Power]
+        }
+        CircuitElement::Igbt(Igbt { .. }) => &[Vce, Vgs, Ic, Power],
+        CircuitElement::VoltageRegulator(VoltageRegulator { .. }) => &[Voltage, Current, Power],
         // A crystal's power is its drive level.
-        CircuitElement::Crystal { .. } => &[Power],
-        CircuitElement::FerriteBead { .. } => &[Current, Power],
+        CircuitElement::Crystal(Crystal { .. }) => &[Power],
+        CircuitElement::FerriteBead(FerriteBead { .. }) => &[Current, Power],
         _ => &[],
     }
 }
@@ -261,12 +270,12 @@ fn needed(element: &CircuitElement) -> &'static [RatingKind] {
 fn is_diode(element: &CircuitElement) -> bool {
     matches!(
         element,
-        CircuitElement::Diode { .. }
-            | CircuitElement::SchottkyDiode { .. }
-            | CircuitElement::Led { .. }
-            | CircuitElement::Photodiode { .. }
-            | CircuitElement::ZenerDiode { .. }
-            | CircuitElement::Varactor { .. }
+        CircuitElement::Diode(Diode { .. })
+            | CircuitElement::SchottkyDiode(SchottkyDiode { .. })
+            | CircuitElement::Led(Led { .. })
+            | CircuitElement::Photodiode(Photodiode { .. })
+            | CircuitElement::ZenerDiode(ZenerDiode { .. })
+            | CircuitElement::Varactor(Varactor { .. })
     )
 }
 
@@ -285,37 +294,41 @@ fn measure(
         (RatingKind::Tj, e) => *sample.junction_temperatures.get(e.id())?,
         (RatingKind::Power, _) => port?.power.max(0.0),
         // A regulator's voltage rating is its maximum input.
-        (RatingKind::Voltage, CircuitElement::VoltageRegulator { .. }) => between(0, 2)?,
+        (RatingKind::Voltage, CircuitElement::VoltageRegulator(VoltageRegulator { .. })) => {
+            between(0, 2)?
+        }
         (RatingKind::Voltage, _) => port?.voltage_across.abs(),
         (RatingKind::Current, _) => port?.current_through.abs(),
         (RatingKind::ReverseVoltage, e) if is_diode(e) => (-port?.voltage_across).max(0.0),
         // A polarised capacitor's + terminal is nodes[0].
-        (RatingKind::ReverseVoltage, CircuitElement::Capacitor { .. }) => {
+        (RatingKind::ReverseVoltage, CircuitElement::Capacitor(Capacitor { .. })) => {
             (-port?.voltage_across).max(0.0)
         }
         (RatingKind::ForwardCurrent, e) if is_diode(e) => port?.current_through.max(0.0),
         // [base, collector, emitter] and [gate, collector, emitter]
-        (RatingKind::Vce, CircuitElement::Bjt { .. } | CircuitElement::Igbt { .. }) => {
+        (RatingKind::Vce, CircuitElement::Bjt(Bjt { .. }) | CircuitElement::Igbt(Igbt { .. })) => {
             between(1, 2)?
         }
-        (RatingKind::Vcb, CircuitElement::Bjt { .. }) => between(1, 0)?,
-        (RatingKind::Veb, CircuitElement::Bjt { .. }) => between(2, 0)?,
-        (RatingKind::Ic, CircuitElement::Bjt { .. } | CircuitElement::Igbt { .. }) => {
+        (RatingKind::Vcb, CircuitElement::Bjt(Bjt { .. })) => between(1, 0)?,
+        (RatingKind::Veb, CircuitElement::Bjt(Bjt { .. })) => between(2, 0)?,
+        (RatingKind::Ic, CircuitElement::Bjt(Bjt { .. }) | CircuitElement::Igbt(Igbt { .. })) => {
             port?.current_through.abs()
         }
         // [gate, drain, source]
-        (RatingKind::Vds, CircuitElement::Mosfet { .. } | CircuitElement::Jfet { .. }) => {
-            between(1, 2)?
-        }
+        (
+            RatingKind::Vds,
+            CircuitElement::Mosfet(Mosfet { .. }) | CircuitElement::Jfet(Jfet { .. }),
+        ) => between(1, 2)?,
         (
             RatingKind::Vgs,
-            CircuitElement::Mosfet { .. }
-            | CircuitElement::Jfet { .. }
-            | CircuitElement::Igbt { .. },
+            CircuitElement::Mosfet(Mosfet { .. })
+            | CircuitElement::Jfet(Jfet { .. })
+            | CircuitElement::Igbt(Igbt { .. }),
         ) => between(0, 2)?,
-        (RatingKind::Id, CircuitElement::Mosfet { .. } | CircuitElement::Jfet { .. }) => {
-            port?.current_through.abs()
-        }
+        (
+            RatingKind::Id,
+            CircuitElement::Mosfet(Mosfet { .. }) | CircuitElement::Jfet(Jfet { .. }),
+        ) => port?.current_through.abs(),
         _ => return None,
     };
     value.is_finite().then_some(value)

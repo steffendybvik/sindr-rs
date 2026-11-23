@@ -1,25 +1,29 @@
 //! Absolute-maximum ratings checks against DC and transient results.
 
+use sindr::element::{
+    Bjt, Capacitor, Crystal, Diode, Igbt, Inductor, Mosfet, Resistor, Varactor, VoltageSource,
+    ZenerDiode,
+};
 use sindr::{
     check_ratings, solve_circuit, solve_transient, BjtKind, Block, Circuit, CircuitElement,
     Instance, Part, RatingKind, RatingStatus, Ratings, TransientConfig, TransientStart, Waveform,
 };
 
 fn vsrc(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn res(id: &str, p: &str, n: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [p.into(), n.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn rated(ratings: Ratings) -> Part {
@@ -101,7 +105,7 @@ fn inrush_peak_is_caught_in_the_transient() {
     let mut c = Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
@@ -114,13 +118,13 @@ fn inrush_peak_is_caught_in_the_transient() {
                     pulse_width: 1.0,
                     period: 0.0,
                 }),
-            },
+            }),
             res("R1", "in", "out", 10.0),
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 10e-6,
-            },
+            }),
         ],
     );
     c.parts.insert(
@@ -163,10 +167,12 @@ fn inrush_peak_is_caught_in_the_transient() {
 fn polarised_capacitor_reverse_bias_is_flagged() {
     // `+` is nodes[0]. C1 sits the right way round on +5 V; C2 is fitted
     // backwards, so its `+` is 5 V below its `-`.
-    let cap = |id: &str, plus: &str, minus: &str| CircuitElement::Capacitor {
-        id: id.into(),
-        nodes: [plus.into(), minus.into()],
-        capacitance: 100e-6,
+    let cap = |id: &str, plus: &str, minus: &str| {
+        CircuitElement::Capacitor(Capacitor {
+            id: id.into(),
+            nodes: [plus.into(), minus.into()],
+            capacitance: 100e-6,
+        })
     };
     let mut c = Circuit::new(
         "0",
@@ -209,11 +215,13 @@ fn polarised_capacitor_reverse_bias_is_flagged() {
 #[test]
 fn diode_reverse_voltage_and_forward_current() {
     // D1 reverse-biased by 30 V; D2 forward through 1 kΩ from 5 V.
-    let diode = |id: &str, a: &str, k: &str| CircuitElement::Diode {
-        id: id.into(),
-        nodes: [a.into(), k.into()],
-        temperature: 300.15,
-        model: None,
+    let diode = |id: &str, a: &str, k: &str| {
+        CircuitElement::Diode(Diode {
+            id: id.into(),
+            nodes: [a.into(), k.into()],
+            temperature: 300.15,
+            model: None,
+        })
     };
     let mut c = Circuit::new(
         "0",
@@ -269,7 +277,7 @@ fn bjt_terminal_ratings() {
             vsrc("VCC", "vcc", "0", 12.0),
             res("RC", "vcc", "c", 1e3),
             res("RB", "vcc", "b", 100e3),
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "0".into()],
                 kind: BjtKind::Npn,
@@ -277,7 +285,7 @@ fn bjt_terminal_ratings() {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            },
+            }),
         ],
     );
     c.parts.insert(
@@ -387,14 +395,14 @@ fn mosfet_terminal_ratings() {
             vsrc("VG", "g", "0", 3.0),
             vsrc("VDD", "vdd", "0", 10.0),
             res("RD", "vdd", "d", 1e3),
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "0".into()],
                 kind: sindr::MosfetKind::Nmos,
                 params: sindr_devices::mosfet::MosfetParams::default_nmos(),
                 parasitic_caps: None,
                 body_diode: None,
-            },
+            }),
         ],
     );
     c.parts.insert(
@@ -487,12 +495,12 @@ fn inductor_current_rating_sees_the_settled_current() {
         vec![
             vsrc("V1", "a", "0", 1.0),
             res("R1", "a", "b", 10.0),
-            CircuitElement::Inductor {
+            CircuitElement::Inductor(Inductor {
                 id: "L1".into(),
                 nodes: ["b".into(), "0".into()],
                 inductance: 1e-3,
                 saturation: None,
-            },
+            }),
         ],
     );
     c.parts.insert(
@@ -520,11 +528,11 @@ fn crystal_needs_a_drive_level_rating() {
         vec![
             vsrc("V1", "a", "0", 1.0),
             res("R1", "a", "b", 1e3),
-            CircuitElement::Crystal {
+            CircuitElement::Crystal(Crystal {
                 id: "X1".into(),
                 nodes: ["b".into(), "0".into()],
                 params: sindr::circuit::CrystalParams::from_datasheet(32768.0, 35e3, 1.5e-12),
-            },
+            }),
             res("RB", "b", "0", 1e6),
         ],
     );
@@ -542,29 +550,29 @@ fn zener_varactor_and_igbt_needed_ratings() {
         vec![
             vsrc("V1", "in", "0", 12.0),
             res("R1", "in", "k", 1e3),
-            CircuitElement::ZenerDiode {
+            CircuitElement::ZenerDiode(ZenerDiode {
                 id: "DZ1".into(),
                 nodes: ["0".into(), "k".into()],
                 vz: 5.1,
                 temperature: 300.15,
-            },
+            }),
             // Reverse-biased 5 V through 1 MΩ.
             vsrc("V2", "c", "0", 5.0),
             res("R2", "c", "cv", 1e6),
-            CircuitElement::Varactor {
+            CircuitElement::Varactor(Varactor {
                 id: "CV1".into(),
                 nodes: ["0".into(), "cv".into()],
                 params: sindr::VaractorParams::default(),
-            },
+            }),
             // IGBT: gate at 6 V, 15 V through 100 Ω.
             vsrc("VG", "g", "0", 6.0),
             vsrc("VCC", "vcc", "0", 15.0),
             res("RL", "vcc", "col", 100.0),
-            CircuitElement::Igbt {
+            CircuitElement::Igbt(Igbt {
                 id: "Z1".into(),
                 nodes: ["g".into(), "col".into(), "0".into()],
                 params: sindr::IgbtParams::default(),
-            },
+            }),
         ],
     );
     let result = sindr::solve_op(&c).unwrap();

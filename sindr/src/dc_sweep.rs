@@ -5,6 +5,7 @@
 //! other ([`dc_sweep_nested`]). Used for generating I-V curves, families of
 //! device curves and transfer characteristics.
 
+use crate::element::{CurrentSource, VoltageSource};
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -178,9 +179,8 @@ impl DcSweepAxis {
             )));
         }
         let found = circuit.components.iter().any(|c| match c {
-            CircuitElement::VoltageSource { id, .. } | CircuitElement::CurrentSource { id, .. } => {
-                *id == self.source_id
-            }
+            CircuitElement::VoltageSource(VoltageSource { id, .. })
+            | CircuitElement::CurrentSource(CurrentSource { id, .. }) => *id == self.source_id,
             _ => false,
         });
         if !found {
@@ -198,21 +198,21 @@ impl DcSweepAxis {
 fn set_source(circuit: &mut Circuit, id: &str, value: f64) {
     for component in &mut circuit.components {
         match component {
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: cid,
                 voltage,
                 waveform,
                 ..
-            } if cid == id => {
+            }) if cid == id => {
                 *voltage = value;
                 *waveform = None;
             }
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 id: cid,
                 current,
                 waveform,
                 ..
-            } if cid == id => {
+            }) if cid == id => {
                 *current = value;
                 *waveform = None;
             }
@@ -301,21 +301,22 @@ fn sweep_curve(
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement, dc_sweep};
+/// use sindr::element::{Resistor, VoltageSource};
 ///
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             voltage: 0.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             resistance: 1_000.0,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -328,6 +329,7 @@ fn sweep_curve(
 /// let curve = sweep.component_current_curve("R1");
 /// assert!((curve.last().unwrap().1 - 0.010).abs() < 1e-9);
 /// ```
+///
 pub fn dc_sweep(
     circuit: &Circuit,
     source_id: &str,
@@ -419,28 +421,29 @@ pub struct NestedDcSweepCurve {
 /// ```
 /// use sindr::{dc_sweep_nested, Circuit, CircuitElement};
 /// use sindr::dc_sweep::DcSweepAxis;
+/// use sindr::element::{Resistor, VoltageSource};
 ///
 /// // Two sources into a 1 kΩ: the current is (V1 + V2) / 1 kΩ.
 /// let circuit = Circuit::new(
 ///     "0",
 ///     vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["a".into(), "b".into()],
 ///             voltage: 0.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::VoltageSource {
+///         }),
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V2".into(),
 ///             nodes: ["b".into(), "0".into()],
 ///             voltage: 0.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["a".into(), "0".into()],
 ///             resistance: 1e3,
-///         },
+///         }),
 ///     ],
 /// );
 /// let sweep = dc_sweep_nested(
@@ -453,6 +456,7 @@ pub struct NestedDcSweepCurve {
 /// let last = sweep.curves[1].sweep.component_current_curve("R1");
 /// assert!((last[2].1 - 3e-3).abs() < 1e-12); // (1 V + 2 V) / 1 kΩ
 /// ```
+///
 pub fn dc_sweep_nested(
     circuit: &Circuit,
     inner: &DcSweepAxis,
@@ -508,6 +512,7 @@ pub(crate) fn dc_sweep_nested_with(
 mod tests {
     use super::*;
     use crate::circuit::CircuitElement;
+    use crate::element::{Diode, Resistor};
     use approx::assert_relative_eq;
 
     #[test]
@@ -517,17 +522,17 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 0.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "0".into()],
                     resistance: 1000.0,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -549,23 +554,23 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 0.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     resistance: 100.0,
-                },
-                CircuitElement::Diode {
+                }),
+                CircuitElement::Diode(Diode {
                     id: "D1".into(),
                     nodes: ["n2".into(), "0".into()],
                     temperature: 300.15,
                     model: None,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -598,11 +603,11 @@ mod tests {
     fn sweep_invalid_source() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Resistor {
+            components: vec![CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "0".into()],
                 resistance: 1000.0,
-            }],
+            })],
             ..Default::default()
         };
 
@@ -614,12 +619,12 @@ mod tests {
     fn sweep_too_few_points() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::VoltageSource {
+            components: vec![CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 0.0,
                 waveform: None,
-            }],
+            })],
             ..Default::default()
         };
 
@@ -632,17 +637,17 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 0.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "0".into()],
                     resistance: 1000.0,
-                },
+                }),
             ],
             ..Default::default()
         };

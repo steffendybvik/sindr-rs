@@ -3,6 +3,7 @@
 //! transient and sweep curves.
 
 use approx::assert_relative_eq;
+use sindr::element::{Bjt, Capacitor, Mosfet, OpAmp, Relay, Resistor, VoltageSource};
 use sindr::{
     dc_sweep, solve_ac, solve_circuit, solve_transient, temperature_sweep, AcConfig, BjtKind,
     Block, Circuit, CircuitElement, Instance, MosfetKind, TransientConfig,
@@ -10,28 +11,28 @@ use sindr::{
 use sindr_devices::mosfet::MosfetParams;
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn v(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn c(id: &str, a: &str, b: &str, farads: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance: farads,
-    }
+    })
 }
 
 /// 10 V across 1 kΩ + 4 kΩ: 8 V at `out`, 2 mA.
@@ -88,7 +89,7 @@ fn device_results_by_id() {
             v("VB", "vb", "0", 0.7),
             r("RB", "vb", "b", 1e3),
             r("RC", "vcc", "c", 1e3),
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "0".into()],
                 kind: BjtKind::Npn,
@@ -96,32 +97,32 @@ fn device_results_by_id() {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            },
+            }),
             v("VG", "g", "0", 3.0),
             r("RD", "vcc", "d", 1e3),
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "0".into()],
                 kind: MosfetKind::Nmos,
                 params: MosfetParams::default_nmos(),
                 parasitic_caps: None,
                 body_diode: None,
-            },
-            CircuitElement::OpAmp {
+            }),
+            CircuitElement::OpAmp(OpAmp {
                 id: "U1".into(),
                 nodes: ["vb".into(), "out".into(), "out".into()],
                 v_pos: 15.0,
                 v_neg: -15.0,
                 model: None,
-            },
+            }),
             r("RL", "out", "0", 1e4),
-            CircuitElement::Relay {
+            CircuitElement::Relay(Relay {
                 id: "K1".into(),
                 nodes: ["vcc".into(), "0".into(), "k_a".into(), "k_b".into()],
                 coil_resistance: 500.0,
                 pickup_voltage: 5.0,
                 inductance: 0.0,
-            },
+            }),
             r("RK1", "k_a", "0", 1e3),
             r("RK2", "k_b", "0", 1e3),
         ],

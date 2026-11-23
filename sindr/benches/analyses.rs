@@ -6,6 +6,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{Bjt, Capacitor, Diode, Resistor, VoltageSource};
 use sindr::noise::{solve_noise, NoiseConfig};
 use sindr::{
     check_ratings, dc_sweep, solve_circuit, solve_sensitivity, solve_tf, temperature_sweep,
@@ -13,20 +14,20 @@ use sindr::{
 };
 
 fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id,
         nodes: [a, b],
         resistance,
-    }
+    })
 }
 
 fn source(id: &str, node: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [node.into(), "0".into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 /// `n` RC stages from `V1`: linear, so AC, `.tf` and `.sens` skip Newton.
@@ -39,11 +40,11 @@ fn rc_ladder(n: usize) -> Circuit {
             format!("n{i}"),
             100.0,
         ));
-        components.push(CircuitElement::Capacitor {
+        components.push(CircuitElement::Capacitor(Capacitor {
             id: format!("C{i}"),
             nodes: [format!("n{i}"), "0".into()],
             capacitance: 1e-9,
-        });
+        }));
     }
     Circuit::new("0", components)
 }
@@ -59,12 +60,12 @@ fn diode_chain(n: usize) -> Circuit {
             1e3,
         ));
         components.push(r(format!("RP{i}"), "n0".into(), format!("n{i}"), 10e3));
-        components.push(CircuitElement::Diode {
+        components.push(CircuitElement::Diode(Diode {
             id: format!("D{i}"),
             nodes: [format!("n{i}"), "0".into()],
             temperature: 300.15,
             model: None,
-        });
+        }));
     }
     let mut c = Circuit::new("0", components);
     let rated = Part {
@@ -94,7 +95,7 @@ fn bjt_stage() -> Circuit {
             r("RB".into(), "vcc".into(), "b".into(), 470e3),
             r("RC".into(), "vcc".into(), "c".into(), 2.2e3),
             r("RE".into(), "e".into(), "0".into(), 220.0),
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "e".into()],
                 kind: BjtKind::Npn,
@@ -102,7 +103,7 @@ fn bjt_stage() -> Circuit {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            },
+            }),
         ],
     )
 }

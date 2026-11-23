@@ -1,5 +1,6 @@
 //! CSV export reads back as the same numbers, for every result type.
 
+use sindr::element::{Capacitor, Diode, Resistor, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
@@ -63,22 +64,22 @@ fn rc() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "out,1".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out,1".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -128,23 +129,23 @@ fn diode() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["a".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["a".into(), "b".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["b".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     }

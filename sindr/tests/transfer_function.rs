@@ -2,44 +2,48 @@
 //! finite differences of full DC solves for nonlinear ones.
 
 use approx::assert_relative_eq;
+use sindr::element::{
+    Bjt, Capacitor, CurrentSource, Diode, Inductor, OpAmp, Resistor, Transformer, Varactor,
+    VoltageSource,
+};
 use sindr::{
     solve_circuit, solve_tf, BjtKind, Circuit, CircuitElement, SimError, TfConfig, TfOutput,
 };
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn isource(id: &str, from: &str, to: &str, current: f64) -> CircuitElement {
-    CircuitElement::CurrentSource {
+    CircuitElement::CurrentSource(CurrentSource {
         id: id.into(),
         nodes: [from.into(), to.into()],
         current,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn opamp(id: &str, plus: &str, minus: &str, out: &str) -> CircuitElement {
-    CircuitElement::OpAmp {
+    CircuitElement::OpAmp(OpAmp {
         id: id.into(),
         nodes: [plus.into(), minus.into(), out.into()],
         v_pos: 15.0,
         v_neg: -15.0,
         model: None,
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -166,17 +170,17 @@ fn reactive_parts_take_their_dc_values() {
     // R1 over R2 with L in series, C across R2.
     let mut c = divider();
     c.components[1] = resistor("R1", "in", "mid", 1e3);
-    c.components.push(CircuitElement::Inductor {
+    c.components.push(CircuitElement::Inductor(Inductor {
         id: "L1".into(),
         nodes: ["mid".into(), "out".into()],
         inductance: 1e-3,
         saturation: None,
-    });
-    c.components.push(CircuitElement::Capacitor {
+    }));
+    c.components.push(CircuitElement::Capacitor(Capacitor {
         id: "C1".into(),
         nodes: ["out".into(), "0".into()],
         capacitance: 1e-6,
-    });
+    }));
     let r = tf(&c, v_out("out"), "V1");
     // C1 is a 1 TΩ leak at DC, so the answers are the divider's to ~1e-9.
     assert_relative_eq!(r.gain, 0.75, max_relative = 1e-8);
@@ -188,7 +192,7 @@ fn reactive_parts_take_their_dc_values() {
 fn with_v1(circuit: &Circuit, volts: f64) -> Circuit {
     let mut c = circuit.clone();
     for e in &mut c.components {
-        if let CircuitElement::VoltageSource { id, voltage, .. } = e {
+        if let CircuitElement::VoltageSource(VoltageSource { id, voltage, .. }) = e {
             if id == "V1" {
                 *voltage = volts;
             }
@@ -221,12 +225,12 @@ fn diode_matches_finite_differences() {
     let c = circuit(vec![
         vsource("V1", "in", "0", 5.0),
         resistor("R1", "in", "out", 1e3),
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
             model: None,
-        },
+        }),
     ]);
     for v0 in [0.3, 0.7, 5.0] {
         let at = with_v1(&c, v0);
@@ -255,7 +259,7 @@ fn common_emitter_stage_matches_finite_differences() {
         resistor("RS", "in", "b", 1e3),
         resistor("RC", "vcc", "c", 2.2e3),
         resistor("RE", "e", "0", 470.0),
-        CircuitElement::Bjt {
+        CircuitElement::Bjt(Bjt {
             id: "Q1".into(),
             nodes: ["b".into(), "c".into(), "e".into()],
             kind: BjtKind::Npn,
@@ -263,7 +267,7 @@ fn common_emitter_stage_matches_finite_differences() {
             temperature: 300.15,
             parasitic_caps: None,
             model: None,
-        },
+        }),
     ]);
     let r = tf(&c, v_out("c"), "V1");
     let (gain, rin) = finite_difference(&c, 2.0, "c", "RS");
@@ -292,12 +296,12 @@ fn bad_input_or_output_is_an_error() {
     // An inductor is a 0 V source in the DC system, but not a source to name.
     let mut with_l = divider();
     with_l.components[1] = resistor("R1", "in", "mid", 1e3);
-    with_l.components.push(CircuitElement::Inductor {
+    with_l.components.push(CircuitElement::Inductor(Inductor {
         id: "L1".into(),
         nodes: ["mid".into(), "out".into()],
         inductance: 1e-3,
         saturation: None,
-    });
+    }));
     for (output, input) in [
         (v_out("out"), "L1"),
         (
@@ -321,14 +325,14 @@ fn bad_input_or_output_is_an_error() {
 #[test]
 fn transformer_windings_are_shorts() {
     let c = circuit(vec![
-        CircuitElement::Transformer {
+        CircuitElement::Transformer(Transformer {
             id: "T1".into(),
             nodes: ["p".into(), "0".into(), "s".into(), "0".into()],
             l1: 1e-3,
             l2: 4e-3,
             k: 0.99,
             saturation: None,
-        },
+        }),
         vsource("V1", "in", "0", 1.0),
         resistor("R1", "in", "p", 1e3),
         resistor("R2", "s", "0", 1e3),
@@ -372,10 +376,12 @@ fn bad_port_is_reported_before_the_dc_solve() {
 /// used to stamp just their capacitance at ω = 0, which left it singular.
 #[test]
 fn node_between_varactors_is_not_singular() {
-    let varactor = |id: &str, a: &str, b: &str| CircuitElement::Varactor {
-        id: id.into(),
-        nodes: [a.into(), b.into()],
-        params: Default::default(),
+    let varactor = |id: &str, a: &str, b: &str| {
+        CircuitElement::Varactor(Varactor {
+            id: id.into(),
+            nodes: [a.into(), b.into()],
+            params: Default::default(),
+        })
     };
     let c = circuit(vec![
         vsource("V1", "in", "0", 1.0),

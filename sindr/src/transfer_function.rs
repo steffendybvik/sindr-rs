@@ -4,6 +4,7 @@
 //! gain from an input source to an output, the resistance the input source
 //! sees, and the resistance at the output.
 
+use crate::element::{CurrentSource, VoltageSource};
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -155,27 +156,28 @@ pub struct TfResult {
 /// ```
 /// use sindr::{Circuit, CircuitElement};
 /// use sindr::transfer_function::{solve_tf, TfConfig, TfOutput};
+/// use sindr::element::{Resistor, VoltageSource};
 ///
 /// // A 1 kΩ / 3 kΩ divider: gain 3/4, Rin 4 kΩ, Rout 1k ‖ 3k = 750 Ω.
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["in".into(), "0".into()],
 ///             voltage: 1.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["in".into(), "out".into()],
 ///             resistance: 1_000.0,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R2".into(),
 ///             nodes: ["out".into(), "0".into()],
 ///             resistance: 3_000.0,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -187,6 +189,7 @@ pub struct TfResult {
 /// assert!((tf.output_resistance - 750.0).abs() < 1e-6);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
@@ -234,16 +237,14 @@ pub(crate) fn solve_tf_with(
 /// alone, so a misspelt port fails before the DC solve rather than after it.
 fn check_ports(circuit: &Circuit, config: &TfConfig) -> Result<(), SimError> {
     let is_vsource = |id: &str| {
-        circuit
-            .components
-            .iter()
-            .any(|c| matches!(c, CircuitElement::VoltageSource { id: v, .. } if v == id))
+        circuit.components.iter().any(
+            |c| matches!(c, CircuitElement::VoltageSource(VoltageSource { id: v, .. }) if v == id),
+        )
     };
     let is_isource = |id: &str| {
-        circuit
-            .components
-            .iter()
-            .any(|c| matches!(c, CircuitElement::CurrentSource { id: i, .. } if i == id))
+        circuit.components.iter().any(
+            |c| matches!(c, CircuitElement::CurrentSource(CurrentSource { id: i, .. }) if i == id),
+        )
     };
     let id = &config.input_source;
     if !is_vsource(id) && !is_isource(id) {
@@ -283,7 +284,7 @@ pub(crate) fn independent_vsource_branch(
     circuit
         .components
         .iter()
-        .any(|c| matches!(c, CircuitElement::VoltageSource { id: vid, .. } if vid == id))
+        .any(|c| matches!(c, CircuitElement::VoltageSource(VoltageSource { id: vid, .. }) if vid == id))
         .then(|| system.vsource_branch(id))
         .flatten()
 }
@@ -313,7 +314,7 @@ impl Port {
             .find_map(|c| match c {
                 // A current source drives current through itself from
                 // nodes[0] to nodes[1], so into the circuit at nodes[1].
-                CircuitElement::CurrentSource { id: cid, nodes, .. } if cid == id => Some(
+                CircuitElement::CurrentSource(CurrentSource { id: cid, nodes, .. }) if cid == id => Some(
                     Port::Nodes(node_map.index(&nodes[1]), node_map.index(&nodes[0])),
                 ),
                 _ => None,

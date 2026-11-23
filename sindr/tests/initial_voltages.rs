@@ -2,6 +2,7 @@
 //! `SolverOptions::nodeset` holds node voltages — sindr's `.NODESET`
 //! equivalent. These tests run against the public API only.
 
+use sindr::element::{Capacitor, Diode, Resistor, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::{solve_circuit, Circuit, CircuitElement};
@@ -19,22 +20,22 @@ fn voltage_divider() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["n2".into(), "0".into()],
                 resistance: 2_000.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -44,23 +45,23 @@ fn diode_resistor(vsource: f64) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: vsource,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 100.0,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -171,22 +172,22 @@ fn seed_does_not_break_transient_path() {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["n2".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     };

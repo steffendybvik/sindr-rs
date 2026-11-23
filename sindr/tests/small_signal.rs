@@ -10,6 +10,11 @@
 
 use num_complex::Complex64;
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::element::{
+    Battery, Bjt, Cccs, Ccvs, Diode, Fuse, Igbt, Jfet, Led, Mosfet, OpAmp, Photodiode,
+    Photoresistor, Potentiometer, Pushbutton, Resistor, SchottkyDiode, Switch, Thermistor, Vccs,
+    Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+};
 use sindr::{
     solve_circuit, BjtKind, BjtModel, Circuit, CircuitElement, DiodeModel, IgbtParams, JfetKind,
     MosfetKind,
@@ -17,27 +22,27 @@ use sindr::{
 use sindr_devices::mosfet::MosfetParams;
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 /// `circuit` with source `V1` set to `volts`.
 fn with_input(circuit: &Circuit, volts: f64) -> Circuit {
     let mut c = circuit.clone();
     for e in &mut c.components {
-        if let CircuitElement::VoltageSource { id, voltage, .. } = e {
+        if let CircuitElement::VoltageSource(VoltageSource { id, voltage, .. }) = e {
             if id == "V1" {
                 *voltage = volts;
             }
@@ -91,12 +96,12 @@ const T_NOM: f64 = 300.15;
 #[test]
 fn diode_ac_matches_dc() {
     for t in [T_NOM, 350.0] {
-        let circuit = two_terminal(CircuitElement::Diode {
+        let circuit = two_terminal(CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["n2".into(), "0".into()],
             temperature: t,
             model: None,
-        });
+        }));
         assert_ac_matches_dc(&format!("diode at {t} K"), &circuit, &[-2.0, 0.3, 0.7, 5.0]);
     }
 }
@@ -111,12 +116,12 @@ fn diode_model_ac_matches_dc() {
         ..DiodeModel::default()
     };
     for t in [T_NOM, 350.0] {
-        let circuit = two_terminal(CircuitElement::Diode {
+        let circuit = two_terminal(CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["n2".into(), "0".into()],
             temperature: t,
             model: Some(model),
-        });
+        }));
         assert_ac_matches_dc(
             &format!("1N4148 at {t} K"),
             &circuit,
@@ -128,12 +133,12 @@ fn diode_model_ac_matches_dc() {
 #[test]
 fn led_ac_matches_dc() {
     for t in [T_NOM, 350.0] {
-        let circuit = two_terminal(CircuitElement::Led {
+        let circuit = two_terminal(CircuitElement::Led(Led {
             id: "D1".into(),
             nodes: ["n2".into(), "0".into()],
             color: "green".into(),
             temperature: t,
-        });
+        }));
         assert_ac_matches_dc(&format!("LED at {t} K"), &circuit, &[1.0, 2.2, 5.0]);
     }
 }
@@ -141,11 +146,11 @@ fn led_ac_matches_dc() {
 #[test]
 fn schottky_ac_matches_dc() {
     for t in [T_NOM, 350.0] {
-        let circuit = two_terminal(CircuitElement::SchottkyDiode {
+        let circuit = two_terminal(CircuitElement::SchottkyDiode(SchottkyDiode {
             id: "D1".into(),
             nodes: ["n2".into(), "0".into()],
             temperature: t,
-        });
+        }));
         assert_ac_matches_dc(&format!("Schottky at {t} K"), &circuit, &[-2.0, 0.2, 5.0]);
     }
 }
@@ -154,12 +159,12 @@ fn schottky_ac_matches_dc() {
 #[test]
 fn zener_ac_matches_dc() {
     for t in [T_NOM, 350.0] {
-        let circuit = two_terminal(CircuitElement::ZenerDiode {
+        let circuit = two_terminal(CircuitElement::ZenerDiode(ZenerDiode {
             id: "D1".into(),
             nodes: ["n2".into(), "0".into()],
             vz: 5.1,
             temperature: t,
-        });
+        }));
         assert_ac_matches_dc(
             &format!("Zener at {t} K"),
             &circuit,
@@ -171,12 +176,12 @@ fn zener_ac_matches_dc() {
 #[test]
 fn photodiode_ac_matches_dc() {
     for (irradiance, t) in [(0.0, T_NOM), (1e-3, T_NOM), (0.0, 350.0), (1e-3, 350.0)] {
-        let circuit = two_terminal(CircuitElement::Photodiode {
+        let circuit = two_terminal(CircuitElement::Photodiode(Photodiode {
             id: "D1".into(),
             nodes: ["n2".into(), "0".into()],
             irradiance,
             temperature: t,
-        });
+        }));
         assert_ac_matches_dc(
             &format!("photodiode at {irradiance} W, {t} K"),
             &circuit,
@@ -204,7 +209,7 @@ fn bjt_stage_with(kind: BjtKind, temperature: f64, model: Option<BjtModel>) -> C
             resistor("RB", "in", "b", 10e3),
             resistor("RC", "vcc", "c", 1e3),
             resistor("RE", "e", "0", 100.0),
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "e".into()],
                 kind,
@@ -212,7 +217,7 @@ fn bjt_stage_with(kind: BjtKind, temperature: f64, model: Option<BjtModel>) -> C
                 temperature,
                 parasitic_caps: None,
                 model,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -281,14 +286,14 @@ fn fet_stage(device: CircuitElement, sign: f64, vdd: f64) -> Circuit {
 }
 
 fn mosfet(kind: MosfetKind, params: MosfetParams) -> CircuitElement {
-    CircuitElement::Mosfet {
+    CircuitElement::Mosfet(Mosfet {
         id: "M1".into(),
         nodes: ["g".into(), "d".into(), "s".into()],
         kind,
         params,
         parasitic_caps: None,
         body_diode: None,
-    }
+    })
 }
 
 /// Cutoff, saturation and triode.
@@ -313,14 +318,14 @@ fn pmos_ac_matches_dc() {
 }
 
 fn jfet(kind: JfetKind) -> CircuitElement {
-    CircuitElement::Jfet {
+    CircuitElement::Jfet(Jfet {
         id: "J1".into(),
         nodes: ["g".into(), "d".into(), "s".into()],
         kind,
         idss: 10e-3,
         vp: -2.0,
         parasitic_caps: None,
-    }
+    })
 }
 
 /// Saturation near pinch-off (V_GS ≈ −1.7 V), then the ohmic region at
@@ -369,11 +374,11 @@ fn igbt_ac_matches_dc() {
             vsource("VCC", "vcc", "0", 20.0),
             resistor("RC", "vcc", "c", 100.0),
             resistor("RE", "e", "0", 10.0),
-            CircuitElement::Igbt {
+            CircuitElement::Igbt(Igbt {
                 id: "Q1".into(),
                 nodes: ["g".into(), "c".into(), "e".into()],
                 params: IgbtParams::default(),
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -389,78 +394,78 @@ fn resistive_parts_ac_matches_dc() {
     let cases = vec![
         two(
             "closed switch",
-            CircuitElement::Switch {
+            CircuitElement::Switch(Switch {
                 id: "S1".into(),
                 nodes: nodes(),
                 closed: true,
-            },
+            }),
         ),
         two(
             "open switch",
-            CircuitElement::Switch {
+            CircuitElement::Switch(Switch {
                 id: "S1".into(),
                 nodes: nodes(),
                 closed: false,
-            },
+            }),
         ),
         two(
             "closed pushbutton",
-            CircuitElement::Pushbutton {
+            CircuitElement::Pushbutton(Pushbutton {
                 id: "S1".into(),
                 nodes: nodes(),
                 closed: true,
-            },
+            }),
         ),
         two(
             "open pushbutton",
-            CircuitElement::Pushbutton {
+            CircuitElement::Pushbutton(Pushbutton {
                 id: "S1".into(),
                 nodes: nodes(),
                 closed: false,
-            },
+            }),
         ),
         two(
             "photoresistor",
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 id: "LDR1".into(),
                 nodes: nodes(),
                 light_level: 0.4,
-            },
+            }),
         ),
         two(
             "thermistor",
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id: "TH1".into(),
                 nodes: nodes(),
                 temperature: 330.0,
-            },
+            }),
         ),
         two(
             "battery without a polarisation pair",
-            CircuitElement::Battery {
+            CircuitElement::Battery(Battery {
                 id: "B1".into(),
                 nodes: nodes(),
                 params: sindr_devices::battery::BatteryParams::constant(3.0, 1.0, 10.0),
                 state_of_charge: 0.5,
-            },
+            }),
         ),
         two(
             "intact fuse",
-            CircuitElement::Fuse {
+            CircuitElement::Fuse(Fuse {
                 id: "F1".into(),
                 nodes: nodes(),
                 rating: 1.0,
                 blown: false,
-            },
+            }),
         ),
         two(
             "blown fuse",
-            CircuitElement::Fuse {
+            CircuitElement::Fuse(Fuse {
                 id: "F1".into(),
                 nodes: nodes(),
                 rating: 1.0,
                 blown: true,
-            },
+            }),
         ),
         (
             "potentiometer".to_string(),
@@ -468,12 +473,12 @@ fn resistive_parts_ac_matches_dc() {
                 "0",
                 vec![
                     vsource("V1", "in", "0", 0.0),
-                    CircuitElement::Potentiometer {
+                    CircuitElement::Potentiometer(Potentiometer {
                         id: "P1".into(),
                         nodes: ["in".into(), "w".into(), "0".into()],
                         resistance: 10e3,
                         position: 0.3,
-                    },
+                    }),
                     resistor("RL", "w", "0", 4.7e3),
                 ],
             ),
@@ -496,71 +501,71 @@ fn controlled_sources_ac_matches_dc() {
             resistor("R2", "n2", "m", 1e3),
             resistor("R3", "m", "0", 1e3),
             // E1 drives e below ground: its positive terminal is ground.
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 id: "E1".into(),
                 nodes: ["0".into(), "e".into()],
                 control_nodes: ["n2".into(), "m".into()],
                 gain: 2.0,
-            },
+            }),
             resistor("RE", "e", "0", 1e3),
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id: "G1".into(),
                 nodes: ["0".into(), "g".into()],
                 control_nodes: ["n2".into(), "m".into()],
                 gm: 1e-3,
-            },
+            }),
             resistor("RG", "g", "0", 2e3),
-            CircuitElement::Ccvs {
+            CircuitElement::Ccvs(Ccvs {
                 id: "H1".into(),
                 nodes: ["h".into(), "0".into()],
                 control_source: "V1".into(),
                 rm: 500.0,
-            },
+            }),
             resistor("RH", "h", "0", 1e3),
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id: "F1".into(),
                 nodes: ["0".into(), "f".into()],
                 control_source: "V1".into(),
                 alpha: 0.5,
-            },
+            }),
             resistor("RF", "f", "0", 1e3),
-            CircuitElement::OpAmp {
+            CircuitElement::OpAmp(OpAmp {
                 id: "U1".into(),
                 nodes: ["m".into(), "0".into(), "o".into()],
                 v_pos: 15.0,
                 v_neg: -15.0,
                 model: None,
-            },
+            }),
             resistor("RO", "o", "0", 10e3),
             // The same sources the other way round: output from a node
             // into ground, or a control terminal on ground.
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 id: "E2".into(),
                 nodes: ["e2".into(), "0".into()],
                 control_nodes: ["0".into(), "m".into()],
                 gain: 3.0,
-            },
+            }),
             resistor("RE2", "e2", "0", 1e3),
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id: "G2".into(),
                 nodes: ["g2".into(), "0".into()],
                 control_nodes: ["n2".into(), "m".into()],
                 gm: 2e-3,
-            },
+            }),
             resistor("RG2", "g2", "0", 1e3),
-            CircuitElement::Ccvs {
+            CircuitElement::Ccvs(Ccvs {
                 id: "H2".into(),
                 nodes: ["0".into(), "h2".into()],
                 control_source: "V1".into(),
                 rm: 200.0,
-            },
+            }),
             resistor("RH2", "h2", "0", 1e3),
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id: "F2".into(),
                 nodes: ["f2".into(), "0".into()],
                 control_source: "V1".into(),
                 alpha: 2.0,
-            },
+            }),
             resistor("RF2", "f2", "0", 1e3),
             // A source with its positive terminal on ground.
             vsource("V3", "0", "nv", 1.0),
@@ -579,12 +584,12 @@ fn regulator_with_a_lifted_ground_pin_ac_matches_dc() {
         "0",
         vec![
             vsource("V1", "in", "0", 0.0),
-            CircuitElement::VoltageRegulator {
+            CircuitElement::VoltageRegulator(VoltageRegulator {
                 id: "U1".into(),
                 nodes: ["in".into(), "out".into(), "adj".into()],
                 voltage: 5.0,
                 model: Some(sindr::RegulatorParams::lm7805()),
-            },
+            }),
             resistor("RADJ", "adj", "0", 100.0),
             resistor("RL", "out", "0", 100.0),
         ],

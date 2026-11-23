@@ -4,6 +4,7 @@
 //! Only compiled when the `spice` feature is enabled.
 #![cfg(feature = "spice")]
 
+use sindr::element::{Behavioural, Resistor, VoltageSource};
 use sindr::spice::{parse_str, to_netlist};
 use sindr::{solve_op, BehaviouralOutput, CircuitElement};
 
@@ -50,7 +51,9 @@ fn value_forms_of_e_and_g_are_behavioural() {
         .components
         .iter()
         .filter_map(|c| match c {
-            CircuitElement::Behavioural { id, output, .. } => Some((id.as_str(), *output)),
+            CircuitElement::Behavioural(Behavioural { id, output, .. }) => {
+                Some((id.as_str(), *output))
+            }
             _ => None,
         })
         .collect();
@@ -143,23 +146,23 @@ fn export_renames_what_the_expression_reads() {
     let circuit = sindr::Circuit::new(
         "gnd",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "supply".into(),
                 nodes: ["a".into(), "gnd".into()],
                 voltage: 1.0,
                 waveform: None,
-            },
-            CircuitElement::Behavioural {
+            }),
+            CircuitElement::Behavioural(Behavioural {
                 id: "mul".into(),
                 nodes: ["out".into(), "gnd".into()],
                 output: BehaviouralOutput::Voltage,
                 expr: Expression::parse("v(a,gnd)*i(supply)").unwrap(),
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "load".into(),
                 nodes: ["out".into(), "gnd".into()],
                 resistance: 1e3,
-            },
+            }),
         ],
     );
     let written = to_netlist(&circuit, "t").unwrap();
@@ -176,17 +179,17 @@ fn exporting_an_expression_that_reads_a_missing_source_is_an_error() {
     let circuit = sindr::Circuit::new(
         "0",
         vec![
-            CircuitElement::Behavioural {
+            CircuitElement::Behavioural(Behavioural {
                 id: "b1".into(),
                 nodes: ["out".into(), "0".into()],
                 output: BehaviouralOutput::Current,
                 expr: Expression::parse("2*i(ghost)").unwrap(),
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "r1".into(),
                 nodes: ["out".into(), "0".into()],
                 resistance: 1e3,
-            },
+            }),
         ],
     );
     let err = to_netlist(&circuit, "t").unwrap_err();

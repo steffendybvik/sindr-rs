@@ -4,6 +4,7 @@ use super::{parse_value, ImportError, ImportOptions, ImportedCircuit, Netlist, P
 use crate::ac_analysis::{solve_ac, AcConfig, AcResult};
 use crate::circuit::{BehaviouralOutput, Circuit, CircuitElement};
 use crate::dc_sweep::{dc_sweep, DcSweepResult};
+use crate::element::{Behavioural, Capacitor, CurrentSource, Inductor, Resistor, VoltageSource};
 use crate::expression::Expression;
 use crate::results::SimulationResult;
 use crate::transient::{solve_transient, TransientConfig};
@@ -140,22 +141,24 @@ impl BenchSource {
     pub(super) fn element(&self, nodes: [String; 2]) -> CircuitElement {
         let id = self.id.clone();
         match &self.kind {
-            SourceKind::Voltage { volts, waveform } => CircuitElement::VoltageSource {
-                id,
-                nodes,
-                voltage: *volts,
-                waveform: waveform.clone(),
-            },
+            SourceKind::Voltage { volts, waveform } => {
+                CircuitElement::VoltageSource(VoltageSource {
+                    id,
+                    nodes,
+                    voltage: *volts,
+                    waveform: waveform.clone(),
+                })
+            }
             // sindr's current source pushes current from nodes[0] to
             // nodes[1] through itself, so it drives nodes[1]'s net.
             SourceKind::Current { amps, waveform } => {
                 let [plus, minus] = nodes;
-                CircuitElement::CurrentSource {
+                CircuitElement::CurrentSource(CurrentSource {
                     id,
                     nodes: [minus, plus],
                     current: *amps,
                     waveform: waveform.clone(),
-                }
+                })
             }
         }
     }
@@ -294,30 +297,30 @@ impl BenchLoad {
     pub(super) fn element(&self, nodes: [String; 2]) -> Result<CircuitElement, ImportError> {
         let id = self.id.clone();
         Ok(match self.kind {
-            LoadKind::Resistor(resistance) => CircuitElement::Resistor {
+            LoadKind::Resistor(resistance) => CircuitElement::Resistor(Resistor {
                 id,
                 nodes,
                 resistance,
-            },
-            LoadKind::Capacitor(capacitance) => CircuitElement::Capacitor {
+            }),
+            LoadKind::Capacitor(capacitance) => CircuitElement::Capacitor(Capacitor {
                 id,
                 nodes,
                 capacitance,
-            },
-            LoadKind::Inductor(inductance) => CircuitElement::Inductor {
+            }),
+            LoadKind::Inductor(inductance) => CircuitElement::Inductor(Inductor {
                 id,
                 nodes,
                 inductance,
                 saturation: None,
-            },
+            }),
             // A current source pushes from nodes[0] to nodes[1] through
             // itself, so it draws from a's net into b's.
-            LoadKind::CurrentSink { amps } => CircuitElement::CurrentSource {
+            LoadKind::CurrentSink { amps } => CircuitElement::CurrentSource(CurrentSource {
                 id,
                 nodes,
                 current: amps,
                 waveform: None,
-            },
+            }),
             // A behavioural current v(a, b)·g(t): Newton stamps it as the
             // conductance it is, and the transient lands a step on `at`
             // from the `time < at` it compares.
@@ -346,12 +349,12 @@ impl BenchLoad {
                 };
                 let [a, b] = &nodes;
                 let expr = Expression::timed_conductance(a, b, at, before, after);
-                CircuitElement::Behavioural {
+                CircuitElement::Behavioural(Behavioural {
                     id,
                     nodes,
                     output: BehaviouralOutput::Current,
                     expr,
-                }
+                })
             }
         })
     }

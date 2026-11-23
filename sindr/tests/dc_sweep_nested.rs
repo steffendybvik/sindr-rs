@@ -2,16 +2,17 @@
 //! two-source `.dc` card.
 
 use sindr::dc_sweep::DcSweepAxis;
+use sindr::element::{Bjt, CurrentSource, Diode, Mosfet, Resistor, VoltageSource};
 use sindr::{dc_sweep, dc_sweep_nested, Circuit, CircuitElement, MosfetKind};
 use sindr_devices::mosfet::MosfetParams;
 
 fn vsource(id: &str, a: &str, b: &str) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [a.into(), b.into()],
         voltage: 0.0,
         waveform: None,
-    }
+    })
 }
 
 /// An NMOS with its source grounded, gate on VGS and drain on VDS.
@@ -21,14 +22,14 @@ fn nmos(params: MosfetParams) -> Circuit {
         vec![
             vsource("VGS", "g", "0"),
             vsource("VDS", "d", "0"),
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "0".into()],
                 kind: MosfetKind::Nmos,
                 params,
                 parasitic_caps: None,
                 body_diode: None,
-            },
+            }),
         ],
     )
 }
@@ -95,14 +96,14 @@ fn bjt_curves_sweep_a_base_current() {
     let circuit = Circuit::new(
         "0",
         vec![
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 id: "IB".into(),
                 nodes: ["0".into(), "b".into()],
                 current: 0.0,
                 waveform: None,
-            },
+            }),
             vsource("VCE", "c", "0"),
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "0".into()],
                 kind: sindr::BjtKind::Npn,
@@ -110,7 +111,7 @@ fn bjt_curves_sweep_a_base_current() {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            },
+            }),
         ],
     );
     let sweep = dc_sweep_nested(
@@ -141,23 +142,25 @@ fn seeded_points_match_independent_solves() {
         "0",
         vec![
             vsource("V1", "a", "0"),
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["a".into(), "b".into()],
                 resistance: 100.0,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["b".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
     );
     let sweep = dc_sweep(&circuit, "V1", -1.0, 5.0, 25).unwrap();
     for point in &sweep.points {
         let mut alone = circuit.clone();
-        if let CircuitElement::VoltageSource { voltage, .. } = &mut alone.components[0] {
+        if let CircuitElement::VoltageSource(VoltageSource { voltage, .. }) =
+            &mut alone.components[0]
+        {
             *voltage = point.sweep_value;
         }
         let want = sindr::solve_circuit(&alone).unwrap().node_voltages["b"];

@@ -1,5 +1,11 @@
 //! Write a [`Circuit`] as a SPICE deck: [`to_netlist`].
 
+use crate::element::{
+    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, Diode,
+    FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor,
+    Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt, Thermistor,
+    Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+};
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 
@@ -114,21 +120,22 @@ pub enum ExportError {
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement};
+/// use sindr::element::{Resistor, VoltageSource};
 ///
 /// let circuit = Circuit {
 ///     ground_node: "gnd".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["in".into(), "gnd".into()],
 ///             voltage: 5.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "load".into(),
 ///             nodes: ["in".into(), "gnd".into()],
 ///             resistance: 1e3,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -136,6 +143,7 @@ pub enum ExportError {
 /// assert_eq!(deck, "divider\nV1 in 0 DC 5\nRload in 0 1000\n.end\n");
 /// # Ok::<(), sindr::spice::ExportError>(())
 /// ```
+///
 pub fn to_netlist(circuit: &Circuit, title: &str) -> Result<String, ExportError> {
     circuit.flattened()?;
     let mut deck = Deck::new(&circuit.ground_node);
@@ -254,7 +262,10 @@ impl<'a> Deck<'a> {
             self.names.insert(id, name);
         }
         for component in components {
-            if matches!(component, CircuitElement::VoltageSource { .. }) {
+            if matches!(
+                component,
+                CircuitElement::VoltageSource(VoltageSource { .. })
+            ) {
                 self.voltage_sources.insert(component.id());
             }
         }
@@ -360,9 +371,9 @@ impl<'a> Deck<'a> {
             reason: reason.to_string(),
         };
         match component {
-            CircuitElement::SwitchSpdt { .. }
-            | CircuitElement::Crystal { .. }
-            | CircuitElement::FerriteBead { .. } => {
+            CircuitElement::SwitchSpdt(SwitchSpdt { .. })
+            | CircuitElement::Crystal(Crystal { .. })
+            | CircuitElement::FerriteBead(FerriteBead { .. }) => {
                 let parts = crate::composite::lower(component)
                     .map_err(|e| unsupported(&e.to_string()))?
                     .unwrap_or_default();
@@ -376,16 +387,16 @@ impl<'a> Deck<'a> {
                     let part_name = self.extra_name(id, format!("{letter}{base}_{suffix}"))?;
                     let nodes = [local(&part.nodes()[0]), local(&part.nodes()[1])];
                     let value = match part {
-                        CircuitElement::Resistor { resistance, .. } => {
+                        CircuitElement::Resistor(Resistor { resistance, .. }) => {
                             num(id, "resistance", *resistance)?
                         }
-                        CircuitElement::Inductor { inductance, .. } => {
+                        CircuitElement::Inductor(Inductor { inductance, .. }) => {
                             num(id, "inductance", *inductance)?
                         }
-                        CircuitElement::Capacitor { capacitance, .. } => {
+                        CircuitElement::Capacitor(Capacitor { capacitance, .. }) => {
                             num(id, "capacitance", *capacitance)?
                         }
-                        CircuitElement::Switch { closed, .. } => {
+                        CircuitElement::Switch(Switch { closed, .. }) => {
                             let r = if *closed {
                                 SWITCH_R_CLOSED
                             } else {
@@ -399,12 +410,12 @@ impl<'a> Deck<'a> {
                 }
                 Ok(())
             }
-            CircuitElement::Behavioural {
+            CircuitElement::Behavioural(Behavioural {
                 nodes,
                 output,
                 expr,
                 ..
-            } => {
+            }) => {
                 // The expression reads nodes and sources by their deck names.
                 let mut deck_names = HashMap::new();
                 for variable in expr.variables() {
@@ -439,46 +450,46 @@ impl<'a> Deck<'a> {
                 self.line(format!("{name} {nodes} {key}={{{expr}}}"));
                 Ok(())
             }
-            CircuitElement::Battery { .. } => Err(unsupported(
+            CircuitElement::Battery(Battery { .. }) => Err(unsupported(
                 "a battery's state of charge has no SPICE3 primitive",
             )),
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 nodes, resistance, ..
-            } => self.two_terminal(&name, nodes, num(id, "resistance", *resistance)?),
-            CircuitElement::Capacitor {
+            }) => self.two_terminal(&name, nodes, num(id, "resistance", *resistance)?),
+            CircuitElement::Capacitor(Capacitor {
                 nodes, capacitance, ..
-            } => self.two_terminal(&name, nodes, num(id, "capacitance", *capacitance)?),
-            CircuitElement::Inductor {
+            }) => self.two_terminal(&name, nodes, num(id, "capacitance", *capacitance)?),
+            CircuitElement::Inductor(Inductor {
                 saturation: Some(_),
                 ..
-            }
-            | CircuitElement::Transformer {
+            })
+            | CircuitElement::Transformer(Transformer {
                 saturation: Some(_),
                 ..
-            } => Err(unsupported("a saturating core has no SPICE3 primitive")),
-            CircuitElement::Inductor {
+            }) => Err(unsupported("a saturating core has no SPICE3 primitive")),
+            CircuitElement::Inductor(Inductor {
                 nodes, inductance, ..
-            } => self.two_terminal(&name, nodes, num(id, "inductance", *inductance)?),
-            CircuitElement::VoltageSource {
+            }) => self.two_terminal(&name, nodes, num(id, "inductance", *inductance)?),
+            CircuitElement::VoltageSource(VoltageSource {
                 nodes,
                 voltage: value,
                 waveform,
                 ..
-            }
-            | CircuitElement::CurrentSource {
+            })
+            | CircuitElement::CurrentSource(CurrentSource {
                 nodes,
                 current: value,
                 waveform,
                 ..
-            } => {
+            }) => {
                 let value = match waveform {
                     None => format!("DC {}", num(id, "value", *value)?),
                     Some(w) => waveform_card(id, w, *value)?,
                 };
                 self.two_terminal(&name, nodes, value)
             }
-            CircuitElement::Switch { nodes, closed, .. }
-            | CircuitElement::Pushbutton { nodes, closed, .. } => {
+            CircuitElement::Switch(Switch { nodes, closed, .. })
+            | CircuitElement::Pushbutton(Pushbutton { nodes, closed, .. }) => {
                 let r = if *closed {
                     SWITCH_R_CLOSED
                 } else {
@@ -486,28 +497,28 @@ impl<'a> Deck<'a> {
                 };
                 self.two_terminal(&name, nodes, num(id, "resistance", r)?)
             }
-            CircuitElement::Fuse { nodes, blown, .. } => {
+            CircuitElement::Fuse(Fuse { nodes, blown, .. }) => {
                 let r = if *blown { SWITCH_R_OPEN } else { FUSE_R_INTACT };
                 self.two_terminal(&name, nodes, num(id, "resistance", r)?)
             }
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 nodes, light_level, ..
-            } => {
+            }) => {
                 let r = ldr_resistance(*light_level);
                 self.two_terminal(&name, nodes, num(id, "resistance", r)?)
             }
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 nodes, temperature, ..
-            } => {
+            }) => {
                 let r = crate::device_params::thermistor_resistance(*temperature);
                 self.two_terminal(&name, nodes, num(id, "resistance", r)?)
             }
-            CircuitElement::Potentiometer {
+            CircuitElement::Potentiometer(Potentiometer {
                 nodes,
                 resistance,
                 position,
                 ..
-            } => {
+            }) => {
                 // The clamp keeps the wiper off the ends, as the stamp does.
                 let pos = position.clamp(0.001, 0.999);
                 let top = num(id, "resistance", resistance * pos)?;
@@ -518,34 +529,34 @@ impl<'a> Deck<'a> {
                 self.two_terminal(&top_name, &[t, w.clone()], top)?;
                 self.two_terminal(&bottom_name, &[w, b], bottom)
             }
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 nodes,
                 temperature,
                 model,
                 ..
-            } => {
+            }) => {
                 nominal(id, *temperature)?;
                 let model = model.unwrap_or_default();
                 self.diode(id, &name, nodes, model)
             }
-            CircuitElement::Led {
+            CircuitElement::Led(Led {
                 nodes,
                 color,
                 temperature,
                 ..
-            } => {
+            }) => {
                 nominal(id, *temperature)?;
                 let model = shockley(device_params::led(color, T_NOM));
                 self.diode(id, &name, nodes, model)
             }
-            CircuitElement::SchottkyDiode {
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 nodes, temperature, ..
-            } => {
+            }) => {
                 nominal(id, *temperature)?;
                 let model = shockley(device_params::schottky(T_NOM));
                 self.diode(id, &name, nodes, model)
             }
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 nodes,
                 kind,
                 bf,
@@ -553,7 +564,7 @@ impl<'a> Deck<'a> {
                 parasitic_caps,
                 model,
                 ..
-            } => {
+            }) => {
                 nominal(id, *temperature)?;
                 if parasitic_caps
                     .as_ref()
@@ -570,42 +581,42 @@ impl<'a> Deck<'a> {
                 self.line(format!("{name} {nodes} {model_name}"));
                 Ok(())
             }
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 nodes,
                 control_nodes,
                 gain,
                 ..
-            } => self.controlled(&name, nodes, control_nodes, num(id, "gain", *gain)?),
+            }) => self.controlled(&name, nodes, control_nodes, num(id, "gain", *gain)?),
             // VCCS and CCCS share SPICE's G and F direction, so their nodes
             // go out as they are. Checked against ngspice by the
             // `op_exported_controlled` golden.
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 nodes,
                 control_nodes,
                 gm,
                 ..
-            } => self.controlled(&name, nodes, control_nodes, num(id, "gm", *gm)?),
-            CircuitElement::Ccvs {
+            }) => self.controlled(&name, nodes, control_nodes, num(id, "gm", *gm)?),
+            CircuitElement::Ccvs(Ccvs {
                 nodes,
                 control_source,
                 rm,
                 ..
-            } => {
+            }) => {
                 let value = num(id, "rm", *rm)?;
                 self.current_controlled(&name, id, nodes, control_source, value)
             }
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 nodes,
                 control_source,
                 alpha,
                 ..
-            } => {
+            }) => {
                 let value = num(id, "alpha", *alpha)?;
                 self.current_controlled(&name, id, nodes, control_source, value)
             }
-            CircuitElement::Transformer {
+            CircuitElement::Transformer(Transformer {
                 nodes, l1, l2, k, ..
-            } => {
+            }) => {
                 let [p1, q1, p2, q2] = nodes.clone();
                 let base = name.strip_prefix(['K', 'k']).unwrap_or(&name);
                 let primary = self.extra_name(id, format!("L{base}_p"))?;
@@ -616,14 +627,14 @@ impl<'a> Deck<'a> {
                 self.line(format!("{name} {primary} {secondary} {k}"));
                 Ok(())
             }
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 nodes,
                 kind,
                 params,
                 parasitic_caps,
                 body_diode,
                 ..
-            } => {
+            }) => {
                 if params.kf != 0.0 {
                     return Err(unsupported(
                         "a level-1 card's flicker noise needs a gate oxide sindr doesn't model",
@@ -693,14 +704,14 @@ impl<'a> Deck<'a> {
                 }
                 Ok(())
             }
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 nodes,
                 kind,
                 idss,
                 vp,
                 parasitic_caps,
                 ..
-            } => {
+            }) => {
                 // sindr's P-channel JFET pinches off at −|vp| in the mirrored
                 // frame, so either sign of `vp` is its |vp|; SPICE's VTO for
                 // both polarities is that negative number.
@@ -748,23 +759,25 @@ impl<'a> Deck<'a> {
                 self.line(format!("{name} {line_nodes} {model_name}"));
                 Ok(())
             }
-            CircuitElement::Igbt { .. } => Err(unsupported("SPICE has no IGBT primitive")),
-            CircuitElement::ZenerDiode { .. } => Err(unsupported(
+            CircuitElement::Igbt(Igbt { .. }) => Err(unsupported("SPICE has no IGBT primitive")),
+            CircuitElement::ZenerDiode(ZenerDiode { .. }) => Err(unsupported(
                 "sindr's breakdown clamp isn't SPICE's BV/IBV breakdown",
             )),
-            CircuitElement::OpAmp { .. } | CircuitElement::Comparator { .. } => Err(unsupported(
-                "the saturating macromodel has no SPICE primitive",
-            )),
-            CircuitElement::Relay { .. } => Err(unsupported(
+            CircuitElement::OpAmp(OpAmp { .. }) | CircuitElement::Comparator(Comparator { .. }) => {
+                Err(unsupported(
+                    "the saturating macromodel has no SPICE primitive",
+                ))
+            }
+            CircuitElement::Relay(Relay { .. }) => Err(unsupported(
                 "a voltage-operated contact has no SPICE3 primitive",
             )),
-            CircuitElement::Photodiode { .. } => Err(unsupported(
+            CircuitElement::Photodiode(Photodiode { .. }) => Err(unsupported(
                 "the light-driven current has no SPICE primitive",
             )),
-            CircuitElement::Varactor { .. } => Err(unsupported(
+            CircuitElement::Varactor(Varactor { .. }) => Err(unsupported(
                 "a SPICE diode with junction capacitance also conducts",
             )),
-            CircuitElement::VoltageRegulator { .. } => {
+            CircuitElement::VoltageRegulator(VoltageRegulator { .. }) => {
                 Err(unsupported("a regulator macromodel has no SPICE primitive"))
             }
         }
@@ -905,22 +918,22 @@ impl<'a> Deck<'a> {
 /// The SPICE element letter an element is written as.
 fn spice_letter(component: &CircuitElement) -> char {
     match component {
-        CircuitElement::Capacitor { .. } => 'C',
-        CircuitElement::Inductor { .. } => 'L',
-        CircuitElement::VoltageSource { .. } => 'V',
-        CircuitElement::CurrentSource { .. } => 'I',
-        CircuitElement::Diode { .. }
-        | CircuitElement::Led { .. }
-        | CircuitElement::SchottkyDiode { .. } => 'D',
-        CircuitElement::Bjt { .. } => 'Q',
-        CircuitElement::Vcvs { .. } => 'E',
-        CircuitElement::Vccs { .. } => 'G',
-        CircuitElement::Ccvs { .. } => 'H',
-        CircuitElement::Cccs { .. } => 'F',
-        CircuitElement::Transformer { .. } => 'K',
-        CircuitElement::Mosfet { .. } => 'M',
-        CircuitElement::Jfet { .. } => 'J',
-        CircuitElement::Behavioural { .. } => 'B',
+        CircuitElement::Capacitor(Capacitor { .. }) => 'C',
+        CircuitElement::Inductor(Inductor { .. }) => 'L',
+        CircuitElement::VoltageSource(VoltageSource { .. }) => 'V',
+        CircuitElement::CurrentSource(CurrentSource { .. }) => 'I',
+        CircuitElement::Diode(Diode { .. })
+        | CircuitElement::Led(Led { .. })
+        | CircuitElement::SchottkyDiode(SchottkyDiode { .. }) => 'D',
+        CircuitElement::Bjt(Bjt { .. }) => 'Q',
+        CircuitElement::Vcvs(Vcvs { .. }) => 'E',
+        CircuitElement::Vccs(Vccs { .. }) => 'G',
+        CircuitElement::Ccvs(Ccvs { .. }) => 'H',
+        CircuitElement::Cccs(Cccs { .. }) => 'F',
+        CircuitElement::Transformer(Transformer { .. }) => 'K',
+        CircuitElement::Mosfet(Mosfet { .. }) => 'M',
+        CircuitElement::Jfet(Jfet { .. }) => 'J',
+        CircuitElement::Behavioural(Behavioural { .. }) => 'B',
         _ => 'R',
     }
 }

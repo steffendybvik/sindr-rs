@@ -42,11 +42,12 @@
 //!
 //! ```
 //! use sindr::{solve_circuit, Circuit, CircuitElement};
+//! use sindr::element::{Led, Resistor, VoltageSource};
 //!
 //! let circuit = Circuit::new("gnd", vec![
-//!     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "gnd".into()], voltage: 5.0, waveform: None },
-//!     CircuitElement::Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 220.0 },
-//!     CircuitElement::Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 },
+//!     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "gnd".into()], voltage: 5.0, waveform: None }),
+//!     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 220.0 }),
+//!     CircuitElement::Led(Led { id: "D1".into(), nodes: ["a".into(), "gnd".into()], color: "red".into(), temperature: 300.15 }),
 //! ]);
 //! let result = solve_circuit(&circuit)?;
 //! let led = result.component("D1").expect("D1 is in the circuit");
@@ -205,27 +206,28 @@
 //!
 //! ```
 //! use sindr::{Circuit, CircuitElement, solve_circuit};
+//! use sindr::element::{Capacitor, Resistor, VoltageSource};
 //!
 //! // 5 V step into R = 1 kΩ, C = 1 µF: τ = 1 ms.
 //! let circuit = Circuit {
 //!     ground_node: "0".into(),
 //!     components: vec![
-//!         CircuitElement::VoltageSource {
+//!         CircuitElement::VoltageSource(VoltageSource {
 //!             id: "V1".into(),
 //!             nodes: ["in".into(), "0".into()],
 //!             voltage: 5.0,
 //!             waveform: None,
-//!         },
-//!         CircuitElement::Resistor {
+//!         }),
+//!         CircuitElement::Resistor(Resistor {
 //!             id: "R1".into(),
 //!             nodes: ["in".into(), "out".into()],
 //!             resistance: 1_000.0,
-//!         },
-//!         CircuitElement::Capacitor {
+//!         }),
+//!         CircuitElement::Capacitor(Capacitor {
 //!             id: "C1".into(),
 //!             nodes: ["out".into(), "0".into()],
 //!             capacitance: 1e-6,
-//!         },
+//!         }),
 //!     ],
 //!     ..Default::default()
 //! };
@@ -309,6 +311,7 @@ pub mod datasheet;
 pub mod dc_sweep;
 pub mod design;
 mod device_params;
+pub mod element;
 pub mod error;
 pub mod import;
 mod integration;
@@ -402,6 +405,10 @@ pub use sindr_devices::regulator;
 pub use sindr_devices::regulator::RegulatorParams;
 pub use sindr_devices::varactor::VaractorParams;
 
+use crate::element::{
+    Capacitor, CurrentSource, Diode, Inductor, Mosfet, Resistor, Transformer, Varactor,
+    VoltageSource, ZenerDiode,
+};
 pub(crate) use mna::MnaSystem;
 use node_map::NodeMap as NM;
 
@@ -416,11 +423,11 @@ pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, C
         composite::is_composite(c)
             || matches!(
                 c,
-                CircuitElement::ZenerDiode { .. }
-                    | CircuitElement::Mosfet {
+                CircuitElement::ZenerDiode(ZenerDiode { .. })
+                    | CircuitElement::Mosfet(Mosfet {
                         body_diode: Some(_),
                         ..
-                    }
+                    })
             )
     };
     if !flat.components.iter().any(lowers) {
@@ -447,25 +454,25 @@ pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, C
     }
     let mut body_diodes = Vec::new();
     for element in &mut owned.components {
-        if let CircuitElement::Mosfet {
+        if let CircuitElement::Mosfet(Mosfet {
             id,
             nodes,
             kind,
             body_diode,
             ..
-        } = element
+        }) = element
         {
             if let Some(model) = body_diode.take() {
                 let (anode, cathode) = match kind {
                     MosfetKind::Nmos => (&nodes[2], &nodes[1]),
                     MosfetKind::Pmos => (&nodes[1], &nodes[2]),
                 };
-                body_diodes.push(CircuitElement::Diode {
+                body_diodes.push(CircuitElement::Diode(Diode {
                     id: format!("{id}.body"),
                     nodes: [anode.clone(), cathode.clone()],
                     temperature: sindr_devices::diode::T_NOM,
                     model: Some(model),
-                });
+                }));
             }
         }
     }
@@ -479,24 +486,24 @@ pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, C
     }
     owned.components.extend(body_diodes);
     for element in &mut owned.components {
-        if let CircuitElement::ZenerDiode {
+        if let CircuitElement::ZenerDiode(ZenerDiode {
             id,
             nodes,
             vz,
             temperature,
-        } = element
+        }) = element
         {
             if !(vz.is_finite() && *vz > 0.0) {
                 return Err(SimError::InvalidComponent(format!(
                     "`{id}`: vz {vz} V must be a positive, finite number"
                 )));
             }
-            *element = CircuitElement::Diode {
+            *element = CircuitElement::Diode(Diode {
                 id: id.clone(),
                 nodes: nodes.clone(),
                 temperature: *temperature,
                 model: Some(device_params::zener_model(*vz)),
-            };
+            });
         }
     }
     Ok(std::borrow::Cow::Owned(owned))
@@ -552,21 +559,22 @@ fn auto_transient_config(
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement, solve_circuit};
+/// use sindr::element::{Resistor, VoltageSource};
 ///
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             voltage: 5.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             resistance: 1_000.0,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -576,6 +584,7 @@ fn auto_transient_config(
 /// let i_r1 = result.current("R1").unwrap();
 /// assert!((i_r1.abs() - 0.005).abs() < 1e-9);
 /// ```
+///
 pub fn solve_circuit(circuit: &Circuit) -> Result<SimulationResult, SimError> {
     solve_circuit_with(circuit, &SolverOptions::default())
 }
@@ -645,19 +654,20 @@ fn solve_circuit_parts(
 ///
 /// ```
 /// use sindr::{solve_op, Circuit, CircuitElement};
+/// use sindr::element::{Inductor, Resistor, VoltageSource};
 ///
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 1.0, waveform: None,
-///         },
-///         CircuitElement::Inductor {
+///         }),
+///         CircuitElement::Inductor(Inductor {
 ///             id: "L1".into(), nodes: ["in".into(), "mid".into()], inductance: 1e-3, saturation: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(), nodes: ["mid".into(), "0".into()], resistance: 1e3,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -753,16 +763,16 @@ pub(crate) fn dc_equivalent(circuit: &Circuit) -> Circuit {
     let mut dc = dc_reactances(circuit);
     for component in &mut dc.components {
         match component {
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 voltage, waveform, ..
-            } => {
+            }) => {
                 if let Some(w) = waveform.take() {
                     *voltage += w.evaluate(0.0);
                 }
             }
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 current, waveform, ..
-            } => {
+            }) => {
                 if let Some(w) = waveform.take() {
                     *current += w.evaluate(0.0);
                 }
@@ -786,38 +796,42 @@ fn dc_reactances(circuit: &Circuit) -> Circuit {
                     // capacitors or varactors isn't singular. The same leak as
                     // the varactor's DC stamp, which `.tf`'s ω = 0 small-signal
                     // stamp (its capacitance only) would otherwise drop.
-                    CircuitElement::Capacitor { id, nodes, .. }
-                    | CircuitElement::Varactor { id, nodes, .. } => CircuitElement::Resistor {
-                        id: id.clone(),
-                        nodes: nodes.clone(),
-                        resistance: 1e12,
-                    },
+                    CircuitElement::Capacitor(Capacitor { id, nodes, .. })
+                    | CircuitElement::Varactor(Varactor { id, nodes, .. }) => {
+                        CircuitElement::Resistor(Resistor {
+                            id: id.clone(),
+                            nodes: nodes.clone(),
+                            resistance: 1e12,
+                        })
+                    }
                     // An exact short: a 0 V source. A tiny resistor would put a
                     // ~1e9 S entry beside milli-siemens ones and cost the LU
                     // about twelve digits.
-                    CircuitElement::Inductor { id, nodes, .. } => CircuitElement::VoltageSource {
-                        id: id.clone(),
-                        nodes: nodes.clone(),
-                        voltage: 0.0,
-                        waveform: None,
-                    },
+                    CircuitElement::Inductor(Inductor { id, nodes, .. }) => {
+                        CircuitElement::VoltageSource(VoltageSource {
+                            id: id.clone(),
+                            nodes: nodes.clone(),
+                            voltage: 0.0,
+                            waveform: None,
+                        })
+                    }
                     // Both windings shorted, one 0 V source each: they fill the
                     // transformer's two branch rows, in its place.
-                    CircuitElement::Transformer { id, nodes, .. } => {
+                    CircuitElement::Transformer(Transformer { id, nodes, .. }) => {
                         let [p1, q1, p2, q2] = nodes.clone();
                         return vec![
-                            CircuitElement::VoltageSource {
+                            CircuitElement::VoltageSource(VoltageSource {
                                 id: id.clone(),
                                 nodes: [p1, q1],
                                 voltage: 0.0,
                                 waveform: None,
-                            },
-                            CircuitElement::VoltageSource {
+                            }),
+                            CircuitElement::VoltageSource(VoltageSource {
                                 id: format!("{id}#2"),
                                 nodes: [p2, q2],
                                 voltage: 0.0,
                                 waveform: None,
-                            },
+                            }),
                         ];
                     }
                     other => other.clone(),

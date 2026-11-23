@@ -2,6 +2,7 @@
 //! Monte Carlo or corner analysis, against the divider's closed form at
 //! the same corners.
 
+use sindr::element::{Resistor, VoltageSource};
 use sindr::measure::{Measure, Measurement, Signal, Spec, Stat};
 use sindr::variation::{
     corners, monte_carlo, ratings_over, Corner, Corners, MonteCarloConfig, Parameter, Sampling,
@@ -12,20 +13,22 @@ use sindr::{solve_op, Circuit, CircuitElement, Part, RatingKind, RatingStatus, R
 /// 10 V across r1 over r2, both 10 kΩ; r2 rated for 2.6 mW (it takes
 /// 2.5 mW at nominal).
 fn divider() -> Circuit {
-    let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
-        id: id.into(),
-        nodes: [a.into(), b.into()],
-        resistance: 10e3,
+    let r = |id: &str, a: &str, b: &str| {
+        CircuitElement::Resistor(Resistor {
+            id: id.into(),
+            nodes: [a.into(), b.into()],
+            resistance: 10e3,
+        })
     };
     let mut c = Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "v1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
+            }),
             r("r1", "in", "out"),
             r("r2", "out", "0"),
         ],
@@ -195,7 +198,7 @@ fn ratings_within_at_every_corner_stay_within() {
 fn monte_carlo_ratings_record_failed_runs() {
     let sampling = Sampling::MonteCarlo(MonteCarloConfig::new(tolerances(), 40).with_seed(4));
     let picky = |c: &Circuit| match &c.components[1] {
-        CircuitElement::Resistor { resistance, .. } if *resistance > 10e3 => {
+        CircuitElement::Resistor(Resistor { resistance, .. }) if *resistance > 10e3 => {
             Err(SimError::InvalidComponent("too big".to_string()))
         }
         _ => solve_op(c),

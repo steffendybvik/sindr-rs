@@ -9,30 +9,31 @@
 //   Reverse-bias (V < 0): near-zero current
 //   Forward-bias (V > ~0.5): exponential current turn-on
 
+use sindr::element::{Diode, Resistor, VoltageSource};
 use sindr::{dc_sweep, Circuit, CircuitElement};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 0.0, // initial value irrelevant; dc_sweep overrides it
                 waveform: None,
-            },
+            }),
             // Series resistor required: diode directly across V-source is degenerate
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id: "R_series".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 100.0,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["n2".into(), "0".into()], // anode: n2, cathode: GND
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     };
