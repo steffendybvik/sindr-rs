@@ -306,6 +306,7 @@ fn nr_inner(
 
     let diode_info = collect_diode_info(circuit, node_map);
     let igbt_info = collect_igbt_info(circuit, node_map);
+    let terminals = crate::node_map::Terminals::new(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
     let mut last_step = (f64::INFINITY, None);
     // The iterate `v_prev` stepped from, to shorten a step that lands where
@@ -326,7 +327,7 @@ fn nr_inner(
                 (num_nodes, num_vsources),
             )
         } else {
-            stamp::stamp_circuit(circuit, &mut system, node_map, Some(&v_prev))
+            stamp::stamp_circuit_with(circuit, &mut system, node_map, &terminals, Some(&v_prev))
         };
         let solved = stamped.and_then(|()| {
             // Add Gmin shunts (default GMIN floor + any homotopy extra).
