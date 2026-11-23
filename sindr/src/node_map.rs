@@ -5,7 +5,37 @@
 //! table between the two. The ground node is excluded from the matrix and
 //! maps to `None` — every other unique node string gets a sequential index.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// FNV-1a: node names are short, and SipHash's DoS resistance buys nothing
+/// for a table built from the caller's own circuit.
+#[derive(Default)]
+pub(crate) struct Fnv(u64);
+
+impl Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        self.0 = h;
+    }
+}
+
+type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Fnv>>;
+
+/// A string-keyed map with the [`Fnv`] hasher, for tables looked up on every
+/// iteration of a solve.
+pub(crate) type FastMap<V> = HashMap<String, V>;
 
 use crate::circuit::Circuit;
 
@@ -35,7 +65,7 @@ impl NodeMap {
         // Remove ground
         unique.remove(&circuit.ground_node);
 
-        let mut map = HashMap::new();
+        let mut map = HashMap::default();
         let mut reverse = Vec::new();
         for node in unique {
             let idx = map.len();
@@ -56,7 +86,7 @@ impl NodeMap {
     /// sequential indices starting from 0.
     #[cfg(test)]
     pub fn from_nodes(nodes: &[String], ground: &str) -> Self {
-        let mut map = HashMap::new();
+        let mut map = HashMap::default();
         let mut reverse = Vec::new();
 
         for node in nodes {
@@ -97,6 +127,40 @@ impl NodeMap {
     /// Reverse lookup: get the node name for a given matrix index.
     pub fn node_name(&self, index: usize) -> Option<&str> {
         self.reverse.get(index).map(|s| s.as_str())
+    }
+}
+
+/// Each element's terminals as matrix indices, resolved once per solve so
+/// the per-iteration stamps don't look names up. Element `k` of the circuit
+/// it was built from has [`of(k)`](Self::of), in
+/// [`nodes`](crate::circuit::CircuitElement::nodes) order.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Terminals {
+    start: Vec<usize>,
+    index: Vec<Option<usize>>,
+}
+
+impl Terminals {
+    pub(crate) fn new(circuit: &Circuit, node_map: &NodeMap) -> Self {
+        let mut start = Vec::with_capacity(circuit.components.len() + 1);
+        let mut index = Vec::new();
+        for component in &circuit.components {
+            start.push(index.len());
+            index.extend(component.nodes().iter().map(|n| node_map.index(n)));
+        }
+        start.push(index.len());
+        Self { start, index }
+    }
+
+    /// Element `k`'s terminals.
+    pub(crate) fn of(&self, k: usize) -> &[Option<usize>] {
+        &self.index[self.start[k]..self.start[k + 1]]
+    }
+
+    /// Element `k`'s first two terminals, for a two-terminal element.
+    pub(crate) fn pair(&self, k: usize) -> [Option<usize>; 2] {
+        let t = self.of(k);
+        [t[0], t[1]]
     }
 }
 
@@ -153,5 +217,38 @@ mod tests {
         let nm = NodeMap::from_nodes(&nodes, "0");
 
         assert_eq!(nm.index("nonexistent"), None);
+    }
+
+    #[test]
+    fn terminals_resolve_each_element_in_node_order() {
+        use crate::circuit::CircuitElement;
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::Resistor {
+                    id: "R1".into(),
+                    nodes: ["b".into(), "a".into()],
+                    resistance: 1.0,
+                },
+                CircuitElement::Resistor {
+                    id: "R2".into(),
+                    nodes: ["0".into(), "b".into()],
+                    resistance: 1.0,
+                },
+            ],
+        );
+        let nm = NodeMap::from_circuit(&circuit);
+        let t = Terminals::new(&circuit, &nm);
+        assert_eq!(t.pair(0), [nm.index("b"), nm.index("a")]);
+        assert_eq!(t.of(1), [None, nm.index("b")]);
+    }
+
+    #[test]
+    fn the_fast_hasher_finds_every_node() {
+        let nodes: Vec<String> = (0..1000).map(|i| format!("n{i}")).collect();
+        let nm = NodeMap::from_nodes(&nodes, "n0");
+        for (i, n) in nodes.iter().enumerate().skip(1) {
+            assert_eq!(nm.index(n), Some(i - 1));
+        }
     }
 }

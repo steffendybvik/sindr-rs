@@ -19,17 +19,17 @@ pub use crate::integration::IntegrationMethod;
 use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
 use crate::newton_raphson;
-use crate::node_map::NodeMap;
+use crate::node_map::{FastMap, NodeMap, Terminals};
 use crate::results::{
     BjtResult, ComponentResult, MosfetResult, SimulationResult, TimestepSnapshot, TransientData,
     TransientStats,
 };
 use crate::solver::SolverOptions;
 use crate::stamp::{
-    stamp_bjt_companion, stamp_cccs, stamp_ccvs, stamp_current_source, stamp_diode_companion,
+    stamp_bjt_companion, stamp_cccs, stamp_ccvs, stamp_current_source_at, stamp_diode_companion,
     stamp_igbt_companion, stamp_jfet_companion, stamp_mosfet_companion, stamp_resistor,
-    stamp_transformer_companion, stamp_vccs, stamp_vcvs, stamp_voltage_source, SWITCH_R_CLOSED,
-    SWITCH_R_OPEN,
+    stamp_resistor_at, stamp_transformer_companion, stamp_vccs, stamp_vcvs,
+    stamp_voltage_source_at, SWITCH_R_CLOSED, SWITCH_R_OPEN,
 };
 use crate::thermal::Heated;
 
@@ -193,14 +193,16 @@ fn stamp_circuit_transient(
     caps: &[History],
     inds: &[History],
     v_prev: &DVector<f64>,
-    parasitic: &HashMap<String, History>,
+    parasitic: &FastMap<History>,
+    terminals: &Terminals,
 ) -> Result<(), SimError> {
     let num_nodes = node_map.num_nodes();
     let mut vsource_index: usize = 0;
     let mut cap_index: usize = 0;
     let mut ind_index: usize = 0;
 
-    for component in &circuit.components {
+    for (k, component) in circuit.components.iter().enumerate() {
+        let at = || terminals.pair(k);
         match component {
             // Split into their parts, or lowered to a diode, by
             // `solver_circuit` first.
@@ -208,41 +210,31 @@ fn stamp_circuit_transient(
             | CircuitElement::Crystal { .. }
             | CircuitElement::FerriteBead { .. }
             | CircuitElement::ZenerDiode { .. } => {}
-            CircuitElement::Resistor {
-                id,
-                nodes,
-                resistance,
-            } => {
+            CircuitElement::Resistor { id, resistance, .. } => {
                 if *resistance <= 0.0 {
                     return Err(SimError::InvalidResistance(id.clone()));
                 }
-                stamp_resistor(system, node_map, nodes, *resistance);
+                stamp_resistor_at(system, at(), *resistance);
             }
             CircuitElement::VoltageSource {
-                nodes,
-                voltage,
-                waveform,
-                ..
+                voltage, waveform, ..
             } => {
                 let v = match waveform {
                     Some(w) => *voltage + w.evaluate(t),
                     None => *voltage,
                 };
                 let branch = num_nodes + vsource_index;
-                stamp_voltage_source(system, node_map, nodes, v, branch);
+                stamp_voltage_source_at(system, at(), v, branch);
                 vsource_index += 1;
             }
             CircuitElement::CurrentSource {
-                nodes,
-                current,
-                waveform,
-                ..
+                current, waveform, ..
             } => {
                 let i = match waveform {
                     Some(w) => *current + w.evaluate(t),
                     None => *current,
                 };
-                stamp_current_source(system, node_map, nodes, i);
+                stamp_current_source_at(system, at(), i);
             }
             CircuitElement::Switch { nodes, closed, .. } => {
                 let resistance = if *closed {
@@ -252,20 +244,16 @@ fn stamp_circuit_transient(
                 };
                 stamp_resistor(system, node_map, nodes, resistance);
             }
-            CircuitElement::Capacitor {
-                nodes, capacitance, ..
-            } => {
+            CircuitElement::Capacitor { capacitance, .. } => {
                 let (g, i_hist) = integ.capacitor(*capacitance, &caps[cap_index]);
-                stamp_companion(system, node_map, nodes, g, i_hist);
+                stamp_companion_at(system, at(), g, i_hist);
                 cap_index += 1;
             }
-            CircuitElement::Battery {
-                id, nodes, params, ..
-            } => {
+            CircuitElement::Battery { id, params, .. } => {
                 let soc = parasitic_history(parasitic, id, crate::battery_state::SOC).x1;
                 let rc = parasitic_history(parasitic, id, crate::battery_state::RC);
                 let (g, i_hist) = crate::battery_state::step_norton(params, soc, &rc, integ);
-                stamp_companion(system, node_map, nodes, g, i_hist);
+                stamp_companion_at(system, at(), g, i_hist);
             }
             CircuitElement::Inductor {
                 nodes,
@@ -289,7 +277,7 @@ fn stamp_circuit_transient(
                         (g, i - g * v)
                     }
                 };
-                stamp_companion(system, node_map, nodes, g, i_hist);
+                stamp_companion_at(system, at(), g, i_hist);
                 ind_index += 1;
             }
             CircuitElement::Diode {
@@ -306,7 +294,7 @@ fn stamp_circuit_transient(
                     let (q, c) = sindr_devices::diode::diode_charge(v, &params, &charge);
                     let history = parasitic_history(parasitic, id, DIODE_CHARGE);
                     let (g, i_hist) = integ.charge(q, c, v, &history);
-                    stamp_companion(system, node_map, nodes, g, i_hist);
+                    stamp_companion_at(system, at(), g, i_hist);
                 }
             }
             CircuitElement::Led {
@@ -547,12 +535,12 @@ fn stamp_circuit_transient(
                 stamp_vcvs(system, node_map, &out_nodes, &ctrl_nodes, 1e5, branch);
                 vsource_index += 1;
             }
-            CircuitElement::Varactor { nodes, params, .. } => {
+            CircuitElement::Varactor { params, .. } => {
                 // Linearised at the voltage the step starts from.
                 let history = &caps[cap_index];
                 let c = sindr_devices::varactor::junction_capacitance(history.x1, params);
                 let (g, i_hist) = integ.capacitor(c, history);
-                stamp_companion(system, node_map, nodes, g, i_hist);
+                stamp_companion_at(system, at(), g, i_hist);
                 cap_index += 1;
             }
             CircuitElement::Igbt { nodes, params, .. } => {
@@ -1936,7 +1924,7 @@ pub(crate) fn run_transient(
     let mut caps: Vec<History> = Vec::new();
     let mut inds: Vec<History> = Vec::new();
     // Parasitic cap histories, keyed by "component_id-junction" ("Q1-be").
-    let mut parasitic: HashMap<String, History> = HashMap::new();
+    let mut parasitic: FastMap<History> = FastMap::default();
     for component in &circuit.components {
         match component {
             CircuitElement::Capacitor { nodes, .. } | CircuitElement::Varactor { nodes, .. } => {
@@ -2647,6 +2635,7 @@ struct StepSolver<'a> {
     diode_info: Vec<newton_raphson::DiodeLimitInfo>,
     igbt_info: Vec<newton_raphson::IgbtLimitInfo>,
     opts: &'a SolverOptions,
+    terminals: Terminals,
 }
 
 impl<'a> StepSolver<'a> {
@@ -2671,6 +2660,7 @@ impl<'a> StepSolver<'a> {
             },
             igbt_info: newton_raphson::collect_igbt_info(circuit, node_map),
             opts,
+            terminals: Terminals::new(circuit, node_map),
         }
     }
 
@@ -2683,7 +2673,7 @@ impl<'a> StepSolver<'a> {
         t: f64,
         caps: &[History],
         inds: &[History],
-        parasitic: &HashMap<String, History>,
+        parasitic: &FastMap<History>,
         start: &DVector<f64>,
     ) -> Result<DVector<f64>, SimError> {
         self.newton(integ, t, caps, inds, parasitic, start, None)
@@ -2711,7 +2701,7 @@ impl<'a> StepSolver<'a> {
         t: f64,
         caps: &[History],
         inds: &[History],
-        parasitic: &HashMap<String, History>,
+        parasitic: &FastMap<History>,
         start: &DVector<f64>,
     ) -> Result<DVector<f64>, SimError> {
         let mut anchor = start.clone();
@@ -2763,7 +2753,7 @@ impl<'a> StepSolver<'a> {
         t: f64,
         caps: &[History],
         inds: &[History],
-        parasitic: &HashMap<String, History>,
+        parasitic: &FastMap<History>,
         start: &DVector<f64>,
         pseudo: Option<(f64, &DVector<f64>)>,
     ) -> Result<DVector<f64>, SimError> {
@@ -2779,6 +2769,7 @@ impl<'a> StepSolver<'a> {
                 inds,
                 v_prev,
                 parasitic,
+                &self.terminals,
             )?;
             Ok(system)
         };
@@ -2852,7 +2843,7 @@ fn update_parasitic_histories(
     node_map: &NodeMap,
     solution: &DVector<f64>,
     integ: &Integrator,
-    parasitic: &mut HashMap<String, History>,
+    parasitic: &mut FastMap<History>,
 ) {
     let v = |n: &String| node_map.index(n).map_or(0.0, |i| solution[i]);
     let num_nodes = node_map.num_nodes();
@@ -3008,7 +2999,7 @@ pub(crate) fn jfet_gate_charge(
 
 /// The history of component `id`'s parasitic capacitor at `junction`
 /// (uncharged before its first step).
-fn parasitic_history(parasitic: &HashMap<String, History>, id: &str, junction: &str) -> History {
+fn parasitic_history(parasitic: &FastMap<History>, id: &str, junction: &str) -> History {
     parasitic
         .get(&format!("{id}-{junction}"))
         .copied()
@@ -3025,7 +3016,7 @@ const DIODE_CHARGE: &str = "q";
 /// dissipation: the stored charge doesn't heat it.
 fn add_diode_charge_currents(
     circuit: &Circuit,
-    parasitic: &HashMap<String, History>,
+    parasitic: &FastMap<History>,
     results: &mut [ComponentResult],
 ) {
     for component in &circuit.components {
@@ -3092,8 +3083,16 @@ fn stamp_companion(
     g: f64,
     i_hist: f64,
 ) {
-    let p = node_map.index(&nodes[0]);
-    let q = node_map.index(&nodes[1]);
+    stamp_companion_at(
+        system,
+        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
+        g,
+        i_hist,
+    );
+}
+
+/// [`stamp_companion`] between matrix indices (`None` is ground).
+fn stamp_companion_at(system: &mut MnaSystem, [p, q]: [Option<usize>; 2], g: f64, i_hist: f64) {
     if let Some(pi) = p {
         system.a[(pi, pi)] += g;
         system.b[pi] -= i_hist;

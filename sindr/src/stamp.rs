@@ -24,7 +24,7 @@ use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
+use crate::node_map::{NodeMap, Terminals};
 
 /// Switch closed resistance (very low, near short circuit).
 pub const SWITCH_R_CLOSED: f64 = 0.01;
@@ -77,10 +77,24 @@ pub fn stamp_circuit(
     node_map: &NodeMap,
     v_prev: Option<&DVector<f64>>,
 ) -> Result<(), SimError> {
+    let terminals = Terminals::new(circuit, node_map);
+    stamp_circuit_with(circuit, system, node_map, &terminals, v_prev)
+}
+
+/// [`stamp_circuit`] with `circuit`'s terminals already resolved, for a
+/// loop that stamps the same circuit many times.
+pub(crate) fn stamp_circuit_with(
+    circuit: &Circuit,
+    system: &mut MnaSystem,
+    node_map: &NodeMap,
+    terminals: &Terminals,
+    v_prev: Option<&DVector<f64>>,
+) -> Result<(), SimError> {
     let num_nodes = node_map.num_nodes();
     let mut vsource_index: usize = 0;
 
-    for component in &circuit.components {
+    for (k, component) in circuit.components.iter().enumerate() {
+        let at = || terminals.pair(k);
         match component {
             CircuitElement::SwitchSpdt { id, .. }
             | CircuitElement::Crystal { id, .. }
@@ -90,23 +104,19 @@ pub fn stamp_circuit(
                      entry point (solve_circuit, solve_transient, …), not stamp_circuit"
                 )));
             }
-            CircuitElement::Resistor {
-                id,
-                nodes,
-                resistance,
-            } => {
+            CircuitElement::Resistor { id, resistance, .. } => {
                 if *resistance <= 0.0 {
                     return Err(SimError::InvalidResistance(id.clone()));
                 }
-                stamp_resistor(system, node_map, nodes, *resistance);
+                stamp_resistor_at(system, at(), *resistance);
             }
-            CircuitElement::VoltageSource { nodes, voltage, .. } => {
+            CircuitElement::VoltageSource { voltage, .. } => {
                 let branch = num_nodes + vsource_index;
-                stamp_voltage_source(system, node_map, nodes, *voltage, branch);
+                stamp_voltage_source_at(system, at(), *voltage, branch);
                 vsource_index += 1;
             }
-            CircuitElement::CurrentSource { nodes, current, .. } => {
-                stamp_current_source(system, node_map, nodes, *current);
+            CircuitElement::CurrentSource { current, .. } => {
+                stamp_current_source_at(system, at(), *current);
             }
             CircuitElement::Switch { nodes, closed, .. } => {
                 let resistance = if *closed {
@@ -435,9 +445,20 @@ pub fn stamp_resistor(
     nodes: &[String; 2],
     resistance: f64,
 ) {
+    stamp_resistor_at(
+        system,
+        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
+        resistance,
+    );
+}
+
+/// [`stamp_resistor`] between matrix indices (`None` is ground).
+pub(crate) fn stamp_resistor_at(
+    system: &mut MnaSystem,
+    [p, q]: [Option<usize>; 2],
+    resistance: f64,
+) {
     let g = 1.0 / resistance;
-    let p = node_map.index(&nodes[0]);
-    let q = node_map.index(&nodes[1]);
 
     if let Some(pi) = p {
         system.a[(pi, pi)] += g;
@@ -467,9 +488,21 @@ pub fn stamp_voltage_source(
     voltage: f64,
     branch: usize,
 ) {
-    let p = node_map.index(&nodes[0]);
-    let q = node_map.index(&nodes[1]);
+    stamp_voltage_source_at(
+        system,
+        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
+        voltage,
+        branch,
+    );
+}
 
+/// [`stamp_voltage_source`] between matrix indices (`None` is ground).
+pub(crate) fn stamp_voltage_source_at(
+    system: &mut MnaSystem,
+    [p, q]: [Option<usize>; 2],
+    voltage: f64,
+    branch: usize,
+) {
     // B submatrix (node rows, branch column)
     if let Some(pi) = p {
         system.a[(pi, branch)] += 1.0;
@@ -727,9 +760,19 @@ pub fn stamp_current_source(
     nodes: &[String; 2],
     current: f64,
 ) {
-    let from = node_map.index(&nodes[0]);
-    let to = node_map.index(&nodes[1]);
+    stamp_current_source_at(
+        system,
+        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
+        current,
+    );
+}
 
+/// [`stamp_current_source`] between matrix indices (`None` is ground).
+pub(crate) fn stamp_current_source_at(
+    system: &mut MnaSystem,
+    [from, to]: [Option<usize>; 2],
+    current: f64,
+) {
     if let Some(ti) = to {
         system.b[ti] += current;
     }
