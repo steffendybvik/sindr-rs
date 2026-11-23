@@ -5,6 +5,7 @@
 use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::element::{Behavioural, Resistor, VoltageSource};
 use sindr::expression::Expression;
+use sindr::DcSweepAxis;
 use sindr::{
     dc_sweep, solve_op, solve_transient, BehaviouralOutput, Block, Circuit, CircuitElement,
     Instance, SimError, TransientConfig,
@@ -118,7 +119,7 @@ fn dc_sweep_through_a_smooth_nonlinearity() {
         b("b1", "out", "0", V, "2*tanh(v(in)/0.5)"),
         r("rl", "out", "0", 1e3),
     ]);
-    let sweep = dc_sweep(&c, "vin", -2.0, 2.0, 21).unwrap();
+    let sweep = dc_sweep(&c, &DcSweepAxis::new("vin", -2.0, 2.0, 21)).unwrap();
     for point in &sweep.points {
         let x = point.result.node_voltages["in"];
         close(

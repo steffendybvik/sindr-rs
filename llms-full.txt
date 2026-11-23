@@ -887,7 +887,7 @@ Sweep a voltage or current source across a range and collect operating points at
 # let mut circuit = Circuit::default();
 use sindr::{Circuit, CircuitElement, dc_sweep};
 
-let sweep = dc_sweep(&circuit, "V1", 0.0, 5.0, 51)?;
+let sweep = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 5.0, 51))?;
 
 let v_curve = sweep.node_voltage_curve("n2");
 let i_curve = sweep.component_current_curve("D1");
@@ -926,29 +926,29 @@ use sindr::{Circuit, temperature_sweep, TempSweepResult};
 
 // All junction devices (BJT, diode, LED, Zener, Schottky, Photodiode) have their
 // temperature field overridden at each step.
-let result = temperature_sweep(&circuit, 250.0, 350.0, 11)?; // 250 K → 350 K, 11 points
+let result = temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 350.0, 11))?; // 250 K → 350 K, 11 points
 
 for point in &result.points {
     let ic = point.result.bjt("Q1").map_or(0.0, |b| b.ic);
-    println!("T = {:.1} K, Ic = {:.3} mA", point.temperature_kelvin, ic * 1000.0);
+    println!("T = {:.1} K, Ic = {:.3} mA", point.temperature, ic * 1000.0);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ```rust,ignore
 pub struct TempSweepResult {
-    pub temp_start: f64,              // K
-    pub temp_end:   f64,              // K
-    pub points:     Vec<TempSweepPoint>,
+    pub start:  f64,                 // K
+    pub stop:   f64,                 // K
+    pub points: Vec<TempSweepPoint>,
 }
 
 pub struct TempSweepPoint {
-    pub temperature_kelvin: f64,
-    pub result:             SimulationResult, // the full operating point at this temperature
+    pub temperature: f64,              // K
+    pub result:      SimulationResult, // the full operating point at this temperature
 }
 ```
 
-`num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
+`num_points` must be ≥ 2, and both temperatures finite and above 0 K.
 
 ### Self-heating
 
@@ -2656,6 +2656,7 @@ impl DcSweepAxis {
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement, dc_sweep};
+/// use sindr::dc_sweep::DcSweepAxis;
 /// use sindr::element::{Resistor, VoltageSource};
 ///
 /// let circuit = Circuit {
@@ -2677,7 +2678,7 @@ impl DcSweepAxis {
 /// };
 ///
 /// // Sweep V1 from 0 V to 10 V in 11 steps.
-/// let sweep = dc_sweep(&circuit, "V1", 0.0, 10.0, 11).unwrap();
+/// let sweep = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 10.0, 11)).unwrap();
 /// assert_eq!(sweep.points.len(), 11);
 ///
 /// // I = V/R should rise linearly from 0 to 10 mA.
@@ -2685,13 +2686,7 @@ impl DcSweepAxis {
 /// assert!((curve.last().unwrap().1 - 0.010).abs() < 1e-9);
 /// ```
 ///
-pub fn dc_sweep(
-    circuit: &Circuit,
-    source_id: &str,
-    start: f64,
-    stop: f64,
-    num_points: usize,
-) -> Result<DcSweepResult, SimError> { … }
+pub fn dc_sweep(circuit: &Circuit, axis: &DcSweepAxis) -> Result<DcSweepResult, SimError> { … }
 
 /// A two-source DC sweep: one [`DcSweepResult`] along the inner source per
 /// value of the outer one.
@@ -4625,17 +4620,8 @@ pub enum Analysis {
     /// A small-signal frequency sweep, as [`solve_ac`]. `source_id` names
     /// a bench source.
     Ac(AcConfig),
-    /// A DC sweep of one source's value, as [`dc_sweep`].
-    DcSweep {
-        /// The bench source to sweep.
-        source: String,
-        /// First value (V or A).
-        start: f64,
-        /// Last value (V or A).
-        stop: f64,
-        /// Number of points, both ends included.
-        points: usize,
-    },
+    /// A DC sweep of one bench source's value, as [`dc_sweep`].
+    DcSweep(DcSweepAxis),
 }
 
 /// What a schematic leaves out: the ground net, the sources and loads that
@@ -8446,10 +8432,7 @@ impl Solver {
     pub fn dc_sweep(
         &self,
         circuit: &Circuit,
-        source_id: &str,
-        start: f64,
-        stop: f64,
-        num_points: usize,
+        axis: &DcSweepAxis,
     ) -> Result<DcSweepResult, SimError> { … }
 
     /// As [`dc_sweep_nested`](crate::dc_sweep_nested). The nodeset seeds the
@@ -8475,9 +8458,7 @@ impl Solver {
     pub fn temperature_sweep(
         &self,
         circuit: &Circuit,
-        temp_start: f64,
-        temp_end: f64,
-        num_steps: usize,
+        config: &crate::temp_sweep::TempSweepConfig,
     ) -> Result<TempSweepResult, SimError> { … }
 }
 ```
@@ -9415,9 +9396,7 @@ for analysis in &netlist.analyses {
                     println!("dc sweep of {source}: {} curves", sweep.curves.len());
                 }
                 (axis, None) => {
-                    let sweep = sindr::dc_sweep(
-                        &netlist.circuit, &axis.source_id, axis.start, axis.stop, axis.num_points,
-                    )?;
+                    let sweep = sindr::dc_sweep(&netlist.circuit, &axis)?;
                     println!("dc sweep of {source}: {} points", sweep.points.len());
                 }
             }
@@ -9992,7 +9971,7 @@ temperature field on all IS-bearing components, and calls solve_circuit.
 /// One temperature sweep data point.
 pub struct TempSweepPoint {
     /// Temperature for this point (Kelvin).
-    pub temperature_kelvin: f64,
+    pub temperature: f64,
     /// Simulation result at this temperature.
     pub result: SimulationResult,
 }
@@ -10003,10 +9982,10 @@ pub struct TempSweepPoint {
 /// vector to iterate `(temperature, result)` pairs.
 pub struct TempSweepResult {
     /// Start of the swept temperature range (K).
-    pub temp_start: f64,
+    pub start: f64,
     /// End of the swept temperature range (K).
-    pub temp_end: f64,
-    /// Operating points, in order from `temp_start` to `temp_end`.
+    pub stop: f64,
+    /// Operating points, in order from `start` to `stop`.
     pub points: Vec<TempSweepPoint>,
 }
 
@@ -10024,6 +10003,30 @@ impl TempSweepResult {
     pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> { … }
 }
 
+/// A temperature sweep: `num_points` temperatures from `start` to `stop`
+/// (K), both ends included.
+///
+/// ```
+/// use sindr::temp_sweep::TempSweepConfig;
+///
+/// // −40 °C to 125 °C in 12 points.
+/// let config = TempSweepConfig::new(233.15, 398.15, 12);
+/// assert_eq!(config.num_points, 12);
+/// ```
+pub struct TempSweepConfig {
+    /// First temperature (K).
+    pub start: f64,
+    /// Last temperature (K).
+    pub stop: f64,
+    /// Points including both ends. At least 2.
+    pub num_points: usize,
+}
+
+impl TempSweepConfig {
+    /// `num_points` temperatures from `start` to `stop` (K).
+    pub fn new(start: f64, stop: f64, num_points: usize) -> Self { … }
+}
+
 /// Sweeps junction temperature across a range and solves the circuit at
 /// each step.
 ///
@@ -10038,12 +10041,12 @@ impl TempSweepResult {
 /// # Arguments
 ///
 /// - `circuit` — circuit to sweep (cloned per point, not modified)
-/// - `temp_start`, `temp_end` — sweep endpoints in kelvin (e.g. 250.0 to 400.0)
-/// - `num_steps` — total points including both endpoints (minimum 2)
+/// - `config` — the temperatures: endpoints in kelvin (e.g. 250.0 to
+///   400.0) and the number of points including both
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_steps < 2` or above 10⁷, or either endpoint
+/// - [`SimError::InvalidComponent`] if `num_points < 2` or above 10⁷, or either endpoint
 ///   is not finite or not above 0 K
 /// - Any [`SimError`] from solving at one of the temperatures (propagated
 ///   immediately)
@@ -10052,6 +10055,7 @@ impl TempSweepResult {
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement, temperature_sweep};
+/// use sindr::temp_sweep::TempSweepConfig;
 /// use sindr::element::{Diode, VoltageSource};
 ///
 /// let circuit = Circuit {
@@ -10074,15 +10078,13 @@ impl TempSweepResult {
 /// };
 ///
 /// // Sweep from 250 K (-23 °C) to 400 K (127 °C) in 4 steps.
-/// let sweep = temperature_sweep(&circuit, 250.0, 400.0, 4).unwrap();
+/// let sweep = temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 400.0, 4)).unwrap();
 /// assert_eq!(sweep.points.len(), 4);
 /// ```
 ///
 pub fn temperature_sweep(
     circuit: &Circuit,
-    temp_start: f64,
-    temp_end: f64,
-    num_steps: usize,
+    config: &TempSweepConfig,
 ) -> Result<TempSweepResult, SimError> { … }
 ```
 
@@ -12453,6 +12455,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 //   Forward-bias (V > ~0.5): exponential current turn-on
 
 use sindr::element::{Diode, Resistor, VoltageSource};
+use sindr::DcSweepAxis;
 use sindr::{dc_sweep, Circuit, CircuitElement};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12482,7 +12485,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Sweep V1 from -1 V to +1 V in 101 points
-    let sweep = dc_sweep(&circuit, "V1", -1.0, 1.0, 101)?;
+    let sweep = dc_sweep(&circuit, &DcSweepAxis::new("V1", -1.0, 1.0, 101))?;
 
     println!("V_applied(V)\tI_diode(A)");
     for (v, i) in sweep.component_current_curve("D1") {
@@ -12700,13 +12703,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             AnalysisRequest::Dc { source, .. } => {
                 let (axis, _outer) = analysis.dc_axes().ok_or("not a .dc")??;
-                let sweep = sindr::dc_sweep(
-                    &netlist.circuit,
-                    &axis.source_id,
-                    axis.start,
-                    axis.stop,
-                    axis.num_points,
-                )?;
+                let sweep = sindr::dc_sweep(&netlist.circuit, &axis)?;
                 let curve = sweep.node_voltage_curve("n2");
                 println!(
                     "dc sweep of {source}: {} points, V(n2) {:.3}..{:.3} V",
@@ -12878,6 +12875,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 //   (~0.77 V at −23 °C down to ~0.53 V at 127 °C).
 
 use sindr::element::{Diode, Resistor, VoltageSource};
+use sindr::TempSweepConfig;
 use sindr::{temperature_sweep, Circuit, CircuitElement};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12906,13 +12904,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 250 K to 400 K (−23 °C to 127 °C) in 7 points
-    let sweep = temperature_sweep(&circuit, 250.0, 400.0, 7)?;
+    let sweep = temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 400.0, 7))?;
 
     println!("T(°C)\tV_diode(V)");
     for point in &sweep.points {
         println!(
             "{:>6.1}\t{:.4}",
-            point.temperature_kelvin - 273.15,
+            point.temperature - 273.15,
             point.result.voltage("out").unwrap_or(f64::NAN)
         );
     }

@@ -304,6 +304,7 @@ fn sweep_curve(
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement, dc_sweep};
+/// use sindr::dc_sweep::DcSweepAxis;
 /// use sindr::element::{Resistor, VoltageSource};
 ///
 /// let circuit = Circuit {
@@ -325,7 +326,7 @@ fn sweep_curve(
 /// };
 ///
 /// // Sweep V1 from 0 V to 10 V in 11 steps.
-/// let sweep = dc_sweep(&circuit, "V1", 0.0, 10.0, 11).unwrap();
+/// let sweep = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 10.0, 11)).unwrap();
 /// assert_eq!(sweep.points.len(), 11);
 ///
 /// // I = V/R should rise linearly from 0 to 10 mA.
@@ -333,44 +334,27 @@ fn sweep_curve(
 /// assert!((curve.last().unwrap().1 - 0.010).abs() < 1e-9);
 /// ```
 ///
-pub fn dc_sweep(
-    circuit: &Circuit,
-    source_id: &str,
-    start: f64,
-    stop: f64,
-    num_points: usize,
-) -> Result<DcSweepResult, SimError> {
-    dc_sweep_with(
-        circuit,
-        source_id,
-        start,
-        stop,
-        num_points,
-        &SolverOptions::default(),
-    )
+pub fn dc_sweep(circuit: &Circuit, axis: &DcSweepAxis) -> Result<DcSweepResult, SimError> {
+    dc_sweep_with(circuit, axis, &SolverOptions::default())
 }
 
 /// [`dc_sweep`] with `opts`.
 pub(crate) fn dc_sweep_with(
     circuit: &Circuit,
-    source_id: &str,
-    start: f64,
-    stop: f64,
-    num_points: usize,
+    axis: &DcSweepAxis,
     opts: &SolverOptions,
 ) -> Result<DcSweepResult, SimError> {
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    let axis = DcSweepAxis::new(source_id, start, stop, num_points);
-    if num_points < 2 {
+    if axis.num_points < 2 {
         return Err(SimError::InvalidComponent(
             "DC sweep requires at least 2 points".to_string(),
         ));
     }
     axis.check(circuit, 2)?;
     crate::validation::validate_circuit(circuit)?;
-    let mut sweep = sweep_curve(circuit, &axis, None, opts)?;
+    let mut sweep = sweep_curve(circuit, axis, None, opts)?;
     for point in &mut sweep.points {
         crate::composite::fold(original, &mut point.result);
     }
@@ -542,7 +526,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = dc_sweep(&circuit, "V1", 0.0, 10.0, 11).unwrap();
+        let result = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 10.0, 11)).unwrap();
         assert_eq!(result.points.len(), 11);
 
         // Check linearity
@@ -580,7 +564,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = dc_sweep(&circuit, "V1", -1.0, 1.0, 21).unwrap();
+        let result = dc_sweep(&circuit, &DcSweepAxis::new("V1", -1.0, 1.0, 21)).unwrap();
         assert_eq!(result.points.len(), 21);
 
         // At negative sweep values, diode current should be ~0
@@ -616,7 +600,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = dc_sweep(&circuit, "V_nonexistent", 0.0, 10.0, 11);
+        let result = dc_sweep(&circuit, &DcSweepAxis::new("V_nonexistent", 0.0, 10.0, 11));
         assert!(result.is_err());
     }
 
@@ -633,7 +617,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = dc_sweep(&circuit, "V1", 0.0, 10.0, 1);
+        let result = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 10.0, 1));
         assert!(result.is_err());
     }
 
@@ -657,7 +641,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = dc_sweep(&circuit, "V1", 0.0, 5.0, 6).unwrap();
+        let result = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 5.0, 6)).unwrap();
         let curve = result.node_voltage_curve("n1");
         assert_eq!(curve.len(), 6);
 

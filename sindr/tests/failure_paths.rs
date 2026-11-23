@@ -8,6 +8,7 @@ use sindr::element::{
     Capacitor, CurrentSource, Inductor, OpAmp, Resistor, Transformer, Vccs, VoltageSource,
     ZenerDiode,
 };
+use sindr::DcSweepAxis;
 use sindr::{
     dc_sweep, solve_circuit, solve_transient, validate_circuit, Circuit, CircuitElement, SimError,
     TransientConfig,
@@ -68,7 +69,10 @@ fn every_analysis_fails(circuit: &Circuit, check: impl Fn(&str, SimError)) {
             solve_transient(circuit, &TransientConfig::new(1e-3, 1e-5)).map(|_| ()),
         ),
         ("ac", solve_ac(circuit, &ac).map(|_| ())),
-        ("sweep", dc_sweep(circuit, "V1", 0.0, 1.0, 3).map(|_| ())),
+        (
+            "sweep",
+            dc_sweep(circuit, &DcSweepAxis::new("V1", 0.0, 1.0, 3)).map(|_| ()),
+        ),
     ];
     for (analysis, result) in runs {
         match result {
@@ -244,7 +248,7 @@ fn duplicate_ids() {
 fn unknown_source_id() {
     let circuit = Circuit::new("0", vec![v("V1", "a", "0", 1.0), r("R1", "a", "0", 1.0)]);
     assert!(matches!(
-        dc_sweep(&circuit, "V9", 0.0, 1.0, 3),
+        dc_sweep(&circuit, &DcSweepAxis::new("V9", 0.0, 1.0, 3)),
         Err(SimError::InvalidComponent(_))
     ));
 }

@@ -61,7 +61,7 @@ impl TempSweepResult {
             "temperature",
             self.points.iter().map(|p| {
                 (
-                    p.temperature_kelvin,
+                    p.temperature,
                     &p.result.node_voltages,
                     p.result.component_results.as_slice(),
                 )

@@ -33,6 +33,7 @@ use sindr::{
     solve_transient, temperature_sweep, Block, Circuit, CircuitElement, Instance, Measure,
     Measurement, Part, Ratings, SensConfig, Spec, TfConfig, TransientConfig,
 };
+use sindr::{DcSweepAxis, TempSweepConfig};
 
 /// `value` to JSON, back, and to JSON again: both JSON values must match.
 fn round_trip<T: Serialize + DeserializeOwned>(what: &str, value: &T) -> Value {
@@ -280,9 +281,12 @@ fn every_result_type() {
     round_trip("sens config", &sens);
     round_trip("sens", &solve_sensitivity(&c, &sens).unwrap());
 
-    round_trip("dc sweep", &dc_sweep(&c, "V1", 0.0, 5.0, 6).unwrap());
+    round_trip(
+        "dc sweep",
+        &dc_sweep(&c, &DcSweepAxis::new("V1", 0.0, 5.0, 6)).unwrap(),
+    );
     round_trip(
         "temperature sweep",
-        &temperature_sweep(&c, 250.0, 350.0, 3).unwrap(),
+        &temperature_sweep(&c, &TempSweepConfig::new(250.0, 350.0, 3)).unwrap(),
     );
 }

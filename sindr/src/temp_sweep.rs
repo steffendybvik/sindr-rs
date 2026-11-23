@@ -19,7 +19,7 @@ use crate::results::SimulationResult;
 #[non_exhaustive]
 pub struct TempSweepPoint {
     /// Temperature for this point (Kelvin).
-    pub temperature_kelvin: f64,
+    pub temperature: f64,
     /// Simulation result at this temperature.
     pub result: SimulationResult,
 }
@@ -34,10 +34,10 @@ pub struct TempSweepPoint {
 #[non_exhaustive]
 pub struct TempSweepResult {
     /// Start of the swept temperature range (K).
-    pub temp_start: f64,
+    pub start: f64,
     /// End of the swept temperature range (K).
-    pub temp_end: f64,
-    /// Operating points, in order from `temp_start` to `temp_end`.
+    pub stop: f64,
+    /// Operating points, in order from `start` to `stop`.
     pub points: Vec<TempSweepPoint>,
 }
 
@@ -47,7 +47,7 @@ impl TempSweepResult {
     pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.points
             .iter()
-            .filter_map(|p| p.result.voltage(node).map(|v| (p.temperature_kelvin, v)))
+            .filter_map(|p| p.result.voltage(node).map(|v| (p.temperature, v)))
             .collect()
     }
 
@@ -63,9 +63,43 @@ impl TempSweepResult {
             .filter_map(|p| {
                 p.result
                     .component(component_id)
-                    .map(|c| (p.temperature_kelvin, c.current_through))
+                    .map(|c| (p.temperature, c.current_through))
             })
             .collect()
+    }
+}
+
+/// A temperature sweep: `num_points` temperatures from `start` to `stop`
+/// (K), both ends included.
+///
+/// ```
+/// use sindr::temp_sweep::TempSweepConfig;
+///
+/// // −40 °C to 125 °C in 12 points.
+/// let config = TempSweepConfig::new(233.15, 398.15, 12);
+/// assert_eq!(config.num_points, 12);
+/// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct TempSweepConfig {
+    /// First temperature (K).
+    pub start: f64,
+    /// Last temperature (K).
+    pub stop: f64,
+    /// Points including both ends. At least 2.
+    pub num_points: usize,
+}
+
+impl TempSweepConfig {
+    /// `num_points` temperatures from `start` to `stop` (K).
+    pub fn new(start: f64, stop: f64, num_points: usize) -> Self {
+        Self {
+            start,
+            stop,
+            num_points,
+        }
     }
 }
 
@@ -83,12 +117,12 @@ impl TempSweepResult {
 /// # Arguments
 ///
 /// - `circuit` — circuit to sweep (cloned per point, not modified)
-/// - `temp_start`, `temp_end` — sweep endpoints in kelvin (e.g. 250.0 to 400.0)
-/// - `num_steps` — total points including both endpoints (minimum 2)
+/// - `config` — the temperatures: endpoints in kelvin (e.g. 250.0 to
+///   400.0) and the number of points including both
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_steps < 2` or above 10⁷, or either endpoint
+/// - [`SimError::InvalidComponent`] if `num_points < 2` or above 10⁷, or either endpoint
 ///   is not finite or not above 0 K
 /// - Any [`SimError`] from solving at one of the temperatures (propagated
 ///   immediately)
@@ -97,6 +131,7 @@ impl TempSweepResult {
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement, temperature_sweep};
+/// use sindr::temp_sweep::TempSweepConfig;
 /// use sindr::element::{Diode, VoltageSource};
 ///
 /// let circuit = Circuit {
@@ -119,42 +154,37 @@ impl TempSweepResult {
 /// };
 ///
 /// // Sweep from 250 K (-23 °C) to 400 K (127 °C) in 4 steps.
-/// let sweep = temperature_sweep(&circuit, 250.0, 400.0, 4).unwrap();
+/// let sweep = temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 400.0, 4)).unwrap();
 /// assert_eq!(sweep.points.len(), 4);
 /// ```
 ///
 pub fn temperature_sweep(
     circuit: &Circuit,
-    temp_start: f64,
-    temp_end: f64,
-    num_steps: usize,
+    config: &TempSweepConfig,
 ) -> Result<TempSweepResult, SimError> {
-    temperature_sweep_with(
-        circuit,
-        temp_start,
-        temp_end,
-        num_steps,
-        &crate::SolverOptions::default(),
-    )
+    temperature_sweep_with(circuit, config, &crate::SolverOptions::default())
 }
 
 /// [`temperature_sweep`] with `opts`.
 pub(crate) fn temperature_sweep_with(
     circuit: &Circuit,
-    temp_start: f64,
-    temp_end: f64,
-    num_steps: usize,
+    config: &TempSweepConfig,
     opts: &crate::SolverOptions,
 ) -> Result<TempSweepResult, SimError> {
+    let &TempSweepConfig {
+        start: temp_start,
+        stop: temp_end,
+        num_points: num_steps,
+    } = config;
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     if num_steps < 2 {
         return Err(SimError::InvalidComponent(
-            "temperature_sweep: num_steps must be >= 2".into(),
+            "temperature_sweep: num_points must be >= 2".into(),
         ));
     }
-    crate::validation::check_sweep_points("temperature_sweep", "num_steps", num_steps)?;
+    crate::validation::check_sweep_points("temperature_sweep", "num_points", num_steps)?;
     for t in [temp_start, temp_end] {
         if !t.is_finite() || t <= 0.0 {
             return Err(SimError::InvalidComponent(format!(
@@ -213,7 +243,7 @@ pub(crate) fn temperature_sweep_with(
         let result = crate::solve_circuit_with(&sweep_circuit, opts)
             .map_err(|e| e.at(crate::SolvePoint::Temperature { kelvin: t }))?;
         points.push(TempSweepPoint {
-            temperature_kelvin: t,
+            temperature: t,
             result,
         });
     }
@@ -222,8 +252,8 @@ pub(crate) fn temperature_sweep_with(
         crate::composite::fold(original, &mut point.result);
     }
     Ok(TempSweepResult {
-        temp_start,
-        temp_end,
+        start: temp_start,
+        stop: temp_end,
         points,
     })
 }
@@ -257,7 +287,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = temperature_sweep(&circuit, 250.0, 350.0, 11);
+        let result = temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 350.0, 11));
         assert!(
             result.is_ok(),
             "temperature_sweep should succeed: {:?}",
@@ -265,8 +295,8 @@ mod tests {
         );
         let result = result.unwrap();
         assert_eq!(result.points.len(), 11, "Expected 11 points");
-        assert_eq!(result.points[0].temperature_kelvin, 250.0);
-        assert_eq!(result.points[10].temperature_kelvin, 350.0);
+        assert_eq!(result.points[0].temperature, 250.0);
+        assert_eq!(result.points[10].temperature, 350.0);
     }
 
     /// Common-emitter NPN BJT: collector current at 350K should be greater than at 250K.
@@ -313,7 +343,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = temperature_sweep(&circuit, 250.0, 350.0, 3);
+        let result = temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 350.0, 3));
         assert!(
             result.is_ok(),
             "temp sweep BJT should succeed: {:?}",
@@ -364,7 +394,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let result = temperature_sweep(&circuit, 300.0, 400.0, 1);
+        let result = temperature_sweep(&circuit, &TempSweepConfig::new(300.0, 400.0, 1));
         assert!(result.is_err(), "Should error with num_steps < 2");
     }
 }

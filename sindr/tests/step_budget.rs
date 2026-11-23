@@ -8,6 +8,7 @@ use sindr::{
     dc_sweep, solve_circuit, solve_transient, temperature_sweep, Circuit, CircuitElement, SimError,
     TransientConfig, Waveform,
 };
+use sindr::{DcSweepAxis, TempSweepConfig};
 
 fn vsource(id: &str, p: &str, n: &str, waveform: Option<Waveform>) -> CircuitElement {
     CircuitElement::VoltageSource(VoltageSource {
@@ -133,11 +134,11 @@ fn huge_sweeps_are_errors_not_panics() {
     let ac = AcConfig::new("V1", 1.0, 1e6, usize::MAX);
     assert_invalid(solve_ac(&divider(), &ac), "num_points");
     assert_invalid(
-        dc_sweep(&divider(), "V1", 0.0, 1.0, usize::MAX),
+        dc_sweep(&divider(), &DcSweepAxis::new("V1", 0.0, 1.0, usize::MAX)),
         "num_points",
     );
     assert_invalid(
-        temperature_sweep(&divider(), 250.0, 400.0, usize::MAX),
-        "num_steps",
+        temperature_sweep(&divider(), &TempSweepConfig::new(250.0, 400.0, usize::MAX)),
+        "num_points",
     );
 }

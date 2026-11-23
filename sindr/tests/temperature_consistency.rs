@@ -11,6 +11,7 @@ use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 use sindr::element::{
     Bjt, Capacitor, Diode, Led, Photodiode, Resistor, SchottkyDiode, VoltageSource, ZenerDiode,
 };
+use sindr::TempSweepConfig;
 use sindr::{
     solve_circuit, temperature_sweep, BjtKind, Block, Circuit, CircuitElement, Instance, Part,
     SimulationResult, Thermal,
@@ -296,10 +297,11 @@ fn temperature_sweep_sets_every_junction_temperature() {
     let nominal = devices(300.15);
     for (k, device) in nominal.into_iter().enumerate() {
         let name = format!("{device:?}");
-        let sweep = temperature_sweep(&circuit(device), 250.0, 400.0, 4).unwrap();
+        let sweep =
+            temperature_sweep(&circuit(device), &TempSweepConfig::new(250.0, 400.0, 4)).unwrap();
         let mut seen = Vec::new();
         for point in &sweep.points {
-            let t = point.temperature_kelvin;
+            let t = point.temperature;
             let direct = solve_circuit(&circuit(devices(t).swap_remove(k))).unwrap();
             let v = point.result.node_voltages["n2"];
             assert_eq!(v, direct.node_voltages["n2"], "{name} at {t} K");
@@ -354,9 +356,9 @@ fn temperature_sweep_moves_the_ambient_of_self_heated_parts() {
     c.blocks.insert("lamp".into(), block);
     c.instances.push(Instance::new("X1", "lamp", ["b"]));
 
-    let sweep = temperature_sweep(&c, 280.0, 340.0, 3).unwrap();
+    let sweep = temperature_sweep(&c, &TempSweepConfig::new(280.0, 340.0, 3)).unwrap();
     for point in &sweep.points {
-        let t = point.temperature_kelvin;
+        let t = point.temperature;
         for id in ["D1", "X1.D2"] {
             let tj = point.result.junction_temperatures[id];
             let p = point

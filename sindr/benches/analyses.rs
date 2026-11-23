@@ -12,6 +12,7 @@ use sindr::{
     check_ratings, dc_sweep, solve_circuit, solve_sensitivity, solve_tf, temperature_sweep,
     BjtKind, Circuit, CircuitElement, Part, Ratings, SensConfig, TfConfig, TfOutput,
 };
+use sindr::{DcSweepAxis, TempSweepConfig};
 
 fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
     CircuitElement::Resistor(Resistor {
@@ -145,7 +146,7 @@ fn bench(c: &mut Criterion) {
     let chain = diode_chain(10);
     for points in [10, 100, 1_000] {
         group.bench_with_input(BenchmarkId::from_parameter(points), &points, |b, &n| {
-            b.iter(|| dc_sweep(&chain, "V1", 0.0, 5.0, n).unwrap())
+            b.iter(|| dc_sweep(&chain, &DcSweepAxis::new("V1", 0.0, 5.0, n)).unwrap())
         });
     }
     group.finish();
@@ -154,7 +155,7 @@ fn bench(c: &mut Criterion) {
     let stage = bjt_stage();
     for points in [10, 100] {
         group.bench_with_input(BenchmarkId::from_parameter(points), &points, |b, &n| {
-            b.iter(|| temperature_sweep(&stage, 233.15, 398.15, n).unwrap())
+            b.iter(|| temperature_sweep(&stage, &TempSweepConfig::new(233.15, 398.15, n)).unwrap())
         });
     }
     group.finish();

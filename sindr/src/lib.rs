@@ -359,7 +359,7 @@ pub use circuit::{
     BehaviouralOutput, BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel,
     FerriteBeadParams, OpAmpModel, SpdtPosition,
 };
-pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepResult, NestedDcSweepResult};
+pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepAxis, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::{SimError, SolvePoint};
 pub use loop_gain::{solve_loop_gain, LoopGainConfig, LoopGainPoint, LoopGainResult};
@@ -376,7 +376,7 @@ pub use sensitivity::{
     SensConfig, SensEntry, SensParameter, SensResult,
 };
 pub use solver::{Solver, SolverOptions};
-pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
+pub use temp_sweep::{temperature_sweep, TempSweepConfig, TempSweepPoint, TempSweepResult};
 pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
 pub use transient::{
     solve_transient, solve_transient_with_progress, Flow, IntegrationMethod, TransientConfig,

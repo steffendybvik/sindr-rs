@@ -141,7 +141,7 @@ fn op_rejects_an_invalid_circuit() {
 
 #[test]
 fn dc_sweep_solves_operating_points() {
-    let sweep = dc_sweep(&rl(), "V1", 0.0, 2.0, 5).unwrap();
+    let sweep = dc_sweep(&rl(), &DcSweepAxis::new("V1", 0.0, 2.0, 5)).unwrap();
     for point in &sweep.points {
         assert_relative_eq!(
             point.result.node_voltages["mid"],

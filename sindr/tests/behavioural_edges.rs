@@ -5,6 +5,7 @@
 use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::element::{Behavioural, Capacitor, Inductor, Resistor, VoltageSource};
 use sindr::expression::Expression;
+use sindr::DcSweepAxis;
 use sindr::{
     dc_sweep, solve_op, solve_transient, BehaviouralOutput, Circuit, CircuitElement,
     ConvergenceAid, SimError, SimulationResult, Solver, SolverOptions, TransientConfig,
@@ -511,7 +512,7 @@ fn a_sweep_across_a_kink_keeps_every_point() {
         b("b1", "out", "0", V, "limit(2*v(in), -1, 1)"),
         r("r1", "out", "0", 1e3),
     ]);
-    let sweep = dc_sweep(&circuit, "v1", -2.0, 2.0, 401).unwrap();
+    let sweep = dc_sweep(&circuit, &DcSweepAxis::new("v1", -2.0, 2.0, 401)).unwrap();
     assert_eq!(sweep.points.len(), 401);
     let outs: Vec<f64> = sweep
         .points

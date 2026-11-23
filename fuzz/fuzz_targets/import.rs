@@ -13,7 +13,7 @@ use sindr::import::{
     simulate_with, Analysis, Bench, BenchLoad, BenchSource, Component, ComponentKind,
     ImportOptions, LoadKind, Net, Netlist, UnknownKinds,
 };
-use sindr::{AcConfig, TransientConfig};
+use sindr::{AcConfig, DcSweepAxis, TransientConfig};
 
 /// Symbol names, canonical and alias, including multi-unit packages, black
 /// boxes and one sindr doesn't know.
@@ -146,12 +146,7 @@ fn decode(data: &[u8]) -> (Netlist, Bench) {
         0 => Analysis::OperatingPoint,
         1 => Analysis::Transient(TransientConfig::new(1e-6 * (1 + b.below(10)) as f64, 1e-7)),
         2 => Analysis::Ac(AcConfig::new("v0", 1.0, 1e6, 1 + b.below(8))),
-        _ => Analysis::DcSweep {
-            source: "v0".into(),
-            start: b.number(),
-            stop: b.number(),
-            points: b.below(6),
-        },
+        _ => Analysis::DcSweep(DcSweepAxis::new("v0", b.number(), b.number(), b.below(6))),
     });
     (netlist, bench)
 }
@@ -184,8 +179,8 @@ fuzz_target!(|data: &[u8]| {
                 return;
             }
         }
-        if let Analysis::DcSweep { points, .. } = &bench.analysis {
-            if *points > 1_000 {
+        if let Analysis::DcSweep(axis) = &bench.analysis {
+            if axis.num_points > 1_000 {
                 return;
             }
         }
