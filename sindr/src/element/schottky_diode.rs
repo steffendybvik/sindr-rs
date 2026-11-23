@@ -1,8 +1,10 @@
 //! A Schottky diode: a junction diode with a low forward drop.
 
+use crate::device_params;
 use crate::error::SimError;
+use crate::stamp::stamp_diode_companion_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Schottky diode: lower forward voltage (~0.3V) than silicon diode.
 /// nodes: [anode, cathode]
@@ -24,6 +26,15 @@ pub struct SchottkyDiode {
 
 impl Device for SchottkyDiode {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        if let Some(vp) = s.v_prev {
+            let params = device_params::schottky(self.temperature);
+            let nodes = s.nodes();
+            stamp_diode_companion_at(s.system, nodes, vp, &params);
+        }
+        Ok(())
+    }
 
     fn is_nonlinear(&self) -> bool {
         true

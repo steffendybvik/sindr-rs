@@ -1,33 +1,22 @@
 //! Component → MNA matrix stamps.
 //!
-//! Each supported [`CircuitElement`] variant has a
-//! "stamp": a routine that writes its conductance / constraint contributions
-//! into the [`MnaSystem`]. For nonlinear devices, the
-//! stamp evaluates the device's companion model at the current operating
-//! point passed in via the optional `v_prev` solution vector — Newton–Raphson
-//! re-stamps every iteration as the operating point moves.
+//! Each element's DC stamp lives with its device in [`crate::element`]:
+//! a routine that writes its conductance / constraint contributions into
+//! the [`MnaSystem`]. For nonlinear devices, the stamp evaluates the
+//! device's companion model at the current operating point passed in via
+//! the optional `v_prev` solution vector — Newton–Raphson re-stamps every
+//! iteration as the operating point moves.
 //!
 //! [`stamp_circuit`] is the dispatcher used by every analysis path; the
-//! per-element helpers (`stamp_resistor`, `stamp_voltage_source`, …) are also
-//! exposed for the transient and AC pipelines.
+//! helpers several elements share (`stamp_resistor`, `stamp_voltage_source`,
+//! …) are also exposed for the transient and AC pipelines.
 
-use crate::element::{
-    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, Diode,
-    FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor,
-    Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt, Thermistor,
-    Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
-};
 use nalgebra::DVector;
 
-use sindr_devices::bjt::{self, BjtKind, BjtParams};
 use sindr_devices::diode::{self, DiodeParams};
-use sindr_devices::jfet::JfetKind;
-use sindr_devices::mosfet::{MosfetKind, MosfetParams};
-use sindr_devices::photoresistor::{ldr_resistance as rs_ldr_resistance, PhotoresistorParams};
-use sindr_devices::regulator::{regulator_piece, RegulatorLinear, RegulatorParams};
 
-use crate::circuit::{Circuit, CircuitElement};
-use crate::device_params;
+use crate::circuit::Circuit;
+use crate::element::{layout::Layout, DcStamp};
 use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::node_map::{NodeMap, Terminals};
@@ -37,36 +26,11 @@ pub const SWITCH_R_CLOSED: f64 = 0.01;
 /// Switch open resistance (very high, near open circuit).
 pub const SWITCH_R_OPEN: f64 = 1e9;
 
-/// Resistance of a relay's contact (`nodes[2]`–`nodes[3]`): closed when the
-/// coil voltage `nodes[0]`–`nodes[1]` in `v` is at least `pickup_voltage` in
-/// magnitude, open otherwise and when there is no `v` yet.
-pub(crate) fn relay_contact_resistance(
-    node_map: &NodeMap,
-    nodes: &[String; 4],
-    pickup_voltage: f64,
-    v: Option<&nalgebra::DVector<f64>>,
-) -> f64 {
-    let closed = v.is_some_and(|v| {
-        let at = |n: &String| node_map.index(n).map_or(0.0, |i| v[i]);
-        (at(&nodes[0]) - at(&nodes[1])).abs() >= pickup_voltage
-    });
-    if closed {
-        SWITCH_R_CLOSED
-    } else {
-        SWITCH_R_OPEN
-    }
-}
-
-/// Compute LDR (photoresistor) resistance from light level.
-pub fn ldr_resistance(light_level: f64) -> f64 {
-    rs_ldr_resistance(light_level, &PhotoresistorParams::default())
-}
-
 /// Stamp all components in a circuit into the MNA system.
 ///
-/// Iterates through every component and dispatches to the appropriate
-/// stamping function. Voltage sources are numbered sequentially
-/// (0, 1, 2, ...) in the order they appear in the component list.
+/// Iterates through every component and stamps its DC model. Branch rows
+/// follow the node voltages, numbered in the order the elements that take
+/// them appear in the component list.
 ///
 /// When `v_prev` is `Some`, nonlinear components (diodes, LEDs, BJTs, MOSFETs,
 /// JFETs, IGBTs, ...) are stamped using their companion model evaluated at the
@@ -83,359 +47,25 @@ pub fn stamp_circuit(
     node_map: &NodeMap,
     v_prev: Option<&DVector<f64>>,
 ) -> Result<(), SimError> {
+    let layout = Layout::new(circuit);
     let terminals = Terminals::new(circuit, node_map);
-    stamp_circuit_with(circuit, system, node_map, &terminals, v_prev)
+    stamp_circuit_with(circuit, system, node_map, &layout, &terminals, v_prev)
 }
 
-/// [`stamp_circuit`] with `circuit`'s terminals already resolved, for a
-/// loop that stamps the same circuit many times.
+/// [`stamp_circuit`] with `circuit`'s branch rows numbered and terminals
+/// resolved already, for a loop that stamps the same circuit many times.
 pub(crate) fn stamp_circuit_with(
     circuit: &Circuit,
     system: &mut MnaSystem,
     node_map: &NodeMap,
+    layout: &Layout,
     terminals: &Terminals,
     v_prev: Option<&DVector<f64>>,
 ) -> Result<(), SimError> {
-    let num_nodes = node_map.num_nodes();
-    let mut vsource_index: usize = 0;
-
     for (k, component) in circuit.components.iter().enumerate() {
-        let at = || terminals.pair(k);
-        match component {
-            CircuitElement::SwitchSpdt(SwitchSpdt { id, .. })
-            | CircuitElement::Crystal(Crystal { id, .. })
-            | CircuitElement::FerriteBead(FerriteBead { id, .. }) => {
-                return Err(SimError::InvalidComponent(format!(
-                    "`{id}` is stamped as its parts: pass the circuit through an analysis \
-                     entry point (solve_circuit, solve_transient, …), not stamp_circuit"
-                )));
-            }
-            CircuitElement::Resistor(Resistor { id, resistance, .. }) => {
-                if *resistance <= 0.0 {
-                    return Err(SimError::InvalidResistance(id.clone()));
-                }
-                stamp_resistor_at(system, at(), *resistance);
-            }
-            CircuitElement::VoltageSource(VoltageSource { voltage, .. }) => {
-                let branch = num_nodes + vsource_index;
-                stamp_voltage_source_at(system, at(), *voltage, branch);
-                vsource_index += 1;
-            }
-            CircuitElement::CurrentSource(CurrentSource { current, .. }) => {
-                stamp_current_source_at(system, at(), *current);
-            }
-            CircuitElement::Switch(Switch { nodes, closed, .. }) => {
-                let resistance = if *closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
-                stamp_resistor(system, node_map, nodes, resistance);
-            }
-            // Open-circuit stubs -- simulation added in future phases
-            CircuitElement::Capacitor(Capacitor { .. }) => {}
-            CircuitElement::Inductor(Inductor { .. }) => {}
-            CircuitElement::Battery(Battery {
-                nodes,
-                params,
-                state_of_charge,
-                ..
-            }) => {
-                let (g, i_hist) = crate::battery_state::dc_norton(params, *state_of_charge);
-                stamp_resistor(system, node_map, nodes, 1.0 / g);
-                // The Norton current: −i_hist out of nodes[1] into nodes[0]'s side.
-                if let Some(p) = node_map.index(&nodes[0]) {
-                    system.b[p] -= i_hist;
-                }
-                if let Some(q) = node_map.index(&nodes[1]) {
-                    system.b[q] += i_hist;
-                }
-            }
-            CircuitElement::Diode(Diode {
-                model,
-                nodes,
-                temperature,
-                ..
-            }) => {
-                if let Some(vp) = v_prev {
-                    let params = device_params::diode(model.as_ref(), *temperature);
-                    stamp_diode_companion(system, node_map, nodes, vp, &params);
-                }
-            }
-            CircuitElement::Led(Led {
-                nodes,
-                color,
-                temperature,
-                ..
-            }) => {
-                if let Some(vp) = v_prev {
-                    let params = device_params::led(color, *temperature);
-                    stamp_diode_companion(system, node_map, nodes, vp, &params);
-                }
-            }
-            CircuitElement::Bjt(Bjt {
-                model,
-                nodes,
-                kind,
-                bf,
-                temperature,
-                ..
-            }) => {
-                if let Some(vp) = v_prev {
-                    let params = device_params::bjt(*bf, model.as_ref(), *temperature);
-                    stamp_bjt_companion(system, node_map, nodes, vp, &params, *kind);
-                }
-            }
-            CircuitElement::Mosfet(Mosfet {
-                nodes,
-                kind,
-                params,
-                ..
-            }) => {
-                if let Some(vp) = v_prev {
-                    stamp_mosfet_companion(system, node_map, nodes, vp, params, *kind);
-                }
-            }
-            CircuitElement::Vcvs(Vcvs {
-                nodes,
-                control_nodes,
-                gain,
-                ..
-            }) => {
-                let branch = num_nodes + vsource_index;
-                stamp_vcvs(system, node_map, nodes, control_nodes, *gain, branch);
-                vsource_index += 1;
-            }
-            CircuitElement::Vccs(Vccs {
-                nodes,
-                control_nodes,
-                gm,
-                ..
-            }) => {
-                stamp_vccs(system, node_map, nodes, control_nodes, *gm);
-            }
-            CircuitElement::Ccvs(Ccvs {
-                nodes,
-                control_source,
-                rm,
-                ..
-            }) => {
-                let branch = num_nodes + vsource_index;
-                let ctrl_branch = circuit.vsource_branch_index(control_source);
-                if let Some(cb) = ctrl_branch {
-                    let ctrl_branch_idx = num_nodes + cb;
-                    stamp_ccvs(system, node_map, nodes, *rm, branch, ctrl_branch_idx);
-                }
-                vsource_index += 1;
-            }
-            CircuitElement::Cccs(Cccs {
-                nodes,
-                control_source,
-                alpha,
-                ..
-            }) => {
-                let ctrl_branch = circuit.vsource_branch_index(control_source);
-                if let Some(cb) = ctrl_branch {
-                    let ctrl_branch_idx = num_nodes + cb;
-                    stamp_cccs(system, node_map, nodes, *alpha, ctrl_branch_idx);
-                }
-            }
-            CircuitElement::Behavioural(Behavioural {
-                id,
-                nodes,
-                output,
-                expr,
-            }) => {
-                let branch = num_nodes + vsource_index;
-                // Linear first pass: linearised at all-zero unknowns.
-                let zero;
-                let x = match v_prev {
-                    Some(x) => x,
-                    None => {
-                        zero = DVector::zeros(system.b.len());
-                        &zero
-                    }
-                };
-                stamp_behavioural(
-                    system, circuit, node_map, id, nodes, *output, expr, x, 0.0, branch,
-                )?;
-                vsource_index += component.branch_slots();
-            }
-            CircuitElement::Pushbutton(Pushbutton { nodes, closed, .. }) => {
-                let resistance = if *closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
-                stamp_resistor(system, node_map, nodes, resistance);
-            }
-            CircuitElement::Fuse(Fuse { nodes, blown, .. }) => {
-                // Intact (blown=false): 0.001 Ω (1 mΩ) — negligible drop.
-                // Blown (blown=true):  1e9 Ω — effectively open circuit.
-                let resistance = if *blown { SWITCH_R_OPEN } else { 0.001 };
-                stamp_resistor(system, node_map, nodes, resistance);
-            }
-            CircuitElement::Photoresistor(Photoresistor {
-                nodes, light_level, ..
-            }) => {
-                let resistance = ldr_resistance(*light_level);
-                stamp_resistor(system, node_map, nodes, resistance);
-            }
-            CircuitElement::Potentiometer(Potentiometer {
-                nodes,
-                resistance,
-                position,
-                ..
-            }) => {
-                let pos = position.clamp(0.001, 0.999);
-                let r_top = resistance * pos;
-                let r_bot = resistance * (1.0 - pos);
-                let top_wiper: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
-                let wiper_bot: [String; 2] = [nodes[1].clone(), nodes[2].clone()];
-                stamp_resistor(system, node_map, &top_wiper, r_top);
-                stamp_resistor(system, node_map, &wiper_bot, r_bot);
-            }
-            CircuitElement::Relay(Relay {
-                nodes,
-                coil_resistance,
-                pickup_voltage,
-                inductance,
-                ..
-            }) => {
-                // Coil: passive resistive load
-                let coil_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
-                stamp_resistor(system, node_map, &coil_nodes, *coil_resistance);
-                let _ = inductance; // inductance is handled in transient solver
-                let contact_r = relay_contact_resistance(node_map, nodes, *pickup_voltage, v_prev);
-                let contact_nodes: [String; 2] = [nodes[2].clone(), nodes[3].clone()];
-                stamp_resistor(system, node_map, &contact_nodes, contact_r);
-            }
-            // ZenerDiode: a diode with SPICE breakdown at vz (see zener_model)
-            CircuitElement::ZenerDiode(ZenerDiode {
-                nodes,
-                vz,
-                temperature,
-                ..
-            }) => {
-                if let Some(vp) = v_prev {
-                    let params = device_params::zener_diode(*vz, *temperature);
-                    stamp_diode_companion(system, node_map, nodes, vp, &params);
-                }
-            }
-            // Clamped to its rails: a modelled op-amp or a comparator.
-            CircuitElement::OpAmp(OpAmp { model: Some(_), .. })
-            | CircuitElement::Comparator(Comparator { .. }) => {
-                let branch = num_nodes + vsource_index;
-                if let Some(op) =
-                    crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, branch)
-                {
-                    op.stamp_dc(system, node_map, v_prev);
-                }
-                vsource_index += 2;
-            }
-            // OpAmp: ideal high-gain VCVS (gain=1e5). OUT is relative to circuit ground.
-            CircuitElement::OpAmp(OpAmp { nodes, .. }) => {
-                let branch = num_nodes + vsource_index;
-                let out_nodes: [String; 2] = [nodes[2].clone(), circuit.ground_node.clone()];
-                let ctrl_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
-                stamp_vcvs(system, node_map, &out_nodes, &ctrl_nodes, 1e5, branch);
-                vsource_index += 1;
-            }
-            // Schottky diode — same nonlinear pattern as silicon Diode but with Schottky IS/N
-            CircuitElement::SchottkyDiode(SchottkyDiode {
-                nodes, temperature, ..
-            }) => {
-                if let Some(vp) = v_prev {
-                    let params = device_params::schottky(*temperature);
-                    stamp_diode_companion(system, node_map, nodes, vp, &params);
-                }
-            }
-            // Thermistor — passive resistor, resistance computed from temperature param
-            CircuitElement::Thermistor(Thermistor {
-                nodes, temperature, ..
-            }) => {
-                let r = crate::device_params::thermistor_resistance(*temperature);
-                stamp_resistor(system, node_map, nodes, r);
-            }
-            // Varactor — open circuit in DC; transient handled in stamp_varactor_transient
-            CircuitElement::Varactor(Varactor { nodes, .. }) => {
-                stamp_varactor_dc(system, node_map, nodes);
-            }
-            // IGBT — nonlinear companion model (gate-controlled); NR iteration
-            CircuitElement::Igbt(Igbt { nodes, params, .. }) => {
-                if let Some(vp) = v_prev {
-                    stamp_igbt_companion(system, node_map, nodes, vp, params);
-                }
-            }
-            // JFET — Shockley square-law, NR companion (no branch variable)
-            CircuitElement::Jfet(Jfet {
-                nodes,
-                kind,
-                idss,
-                vp,
-                ..
-            }) => {
-                if let Some(vp_prev) = v_prev {
-                    stamp_jfet_companion(system, node_map, nodes, *kind, *idss, *vp, vp_prev);
-                }
-            }
-            // Transformer at DC: both windings shorted, each a 0 V source on
-            // one of its two branch slots, as `dc_equivalent` has them.
-            CircuitElement::Transformer(Transformer { nodes, .. }) => {
-                let [p1, q1, p2, q2] = nodes.clone();
-                let branch = num_nodes + vsource_index;
-                stamp_voltage_source(system, node_map, &[p1, q1], 0.0, branch);
-                stamp_voltage_source(system, node_map, &[p2, q2], 0.0, branch + 1);
-                vsource_index += 2;
-            }
-            CircuitElement::VoltageRegulator(VoltageRegulator {
-                nodes,
-                voltage,
-                model,
-                ..
-            }) => {
-                let branch = num_nodes + vsource_index;
-                stamp_regulator(system, node_map, nodes, *voltage, model, branch, v_prev);
-                vsource_index += 1;
-            }
-            // Photodiode — diode + photocurrent offset
-            CircuitElement::Photodiode(Photodiode {
-                nodes,
-                irradiance,
-                temperature,
-                ..
-            }) => {
-                if let Some(vp) = v_prev {
-                    let params = device_params::photodiode(*temperature);
-                    let v_a = node_map.index(&nodes[0]).map_or(0.0, |i| vp[i]);
-                    let v_c = node_map.index(&nodes[1]).map_or(0.0, |i| vp[i]);
-                    let v_d = v_a - v_c;
-                    let (g_d, i_eq) =
-                        sindr_devices::photodiode::photodiode_companion(v_d, *irradiance, &params);
-                    // Stamp Norton equivalent: conductance between anode/cathode + current source
-                    let p = node_map.index(&nodes[0]);
-                    let q = node_map.index(&nodes[1]);
-                    if let Some(pi) = p {
-                        system.a[(pi, pi)] += g_d;
-                    }
-                    if let Some(qi) = q {
-                        system.a[(qi, qi)] += g_d;
-                    }
-                    if let (Some(pi), Some(qi)) = (p, q) {
-                        system.a[(pi, qi)] -= g_d;
-                        system.a[(qi, pi)] -= g_d;
-                    }
-                    if let Some(pi) = p {
-                        system.b[pi] -= i_eq;
-                    }
-                    if let Some(qi) = q {
-                        system.b[qi] += i_eq;
-                    }
-                }
-            }
-        }
+        let mut s = DcStamp::new(system, circuit, node_map, layout, terminals, k, v_prev);
+        component.device().stamp_dc(&mut s)?;
     }
-
     Ok(())
 }
 
@@ -530,229 +160,6 @@ pub(crate) fn stamp_voltage_source_at(
     system.b[branch] = voltage;
 }
 
-/// The input voltage and output current a regulator is at in `solution`
-/// (both from its ground pin), or `None` without one.
-pub(crate) fn regulator_state(
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    branch: usize,
-    solution: Option<&DVector<f64>>,
-) -> Option<(f64, f64, f64)> {
-    let x = solution?;
-    let v = |n: &String| node_map.index(n).map_or(0.0, |i| x[i]);
-    let vg = v(&nodes[2]);
-    // The branch unknown is the current into the output pin; the regulator
-    // sources the opposite.
-    Some((v(&nodes[0]) - vg, v(&nodes[1]) - vg, -x[branch]))
-}
-
-/// The linear piece of a regulator's characteristic at `solution`, or the
-/// regulating piece at no load without one (unbounded headroom on the side
-/// of the set voltage, so a negative regulator starts regulating too).
-pub(crate) fn regulator_piece_at(
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    voltage: f64,
-    model: &Option<RegulatorParams>,
-    branch: usize,
-    solution: Option<&DVector<f64>>,
-) -> RegulatorLinear {
-    let params = model.unwrap_or_default();
-    let (vin, iout) = regulator_state(node_map, nodes, branch, solution)
-        .map_or((f64::INFINITY.copysign(voltage), 0.0), |(vin, _, iout)| {
-            (vin, iout)
-        });
-    regulator_piece(&params, voltage, vin, iout)
-}
-
-/// `true` when every regulator in `circuit` is on the same piece of its
-/// characteristic, and of its quiescent-current ramp, at `v_new` as at
-/// `v_prev`, the iterate it was stamped from.
-///
-/// The characteristic is piecewise linear, so a Newton step that lands on
-/// another piece can be within the node tolerance (about 1 mV on a 1 V
-/// node) and still be the solution of the wrong piece. Leaving the 0 V
-/// floor, that stale millivolt across a large output capacitor becomes a
-/// current spike on the next short step.
-pub(crate) fn regulator_pieces_settled(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    num_nodes: usize,
-    v_prev: &DVector<f64>,
-    v_new: &DVector<f64>,
-) -> bool {
-    let mut branch = num_nodes;
-    for component in &circuit.components {
-        if let CircuitElement::VoltageRegulator(VoltageRegulator {
-            nodes,
-            voltage,
-            model,
-            ..
-        }) = component
-        {
-            let at =
-                |x: &DVector<f64>| regulator_pieces_at(node_map, nodes, *voltage, model, branch, x);
-            if at(v_prev) != at(v_new) {
-                return false;
-            }
-        }
-        branch += component.branch_slots();
-    }
-    true
-}
-
-/// The piece of its characteristic, and of its quiescent-current ramp, a
-/// regulator is on at `x`.
-fn regulator_pieces_at(
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    voltage: f64,
-    model: &Option<RegulatorParams>,
-    branch: usize,
-    x: &DVector<f64>,
-) -> (RegulatorLinear, Option<(f64, f64)>) {
-    let piece = regulator_piece_at(node_map, nodes, voltage, model, branch, Some(x));
-    let ramp = model
-        .as_ref()
-        .zip(regulator_state(node_map, nodes, branch, Some(x)))
-        .map(|(params, (vin, _, _))| {
-            sindr_devices::regulator::regulator_quiescent(params, voltage, vin)
-        });
-    (piece, ramp)
-}
-
-/// Shorten a Newton step from `v_prev` to `v_new` so that no regulator
-/// passes more than one edge of its piecewise characteristic. Returns
-/// whether the step was shortened: a shortened iterate is not a Newton
-/// solution, so it must not count as converged.
-///
-/// Each iterate solves the regulators' pieces at `v_prev`, which hold only
-/// up to the first edge along the step. Where a node is held by little else
-/// (the input behind an inductor whose companion conductance is `h/L`,
-/// about 1 µS on a 1 ps step), that solution can lie many volts and every
-/// piece away, and the next iterate's piece throws it back: Newton cycles
-/// between the floor and regulation for ever. Stopping inside the next
-/// piece along the step, as Katzenelson's method for piecewise-linear
-/// networks does, walks the regulator one piece at a time. Halfway to the
-/// next edge keeps it clear of both.
-pub(crate) fn limit_regulator_step(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    num_nodes: usize,
-    v_prev: &DVector<f64>,
-    v_new: &mut DVector<f64>,
-) -> bool {
-    // Fractions of the step at which some regulator that changes piece
-    // crosses an edge.
-    let mut crossings: Vec<f64> = Vec::new();
-    let mut branch = num_nodes;
-    for component in &circuit.components {
-        if let CircuitElement::VoltageRegulator(VoltageRegulator {
-            nodes,
-            voltage,
-            model,
-            ..
-        }) = component
-        {
-            let at =
-                |x: &DVector<f64>| regulator_pieces_at(node_map, nodes, *voltage, model, branch, x);
-            if at(v_prev) != at(v_new) {
-                let params = model.unwrap_or_default();
-                let edges = |x: &DVector<f64>| {
-                    let (vin, _, iout) =
-                        regulator_state(node_map, nodes, branch, Some(x)).unwrap_or_default();
-                    let mut e =
-                        sindr_devices::regulator::regulator_edges(&params, *voltage, vin, iout);
-                    if model.is_none() {
-                        // No quiescent current, so no ramp to cross.
-                        e[3] = f64::INFINITY;
-                        e[4] = f64::INFINITY;
-                    }
-                    e
-                };
-                for (a, b) in edges(v_prev).into_iter().zip(edges(v_new)) {
-                    let side = |e: f64| (e > 0.0, e < 0.0);
-                    if a.is_finite() && b.is_finite() && side(a) != side(b) {
-                        crossings.push(a / (a - b));
-                    }
-                }
-            }
-        }
-        branch += component.branch_slots();
-    }
-    crossings.sort_by(f64::total_cmp);
-    // Edges that meet (the floor and the top of the ramp, both at the
-    // dropout voltage) are crossed together.
-    let first = match crossings.first() {
-        Some(&first) => first,
-        None => return false,
-    };
-    let Some(&next) = crossings.iter().find(|&&c| c > first + 1e-9) else {
-        return false;
-    };
-    let alpha = 0.5 * (first + next);
-    *v_new = v_prev + (&*v_new - v_prev) * alpha;
-    true
-}
-
-/// Stamp a linear regulator `[in, out, gnd]` on the piece of its
-/// characteristic the previous iterate `v_prev` is on.
-///
-/// Branch row: `Vout − Vg = offset + d_vin·(Vin − Vg) + d_iout·Iout`, with
-/// `Iout = −i_branch`. KCL: the output pin takes `i_branch`, the input
-/// gives `Iout + Iq`, and the quiescent current returns through ground
-/// (all mirrored for a negative `voltage`).
-pub(crate) fn stamp_regulator(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    voltage: f64,
-    model: &Option<RegulatorParams>,
-    branch: usize,
-    v_prev: Option<&DVector<f64>>,
-) {
-    let piece = regulator_piece_at(node_map, nodes, voltage, model, branch, v_prev);
-    let input = node_map.index(&nodes[0]);
-    let out = node_map.index(&nodes[1]);
-    let gnd = node_map.index(&nodes[2]);
-    // Quiescent current `iq + g·(Vin − Vg)` from the input to the ground pin,
-    // on the piece of its ramp the previous iterate is on. A negative
-    // regulator's runs the other way: in at the ground pin, out at the
-    // (negative) input.
-    let (iq, g_q) = match model {
-        Some(params) => {
-            let vin = regulator_state(node_map, nodes, branch, v_prev)
-                .map_or(f64::INFINITY.copysign(voltage), |(vin, _, _)| vin);
-            sindr_devices::regulator::regulator_quiescent(params, voltage, vin)
-        }
-        None => (0.0, 0.0),
-    };
-    let mut conductance = |r: Option<usize>, c: Option<usize>, g: f64| {
-        if let (Some(r), Some(c)) = (r, c) {
-            system.a[(r, c)] += g;
-        }
-    };
-    conductance(input, input, g_q);
-    conductance(input, gnd, -g_q);
-    conductance(gnd, input, -g_q);
-    conductance(gnd, gnd, g_q);
-    if let Some(o) = out {
-        system.a[(o, branch)] += 1.0;
-        system.a[(branch, o)] += 1.0;
-    }
-    if let Some(i) = input {
-        system.a[(i, branch)] -= 1.0;
-        system.a[(branch, i)] -= piece.d_vin;
-        system.b[i] -= iq;
-    }
-    if let Some(g) = gnd {
-        system.a[(branch, g)] += piece.d_vin - 1.0;
-        system.b[g] += iq;
-    }
-    system.a[(branch, branch)] += piece.d_iout;
-    system.b[branch] = piece.offset;
-}
-
 /// Stamp an independent current source into the RHS vector.
 ///
 /// Current flows from `nodes[0]` toward `nodes[1]`.
@@ -801,9 +208,22 @@ pub(crate) fn stamp_diode_companion(
     v_prev: &DVector<f64>,
     params: &DiodeParams,
 ) {
-    let p = node_map.index(&nodes[0]); // anode
-    let q = node_map.index(&nodes[1]); // cathode
+    stamp_diode_companion_at(
+        system,
+        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
+        v_prev,
+        params,
+    );
+}
 
+/// [`stamp_diode_companion`] between matrix indices `[anode, cathode]`
+/// (`None` is ground).
+pub(crate) fn stamp_diode_companion_at(
+    system: &mut MnaSystem,
+    [p, q]: [Option<usize>; 2],
+    v_prev: &DVector<f64>,
+    params: &DiodeParams,
+) {
     // Compute diode voltage from operating point
     let v_anode = p.map_or(0.0, |i| v_prev[i]);
     let v_cathode = q.map_or(0.0, |i| v_prev[i]);
@@ -833,307 +253,6 @@ pub(crate) fn stamp_diode_companion(
     }
 }
 
-/// Stamp a BJT Ebers-Moll companion model into the MNA system.
-///
-/// The exact Newton linearisation at the current operating point (from
-/// v_prev): the 3×3 terminal Jacobian from `bjt_terminal_jacobian` (Early
-/// effect included) plus 3 RHS entries.
-///
-/// nodes: [base, collector, emitter].
-/// PNP is handled via polarity multiplier on junction voltages and output currents.
-pub(crate) fn stamp_bjt_companion(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    v_prev: &DVector<f64>,
-    params: &BjtParams,
-    kind: BjtKind,
-) {
-    let b = node_map.index(&nodes[0]); // base
-    let c = node_map.index(&nodes[1]); // collector
-    let e = node_map.index(&nodes[2]); // emitter
-
-    // Get node voltages from previous iteration
-    let vb = b.map_or(0.0, |i| v_prev[i]);
-    let vc = c.map_or(0.0, |i| v_prev[i]);
-    let ve = e.map_or(0.0, |i| v_prev[i]);
-
-    // Apply polarity for PNP
-    let sign = match kind {
-        BjtKind::Npn => 1.0,
-        BjtKind::Pnp => -1.0,
-    };
-    let vbe_eff = sign * (vb - ve);
-    let vbc_eff = sign * (vb - vc);
-
-    // Exact Newton linearisation: the currents and their Jacobian come
-    // from the same large-signal model (Early effect included), so the
-    // stamp is consistent at any bias. The terminal matrix is the same for
-    // NPN and PNP; the polarity only flips the currents.
-    let (ib, ic) = bjt::bjt_terminal_currents(vbe_eff, vbc_eff, params);
-    let jac = bjt::bjt_terminal_jacobian(vbe_eff, vbc_eff, params);
-    let matrix = jac.terminal_matrix();
-    let terminals = [b, c, e];
-    for (row, &r) in terminals.iter().enumerate() {
-        for (col, &k) in terminals.iter().enumerate() {
-            if let (Some(r), Some(k)) = (r, k) {
-                system.a[(r, k)] += matrix[row][col];
-            }
-        }
-    }
-
-    // Norton terms: I(v0) − J·v0 per terminal, in the effective frame,
-    // then back to physical currents.
-    let ib_eq = ib - jac.dib_dvbe * vbe_eff - jac.dib_dvbc * vbc_eff;
-    let ic_eq = ic - jac.dic_dvbe * vbe_eff - jac.dic_dvbc * vbc_eff;
-    let ie_eq = -(ib_eq + ic_eq);
-    for (node, i_eq) in [(b, ib_eq), (c, ic_eq), (e, ie_eq)] {
-        if let Some(n) = node {
-            system.b[n] -= sign * i_eq;
-        }
-    }
-}
-
-/// Stamp a MOSFET companion model into the MNA system.
-///
-/// Linearizes the Level 1 MOSFET model at the current operating point
-/// and stamps the resulting conductances + current sources.
-///
-/// nodes: [gate, drain, source].
-/// PMOS is handled via polarity flip on terminal voltages. The body is tied
-/// to the source.
-pub(crate) fn stamp_mosfet_companion(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    v_prev: &DVector<f64>,
-    params: &MosfetParams,
-    kind: MosfetKind,
-) {
-    let g = node_map.index(&nodes[0]); // gate
-    let d = node_map.index(&nodes[1]); // drain
-    let s = node_map.index(&nodes[2]); // source
-
-    let vg = g.map_or(0.0, |i| v_prev[i]);
-    let vd = d.map_or(0.0, |i| v_prev[i]);
-    let vs = s.map_or(0.0, |i| v_prev[i]);
-
-    // The NMOS-frame voltages the companion was linearised at.
-    let (vgs, vds) = kind.nmos_frame(vg, vd, vs);
-    let comp = crate::device_params::mosfet_op(kind, params, vg, vd, vs);
-
-    // Helper closure
-    let stamp_g = |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {
-        if let (Some(r), Some(c)) = (row, col) {
-            system.a[(r, c)] += val;
-        }
-    };
-
-    // For NMOS: Id flows drain->source, controlled by Vgs and Vds. The body
-    // is tied to the source, so Vbs = 0 and the body effect (gmb) drops out.
-    // Linearized: Id = Id0 + gm*(vgs - Vgs0) + gds*(vds - Vds0)
-    //
-    // G-matrix stamps (3x3 Jacobian):
-    // dId/dVg = gm, dId/dVd = gds, dId/dVs = -(gm + gds)
-    // For drain row (current entering drain):
-    stamp_g(system, d, g, comp.gm);
-    stamp_g(system, d, d, comp.gds);
-    stamp_g(system, d, s, -(comp.gm + comp.gds));
-
-    // Source row (KCL: Is = -Id, so dIs/dX = -dId/dX):
-    stamp_g(system, s, g, -comp.gm);
-    stamp_g(system, s, d, -comp.gds);
-    stamp_g(system, s, s, comp.gm + comp.gds);
-
-    // Gate row: Ig = 0 (no gate current in MOSFET), no stamps needed
-
-    // RHS: companion current sources
-    // I_eq = Id0 - gm*Vgs0 - gds*Vds0
-    let i_eq = comp.id - comp.gm * vgs - comp.gds * vds;
-
-    // Apply PMOS sign correction: physical current flows source->drain
-    let sign = match kind {
-        MosfetKind::Nmos => 1.0,
-        MosfetKind::Pmos => -1.0,
-    };
-
-    let i_rhs = sign * i_eq;
-
-    // Stamp RHS: current enters drain, leaves source
-    if let Some(di) = d {
-        system.b[di] -= i_rhs;
-    }
-    if let Some(si) = s {
-        system.b[si] += i_rhs;
-    }
-}
-
-/// Stamp a varactor in DC analysis: open circuit via very large shunt resistor (1e12 Ω).
-///
-/// In transient analysis, use stamp_varactor_transient instead.
-pub(crate) fn stamp_varactor_dc(system: &mut MnaSystem, node_map: &NodeMap, nodes: &[String; 2]) {
-    // 1e12 Ω shunt = open circuit for practical purposes
-    stamp_resistor(system, node_map, nodes, 1e12);
-}
-
-/// Stamp an IGBT companion model (nonlinear, called each NR iteration).
-///
-/// Linearizes IGBT (MOSFET gate + BJT output) at operating point v_prev:
-/// gm as a gate-controlled current source, g_ce as a C–E conductance.
-/// nodes: [gate, collector, emitter]
-pub(crate) fn stamp_igbt_companion(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    v_prev: &DVector<f64>,
-    params: &sindr_devices::igbt::IgbtParams,
-) {
-    let g = node_map.index(&nodes[0]); // gate
-    let c = node_map.index(&nodes[1]); // collector
-    let e = node_map.index(&nodes[2]); // emitter
-
-    let vg = g.map_or(0.0, |i| v_prev[i]);
-    let vc = c.map_or(0.0, |i| v_prev[i]);
-    let ve = e.map_or(0.0, |i| v_prev[i]);
-    let vge = vg - ve;
-    let vce = vc - ve;
-
-    let comp = sindr_devices::igbt::igbt_companion(vge, vce, params);
-
-    let stamp_g = |system: &mut MnaSystem, row: Option<usize>, col: Option<usize>, val: f64| {
-        if let (Some(r), Some(c)) = (row, col) {
-            system.a[(r, c)] += val;
-        }
-    };
-
-    // Ic = gm·vge + g_ce·vce + i_eq, entering the collector, leaving the emitter.
-    // Collector row: dIc/dVg = gm, dIc/dVc = g_ce, dIc/dVe = −(gm + g_ce)
-    stamp_g(system, c, g, comp.gm);
-    stamp_g(system, c, c, comp.g_ce);
-    stamp_g(system, c, e, -(comp.gm + comp.g_ce));
-    // Emitter row (Ie = −Ic)
-    stamp_g(system, e, g, -comp.gm);
-    stamp_g(system, e, c, -comp.g_ce);
-    stamp_g(system, e, e, comp.gm + comp.g_ce);
-
-    // Stamp companion current source: I_eq from emitter to collector
-    // i_eq = ids - gm*vge - g_ce*vce (companion source value)
-    if let Some(ci) = c {
-        system.b[ci] -= comp.i_eq;
-    }
-    if let Some(ei) = e {
-        system.b[ei] += comp.i_eq;
-    }
-}
-
-/// Stamp a JFET companion model into the MNA system.
-///
-/// Linearizes the Shockley square-law JFET model at the current operating point.
-/// nodes: [gate, drain, source].
-/// P-channel: `jfet_companion` works in the mirrored N-channel frame, and the
-/// Norton current is flipped back to the physical one here.
-pub(crate) fn stamp_jfet_companion(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 3], // [gate, drain, source]
-    kind: JfetKind,
-    idss: f64,
-    vp: f64,
-    v_prev: &nalgebra::DVector<f64>,
-) {
-    let g = node_map.index(&nodes[0]); // gate
-    let d = node_map.index(&nodes[1]); // drain
-    let s = node_map.index(&nodes[2]); // source
-
-    let vg = g.map_or(0.0, |i| v_prev[i]);
-    let vd = d.map_or(0.0, |i| v_prev[i]);
-    let vs = s.map_or(0.0, |i| v_prev[i]);
-
-    let vgs = vg - vs;
-    let vds = vd - vs;
-
-    let c = sindr_devices::jfet::jfet_companion(vgs, vds, kind, idss, vp);
-    // For P-channel, jfet_companion works in the mirrored N-channel frame
-    // (vgs' = −vgs, vds' = −vds) and the physical drain current is −Id'.
-    // Mirroring both the voltages and the current leaves gm and gds as they
-    // are but flips the sign of the Norton term.
-    let i_eq = match kind {
-        JfetKind::NChannel => c.i_eq,
-        JfetKind::PChannel => -c.i_eq,
-    };
-
-    // Stamp drain-source conductance gds
-    if let Some(di) = d {
-        system.a[(di, di)] += c.gds;
-    }
-    if let Some(si) = s {
-        system.a[(si, si)] += c.gds;
-    }
-    if let (Some(di), Some(si)) = (d, s) {
-        system.a[(di, si)] -= c.gds;
-        system.a[(si, di)] -= c.gds;
-    }
-
-    // Stamp VCCS: gm * Vgs = gm * (Vg - Vs)
-    // Current flows drain->source (exits drain, enters source)
-    if let (Some(di), Some(gi)) = (d, g) {
-        system.a[(di, gi)] += c.gm;
-    }
-    if let (Some(di), Some(si)) = (d, s) {
-        system.a[(di, si)] -= c.gm;
-    }
-    if let (Some(si), Some(gi)) = (s, g) {
-        system.a[(si, gi)] -= c.gm;
-    }
-    if let (Some(si2), Some(si)) = (s, s) {
-        system.a[(si2, si)] += c.gm;
-    }
-
-    // Stamp equivalent current source i_eq (flows from source to drain in MNA)
-    // Id = gm*Vgs + gds*Vds + i_eq
-    if let Some(di) = d {
-        system.b[di] -= i_eq;
-    }
-    if let Some(si) = s {
-        system.b[si] += i_eq;
-    }
-}
-
-/// Stamp a coupled-inductor transformer as two branch-current unknowns.
-///
-/// `k1`/`k2` are the MNA rows of the primary and secondary currents, each
-/// flowing from the winding's first terminal to its second. Each winding's
-/// branch row is `V(p) − V(q) + Σ_j z[k][j]·I_j = rhs[k]`, with `z` and `rhs`
-/// from the integration formula (`Integrator::coupled`). For backward Euler,
-/// `z = −L/dt` and `rhs = −(L/dt)·I_prev`, i.e. `V = L·(I − I_prev)/dt`.
-pub(crate) fn stamp_transformer_companion(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 4], // [p1, q1, p2, q2]
-    z: [[f64; 2]; 2],
-    rhs: [f64; 2],
-    k1: usize, // branch row/col index for primary current
-    k2: usize, // branch row/col index for secondary current
-) {
-    let rows = [k1, k2];
-    for (w, &k) in rows.iter().enumerate() {
-        let p = node_map.index(&nodes[2 * w]);
-        let q = node_map.index(&nodes[2 * w + 1]);
-        if let Some(pi) = p {
-            system.a[(pi, k)] += 1.0;
-            system.a[(k, pi)] += 1.0;
-        }
-        if let Some(qi) = q {
-            system.a[(qi, k)] -= 1.0;
-            system.a[(k, qi)] -= 1.0;
-        }
-        for (j, &col) in rows.iter().enumerate() {
-            system.a[(k, col)] += z[w][j];
-        }
-        system.b[k] += rhs[w];
-    }
-}
-
 /// Stamp a Voltage-Controlled Voltage Source (VCVS).
 ///
 /// V_out = mu * V_control
@@ -1148,11 +267,26 @@ pub fn stamp_vcvs(
     gain: f64,
     branch: usize,
 ) {
-    let p = node_map.index(&nodes[0]);
-    let q = node_map.index(&nodes[1]);
-    let cp = node_map.index(&control_nodes[0]);
-    let cq = node_map.index(&control_nodes[1]);
+    stamp_vcvs_at(
+        system,
+        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
+        [
+            node_map.index(&control_nodes[0]),
+            node_map.index(&control_nodes[1]),
+        ],
+        gain,
+        branch,
+    );
+}
 
+/// [`stamp_vcvs`] between matrix indices (`None` is ground).
+pub(crate) fn stamp_vcvs_at(
+    system: &mut MnaSystem,
+    [p, q]: [Option<usize>; 2],
+    [cp, cq]: [Option<usize>; 2],
+    gain: f64,
+    branch: usize,
+) {
     // B submatrix: node rows, branch column
     if let Some(pi) = p {
         system.a[(pi, branch)] += 1.0;
@@ -1177,282 +311,23 @@ pub fn stamp_vcvs(
     // RHS = 0 (no independent voltage)
 }
 
-/// Stamp a Voltage-Controlled Current Source (VCCS).
-///
-/// I_out = gm * V_control
-/// nodes: [from, to] (current flows from->to), control_nodes: [ctrl+, ctrl-]
-pub fn stamp_vccs(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    control_nodes: &[String; 2],
-    gm: f64,
-) {
-    let from = node_map.index(&nodes[0]);
-    let to = node_map.index(&nodes[1]);
-    let cp = node_map.index(&control_nodes[0]);
-    let cq = node_map.index(&control_nodes[1]);
-
-    // I = gm * (V(cp) - V(cq)) flows through the source from `from` to
-    // `to`, as in SPICE's `G n+ n-` and sindr's `CurrentSource`: it leaves
-    // node `from` (+ on its KCL row) and enters node `to` (−).
-    if let (Some(fi), Some(cpi)) = (from, cp) {
-        system.a[(fi, cpi)] += gm;
-    }
-    if let (Some(fi), Some(cqi)) = (from, cq) {
-        system.a[(fi, cqi)] -= gm;
-    }
-    if let (Some(ti), Some(cpi)) = (to, cp) {
-        system.a[(ti, cpi)] -= gm;
-    }
-    if let (Some(ti), Some(cqi)) = (to, cq) {
-        system.a[(ti, cqi)] += gm;
-    }
-}
-
-/// Stamp a Current-Controlled Voltage Source (CCVS).
-///
-/// V_out = rm * I_control
-/// nodes: [out+, out-], rm = transresistance
-///
-/// The controlling current is the branch current of another voltage source.
-pub fn stamp_ccvs(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    rm: f64,
-    branch: usize,
-    ctrl_branch: usize,
-) {
-    let p = node_map.index(&nodes[0]);
-    let q = node_map.index(&nodes[1]);
-
-    // B submatrix
-    if let Some(pi) = p {
-        system.a[(pi, branch)] += 1.0;
-    }
-    if let Some(qi) = q {
-        system.a[(qi, branch)] -= 1.0;
-    }
-
-    // C submatrix: V(p) - V(q) = rm * I_ctrl
-    // branch row: V(p) - V(q) - rm*I_ctrl = 0
-    if let Some(pi) = p {
-        system.a[(branch, pi)] += 1.0;
-    }
-    if let Some(qi) = q {
-        system.a[(branch, qi)] -= 1.0;
-    }
-    system.a[(branch, ctrl_branch)] -= rm;
-}
-
-/// Checks every behavioural expression is finite at the solution `x`.
-///
-/// Newton accepts its last step without stamping it, so a source whose
-/// expression left its domain on that step (`asin` just past 1) would
-/// otherwise be reported at a point where it has no value.
-///
-/// # Errors
-///
-/// [`SimError::NotFinite`] for the first one that isn't.
-pub(crate) fn behavioural_finite_at(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    x: &DVector<f64>,
-    t: f64,
-) -> Result<(), SimError> {
-    for component in &circuit.components {
-        if let CircuitElement::Behavioural(Behavioural { id, expr, .. }) = component {
-            behavioural_linearisation(circuit, node_map, id, expr, x, t)?;
-        }
-    }
-    Ok(())
-}
-
-/// A behavioural source's expression linearised at `x` (the MNA unknowns)
-/// and time `t`: `f(x) ≈ c + Σ jacobian[k].1 · x[jacobian[k].0]`.
-///
-/// `v(n, m)` reads `x[n] − x[m]`, `i(src)` the branch column of `src`,
-/// `time` is `t`.
-///
-/// # Errors
-///
-/// [`SimError::InvalidComponent`] when `i(src)` names no voltage-defined
-/// element, or the expression isn't finite at `x`. An infinite slope at a
-/// finite value is taken as 0.
-pub(crate) fn behavioural_linearisation(
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    id: &str,
-    expr: &crate::expression::Expression,
-    x: &DVector<f64>,
-    t: f64,
-) -> Result<(Vec<(usize, f64)>, f64), SimError> {
-    use crate::expression::Variable;
-    let num_nodes = node_map.num_nodes();
-    let at = |k: usize| x.get(k).copied().unwrap_or(0.0);
-    let mut columns: Vec<Vec<(usize, f64)>> = Vec::with_capacity(expr.variables().len());
-    let mut values = Vec::with_capacity(expr.variables().len());
-    for variable in expr.variables() {
-        let (cols, value) = match variable {
-            Variable::Voltage { node, reference } => {
-                let mut cols = Vec::new();
-                let mut value = 0.0;
-                if let Some(k) = node_map.index(node) {
-                    cols.push((k, 1.0));
-                    value += at(k);
-                }
-                if let Some(k) = reference.as_deref().and_then(|r| node_map.index(r)) {
-                    cols.push((k, -1.0));
-                    value -= at(k);
-                }
-                (cols, value)
-            }
-            Variable::Current { source } => {
-                let branch = circuit.vsource_branch_index(source).ok_or_else(|| {
-                    SimError::InvalidComponent(format!(
-                        "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
-                         element (voltage source, VCVS, CCVS, op-amp, regulator or \
-                         behavioural voltage source)"
-                    ))
-                })?;
-                let k = num_nodes + branch;
-                (vec![(k, 1.0)], at(k))
-            }
-            Variable::Time => (Vec::new(), t),
-        };
-        columns.push(cols);
-        values.push(value);
-    }
-    let mut gradient = vec![0.0; values.len()];
-    let f = expr.evaluate_with_gradient(&values, &mut gradient);
-    // A finite value with an infinite slope (sqrt at 0, say) is stamped
-    // flat for this iteration, so Newton can move off it.
-    for g in &mut gradient {
-        if !g.is_finite() {
-            *g = 0.0;
-        }
-    }
-    if !f.is_finite() {
-        return Err(SimError::NotFinite {
-            component: id.to_string(),
-            expression: expr.to_string(),
-            inputs: expr
-                .variables()
-                .iter()
-                .zip(&values)
-                .map(|(v, x)| format!("{} = {x}", variable_name(v)))
-                .collect::<Vec<_>>()
-                .join(", "),
-        });
-    }
-    let mut jacobian: Vec<(usize, f64)> = Vec::new();
-    for (cols, g) in columns.iter().zip(&gradient) {
-        for (k, coefficient) in cols {
-            match jacobian.iter_mut().find(|(c, _)| c == k) {
-                Some((_, j)) => *j += g * coefficient,
-                None => jacobian.push((*k, g * coefficient)),
-            }
-        }
-    }
-    let c = f - jacobian.iter().map(|(k, j)| j * at(*k)).sum::<f64>();
-    Ok((jacobian, c))
-}
-
-fn variable_name(variable: &crate::expression::Variable) -> String {
-    use crate::expression::Variable;
-    match variable {
-        Variable::Voltage {
-            node,
-            reference: None,
-        } => format!("v({node})"),
-        Variable::Voltage {
-            node,
-            reference: Some(r),
-        } => format!("v({node},{r})"),
-        Variable::Current { source } => format!("i({source})"),
-        Variable::Time => "time".to_string(),
-    }
-}
-
-/// Stamps a behavioural source linearised at `x` and time `t`. A voltage
-/// output takes branch row `branch`; a current output takes none.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn stamp_behavioural(
-    system: &mut MnaSystem,
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    id: &str,
-    nodes: &[String; 2],
-    output: crate::BehaviouralOutput,
-    expr: &crate::expression::Expression,
-    x: &DVector<f64>,
-    t: f64,
-    branch: usize,
-) -> Result<(), SimError> {
-    let (jacobian, c) = behavioural_linearisation(circuit, node_map, id, expr, x, t)?;
-    let p = node_map.index(&nodes[0]);
-    let q = node_map.index(&nodes[1]);
-    match output {
-        crate::BehaviouralOutput::Current => {
-            // Out of n+, into n-: f leaves p, so p's row gets +∂f/∂x.
-            for (k, j) in &jacobian {
-                if let Some(pi) = p {
-                    system.a[(pi, *k)] += j;
-                }
-                if let Some(qi) = q {
-                    system.a[(qi, *k)] -= j;
-                }
-            }
-            if let Some(pi) = p {
-                system.b[pi] -= c;
-            }
-            if let Some(qi) = q {
-                system.b[qi] += c;
-            }
-        }
-        _ => {
-            // V(p) − V(q) − ∇f·x = c.
-            stamp_voltage_source(system, node_map, nodes, c, branch);
-            for (k, j) in &jacobian {
-                system.a[(branch, *k)] -= j;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Stamp a Current-Controlled Current Source (CCCS).
-///
-/// I_out = alpha * I_control
-/// nodes: [from, to] (current flows from->to)
-///
-/// The controlling current is the branch current of another voltage source.
-pub fn stamp_cccs(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    alpha: f64,
-    ctrl_branch: usize,
-) {
-    let from = node_map.index(&nodes[0]);
-    let to = node_map.index(&nodes[1]);
-
-    // I_out = alpha * I_ctrl flows through the source from `from` to `to`,
-    // as in SPICE's `F n+ n-`: it leaves `from` and enters `to`.
-    if let Some(fi) = from {
-        system.a[(fi, ctrl_branch)] += alpha;
-    }
-    if let Some(ti) = to {
-        system.a[(ti, ctrl_branch)] -= alpha;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::circuit::Circuit;
+    use crate::circuit::{Circuit, CircuitElement};
+    use crate::element::bjt::stamp_bjt_companion;
+    use crate::element::igbt::stamp_igbt_companion;
+    use crate::element::jfet::stamp_jfet_companion;
+    use crate::element::mosfet::stamp_mosfet_companion;
+    use crate::element::{
+        Bjt, Capacitor, Crystal, CurrentSource, Diode, FerriteBead, Igbt, Inductor, Jfet, Led,
+        Mosfet, Photodiode, Resistor, SchottkyDiode, Transformer, Varactor, VoltageSource,
+        ZenerDiode,
+    };
     use approx::assert_relative_eq;
+    use sindr_devices::bjt::{BjtKind, BjtParams};
+    use sindr_devices::jfet::JfetKind;
+    use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 
     /// A transformer at DC shorts both windings on its own two branch
     /// rows, and a voltage source after it still gets the next row.
@@ -2698,6 +1573,54 @@ mod tests {
             with_varactor.a[(a, b)] - only_r.a[(a, b)],
             -1e-12,
             max_relative = 1e-12
+        );
+    }
+
+    /// The elements the analyses lower to their parts refuse a direct
+    /// stamp, and a zener stamps the diode companion with its breakdown.
+    #[test]
+    fn direct_stamps_of_lowered_elements() {
+        let nodes = || -> [String; 2] { ["a".into(), "0".into()] };
+        let crystal = CircuitElement::Crystal(Crystal {
+            id: "Y1".into(),
+            nodes: nodes(),
+            params: crate::circuit::CrystalParams::from_datasheet(1e6, 50.0, 5e-12),
+        });
+        let bead = CircuitElement::FerriteBead(FerriteBead {
+            id: "FB1".into(),
+            nodes: nodes(),
+            params: crate::circuit::FerriteBeadParams::from_datasheet(600.0, 0.1),
+        });
+        for element in [crystal, bead] {
+            let circuit = Circuit::new("0", vec![element]);
+            let node_map = NodeMap::from_circuit(&circuit);
+            let mut system = MnaSystem::new(node_map.num_nodes(), 0);
+            let err = stamp_circuit(&circuit, &mut system, &node_map, None).unwrap_err();
+            assert!(err.to_string().contains("stamped as its parts"), "{err}");
+        }
+
+        let zener = Circuit::new(
+            "0",
+            vec![CircuitElement::ZenerDiode(ZenerDiode {
+                id: "Z1".into(),
+                nodes: nodes(),
+                vz: 5.1,
+                temperature: 300.15,
+            })],
+        );
+        let node_map = NodeMap::from_circuit(&zener);
+        let v = DVector::from_element(1, -5.2);
+        let mut system = MnaSystem::new(1, 0);
+        stamp_circuit(&zener, &mut system, &node_map, Some(&v)).unwrap();
+        let mut expected = MnaSystem::new(1, 0);
+        let params = crate::device_params::zener_diode(5.1, 300.15);
+        stamp_diode_companion(&mut expected, &node_map, &nodes(), &v, &params);
+        assert_eq!(system.a[(0, 0)], expected.a[(0, 0)]);
+        assert_eq!(system.b[0], expected.b[0]);
+        assert!(
+            system.a[(0, 0)] > 1e-3,
+            "in breakdown: {}",
+            system.a[(0, 0)]
         );
     }
 }

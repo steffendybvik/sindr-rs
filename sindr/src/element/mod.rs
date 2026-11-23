@@ -12,9 +12,12 @@ use std::fmt::Display;
 use crate::circuit::CircuitElement;
 use crate::error::SimError;
 
-/// What sindr knows about a circuit element apart from its analyses: its
-/// identity and terminals, the extra unknowns and history it takes, and
-/// the values its models refuse.
+use dc_stamp::stamped_as_parts;
+pub(crate) use dc_stamp::DcStamp;
+
+/// What sindr knows about a circuit element: its identity and terminals,
+/// the extra unknowns and history it takes, the values its models refuse,
+/// and its DC stamp.
 ///
 /// Every element struct implements it, and [`CircuitElement::device`]
 /// reaches the one inside an element. The provided methods describe a
@@ -75,6 +78,16 @@ pub(crate) trait Device {
         false
     }
 
+    /// Writes the element's DC model into `s.system`, linearised at
+    /// `s.v_prev` when it depends on the solution.
+    ///
+    /// # Errors
+    ///
+    /// What the device's model rejects at stamp time: a resistor's
+    /// non-positive resistance, a behavioural expression that isn't finite,
+    /// an element that only stamps as its parts.
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError>;
+
     /// Rejects a value the models can't use, naming the component, the
     /// field and the value. Left alone, a 0 K junction divides by zero and
     /// fails much later as a bare [`SimError::InvalidSolution`], and a BJT's
@@ -112,39 +125,40 @@ macro_rules! device_identity {
 }
 
 mod battery;
-mod behavioural;
-mod bjt;
+pub(crate) mod behavioural;
+pub(crate) mod bjt;
 mod capacitor;
-mod cccs;
-mod ccvs;
+pub(crate) mod cccs;
+pub(crate) mod ccvs;
 mod comparator;
 mod crystal;
 mod current_source;
+mod dc_stamp;
 mod diode;
 mod ferrite_bead;
 mod fuse;
-mod igbt;
+pub(crate) mod igbt;
 mod inductor;
-mod jfet;
+pub(crate) mod jfet;
 pub(crate) mod layout;
 mod led;
-mod mosfet;
+pub(crate) mod mosfet;
 mod op_amp;
 mod photodiode;
-mod photoresistor;
+pub(crate) mod photoresistor;
 mod potentiometer;
 mod pushbutton;
-mod relay;
+pub(crate) mod relay;
 mod resistor;
 mod schottky_diode;
 mod switch;
 mod switch_spdt;
 mod thermistor;
-mod transformer;
+pub(crate) mod transformer;
 mod varactor;
-mod vccs;
+pub(crate) mod vccs;
 mod vcvs;
-mod voltage_regulator;
+pub(crate) mod voltage_regulator;
 mod voltage_source;
 mod zener_diode;
 

@@ -1,9 +1,10 @@
 //! An independent voltage source, DC plus an optional waveform.
 
 use crate::error::SimError;
+use crate::stamp::stamp_voltage_source_at;
 use crate::waveform::Waveform;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Independent voltage source. `nodes[0]` is the positive terminal,
 /// `nodes[1]` is the negative terminal.
@@ -26,6 +27,12 @@ pub struct VoltageSource {
 
 impl Device for VoltageSource {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let nodes = s.nodes();
+        stamp_voltage_source_at(s.system, nodes, self.voltage, s.branch);
+        Ok(())
+    }
 
     fn branches(&self) -> usize {
         1

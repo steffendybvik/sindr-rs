@@ -1,6 +1,9 @@
 //! A varactor: a diode used for its voltage-dependent junction capacitance.
 
-use super::Device;
+use crate::error::SimError;
+use crate::stamp::stamp_resistor_at;
+
+use super::{DcStamp, Device};
 
 /// Varactor diode: voltage-dependent junction capacitance.
 /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
@@ -20,6 +23,13 @@ pub struct Varactor {
 
 impl Device for Varactor {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        // Open at DC: a 1e12 Ω shunt, open for practical purposes.
+        let nodes = s.nodes();
+        stamp_resistor_at(s.system, nodes, 1e12);
+        Ok(())
+    }
 
     fn capacitor_histories(&self) -> usize {
         1

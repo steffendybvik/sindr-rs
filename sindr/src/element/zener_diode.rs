@@ -1,8 +1,10 @@
 //! A zener diode: a silicon diode with reverse breakdown at `vz`.
 
+use crate::device_params;
 use crate::error::SimError;
+use crate::stamp::stamp_diode_companion_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Zener diode between two nodes: a silicon diode with SPICE reverse
 /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
@@ -34,6 +36,15 @@ pub struct ZenerDiode {
 
 impl Device for ZenerDiode {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        if let Some(vp) = s.v_prev {
+            let params = device_params::zener_diode(self.vz, self.temperature);
+            let nodes = s.nodes();
+            stamp_diode_companion_at(s.system, nodes, vp, &params);
+        }
+        Ok(())
+    }
 
     fn is_nonlinear(&self) -> bool {
         true

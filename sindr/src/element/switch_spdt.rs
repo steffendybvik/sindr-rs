@@ -2,8 +2,9 @@
 //! switches before solving.
 
 use crate::circuit::SpdtPosition;
+use crate::error::SimError;
 
-use super::Device;
+use super::{stamped_as_parts, DcStamp, Device};
 
 /// Single-pole double-throw switch: `nodes: [common, a, b]`. The common
 /// terminal connects to `a` or `b` as [`Switch`] does
@@ -26,4 +27,8 @@ pub struct SwitchSpdt {
 
 impl Device for SwitchSpdt {
     device_identity!();
+
+    fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
+        Err(stamped_as_parts(&self.id))
+    }
 }

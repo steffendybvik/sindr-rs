@@ -1,6 +1,9 @@
 //! A two-terminal switch, open or closed.
 
-use super::Device;
+use crate::error::SimError;
+use crate::stamp::{stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
+
+use super::{DcStamp, Device};
 
 /// Switch between two nodes. Modeled as a resistor with very low (closed)
 /// or very high (open) resistance for DC analysis.
@@ -17,4 +20,15 @@ pub struct Switch {
 
 impl Device for Switch {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let resistance = if self.closed {
+            SWITCH_R_CLOSED
+        } else {
+            SWITCH_R_OPEN
+        };
+        let nodes = s.nodes();
+        stamp_resistor_at(s.system, nodes, resistance);
+        Ok(())
+    }
 }

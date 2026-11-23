@@ -1,8 +1,9 @@
 //! An NTC thermistor: a resistance set by its temperature.
 
 use crate::error::SimError;
+use crate::stamp::stamp_resistor_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// NTC thermistor: resistance varies with temperature (passive, no NR).
 /// nodes: [n1, n2]
@@ -20,6 +21,13 @@ pub struct Thermistor {
 
 impl Device for Thermistor {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let r = crate::device_params::thermistor_resistance(self.temperature);
+        let nodes = s.nodes();
+        stamp_resistor_at(s.system, nodes, r);
+        Ok(())
+    }
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).positive("temperature", self.temperature, " K")

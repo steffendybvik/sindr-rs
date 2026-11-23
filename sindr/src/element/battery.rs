@@ -2,8 +2,9 @@
 //! resistance and an optional RC pair.
 
 use crate::error::SimError;
+use crate::stamp::stamp_resistor_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// A battery: open-circuit voltage by state of charge behind a series
 /// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
@@ -30,6 +31,20 @@ pub struct Battery {
 
 impl Device for Battery {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let (g, i_hist) = crate::battery_state::dc_norton(&self.params, self.state_of_charge);
+        let [p, q] = s.nodes();
+        stamp_resistor_at(s.system, [p, q], 1.0 / g);
+        // The Norton current: −i_hist out of nodes[1] into nodes[0]'s side.
+        if let Some(p) = p {
+            s.system.b[p] -= i_hist;
+        }
+        if let Some(q) = q {
+            s.system.b[q] += i_hist;
+        }
+        Ok(())
+    }
 
     fn is_reactive(&self) -> bool {
         self.params.rc.is_some()

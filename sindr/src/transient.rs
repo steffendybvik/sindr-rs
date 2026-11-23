@@ -20,6 +20,14 @@ use sindr_devices::mosfet::MosfetKind;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
+use crate::element::bjt::stamp_bjt_companion;
+use crate::element::cccs::stamp_cccs;
+use crate::element::ccvs::stamp_ccvs;
+use crate::element::igbt::stamp_igbt_companion;
+use crate::element::jfet::stamp_jfet_companion;
+use crate::element::mosfet::stamp_mosfet_companion;
+use crate::element::transformer::stamp_transformer_companion;
+use crate::element::vccs::stamp_vccs;
 use crate::error::{SimError, SolvePoint};
 pub use crate::integration::IntegrationMethod;
 use crate::integration::{History, Integrator};
@@ -32,9 +40,7 @@ use crate::results::{
 };
 use crate::solver::SolverOptions;
 use crate::stamp::{
-    stamp_bjt_companion, stamp_cccs, stamp_ccvs, stamp_current_source_at, stamp_diode_companion,
-    stamp_igbt_companion, stamp_jfet_companion, stamp_mosfet_companion, stamp_resistor,
-    stamp_resistor_at, stamp_transformer_companion, stamp_vccs, stamp_vcvs,
+    stamp_current_source_at, stamp_diode_companion, stamp_resistor, stamp_resistor_at, stamp_vcvs,
     stamp_voltage_source_at, SWITCH_R_CLOSED, SWITCH_R_OPEN,
 };
 use crate::thermal::Heated;
@@ -418,7 +424,7 @@ fn stamp_circuit_transient(
                 expr,
             }) => {
                 let branch = num_nodes + vsource_index;
-                crate::stamp::stamp_behavioural(
+                crate::element::behavioural::stamp_behavioural(
                     system, circuit, node_map, id, nodes, *output, expr, v_prev, t, branch,
                 )?;
                 vsource_index += component.branch_slots();
@@ -434,7 +440,7 @@ fn stamp_circuit_transient(
             CircuitElement::Photoresistor(Photoresistor {
                 nodes, light_level, ..
             }) => {
-                let resistance = crate::stamp::ldr_resistance(*light_level);
+                let resistance = crate::element::photoresistor::ldr_resistance(*light_level);
                 stamp_resistor(system, node_map, nodes, resistance);
             }
             CircuitElement::Potentiometer(Potentiometer {
@@ -591,7 +597,7 @@ fn stamp_circuit_transient(
                 ..
             }) => {
                 let branch = num_nodes + vsource_index;
-                crate::stamp::stamp_regulator(
+                crate::element::voltage_regulator::stamp_regulator(
                     system,
                     node_map,
                     nodes,
@@ -958,7 +964,7 @@ fn extract_timestep_results(
                 nodes,
                 light_level,
             }) => {
-                let resistance = crate::stamp::ldr_resistance(*light_level);
+                let resistance = crate::element::photoresistor::ldr_resistance(*light_level);
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v = vp - vq;
@@ -2816,7 +2822,7 @@ impl<'a> StepSolver<'a> {
                 newton_raphson::apply_voltage_limiting(&v_new, &v_prev, &self.diode_info);
             let igbt_limited =
                 newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &self.igbt_info);
-            let regulator_limited = crate::stamp::limit_regulator_step(
+            let regulator_limited = crate::element::voltage_regulator::limit_regulator_step(
                 self.circuit,
                 self.node_map,
                 self.num_nodes,
@@ -2833,7 +2839,7 @@ impl<'a> StepSolver<'a> {
                     &self.diode_info,
                     self.opts,
                 )
-                && crate::stamp::regulator_pieces_settled(
+                && crate::element::voltage_regulator::regulator_pieces_settled(
                     self.circuit,
                     self.node_map,
                     self.num_nodes,
@@ -2841,7 +2847,12 @@ impl<'a> StepSolver<'a> {
                     &v_limited,
                 )
             {
-                crate::stamp::behavioural_finite_at(self.circuit, self.node_map, &v_limited, t)?;
+                crate::element::behavioural::behavioural_finite_at(
+                    self.circuit,
+                    self.node_map,
+                    &v_limited,
+                    t,
+                )?;
                 return Ok(v_limited);
             }
             last_step = newton_raphson::max_node_step(&v_prev, &v_limited, self.num_nodes);

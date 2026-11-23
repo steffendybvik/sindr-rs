@@ -4,8 +4,10 @@
 
 use crate::circuit::OpAmpModel;
 use crate::error::SimError;
+use crate::op_amp::{OpAmpStamp, Pins};
+use crate::stamp::stamp_vcvs_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Op-amp, output referred to ground.
 ///
@@ -40,6 +42,22 @@ pub struct OpAmp {
 
 impl Device for OpAmp {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let nodes = s.nodes();
+        let ground = s.node_map.index(&s.circuit.ground_node);
+        match OpAmpStamp::of_op_amp(self, &s.circuit.ground_node, s.branch) {
+            // Clamped to its rails.
+            Some(op) => op.stamp_dc_at(s.system, &Pins { nodes, ground }, s.v_prev),
+            // An ideal high-gain VCVS (gain 1e5), its output from the
+            // circuit's ground.
+            None => {
+                let [plus, minus, out] = nodes;
+                stamp_vcvs_at(s.system, [out, ground], [plus, minus], 1e5, s.branch);
+            }
+        }
+        Ok(())
+    }
 
     /// The macromodel adds its gain-stage voltage after the output current.
     fn branches(&self) -> usize {

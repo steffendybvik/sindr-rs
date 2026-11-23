@@ -16,9 +16,12 @@ use sindr_devices::diode::{self, GMIN};
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
+use crate::element::behavioural::behavioural_finite_at;
+use crate::element::layout::Layout;
+use crate::element::voltage_regulator::{limit_regulator_step, regulator_pieces_settled};
 use crate::error::{SimError, SolvePoint};
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
+use crate::node_map::{NodeMap, Terminals};
 use crate::results::{self, ConvergenceAid, SimulationResult};
 use crate::solver::SolverOptions;
 use crate::stamp;
@@ -312,7 +315,8 @@ fn nr_inner(
 
     let diode_info = collect_diode_info(circuit, node_map);
     let igbt_info = collect_igbt_info(circuit, node_map);
-    let terminals = crate::node_map::Terminals::new(circuit, node_map);
+    let layout = Layout::new(circuit);
+    let terminals = Terminals::new(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
     let mut last_step = (f64::INFINITY, None);
     // The iterate `v_prev` stepped from, to shorten a step that lands where
@@ -329,11 +333,19 @@ fn nr_inner(
                 circuit,
                 &mut system,
                 node_map,
+                (&layout, &terminals),
                 &v_prev,
                 (num_nodes, num_vsources),
             )
         } else {
-            stamp::stamp_circuit_with(circuit, &mut system, node_map, &terminals, Some(&v_prev))
+            stamp::stamp_circuit_with(
+                circuit,
+                &mut system,
+                node_map,
+                &layout,
+                &terminals,
+                Some(&v_prev),
+            )
         };
         let solved = stamped.and_then(|()| {
             // Add Gmin shunts (default GMIN floor + any homotopy extra).
@@ -381,7 +393,7 @@ fn nr_inner(
         let mut v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
         let igbt_limited = apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
         let regulator_limited =
-            stamp::limit_regulator_step(circuit, node_map, num_nodes, &v_prev, &mut v_limited);
+            limit_regulator_step(circuit, node_map, num_nodes, &v_prev, &mut v_limited);
 
         if debug_nr && _iteration < 30 {
             eprintln!(
@@ -396,9 +408,9 @@ fn nr_inner(
         if !igbt_limited
             && !regulator_limited
             && converged(&v_prev, &v_limited, num_nodes, &diode_info, opts)
-            && stamp::regulator_pieces_settled(circuit, node_map, num_nodes, &v_prev, &v_limited)
+            && regulator_pieces_settled(circuit, node_map, num_nodes, &v_prev, &v_limited)
         {
-            stamp::behavioural_finite_at(circuit, node_map, &v_limited, 0.0)?;
+            behavioural_finite_at(circuit, node_map, &v_limited, 0.0)?;
             let result = results::extract_results(circuit, node_map, &v_limited, num_nodes);
             return Ok((result, v_limited));
         }
@@ -422,18 +434,26 @@ fn nr_inner(
 /// Stamps `circuit` at the starting guess. A behavioural source whose
 /// expression isn't finite there (`ln` of a node that starts at 0 V) is
 /// left out of this first iteration, so the rest of the circuit moves its
-/// inputs to where it is.
+/// inputs to where it is. Switching one off changes only its expression,
+/// so `circuit`'s layout and terminals hold for the copy too.
 fn stamp_first(
     circuit: &Circuit,
     system: &mut MnaSystem,
     node_map: &NodeMap,
+    (layout, terminals): (&Layout, &Terminals),
     v: &DVector<f64>,
     (num_nodes, num_vsources): (usize, usize),
 ) -> Result<(), SimError> {
     let mut off: Option<Circuit> = None;
     loop {
-        let stamped =
-            stamp::stamp_circuit(off.as_ref().unwrap_or(circuit), system, node_map, Some(v));
+        let stamped = stamp::stamp_circuit_with(
+            off.as_ref().unwrap_or(circuit),
+            system,
+            node_map,
+            layout,
+            terminals,
+            Some(v),
+        );
         match stamped {
             Err(SimError::NotFinite { component, .. })
                 if switch_off(off.get_or_insert_with(|| circuit.clone()), &component) =>

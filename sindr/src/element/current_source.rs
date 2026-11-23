@@ -1,9 +1,10 @@
 //! An independent current source, DC plus an optional waveform.
 
 use crate::error::SimError;
+use crate::stamp::stamp_current_source_at;
 use crate::waveform::Waveform;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Independent current source. Current flows through it from `nodes[0]`
 /// to `nodes[1]`: drawn out of `nodes[0]` and pushed into `nodes[1]`, as
@@ -27,6 +28,12 @@ pub struct CurrentSource {
 
 impl Device for CurrentSource {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let nodes = s.nodes();
+        stamp_current_source_at(s.system, nodes, self.current);
+        Ok(())
+    }
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).finite("current", self.current, " A")

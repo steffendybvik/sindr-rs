@@ -1,6 +1,9 @@
 //! A momentary pushbutton, pressed or released.
 
-use super::Device;
+use crate::error::SimError;
+use crate::stamp::{stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
+
+use super::{DcStamp, Device};
 
 /// Pushbutton (momentary switch): identical behaviour to Switch.
 /// When closed = true, current flows; when false, open circuit.
@@ -17,4 +20,15 @@ pub struct Pushbutton {
 
 impl Device for Pushbutton {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let resistance = if self.closed {
+            SWITCH_R_CLOSED
+        } else {
+            SWITCH_R_OPEN
+        };
+        let nodes = s.nodes();
+        stamp_resistor_at(s.system, nodes, resistance);
+        Ok(())
+    }
 }

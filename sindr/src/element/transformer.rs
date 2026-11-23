@@ -1,8 +1,11 @@
 //! A transformer: two coupled windings, linear or with a saturating core.
 
 use crate::error::SimError;
+use crate::mna::MnaSystem;
+use crate::node_map::NodeMap;
+use crate::stamp::stamp_voltage_source_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Ideal transformer with coupled inductors.
 ///
@@ -56,6 +59,15 @@ pub struct Transformer {
 
 impl Device for Transformer {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        // Both windings shorted, each a 0 V source on one of its two branch
+        // rows, as `dc_equivalent` has them.
+        let [p1, q1, p2, q2] = s.nodes();
+        stamp_voltage_source_at(s.system, [p1, q1], 0.0, s.branch);
+        stamp_voltage_source_at(s.system, [p2, q2], 0.0, s.branch + 1);
+        Ok(())
+    }
 
     /// One winding current each, primary then secondary.
     fn branches(&self) -> usize {
@@ -111,4 +123,39 @@ impl Device for Transformer {
 #[cfg(feature = "serde")]
 fn default_coupling() -> f64 {
     0.999
+}
+
+/// Stamp a coupled-inductor transformer as two branch-current unknowns.
+///
+/// `k1`/`k2` are the MNA rows of the primary and secondary currents, each
+/// flowing from the winding's first terminal to its second. Each winding's
+/// branch row is `V(p) − V(q) + Σ_j z[k][j]·I_j = rhs[k]`, with `z` and `rhs`
+/// from the integration formula (`Integrator::coupled`). For backward Euler,
+/// `z = −L/dt` and `rhs = −(L/dt)·I_prev`, i.e. `V = L·(I − I_prev)/dt`.
+pub(crate) fn stamp_transformer_companion(
+    system: &mut MnaSystem,
+    node_map: &NodeMap,
+    nodes: &[String; 4], // [p1, q1, p2, q2]
+    z: [[f64; 2]; 2],
+    rhs: [f64; 2],
+    k1: usize, // branch row/col index for primary current
+    k2: usize, // branch row/col index for secondary current
+) {
+    let rows = [k1, k2];
+    for (w, &k) in rows.iter().enumerate() {
+        let p = node_map.index(&nodes[2 * w]);
+        let q = node_map.index(&nodes[2 * w + 1]);
+        if let Some(pi) = p {
+            system.a[(pi, k)] += 1.0;
+            system.a[(k, pi)] += 1.0;
+        }
+        if let Some(qi) = q {
+            system.a[(qi, k)] -= 1.0;
+            system.a[(k, qi)] -= 1.0;
+        }
+        for (j, &col) in rows.iter().enumerate() {
+            system.a[(k, col)] += z[w][j];
+        }
+        system.b[k] += rhs[w];
+    }
 }

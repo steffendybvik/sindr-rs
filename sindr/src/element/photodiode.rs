@@ -1,8 +1,9 @@
 //! A photodiode: a junction diode in parallel with a photocurrent.
 
+use crate::device_params;
 use crate::error::SimError;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Photodiode: diode + photocurrent source driven by irradiance.
 /// nodes: [anode, cathode]
@@ -28,6 +29,39 @@ pub struct Photodiode {
 
 impl Device for Photodiode {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let Some(vp) = s.v_prev else {
+            return Ok(());
+        };
+        let params = device_params::photodiode(self.temperature);
+        let [p, q] = s.nodes();
+        let v_a = p.map_or(0.0, |i| vp[i]);
+        let v_c = q.map_or(0.0, |i| vp[i]);
+        let v_d = v_a - v_c;
+        let (g_d, i_eq) =
+            sindr_devices::photodiode::photodiode_companion(v_d, self.irradiance, &params);
+        // Norton equivalent: conductance between anode and cathode, and a
+        // current source.
+        let system = &mut *s.system;
+        if let Some(pi) = p {
+            system.a[(pi, pi)] += g_d;
+        }
+        if let Some(qi) = q {
+            system.a[(qi, qi)] += g_d;
+        }
+        if let (Some(pi), Some(qi)) = (p, q) {
+            system.a[(pi, qi)] -= g_d;
+            system.a[(qi, pi)] -= g_d;
+        }
+        if let Some(pi) = p {
+            system.b[pi] -= i_eq;
+        }
+        if let Some(qi) = q {
+            system.b[qi] += i_eq;
+        }
+        Ok(())
+    }
 
     fn is_nonlinear(&self) -> bool {
         true

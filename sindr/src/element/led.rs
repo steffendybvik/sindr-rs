@@ -1,8 +1,10 @@
 //! A light-emitting diode, its forward drop set by its colour.
 
+use crate::device_params;
 use crate::error::SimError;
+use crate::stamp::stamp_diode_companion_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// LED. `nodes: [anode, cathode]`. Forward voltage drop depends on
 /// `color` (e.g. `"red"` ≈ 1.8 V, `"blue"` ≈ 3.2 V).
@@ -29,6 +31,15 @@ pub struct Led {
 
 impl Device for Led {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        if let Some(vp) = s.v_prev {
+            let params = device_params::led(&self.color, self.temperature);
+            let nodes = s.nodes();
+            stamp_diode_companion_at(s.system, nodes, vp, &params);
+        }
+        Ok(())
+    }
 
     fn is_nonlinear(&self) -> bool {
         true

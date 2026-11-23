@@ -1,9 +1,11 @@
 //! A junction diode with a SPICE diode model.
 
 use crate::circuit::DiodeModel;
+use crate::device_params;
 use crate::error::SimError;
+use crate::stamp::stamp_diode_companion_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Diode (Shockley model, silicon unless `model` says otherwise).
 /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
@@ -33,6 +35,15 @@ pub struct Diode {
 
 impl Device for Diode {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        if let Some(vp) = s.v_prev {
+            let params = device_params::diode(self.model.as_ref(), self.temperature);
+            let nodes = s.nodes();
+            stamp_diode_companion_at(s.system, nodes, vp, &params);
+        }
+        Ok(())
+    }
 
     fn is_nonlinear(&self) -> bool {
         true

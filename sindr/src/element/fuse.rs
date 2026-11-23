@@ -1,8 +1,9 @@
 //! A fuse: a small resistance, or open once blown.
 
 use crate::error::SimError;
+use crate::stamp::{stamp_resistor_at, SWITCH_R_OPEN};
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Fuse between two nodes.
 ///
@@ -30,6 +31,15 @@ pub struct Fuse {
 
 impl Device for Fuse {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        // Intact (blown=false): 0.001 Ω (1 mΩ) — negligible drop.
+        // Blown (blown=true):  1e9 Ω — effectively open circuit.
+        let resistance = if self.blown { SWITCH_R_OPEN } else { 0.001 };
+        let nodes = s.nodes();
+        stamp_resistor_at(s.system, nodes, resistance);
+        Ok(())
+    }
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).positive("rating", self.rating, " A")

@@ -1,8 +1,9 @@
 //! A potentiometer: two resistors split at the wiper.
 
 use crate::error::SimError;
+use crate::stamp::stamp_resistor_at;
 
-use super::{Check, Device};
+use super::{Check, DcStamp, Device};
 
 /// Potentiometer: 3-terminal voltage divider.
 /// nodes: [top, wiper, bottom]
@@ -22,6 +23,16 @@ pub struct Potentiometer {
 
 impl Device for Potentiometer {
     device_identity!();
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let pos = self.position.clamp(0.001, 0.999);
+        let r_top = self.resistance * pos;
+        let r_bot = self.resistance * (1.0 - pos);
+        let [top, wiper, bottom] = s.nodes();
+        stamp_resistor_at(s.system, [top, wiper], r_top);
+        stamp_resistor_at(s.system, [wiper, bottom], r_bot);
+        Ok(())
+    }
 
     /// The model clamps the wiper position into range, so only a
     /// non-finite position is refused.
