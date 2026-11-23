@@ -582,116 +582,17 @@ pub enum CircuitElement {
 impl CircuitElement {
     /// Returns a reference to the node array for this component.
     pub fn nodes(&self) -> &[String] {
-        match self {
-            CircuitElement::Resistor(Resistor { nodes, .. }) => nodes,
-            CircuitElement::VoltageSource(VoltageSource { nodes, .. }) => nodes,
-            CircuitElement::CurrentSource(CurrentSource { nodes, .. }) => nodes,
-            CircuitElement::Switch(Switch { nodes, .. }) => nodes,
-            CircuitElement::Capacitor(Capacitor { nodes, .. }) => nodes,
-            CircuitElement::Inductor(Inductor { nodes, .. }) => nodes,
-            CircuitElement::Diode(Diode { nodes, .. }) => nodes,
-            CircuitElement::Led(Led { nodes, .. }) => nodes,
-            CircuitElement::Bjt(Bjt { nodes, .. }) => nodes,
-            CircuitElement::Mosfet(Mosfet { nodes, .. }) => nodes,
-            CircuitElement::Jfet(Jfet { nodes, .. }) => nodes,
-            CircuitElement::Vcvs(Vcvs { nodes, .. }) => nodes,
-            CircuitElement::Vccs(Vccs { nodes, .. }) => nodes,
-            CircuitElement::Ccvs(Ccvs { nodes, .. }) => nodes,
-            CircuitElement::Cccs(Cccs { nodes, .. }) => nodes,
-            CircuitElement::Pushbutton(Pushbutton { nodes, .. }) => nodes,
-            CircuitElement::Relay(Relay { nodes, .. }) => nodes,
-            CircuitElement::Photoresistor(Photoresistor { nodes, .. }) => nodes,
-            CircuitElement::Potentiometer(Potentiometer { nodes, .. }) => nodes,
-            CircuitElement::ZenerDiode(ZenerDiode { nodes, .. }) => nodes,
-            CircuitElement::OpAmp(OpAmp { nodes, .. }) => nodes,
-            CircuitElement::Comparator(Comparator { nodes, .. }) => nodes,
-            CircuitElement::SchottkyDiode(SchottkyDiode { nodes, .. }) => nodes,
-            CircuitElement::Thermistor(Thermistor { nodes, .. }) => nodes,
-            CircuitElement::Battery(Battery { nodes, .. }) => nodes,
-            CircuitElement::Photodiode(Photodiode { nodes, .. }) => nodes,
-            CircuitElement::Varactor(Varactor { nodes, .. }) => nodes,
-            CircuitElement::Igbt(Igbt { nodes, .. }) => nodes,
-            CircuitElement::Transformer(Transformer { nodes, .. }) => nodes,
-            CircuitElement::Fuse(Fuse { nodes, .. }) => nodes,
-            CircuitElement::VoltageRegulator(VoltageRegulator { nodes, .. }) => nodes,
-            CircuitElement::SwitchSpdt(SwitchSpdt { nodes, .. }) => nodes,
-            CircuitElement::Crystal(Crystal { nodes, .. }) => nodes,
-            CircuitElement::FerriteBead(FerriteBead { nodes, .. }) => nodes,
-            CircuitElement::Behavioural(Behavioural { nodes, .. }) => nodes,
-        }
+        self.device().nodes()
     }
 
     /// Returns all node names referenced by this component, including control nodes.
     pub fn all_nodes(&self) -> Vec<&String> {
-        match self {
-            CircuitElement::Vcvs(Vcvs {
-                nodes,
-                control_nodes,
-                ..
-            }) => {
-                vec![&nodes[0], &nodes[1], &control_nodes[0], &control_nodes[1]]
-            }
-            CircuitElement::Vccs(Vccs {
-                nodes,
-                control_nodes,
-                ..
-            }) => {
-                vec![&nodes[0], &nodes[1], &control_nodes[0], &control_nodes[1]]
-            }
-            CircuitElement::Ccvs(Ccvs { nodes, .. }) => vec![&nodes[0], &nodes[1]],
-            CircuitElement::Cccs(Cccs { nodes, .. }) => vec![&nodes[0], &nodes[1]],
-            CircuitElement::Behavioural(Behavioural { nodes, expr, .. }) => {
-                let mut all: Vec<&String> = nodes.iter().collect();
-                for node in expr.nodes() {
-                    if !all.contains(&node) {
-                        all.push(node);
-                    }
-                }
-                all
-            }
-            _ => self.nodes().iter().collect(),
-        }
+        self.device().all_nodes()
     }
 
     /// Returns the component identifier.
     pub fn id(&self) -> &str {
-        match self {
-            CircuitElement::Resistor(Resistor { id, .. }) => id,
-            CircuitElement::VoltageSource(VoltageSource { id, .. }) => id,
-            CircuitElement::CurrentSource(CurrentSource { id, .. }) => id,
-            CircuitElement::Switch(Switch { id, .. }) => id,
-            CircuitElement::Capacitor(Capacitor { id, .. }) => id,
-            CircuitElement::Inductor(Inductor { id, .. }) => id,
-            CircuitElement::Diode(Diode { id, .. }) => id,
-            CircuitElement::Led(Led { id, .. }) => id,
-            CircuitElement::Bjt(Bjt { id, .. }) => id,
-            CircuitElement::Mosfet(Mosfet { id, .. }) => id,
-            CircuitElement::Jfet(Jfet { id, .. }) => id,
-            CircuitElement::Vcvs(Vcvs { id, .. }) => id,
-            CircuitElement::Vccs(Vccs { id, .. }) => id,
-            CircuitElement::Ccvs(Ccvs { id, .. }) => id,
-            CircuitElement::Cccs(Cccs { id, .. }) => id,
-            CircuitElement::Pushbutton(Pushbutton { id, .. }) => id,
-            CircuitElement::Relay(Relay { id, .. }) => id,
-            CircuitElement::Photoresistor(Photoresistor { id, .. }) => id,
-            CircuitElement::Potentiometer(Potentiometer { id, .. }) => id,
-            CircuitElement::ZenerDiode(ZenerDiode { id, .. }) => id,
-            CircuitElement::OpAmp(OpAmp { id, .. }) => id,
-            CircuitElement::Comparator(Comparator { id, .. }) => id,
-            CircuitElement::SchottkyDiode(SchottkyDiode { id, .. }) => id,
-            CircuitElement::Thermistor(Thermistor { id, .. }) => id,
-            CircuitElement::Battery(Battery { id, .. }) => id,
-            CircuitElement::Photodiode(Photodiode { id, .. }) => id,
-            CircuitElement::Varactor(Varactor { id, .. }) => id,
-            CircuitElement::Igbt(Igbt { id, .. }) => id,
-            CircuitElement::Transformer(Transformer { id, .. }) => id,
-            CircuitElement::Fuse(Fuse { id, .. }) => id,
-            CircuitElement::VoltageRegulator(VoltageRegulator { id, .. }) => id,
-            CircuitElement::SwitchSpdt(SwitchSpdt { id, .. }) => id,
-            CircuitElement::Crystal(Crystal { id, .. }) => id,
-            CircuitElement::FerriteBead(FerriteBead { id, .. }) => id,
-            CircuitElement::Behavioural(Behavioural { id, .. }) => id,
-        }
+        self.device().id()
     }
 
     /// Extra MNA unknowns the element adds after the node voltages: one
@@ -699,103 +600,17 @@ impl CircuitElement {
     /// (one per winding), and two for an op-amp with an [`OpAmpModel`] or a
     /// comparator (its output current, then its internal gain-stage voltage).
     pub fn branch_slots(&self) -> usize {
-        match self {
-            CircuitElement::OpAmp(OpAmp { model: Some(_), .. })
-            | CircuitElement::Comparator(Comparator { .. }) => 2,
-            CircuitElement::Behavioural(Behavioural {
-                output: BehaviouralOutput::Voltage,
-                ..
-            })
-            | CircuitElement::VoltageSource(VoltageSource { .. })
-            | CircuitElement::Vcvs(Vcvs { .. })
-            | CircuitElement::Ccvs(Ccvs { .. })
-            | CircuitElement::OpAmp(OpAmp { .. })
-            | CircuitElement::VoltageRegulator(VoltageRegulator { .. }) => 1,
-            CircuitElement::Transformer(Transformer { .. }) => 2,
-            _ => 0,
-        }
+        self.device().branches()
     }
 
     /// Mutable [`nodes`](Self::nodes), for renaming nets.
     pub fn nodes_mut(&mut self) -> &mut [String] {
-        match self {
-            CircuitElement::Resistor(Resistor { nodes, .. }) => nodes,
-            CircuitElement::VoltageSource(VoltageSource { nodes, .. }) => nodes,
-            CircuitElement::CurrentSource(CurrentSource { nodes, .. }) => nodes,
-            CircuitElement::Switch(Switch { nodes, .. }) => nodes,
-            CircuitElement::Capacitor(Capacitor { nodes, .. }) => nodes,
-            CircuitElement::Inductor(Inductor { nodes, .. }) => nodes,
-            CircuitElement::Diode(Diode { nodes, .. }) => nodes,
-            CircuitElement::Led(Led { nodes, .. }) => nodes,
-            CircuitElement::Bjt(Bjt { nodes, .. }) => nodes,
-            CircuitElement::Mosfet(Mosfet { nodes, .. }) => nodes,
-            CircuitElement::Jfet(Jfet { nodes, .. }) => nodes,
-            CircuitElement::Vcvs(Vcvs { nodes, .. }) => nodes,
-            CircuitElement::Vccs(Vccs { nodes, .. }) => nodes,
-            CircuitElement::Ccvs(Ccvs { nodes, .. }) => nodes,
-            CircuitElement::Cccs(Cccs { nodes, .. }) => nodes,
-            CircuitElement::Pushbutton(Pushbutton { nodes, .. }) => nodes,
-            CircuitElement::Relay(Relay { nodes, .. }) => nodes,
-            CircuitElement::Photoresistor(Photoresistor { nodes, .. }) => nodes,
-            CircuitElement::Potentiometer(Potentiometer { nodes, .. }) => nodes,
-            CircuitElement::ZenerDiode(ZenerDiode { nodes, .. }) => nodes,
-            CircuitElement::OpAmp(OpAmp { nodes, .. }) => nodes,
-            CircuitElement::Comparator(Comparator { nodes, .. }) => nodes,
-            CircuitElement::SchottkyDiode(SchottkyDiode { nodes, .. }) => nodes,
-            CircuitElement::Thermistor(Thermistor { nodes, .. }) => nodes,
-            CircuitElement::Battery(Battery { nodes, .. }) => nodes,
-            CircuitElement::Photodiode(Photodiode { nodes, .. }) => nodes,
-            CircuitElement::Varactor(Varactor { nodes, .. }) => nodes,
-            CircuitElement::Igbt(Igbt { nodes, .. }) => nodes,
-            CircuitElement::Transformer(Transformer { nodes, .. }) => nodes,
-            CircuitElement::Fuse(Fuse { nodes, .. }) => nodes,
-            CircuitElement::VoltageRegulator(VoltageRegulator { nodes, .. }) => nodes,
-            CircuitElement::SwitchSpdt(SwitchSpdt { nodes, .. }) => nodes,
-            CircuitElement::Crystal(Crystal { nodes, .. }) => nodes,
-            CircuitElement::FerriteBead(FerriteBead { nodes, .. }) => nodes,
-            CircuitElement::Behavioural(Behavioural { nodes, .. }) => nodes,
-        }
+        self.device_mut().nodes_mut()
     }
 
     /// Mutable [`id`](Self::id), for renaming.
     pub fn id_mut(&mut self) -> &mut String {
-        match self {
-            CircuitElement::Resistor(Resistor { id, .. }) => id,
-            CircuitElement::VoltageSource(VoltageSource { id, .. }) => id,
-            CircuitElement::CurrentSource(CurrentSource { id, .. }) => id,
-            CircuitElement::Switch(Switch { id, .. }) => id,
-            CircuitElement::Capacitor(Capacitor { id, .. }) => id,
-            CircuitElement::Inductor(Inductor { id, .. }) => id,
-            CircuitElement::Diode(Diode { id, .. }) => id,
-            CircuitElement::Led(Led { id, .. }) => id,
-            CircuitElement::Bjt(Bjt { id, .. }) => id,
-            CircuitElement::Mosfet(Mosfet { id, .. }) => id,
-            CircuitElement::Jfet(Jfet { id, .. }) => id,
-            CircuitElement::Vcvs(Vcvs { id, .. }) => id,
-            CircuitElement::Vccs(Vccs { id, .. }) => id,
-            CircuitElement::Ccvs(Ccvs { id, .. }) => id,
-            CircuitElement::Cccs(Cccs { id, .. }) => id,
-            CircuitElement::Pushbutton(Pushbutton { id, .. }) => id,
-            CircuitElement::Relay(Relay { id, .. }) => id,
-            CircuitElement::Photoresistor(Photoresistor { id, .. }) => id,
-            CircuitElement::Potentiometer(Potentiometer { id, .. }) => id,
-            CircuitElement::ZenerDiode(ZenerDiode { id, .. }) => id,
-            CircuitElement::OpAmp(OpAmp { id, .. }) => id,
-            CircuitElement::Comparator(Comparator { id, .. }) => id,
-            CircuitElement::SchottkyDiode(SchottkyDiode { id, .. }) => id,
-            CircuitElement::Thermistor(Thermistor { id, .. }) => id,
-            CircuitElement::Battery(Battery { id, .. }) => id,
-            CircuitElement::Photodiode(Photodiode { id, .. }) => id,
-            CircuitElement::Varactor(Varactor { id, .. }) => id,
-            CircuitElement::Igbt(Igbt { id, .. }) => id,
-            CircuitElement::Transformer(Transformer { id, .. }) => id,
-            CircuitElement::Fuse(Fuse { id, .. }) => id,
-            CircuitElement::VoltageRegulator(VoltageRegulator { id, .. }) => id,
-            CircuitElement::SwitchSpdt(SwitchSpdt { id, .. }) => id,
-            CircuitElement::Crystal(Crystal { id, .. }) => id,
-            CircuitElement::FerriteBead(FerriteBead { id, .. }) => id,
-            CircuitElement::Behavioural(Behavioural { id, .. }) => id,
-        }
+        self.device_mut().id_mut()
     }
 
     /// The control-net pair of a VCVS or VCCS.
@@ -946,64 +761,14 @@ impl Circuit {
 
     /// Returns true if the circuit contains any nonlinear elements.
     pub fn has_nonlinear_elements(&self) -> bool {
-        self.components.iter().any(|c| {
-            matches!(
-                c,
-                CircuitElement::OpAmp(OpAmp { model: Some(_), .. })
-                    | CircuitElement::Comparator(Comparator { .. })
-                    | CircuitElement::Inductor(Inductor {
-                        saturation: Some(_),
-                        ..
-                    })
-                    | CircuitElement::Transformer(Transformer {
-                        saturation: Some(_),
-                        ..
-                    })
-                    | CircuitElement::Diode(Diode { .. })
-                    | CircuitElement::Led(Led { .. })
-                    | CircuitElement::Bjt(Bjt { .. })
-                    | CircuitElement::Mosfet(Mosfet { .. })
-                    | CircuitElement::Relay(Relay { .. })
-                    | CircuitElement::ZenerDiode(ZenerDiode { .. })
-                    | CircuitElement::SchottkyDiode(SchottkyDiode { .. })
-                    | CircuitElement::Photodiode(Photodiode { .. })
-                    | CircuitElement::Igbt(Igbt { .. })
-                    | CircuitElement::Jfet(Jfet { .. })
-                    | CircuitElement::Behavioural(Behavioural { .. })
-                    | CircuitElement::VoltageRegulator(VoltageRegulator { .. }) // Thermistor is passive (temperature-dependent resistance, no NR)
-                                                                                // Varactor is passive in DC (open circuit), no NR needed
-            )
-        })
+        self.components.iter().any(|c| c.device().is_nonlinear())
     }
 
     /// Returns true if the circuit contains any reactive elements (Capacitor, Inductor, or
     /// Relay with inductance > 0, or Transformer, or BJT/MOSFET/JFET with non-zero parasitic caps,
     /// or a diode whose model stores charge).
     pub fn has_reactive_elements(&self) -> bool {
-        self.components.iter().any(|c| match c {
-            CircuitElement::Capacitor(Capacitor { .. })
-            | CircuitElement::Inductor(Inductor { .. })
-            | CircuitElement::Varactor(Varactor { .. })
-            | CircuitElement::Transformer(Transformer { .. }) => true,
-            CircuitElement::Relay(Relay { inductance, .. }) if *inductance > 0.0 => true,
-            CircuitElement::Battery(Battery { params, .. }) => params.rc.is_some(),
-            CircuitElement::Bjt(Bjt {
-                parasitic_caps: Some(caps),
-                ..
-            }) if caps.cbe > 0.0 || caps.cbc > 0.0 => true,
-            CircuitElement::Mosfet(Mosfet {
-                parasitic_caps: Some(caps),
-                ..
-            }) if caps.cgs > 0.0 || caps.cgd > 0.0 => true,
-            CircuitElement::Diode(Diode {
-                model: Some(model), ..
-            }) => model.stores_charge(),
-            CircuitElement::Jfet(Jfet {
-                parasitic_caps: Some(caps),
-                ..
-            }) => caps.stores_charge(),
-            _ => false,
-        })
+        self.components.iter().any(|c| c.device().is_reactive())
     }
 
     /// Returns true if any source has a time-varying waveform.
@@ -1020,23 +785,11 @@ impl Circuit {
     pub fn vsource_branch_index(&self, source_id: &str) -> Option<usize> {
         let mut idx = 0;
         for component in &self.components {
-            let slots = component.branch_slots();
-            let has_current = matches!(
-                component,
-                CircuitElement::Behavioural(Behavioural {
-                    output: BehaviouralOutput::Voltage,
-                    ..
-                }) | CircuitElement::VoltageSource(VoltageSource { .. })
-                    | CircuitElement::Vcvs(Vcvs { .. })
-                    | CircuitElement::Ccvs(Ccvs { .. })
-                    | CircuitElement::OpAmp(OpAmp { .. })
-                    | CircuitElement::Comparator(Comparator { .. })
-                    | CircuitElement::VoltageRegulator(VoltageRegulator { .. })
-            );
-            if has_current && component.id() == source_id {
+            let device = component.device();
+            if device.exposes_branch_current() && device.id() == source_id {
                 return Some(idx);
             }
-            idx += slots;
+            idx += device.branches();
         }
         None
     }
