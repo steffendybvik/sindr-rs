@@ -179,21 +179,28 @@
 //!
 //! # Cargo features
 //!
-//! - `serde` *(default)* — `Serialize`/`Deserialize` impls on the public
-//!   types.
+//! All on by default:
+//!
+//! - `serde` — `Serialize`/`Deserialize` impls on the public types.
+//! - `schemars` — `JsonSchema` on every serde type, for apps that publish
+//!   the shape of a netlist, config or result to other tools.
+//! - `spice` — the SPICE3 netlist parser and writer in [`spice`] (see
+//!   below).
 //! - `examples` — exposes [`get_examples`]: the built-in named circuits
 //!   (voltage divider, BJT amp, RC transient, etc.) with ids and
 //!   descriptions. The circuits themselves are always in [`examples`].
-//! - `spice` — the SPICE3 netlist parser in [`spice`] (see below).
-//! - `parallel` — [`variation`] spreads its runs over one thread per core.
-//!   Off by default, and serial anyway where there are no threads (wasm).
+//! - `parallel` — [`variation`] spreads its runs over one thread per core,
+//!   and runs them one after another where there are no threads (wasm).
+//!
+//! `internals` is off by default and outside semver: it exposes the MNA
+//! matrix for sindr's own benchmarks.
 //!
 //! ```toml
 //! [dependencies]
 //! sindr = "0.3"
 //!
-//! # No serde:
-//! sindr = { version = "0.3", default-features = false }
+//! # Only what you pick, here just serde:
+//! sindr = { version = "0.3", default-features = false, features = ["serde"] }
 //! ```
 //!
 //! # Transient results
@@ -258,13 +265,12 @@
 //!
 //! # SPICE netlist input
 //!
-//! Parsing SPICE3 `.cir` decks into a [`Circuit`] lives behind the optional
-//! `spice` feature (off by default, so the heavier parser dependencies stay
-//! out of the baseline build):
+//! Parsing SPICE3 `.cir` decks into a [`Circuit`] is the `spice` feature,
+//! on by default:
 //!
 //! ```toml
 //! [dependencies]
-//! sindr = { version = "0.3", features = ["spice"] }
+//! sindr = "0.3"
 //! ```
 //!
 //! (`no_run`: it reads `amp.cir`, which doesn't exist where doctests run.)

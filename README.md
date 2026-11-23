@@ -134,11 +134,11 @@ Use a full SPICE simulator to run existing decks and vendor model libraries as t
 
 ## SPICE netlist input
 
-A SPICE3 netlist parser ships inside `sindr` behind the optional, default-off `spice` feature (it pulls in `winnow` + `miette`, so the baseline build stays lean):
+A SPICE3 netlist parser ships inside `sindr` as the `spice` feature, on by default like every feature (`default-features = false` and a `features` list keeps only the ones you pick):
 
 ```toml
 [dependencies]
-sindr = { version = "0.3", features = ["spice"] }
+sindr = "0.3"
 ```
 
 ```rust,ignore
@@ -153,7 +153,7 @@ It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, 
 A runnable walkthrough (parse → solve → dispatch directives → render a diagnostic) lives in [`sindr/examples/parse_netlist.rs`](./sindr/examples/parse_netlist.rs):
 
 ```bash
-cargo run --example parse_netlist --features spice
+cargo run --example parse_netlist
 ```
 
 ## Status

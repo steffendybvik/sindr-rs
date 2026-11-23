@@ -20,9 +20,9 @@ serde = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 
 [features]
-default = ["serde"]
+default = ["serde", "schemars"]
 # JSON Schema for every serde type (`schemars::JsonSchema`), for apps that
-# describe sindr's inputs and outputs to other tools. Off by default.
+# describe sindr's inputs and outputs to other tools.
 schemars = ["serde", "dep:schemars"]
 
 [dev-dependencies]

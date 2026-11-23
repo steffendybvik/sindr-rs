@@ -13,17 +13,13 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 sindr = "0.3"
 ```
 
-Serde support is on by default. To disable:
+Every feature is on by default: `serde`, `schemars` (JSON Schema), `spice` (netlist parsing and export), `examples` (the named example circuits) and `parallel` (Monte Carlo and corners across threads, serial on wasm). To keep only some, turn the defaults off and list them:
 
 ```toml
-sindr = { version = "0.3", default-features = false }
+sindr = { version = "0.3", default-features = false, features = ["serde", "spice"] }
 ```
 
-To parse SPICE netlists, enable the optional `spice` feature (off by default):
-
-```toml
-sindr = { version = "0.3", features = ["spice"] }
-```
+Parsing a SPICE netlist:
 
 ```rust,ignore
 let netlist = sindr::spice::parse_file("amp.cir")?;
@@ -33,7 +29,7 @@ let result = sindr::solve_circuit(&netlist.circuit)?;
 It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
-cargo run --example parse_netlist --features spice
+cargo run --example parse_netlist
 ```
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
@@ -958,8 +954,8 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `temperature_sweep` | Temperature sweep |
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
 | `import_netlist` | Importing a schematic netlist with a test bench |
-| `parse_netlist` | SPICE input (`--features spice`) |
-| `list_examples`, `run_example` | The built-in named circuits (`--features examples`) |
+| `parse_netlist` | SPICE input |
+| `list_examples`, `run_example` | The built-in named circuits |
 
 ## Error handling
 
@@ -1049,11 +1045,7 @@ Fields with defaults (`bf`, `temperature`, `k`, `coil_resistance`, `position`, `
 
 ### JSON Schema
 
-The optional `schemars` feature derives `schemars::JsonSchema` on every type that has serde, so an app that describes its tools to others (an MCP server, a form, an API) can publish the exact shape of a netlist, bench, circuit, config or result instead of writing it by hand. Complex numbers are `[re, im]` pairs, as serde writes them.
-
-```toml
-sindr = { version = "0.3", features = ["schemars"] }
-```
+The `schemars` feature (on by default) derives `schemars::JsonSchema` on every type that has serde, so an app that describes its tools to others (an MCP server, a form, an API) can publish the exact shape of a netlist, bench, circuit, config or result instead of writing it by hand. Complex numbers are `[re, im]` pairs, as serde writes them.
 
 ```rust,ignore
 let schema = schemars::schema_for!(sindr::import::Netlist);
