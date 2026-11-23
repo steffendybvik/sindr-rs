@@ -59,7 +59,9 @@
 //! ends, so [`UnconnectedTerminals::Skip`] leaves such a component out
 //! instead: it adds no element, its connected nets stay, an
 //! [`ImportWarning`] names it, and it is listed in
-//! [`ImportedCircuit::skipped`], so the finished part of the design still
+//! [`ImportedCircuit::skipped`]. Open ends (a net only one element
+//! reaches, parts not yet wired to ground) are tied through
+//! [`HIGH_IMPEDANCE_OHMS`], so the finished part of the design still
 //! simulates.
 //!
 //! # Models from part data
@@ -1255,7 +1257,11 @@ pub enum UnconnectedTerminals {
     Error,
     /// Leave the component out: no element, its connected nets kept, an
     /// [`ImportWarning`] naming it, and listed in
-    /// [`ImportedCircuit::skipped`]. For a schematic still being drawn.
+    /// [`ImportedCircuit::skipped`]. Open ends (a net only one element
+    /// reaches, or parts not yet wired to ground) are tied through
+    /// [`HIGH_IMPEDANCE_OHMS`] and listed in
+    /// [`ImportedCircuit::high_impedance`]. For a schematic still being
+    /// drawn.
     Skip,
 }
 
@@ -1402,7 +1408,9 @@ pub struct HighImpedanceNet {
     pub node: String,
     /// The id of the tie's resistor in [`ImportedCircuit::circuit`].
     pub resistor: String,
-    /// The pins of unsimulated parts on the net, in netlist order.
+    /// The pins of unsimulated parts on the net, in netlist order. Empty
+    /// for an open end under [`UnconnectedTerminals::Skip`]: a net only one
+    /// element reaches, or one in a group not yet wired to ground.
     pub pins: Vec<Pin>,
 }
 
@@ -1840,6 +1848,14 @@ impl Netlist {
             circuit.components.push(load.element(nodes)?);
         }
 
+        // A schematic still being drawn has open ends: a net only one
+        // element terminal reaches, or a group of parts not yet wired to the
+        // rest. Under `Skip` those are tied like a black box's nets.
+        if options.unconnected == UnconnectedTerminals::Skip {
+            for net in &self.nets {
+                unsimulated.entry(node(&net.id)).or_default();
+            }
+        }
         let high_impedance = tie_high_impedance_nets(&mut circuit, unsimulated, &ids);
 
         Ok(ImportedCircuit {

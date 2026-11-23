@@ -1074,7 +1074,7 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Netlists as an editor exports them.** `ComponentKind::from_name` reads symbol ids (`resistor-iec`, `capacitor-polarized`, `op-amp`, `push-button`, `switch-spst`, `test-point`, `header-4`). When nets name terminals by id and the names sit in a table on each component, pass the table with `ImportOptions::with_terminal_names` to `Netlist::to_circuit_with` or `import::simulate_with`: a named terminal matches by its name, an unnamed one by its id, so pin `1` of an LED still needs its `Anode` name.
 - **Dual and quad op-amps and comparators.** `dual_op_amp`, `quad_op_amp`, `dual_comparator` and `quad_comparator` (or `op-amp-dual` and the like) are one package whose units share its `V+`/`V-` pins. Each unit becomes its own element, `<id>.a`, `<id>.b` …, with terminals tagged by unit as datasheets write them: `1IN+`, `IN1-`, `INA+`, `-IN B`, `OUT A`, `2OUT`. A spare unit with nothing connected adds no element.
 - **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently. A net a black box leaves with one element or no path to ground, such as a pull-up into an MCU input or a resistor between two IC pins, is tied to ground through 1 TΩ (`HIGH_IMPEDANCE_OHMS`, an input's leakage and SPICE's gmin) so the rest solves, and listed in `ImportedCircuit::high_impedance`.
-- **Schematics still being drawn.** A required terminal on no net refuses the import by default. `ImportOptions::with_unconnected(UnconnectedTerminals::Skip)` leaves that component out instead (its connected nets stay), warns about it, and lists it in `ImportedCircuit::skipped`, so the finished part of a design simulates. An editor's "exclude from simulation" attribute maps onto `ComponentKind::BlackBox`.
+- **Schematics still being drawn.** A required terminal on no net refuses the import by default. `ImportOptions::with_unconnected(UnconnectedTerminals::Skip)` leaves that component out instead (its connected nets stay), warns about it, and lists it in `ImportedCircuit::skipped`; open ends (a net only one element reaches, parts not yet wired to ground) get the 1 TΩ tie. The finished part of a design simulates. An editor's "exclude from simulation" attribute maps onto `ComponentKind::BlackBox`.
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Bench loads** are resistors, capacitors and inductors, plus `LoadKind::CurrentSink` (a constant current drawn from `a` into `b`, such as an IC's supply current; for one that changes with time, use a current `BenchSource` with a waveform) and `LoadKind::TimedSwitch`, which is closed through `on_resistance` until `at` and then open at `off_resistance`, or open then closed with `starts_closed: false`. `LoadKind::released_at(1e-6, 25.0)` is an open-drain output holding a bus line low and letting go at 1 µs, for its rise time through the pull-ups and bus capacitance. The operating point, DC sweeps and AC see it at t = 0; a transient lands a step on `at`, which still sees the old state, as a waveform's jump does.
@@ -4347,7 +4347,9 @@ A required terminal on no net refuses the import with
 ends, so [`UnconnectedTerminals::Skip`] leaves such a component out
 instead: it adds no element, its connected nets stay, an
 [`ImportWarning`] names it, and it is listed in
-[`ImportedCircuit::skipped`], so the finished part of the design still
+[`ImportedCircuit::skipped`]. Open ends (a net only one element
+reaches, parts not yet wired to ground) are tied through
+[`HIGH_IMPEDANCE_OHMS`], so the finished part of the design still
 simulates.
 
 ### Models from part data
@@ -4993,7 +4995,11 @@ pub enum UnconnectedTerminals {
     Error,
     /// Leave the component out: no element, its connected nets kept, an
     /// [`ImportWarning`] naming it, and listed in
-    /// [`ImportedCircuit::skipped`]. For a schematic still being drawn.
+    /// [`ImportedCircuit::skipped`]. Open ends (a net only one element
+    /// reaches, or parts not yet wired to ground) are tied through
+    /// [`HIGH_IMPEDANCE_OHMS`] and listed in
+    /// [`ImportedCircuit::high_impedance`]. For a schematic still being
+    /// drawn.
     Skip,
 }
 
@@ -5095,7 +5101,9 @@ pub struct HighImpedanceNet {
     pub node: String,
     /// The id of the tie's resistor in [`ImportedCircuit::circuit`].
     pub resistor: String,
-    /// The pins of unsimulated parts on the net, in netlist order.
+    /// The pins of unsimulated parts on the net, in netlist order. Empty
+    /// for an open end under [`UnconnectedTerminals::Skip`]: a net only one
+    /// element reaches, or one in a group not yet wired to ground.
     pub pins: Vec<Pin>,
 }
 

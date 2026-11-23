@@ -3433,3 +3433,35 @@ fn the_unconnected_option_reads_from_json() {
         UnconnectedTerminals::Error
     );
 }
+
+#[test]
+fn skip_ties_open_ends_a_schematic_leaves() {
+    // r3 runs from `out` to `stub`, a net nothing else reaches; r4 and r5
+    // form an island not yet wired to anything.
+    let mut n = divider("1k", "1k");
+    for id in ["r3", "r4", "r5"] {
+        n.components
+            .push(Component::new(id, ComponentKind::Resistor).with_value("1k"));
+    }
+    n.nets[1].pins.push(Pin::new("r3", "1"));
+    n.nets.push(Net::new("stub", [("r3", "2")]));
+    n.nets.push(Net::new("x", [("r4", "1"), ("r5", "1")]));
+    n.nets.push(Net::new("y", [("r4", "2"), ("r5", "2")]));
+    assert!(simulate(&n, &gnd_bench()).is_err());
+
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &gnd_bench(), &options).expect("simulates");
+    let Simulation::OperatingPoint(r) = &out.result else {
+        panic!()
+    };
+    assert!((r.node_voltages["out"] - 0.5).abs() < 1e-9);
+    let tied: Vec<&str> = out
+        .circuit
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    assert_eq!(tied, ["stub", "x", "y"]);
+    assert!(out.circuit.high_impedance.iter().all(|h| h.pins.is_empty()));
+    assert!(out.circuit.skipped.is_empty());
+}
