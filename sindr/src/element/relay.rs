@@ -4,9 +4,9 @@ use nalgebra::DVector;
 
 use crate::error::SimError;
 use crate::node_map::NodeMap;
-use crate::stamp::{stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
+use crate::stamp::{stamp_companion_at, stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// Relay: 4-terminal component with a coil and a contact pair.
 /// nodes: [coil+, coil-, contact1, contact2]
@@ -43,6 +43,23 @@ impl Device for Relay {
         Ok(())
     }
 
+    /// The coil's inductance, if it has one, in series with its
+    /// resistance over the step; the contact as at DC.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let [coil_a, coil_b, contact_a, contact_b] = s.nodes();
+        if self.inductance > 0.0 {
+            let (g, i_hist) = s.integ.inductor(self.inductance, s.inductor(0));
+            let (g, i_hist) = series_resistance(g, i_hist, self.coil_resistance);
+            stamp_companion_at(s.system, [coil_a, coil_b], g, i_hist);
+        } else {
+            stamp_resistor_at(s.system, [coil_a, coil_b], self.coil_resistance);
+        }
+        let contact =
+            relay_contact_resistance_at([coil_a, coil_b], self.pickup_voltage, Some(s.v_prev));
+        stamp_resistor_at(s.system, [contact_a, contact_b], contact);
+        Ok(())
+    }
+
     fn inductor_histories(&self) -> usize {
         usize::from(self.inductance > 0.0)
     }
@@ -68,6 +85,15 @@ impl Device for Relay {
 #[cfg(feature = "serde")]
 fn default_relay_coil_resistance() -> f64 {
     500.0
+}
+
+/// A companion `i = g·v + i_hist` in series with a resistance `r`, as one
+/// companion across both: from `v = r·i + v_L` and `i = g·v_L + i_hist`,
+/// `i = g/(1 + g·r)·v + i_hist/(1 + g·r)`. A relay coil is its winding's
+/// resistance in series with its inductance.
+pub(crate) fn series_resistance(g: f64, i_hist: f64, r: f64) -> (f64, f64) {
+    let k = 1.0 + g * r;
+    (g / k, i_hist / k)
 }
 
 /// Resistance of a relay's contact (`nodes[2]`–`nodes[3]`): closed when the

@@ -4,7 +4,6 @@ use nalgebra::DVector;
 
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
 
 use super::{DcStamp, Device};
 
@@ -40,14 +39,11 @@ impl Device for Igbt {
     }
 }
 
-/// Stamp an IGBT companion model (nonlinear, called each NR iteration).
-///
-/// Linearizes IGBT (MOSFET gate + BJT output) at operating point v_prev:
-/// gm as a gate-controlled current source, g_ce as a C–E conductance.
-/// nodes: [gate, collector, emitter]
+/// [`stamp_igbt_companion_at`] by node name.
+#[cfg(test)]
 pub(crate) fn stamp_igbt_companion(
     system: &mut MnaSystem,
-    node_map: &NodeMap,
+    node_map: &crate::node_map::NodeMap,
     nodes: &[String; 3],
     v_prev: &DVector<f64>,
     params: &sindr_devices::igbt::IgbtParams,
@@ -56,8 +52,13 @@ pub(crate) fn stamp_igbt_companion(
     stamp_igbt_companion_at(system, [g, c, e], v_prev, params);
 }
 
-/// [`stamp_igbt_companion`] between matrix indices `[gate, collector,
-/// emitter]` (`None` is ground).
+/// Stamp an IGBT companion model (nonlinear, called each NR iteration).
+///
+/// Linearizes IGBT (MOSFET gate + BJT output) at operating point v_prev:
+/// gm as a gate-controlled current source, g_ce as a C–E conductance.
+/// nodes: [gate, collector, emitter]
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_igbt_companion_at(
     system: &mut MnaSystem,
     [g, c, e]: [Option<usize>; 3],

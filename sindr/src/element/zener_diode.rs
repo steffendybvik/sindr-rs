@@ -4,7 +4,7 @@ use crate::device_params;
 use crate::error::SimError;
 use crate::stamp::stamp_diode_companion_at;
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// Zener diode between two nodes: a silicon diode with SPICE reverse
 /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
@@ -44,6 +44,11 @@ impl Device for ZenerDiode {
             let nodes = s.nodes();
             stamp_diode_companion_at(s.system, nodes, vp, &params);
         }
+        Ok(())
+    }
+
+    /// Nothing: the transient steps the diode it is lowered to.
+    fn stamp_transient(&self, _: &mut TranStamp<'_>) -> Result<(), SimError> {
         Ok(())
     }
 

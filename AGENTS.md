@@ -96,10 +96,10 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 
 ## Adding a new circuit element
 
-1. Add a file in `sindr/src/element/` with a struct for its fields (serde attributes on the fields) and its `Device` impl (identity, branch rows, history slots, nonlinear/reactive flags, value checks, DC stamp), re-export it from `element/mod.rs` and add it to the `device`/`device_mut` matches there, and add a variant wrapping it to `CircuitElement` in `sindr/src/circuit.rs` (with the serde `rename`).
+1. Add a file in `sindr/src/element/` with a struct for its fields (serde attributes on the fields) and its `Device` impl (identity, branch rows, history slots, nonlinear/reactive flags, value checks, DC and transient stamps), re-export it from `element/mod.rs` and add it to the `device`/`device_mut` matches there, and add a variant wrapping it to `CircuitElement` in `sindr/src/circuit.rs` (with the serde `rename`).
 2. If it has device physics, add a module in `sindr-devices/src/` exposing a companion-model function.
 3. Implement its DC stamp as `Device::stamp_dc` in its file (linearised at `v_prev` if nonlinear), with `stamp.rs`'s shared helpers.
-4. If it stores state across timesteps (charge, current), thread it through the transient state in `sindr/src/transient.rs`.
+4. Implement `Device::stamp_transient` too unless its transient model is exactly its DC stamp (no stored energy, nothing that changes with time): the provided one calls `stamp_dc`. Capacitor and inductor histories come from `TranStamp::capacitor` / `inductor` (counted by `capacitor_histories` / `inductor_histories`); other state it carries across timesteps (charge, current) is kept by id in the transient's history map, set up and advanced in `sindr/src/transient.rs`.
 5. Extend `SimulationResult` (`sindr/src/results.rs`) only if the element produces results that don't fit `ComponentResult`.
 6. Add a unit test that exercises a known analytical answer.
 7. Document it in `sindr/README.md` under the appropriate section.
@@ -168,7 +168,7 @@ When in doubt, run `cargo run --example list_examples` and copy the closest exis
 |----------|------|
 | "What components exist?" | `sindr/src/circuit.rs` (`CircuitElement` enum) and `sindr/src/element/` (its structs) |
 | "What does the solver do for circuit X?" | routing table in `sindr/README.md`, plus `sindr/src/lib.rs::solve_circuit` |
-| "How is element Y stamped?" | its `stamp_dc` in `sindr/src/element/`, dispatched from `sindr/src/stamp.rs` |
+| "How is element Y stamped?" | its `stamp_dc` and `stamp_transient` in `sindr/src/element/`, dispatched from `sindr/src/stamp.rs` and `sindr/src/transient.rs` |
 | "Why did this fail?" | `sindr/src/error.rs` (`SimError` variants) |
 | "What does sindr *not* do?" | [`LIMITATIONS.md`](./LIMITATIONS.md) |
 | "What's a known-good example circuit?" | `sindr/src/examples.rs` and `sindr/examples/` |

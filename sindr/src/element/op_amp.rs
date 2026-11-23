@@ -4,10 +4,10 @@
 
 use crate::circuit::OpAmpModel;
 use crate::error::SimError;
-use crate::op_amp::{OpAmpStamp, Pins};
+use crate::op_amp::{OpAmpStamp, Pins, OP_AMP_STAGE};
 use crate::stamp::stamp_vcvs_at;
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// Op-amp, output referred to ground.
 ///
@@ -57,6 +57,21 @@ impl Device for OpAmp {
                 stamp_vcvs_at(s.system, [out, ground], [plus, minus], 1e5, s.branch);
             }
         }
+        Ok(())
+    }
+
+    /// The macromodel's gain stage over the step, from its history; the
+    /// near-ideal VCVS as at DC.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let Some(op) = OpAmpStamp::of_op_amp(self, &s.circuit.ground_node, s.branch) else {
+            return self.stamp_dc(&mut s.dc());
+        };
+        let pins = Pins {
+            nodes: s.nodes(),
+            ground: s.node_map.index(&s.circuit.ground_node),
+        };
+        let history = s.history(&self.id, OP_AMP_STAGE);
+        op.stamp_transient(s.system, &pins, s.integ, &history, s.v_prev);
         Ok(())
     }
 

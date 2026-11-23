@@ -33,6 +33,11 @@ use crate::stamp::stamp_current_source_at;
 /// output bends over smoothly instead of with a kink Newton can't follow.
 const KNEE: f64 = 0.01;
 
+/// Key suffix, in the transient's per-element history map, of a modelled
+/// op-amp's or a comparator's gain stage. It starts from rest (0 V) like
+/// the capacitors.
+pub(crate) const OP_AMP_STAGE: &str = "stage";
+
 /// A comparator's model: the unmodelled op-amp's gain of 1e5 with no pole,
 /// slew limit, output resistance, offset or bias, so it differs from that
 /// op-amp only in holding its output between the rails.
@@ -237,16 +242,6 @@ impl<'a> OpAmpStamp<'a> {
 
     /// DC: `F(x, vd) = 0` and the output row, linearised at `v_prev` (at
     /// rest when there is no iterate yet).
-    pub(crate) fn stamp_dc(
-        &self,
-        system: &mut MnaSystem,
-        node_map: &NodeMap,
-        v_prev: Option<&DVector<f64>>,
-    ) {
-        self.stamp_dc_at(system, &self.pins(node_map), v_prev);
-    }
-
-    /// [`stamp_dc`](Self::stamp_dc) with the pins resolved.
     pub(crate) fn stamp_dc_at(
         &self,
         system: &mut MnaSystem,
@@ -266,23 +261,22 @@ impl<'a> OpAmpStamp<'a> {
     pub(crate) fn stamp_transient(
         &self,
         system: &mut MnaSystem,
-        node_map: &NodeMap,
+        pins: &Pins,
         integ: &Integrator,
         history: &History,
         v_prev: &DVector<f64>,
     ) {
         let Some(tau) = self.tau() else {
-            return self.stamp_dc(system, node_map, Some(v_prev));
+            return self.stamp_dc_at(system, pins, Some(v_prev));
         };
-        let pins = self.pins(node_map);
         let x0 = v_prev[self.stage()];
-        let vd0 = Self::vd_at(&pins, v_prev);
-        self.stamp_output(system, &pins, x0);
+        let vd0 = Self::vd_at(pins, v_prev);
+        self.stamp_output(system, pins, x0);
         let (f0, c_x, c_u) = self.stage_rate(x0, vd0);
         let (g, h) = integ.capacitor(1.0, history);
         self.stamp_stage(
             system,
-            &pins,
+            pins,
             tau * g + c_x,
             c_u,
             -tau * h + f0 + c_x * x0 - c_u * vd0,

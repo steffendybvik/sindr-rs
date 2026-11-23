@@ -15,34 +15,31 @@ use nalgebra::DVector;
 
 use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::inductor;
-use sindr_devices::jfet::JfetKind;
 use sindr_devices::mosfet::MosfetKind;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
-use crate::element::bjt::stamp_bjt_companion;
-use crate::element::cccs::stamp_cccs;
-use crate::element::ccvs::stamp_ccvs;
-use crate::element::igbt::stamp_igbt_companion;
-use crate::element::jfet::stamp_jfet_companion;
-use crate::element::mosfet::stamp_mosfet_companion;
-use crate::element::transformer::stamp_transformer_companion;
-use crate::element::vccs::stamp_vccs;
+use crate::element::bjt::bjt_parasitics;
+use crate::element::diode::DIODE_CHARGE;
+use crate::element::jfet::{jfet_gate_charge, jfet_junctions};
+use crate::element::layout::Layout;
+use crate::element::mosfet::mosfet_parasitics;
+use crate::element::relay::series_resistance;
+use crate::element::transformer::transformer_flux;
+use crate::element::{parasitic_history, TranStamp};
 use crate::error::{SimError, SolvePoint};
 pub use crate::integration::IntegrationMethod;
 use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
 use crate::newton_raphson;
 use crate::node_map::{FastMap, NodeMap, Terminals};
+use crate::op_amp::OP_AMP_STAGE;
 use crate::results::{
     BjtResult, ComponentResult, MosfetResult, SimulationResult, TimestepSnapshot, TransientData,
     TransientStats,
 };
 use crate::solver::SolverOptions;
-use crate::stamp::{
-    stamp_current_source_at, stamp_diode_companion, stamp_resistor, stamp_resistor_at, stamp_vcvs,
-    stamp_voltage_source_at, SWITCH_R_CLOSED, SWITCH_R_OPEN,
-};
+use crate::stamp::{SWITCH_R_CLOSED, SWITCH_R_OPEN};
 use crate::thermal::Heated;
 
 /// Calculate simulation duration and timestep from circuit time constants.
@@ -179,438 +176,45 @@ pub fn calculate_duration(circuit: &Circuit) -> (f64, f64) {
     (duration, dt)
 }
 
-/// A companion `i = g·v + i_hist` in series with a resistance `r`, as one
-/// companion across both: from `v = r·i + v_L` and `i = g·v_L + i_hist`,
-/// `i = g/(1 + g·r)·v + i_hist/(1 + g·r)`. A relay coil is its winding's
-/// resistance in series with its inductance.
-fn series_resistance(g: f64, i_hist: f64, r: f64) -> (f64, f64) {
-    let k = 1.0 + g * r;
-    (g / k, i_hist / k)
-}
-
 /// Stamp all circuit components for one transient step ending at time `t`.
 ///
-/// Capacitors and inductors use `integ`'s companions, built from their
-/// history at the start of the step (`caps`, `inds`, in component order);
-/// sources are evaluated at `t`. Nonlinear devices are linearised at
-/// `v_prev`, the current Newton iterate. BJT/MOSFET parasitic capacitances
-/// use `parasitic`, keyed by "component_id-junction" ("Q1-be").
+/// Each element writes its [`Device::stamp_transient`]: capacitors and
+/// inductors `integ`'s companions, built from their history at the start
+/// of the step (`caps`, `inds`, in `placement`'s slots, and `parasitic`,
+/// keyed `"{id}-{key}"`); sources their value at `t`; nonlinear devices
+/// their linearisation at `v_prev`, the current Newton iterate.
+///
+/// [`Device::stamp_transient`]: crate::element::Device::stamp_transient
 #[allow(clippy::too_many_arguments)]
 fn stamp_circuit_transient(
     circuit: &Circuit,
     system: &mut MnaSystem,
     node_map: &NodeMap,
+    placement: &Placement,
     integ: &Integrator,
     t: f64,
     caps: &[History],
     inds: &[History],
     v_prev: &DVector<f64>,
     parasitic: &FastMap<History>,
-    terminals: &Terminals,
 ) -> Result<(), SimError> {
-    let num_nodes = node_map.num_nodes();
-    let mut vsource_index: usize = 0;
-    let mut cap_index: usize = 0;
-    let mut ind_index: usize = 0;
-
     for (k, component) in circuit.components.iter().enumerate() {
-        let at = || terminals.pair(k);
-        match component {
-            // Split into their parts, or lowered to a diode, by
-            // `solver_circuit` first.
-            CircuitElement::SwitchSpdt(SwitchSpdt { .. })
-            | CircuitElement::Crystal(Crystal { .. })
-            | CircuitElement::FerriteBead(FerriteBead { .. })
-            | CircuitElement::ZenerDiode(ZenerDiode { .. }) => {}
-            CircuitElement::Resistor(Resistor { id, resistance, .. }) => {
-                if *resistance <= 0.0 {
-                    return Err(SimError::InvalidResistance(id.clone()));
-                }
-                stamp_resistor_at(system, at(), *resistance);
-            }
-            CircuitElement::VoltageSource(VoltageSource {
-                voltage, waveform, ..
-            }) => {
-                let v = match waveform {
-                    Some(w) => *voltage + w.evaluate(t),
-                    None => *voltage,
-                };
-                let branch = num_nodes + vsource_index;
-                stamp_voltage_source_at(system, at(), v, branch);
-                vsource_index += 1;
-            }
-            CircuitElement::CurrentSource(CurrentSource {
-                current, waveform, ..
-            }) => {
-                let i = match waveform {
-                    Some(w) => *current + w.evaluate(t),
-                    None => *current,
-                };
-                stamp_current_source_at(system, at(), i);
-            }
-            CircuitElement::Switch(Switch { nodes, closed, .. }) => {
-                let resistance = if *closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
-                stamp_resistor(system, node_map, nodes, resistance);
-            }
-            CircuitElement::Capacitor(Capacitor { capacitance, .. }) => {
-                let (g, i_hist) = integ.capacitor(*capacitance, &caps[cap_index]);
-                stamp_companion_at(system, at(), g, i_hist);
-                cap_index += 1;
-            }
-            CircuitElement::Battery(Battery { id, params, .. }) => {
-                let soc = parasitic_history(parasitic, id, crate::battery_state::SOC).x1;
-                let rc = parasitic_history(parasitic, id, crate::battery_state::RC);
-                let (g, i_hist) = crate::battery_state::step_norton(params, soc, &rc, integ);
-                stamp_companion_at(system, at(), g, i_hist);
-            }
-            CircuitElement::Inductor(Inductor {
-                nodes,
-                inductance,
-                saturation,
-                ..
-            }) => {
-                let history = &inds[ind_index];
-                let (g, i_hist) = match saturation {
-                    None => integ.inductor(*inductance, history),
-                    Some(sat) => {
-                        // Its history holds fluxes. At the Newton iterate's
-                        // voltage the step ends at flux λ(v), carrying
-                        // i(λ); di/dv = (dλ/dv)/L(i).
-                        let v = node_voltage(&nodes[0], node_map, v_prev)
-                            - node_voltage(&nodes[1], node_map, v_prev);
-                        let lambda = integ.flux(v, history);
-                        let i = inductor::current_from_flux(lambda, *inductance, sat);
-                        let l = inductor::incremental_inductance(i, *inductance, sat);
-                        let g = integ.flux_per_volt() / l;
-                        (g, i - g * v)
-                    }
-                };
-                stamp_companion_at(system, at(), g, i_hist);
-                ind_index += 1;
-            }
-            CircuitElement::Diode(Diode {
-                model,
-                id,
-                nodes,
-                temperature,
-            }) => {
-                let params = device_params::diode(model.as_ref(), *temperature);
-                stamp_diode_companion(system, node_map, nodes, v_prev, &params);
-                if let Some(charge) = device_params::diode_charge(model.as_ref()) {
-                    let v = node_voltage(&nodes[0], node_map, v_prev)
-                        - node_voltage(&nodes[1], node_map, v_prev);
-                    let (q, c) = sindr_devices::diode::diode_charge(v, &params, &charge);
-                    let history = parasitic_history(parasitic, id, DIODE_CHARGE);
-                    let (g, i_hist) = integ.charge(q, c, v, &history);
-                    stamp_companion_at(system, at(), g, i_hist);
-                }
-            }
-            CircuitElement::Led(Led {
-                nodes,
-                color,
-                temperature,
-                ..
-            }) => {
-                let params = device_params::led(color, *temperature);
-                stamp_diode_companion(system, node_map, nodes, v_prev, &params);
-            }
-            CircuitElement::Bjt(Bjt {
-                model,
-                id,
-                nodes,
-                kind,
-                bf,
-                temperature,
-                parasitic_caps,
-            }) => {
-                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
-                stamp_bjt_companion(system, node_map, nodes, v_prev, &params, *kind);
-                if let Some(pc) = parasitic_caps {
-                    for (junction, c, a, b) in bjt_parasitics(nodes, pc) {
-                        let (g, i_hist) =
-                            integ.capacitor(c, &parasitic_history(parasitic, id, junction));
-                        stamp_companion(system, node_map, &[a, b], g, i_hist);
-                    }
-                }
-            }
-            CircuitElement::Mosfet(Mosfet {
-                id,
-                nodes,
-                kind,
-                params,
-                parasitic_caps,
-                ..
-            }) => {
-                stamp_mosfet_companion(system, node_map, nodes, v_prev, params, *kind);
-                if let Some(pc) = parasitic_caps {
-                    for (junction, c, a, b) in mosfet_parasitics(nodes, pc) {
-                        let (g, i_hist) =
-                            integ.capacitor(c, &parasitic_history(parasitic, id, junction));
-                        stamp_companion(system, node_map, &[a, b], g, i_hist);
-                    }
-                }
-            }
-            // JFET — nonlinear companion in NR transient loop
-            CircuitElement::Jfet(Jfet {
-                id,
-                nodes,
-                kind,
-                idss,
-                vp,
-                parasitic_caps,
-            }) => {
-                stamp_jfet_companion(system, node_map, nodes, *kind, *idss, *vp, v_prev);
-                if let Some(pc) = parasitic_caps {
-                    for (junction, c0, a, b) in jfet_junctions(nodes, pc) {
-                        let v =
-                            node_voltage(&a, node_map, v_prev) - node_voltage(&b, node_map, v_prev);
-                        let (q, c) = jfet_gate_charge(v, *kind, pc, c0);
-                        let history = parasitic_history(parasitic, id, junction);
-                        let (g, i_hist) = integ.charge(q, c, v, &history);
-                        stamp_companion(system, node_map, &[a, b], g, i_hist);
-                    }
-                }
-            }
-            CircuitElement::Vcvs(Vcvs {
-                nodes,
-                control_nodes,
-                gain,
-                ..
-            }) => {
-                let branch = num_nodes + vsource_index;
-                stamp_vcvs(system, node_map, nodes, control_nodes, *gain, branch);
-                vsource_index += 1;
-            }
-            CircuitElement::Vccs(Vccs {
-                nodes,
-                control_nodes,
-                gm,
-                ..
-            }) => {
-                stamp_vccs(system, node_map, nodes, control_nodes, *gm);
-            }
-            CircuitElement::Ccvs(Ccvs {
-                nodes,
-                control_source,
-                rm,
-                ..
-            }) => {
-                let branch = num_nodes + vsource_index;
-                let ctrl_branch = circuit.vsource_branch_index(control_source);
-                if let Some(cb) = ctrl_branch {
-                    stamp_ccvs(system, node_map, nodes, *rm, branch, num_nodes + cb);
-                }
-                vsource_index += 1;
-            }
-            CircuitElement::Cccs(Cccs {
-                nodes,
-                control_source,
-                alpha,
-                ..
-            }) => {
-                let ctrl_branch = circuit.vsource_branch_index(control_source);
-                if let Some(cb) = ctrl_branch {
-                    stamp_cccs(system, node_map, nodes, *alpha, num_nodes + cb);
-                }
-            }
-            CircuitElement::Behavioural(Behavioural {
-                id,
-                nodes,
-                output,
-                expr,
-            }) => {
-                let branch = num_nodes + vsource_index;
-                crate::element::behavioural::stamp_behavioural(
-                    system, circuit, node_map, id, nodes, *output, expr, v_prev, t, branch,
-                )?;
-                vsource_index += component.branch_slots();
-            }
-            CircuitElement::Pushbutton(Pushbutton { nodes, closed, .. }) => {
-                let resistance = if *closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
-                stamp_resistor(system, node_map, nodes, resistance);
-            }
-            CircuitElement::Photoresistor(Photoresistor {
-                nodes, light_level, ..
-            }) => {
-                let resistance = crate::element::photoresistor::ldr_resistance(*light_level);
-                stamp_resistor(system, node_map, nodes, resistance);
-            }
-            CircuitElement::Potentiometer(Potentiometer {
-                nodes,
-                resistance,
-                position,
-                ..
-            }) => {
-                let pos = position.clamp(0.001, 0.999);
-                let r_top = resistance * pos;
-                let r_bot = resistance * (1.0 - pos);
-                let top_wiper: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
-                let wiper_bot: [String; 2] = [nodes[1].clone(), nodes[2].clone()];
-                stamp_resistor(system, node_map, &top_wiper, r_top);
-                stamp_resistor(system, node_map, &wiper_bot, r_bot);
-            }
-            CircuitElement::Relay(Relay {
-                nodes,
-                coil_resistance,
-                pickup_voltage,
-                inductance,
-                ..
-            }) => {
-                let coil_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
-                if *inductance > 0.0 {
-                    let (g, i_hist) = integ.inductor(*inductance, &inds[ind_index]);
-                    let (g, i_hist) = series_resistance(g, i_hist, *coil_resistance);
-                    stamp_companion(system, node_map, &coil_nodes, g, i_hist);
-                    ind_index += 1;
-                } else {
-                    stamp_resistor(system, node_map, &coil_nodes, *coil_resistance);
-                }
-                let vc_pos = node_map.index(&nodes[0]).map_or(0.0, |i| v_prev[i]);
-                let vc_neg = node_map.index(&nodes[1]).map_or(0.0, |i| v_prev[i]);
-                let contact_closed = (vc_pos - vc_neg).abs() >= *pickup_voltage;
-                let contact_r = if contact_closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
-                let contact_nodes: [String; 2] = [nodes[2].clone(), nodes[3].clone()];
-                stamp_resistor(system, node_map, &contact_nodes, contact_r);
-            }
-            CircuitElement::SchottkyDiode(SchottkyDiode {
-                nodes, temperature, ..
-            }) => {
-                let diode_params = device_params::schottky(*temperature);
-                stamp_diode_companion(system, node_map, nodes, v_prev, &diode_params);
-            }
-            CircuitElement::Thermistor(Thermistor {
-                nodes, temperature, ..
-            }) => {
-                let r = crate::device_params::thermistor_resistance(*temperature);
-                stamp_resistor(system, node_map, nodes, r);
-            }
-            CircuitElement::Photodiode(Photodiode {
-                nodes,
-                irradiance,
-                temperature,
-                ..
-            }) => {
-                let photo_params = device_params::photodiode(*temperature);
-                let v_a = node_map.index(&nodes[0]).map_or(0.0, |i| v_prev[i]);
-                let v_c = node_map.index(&nodes[1]).map_or(0.0, |i| v_prev[i]);
-                let v_d = v_a - v_c;
-                let (g_d, i_eq) = sindr_devices::photodiode::photodiode_companion(
-                    v_d,
-                    *irradiance,
-                    &photo_params,
-                );
-                let p = node_map.index(&nodes[0]);
-                let q = node_map.index(&nodes[1]);
-                if let Some(pi) = p {
-                    system.a[(pi, pi)] += g_d;
-                }
-                if let Some(qi) = q {
-                    system.a[(qi, qi)] += g_d;
-                }
-                if let (Some(pi), Some(qi)) = (p, q) {
-                    system.a[(pi, qi)] -= g_d;
-                    system.a[(qi, pi)] -= g_d;
-                }
-                if let Some(pi) = p {
-                    system.b[pi] -= i_eq;
-                }
-                if let Some(qi) = q {
-                    system.b[qi] += i_eq;
-                }
-            }
-            CircuitElement::OpAmp(OpAmp { model: Some(_), .. })
-            | CircuitElement::Comparator(Comparator { .. }) => {
-                let branch = num_nodes + vsource_index;
-                if let Some(op) =
-                    crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, branch)
-                {
-                    let history = parasitic_history(parasitic, component.id(), OP_AMP_STAGE);
-                    op.stamp_transient(system, node_map, integ, &history, v_prev);
-                }
-                vsource_index += 2;
-            }
-            CircuitElement::OpAmp(OpAmp { nodes, .. }) => {
-                let branch = num_nodes + vsource_index;
-                let out_nodes: [String; 2] = [nodes[2].clone(), circuit.ground_node.clone()];
-                let ctrl_nodes: [String; 2] = [nodes[0].clone(), nodes[1].clone()];
-                stamp_vcvs(system, node_map, &out_nodes, &ctrl_nodes, 1e5, branch);
-                vsource_index += 1;
-            }
-            CircuitElement::Varactor(Varactor { params, .. }) => {
-                // Linearised at the voltage the step starts from.
-                let history = &caps[cap_index];
-                let c = sindr_devices::varactor::junction_capacitance(history.x1, params);
-                let (g, i_hist) = integ.capacitor(c, history);
-                stamp_companion_at(system, at(), g, i_hist);
-                cap_index += 1;
-            }
-            CircuitElement::Igbt(Igbt { nodes, params, .. }) => {
-                stamp_igbt_companion(system, node_map, nodes, v_prev, params);
-            }
-            CircuitElement::Transformer(Transformer {
-                nodes,
-                l1,
-                l2,
-                k,
-                saturation,
-                ..
-            }) => {
-                let k1 = num_nodes + vsource_index;
-                let k2 = num_nodes + vsource_index + 1;
-                let h = [&inds[ind_index], &inds[ind_index + 1]];
-                let (z, rhs) = match saturation {
-                    None => integ.coupled(transformer_inductances(*l1, *l2, *k), h),
-                    // Its histories hold fluxes. Linearised at the Newton
-                    // iterate's winding currents.
-                    Some(sat) => {
-                        let at = |k: usize| v_prev.get(k).copied().unwrap_or(0.0);
-                        let i = [at(k1), at(k2)];
-                        let (lambda, l) = transformer_flux(*l1, *l2, *k, sat, i);
-                        integ.coupled_nonlinear(l, lambda, i, h)
-                    }
-                };
-                ind_index += 2;
-                vsource_index += 2;
-                stamp_transformer_companion(system, node_map, nodes, z, rhs, k1, k2);
-            }
-            // Fuse: stamp as resistor (intact=0.001 Ohm, blown=1e9 Ohm) in NR transient
-            CircuitElement::Fuse(Fuse { nodes, blown, .. }) => {
-                let resistance = if *blown { SWITCH_R_OPEN } else { 0.001 };
-                stamp_resistor(system, node_map, nodes, resistance);
-            }
-            CircuitElement::VoltageRegulator(VoltageRegulator {
-                nodes,
-                voltage,
-                model,
-                ..
-            }) => {
-                let branch = num_nodes + vsource_index;
-                crate::element::voltage_regulator::stamp_regulator(
-                    system,
-                    node_map,
-                    nodes,
-                    *voltage,
-                    model,
-                    branch,
-                    Some(v_prev),
-                );
-                vsource_index += 1;
-            }
-        }
+        let mut s = TranStamp::new(
+            system,
+            circuit,
+            node_map,
+            &placement.layout,
+            &placement.terminals,
+            k,
+            v_prev,
+            t,
+            integ,
+            caps,
+            inds,
+            parasitic,
+        );
+        component.device().stamp_transient(&mut s)?;
     }
-
     Ok(())
 }
 
@@ -2068,16 +1672,20 @@ pub(crate) fn run_transient(
     // The accepted step before this one; `None` until the first is taken.
     let mut h_prev: Option<f64> = None;
 
-    let fixed_step = StepSolver::new(circuit, node_map, num_nodes, num_vsources, opts);
+    let placement = Placement::new(circuit, node_map);
+    let fixed_step = StepSolver::new(circuit, node_map, &placement, num_nodes, num_vsources, opts);
 
     // Self-heating: a working copy of the circuit whose junction
     // temperatures follow each part's thermal RC, advanced after every
     // accepted step. The next step solves at the new temperatures.
     let heated = Heated::from_circuit(circuit)?;
     let mut temps = heated.as_ref().map(Heated::ambient).unwrap_or_default();
+    // Only junction temperatures change in it, so its elements sit where
+    // `circuit`'s do and share `placement`.
     let mut work = heated.as_ref().map(|h| {
         let mut work = circuit.clone();
         h.apply(&mut work, &temps);
+        debug_assert_eq!(Layout::new(&work), placement.layout);
         work
     });
 
@@ -2181,7 +1789,8 @@ pub(crate) fn run_transient(
         let heated_step;
         let (step, stepped) = match &work {
             Some(work) => {
-                heated_step = StepSolver::new(work, node_map, num_nodes, num_vsources, opts);
+                heated_step =
+                    StepSolver::new(work, node_map, &placement, num_nodes, num_vsources, opts);
                 (&heated_step, work)
             }
             None => (&fixed_step, circuit),
@@ -2653,24 +2262,43 @@ fn lte_ratio(
     Some(worst)
 }
 
+/// Where each element of a run's circuit sits in its MNA system: its
+/// branch rows and history slots, and its terminals' matrix indices.
+struct Placement {
+    layout: Layout,
+    terminals: Terminals,
+}
+
+impl Placement {
+    fn new(circuit: &Circuit, node_map: &NodeMap) -> Self {
+        Self {
+            layout: Layout::new(circuit),
+            terminals: Terminals::new(circuit, node_map),
+        }
+    }
+}
+
 /// Solves one transient step: a single linear solve, or Newton–Raphson when
 /// the circuit has nonlinear devices.
 struct StepSolver<'a> {
     circuit: &'a Circuit,
     node_map: &'a NodeMap,
+    placement: &'a Placement,
     num_nodes: usize,
     num_vsources: usize,
     nonlinear: bool,
     diode_info: Vec<newton_raphson::DiodeLimitInfo>,
     igbt_info: Vec<newton_raphson::IgbtLimitInfo>,
     opts: &'a SolverOptions,
-    terminals: Terminals,
 }
 
 impl<'a> StepSolver<'a> {
+    /// The stepper for `circuit`, whose elements sit where `placement`
+    /// says.
     fn new(
         circuit: &'a Circuit,
         node_map: &'a NodeMap,
+        placement: &'a Placement,
         num_nodes: usize,
         num_vsources: usize,
         opts: &'a SolverOptions,
@@ -2679,6 +2307,7 @@ impl<'a> StepSolver<'a> {
         Self {
             circuit,
             node_map,
+            placement,
             num_nodes,
             num_vsources,
             nonlinear,
@@ -2689,7 +2318,6 @@ impl<'a> StepSolver<'a> {
             },
             igbt_info: newton_raphson::collect_igbt_info(circuit, node_map),
             opts,
-            terminals: Terminals::new(circuit, node_map),
         }
     }
 
@@ -2792,13 +2420,13 @@ impl<'a> StepSolver<'a> {
                 self.circuit,
                 &mut system,
                 self.node_map,
+                self.placement,
                 integ,
                 t,
                 caps,
                 inds,
                 v_prev,
                 parasitic,
-                &self.terminals,
             )?;
             Ok(system)
         };
@@ -2965,85 +2593,6 @@ fn update_parasitic_histories(
     }
 }
 
-/// A BJT's parasitic capacitors as `(junction, C, terminal, terminal)`:
-/// Cbe base–emitter and Cbc base–collector, each only if > 0.
-pub(crate) fn bjt_parasitics(
-    nodes: &[String; 3],
-    pc: &crate::circuit::BjtParasiticCaps,
-) -> Vec<(&'static str, f64, String, String)> {
-    let [b, c, e] = nodes.clone();
-    [("be", pc.cbe, b.clone(), e), ("bc", pc.cbc, b, c)]
-        .into_iter()
-        .filter(|cap| cap.1 > 0.0)
-        .collect()
-}
-
-/// A MOSFET's parasitic capacitors as `(junction, C, terminal, terminal)`:
-/// Cgs gate–source and Cgd gate–drain, each only if > 0.
-pub(crate) fn mosfet_parasitics(
-    nodes: &[String; 3],
-    pc: &crate::circuit::MosfetParasiticCaps,
-) -> Vec<(&'static str, f64, String, String)> {
-    let [g, d, s] = nodes.clone();
-    [("gs", pc.cgs, g.clone(), s), ("gd", pc.cgd, g, d)]
-        .into_iter()
-        .filter(|cap| cap.1 > 0.0)
-        .collect()
-}
-
-/// A JFET's gate junctions as `(junction, zero-bias C, terminal, terminal)`:
-/// gate–source and gate–drain, each only if its capacitance is > 0. Their
-/// histories hold charges (C), not voltages.
-pub(crate) fn jfet_junctions(
-    nodes: &[String; 3],
-    pc: &crate::circuit::JfetParasiticCaps,
-) -> Vec<(&'static str, f64, String, String)> {
-    let [g, d, s] = nodes.clone();
-    [("gs", pc.cgs, g.clone(), s), ("gd", pc.cgd, g, d)]
-        .into_iter()
-        .filter(|j| j.1 > 0.0)
-        .collect()
-}
-
-/// Charge (C) on a JFET gate junction of zero-bias capacitance `c0` (F),
-/// gate side positive, and its capacitance (F) at `v` (V), gate minus the
-/// other terminal. A P-channel
-/// part's gate junction points the other way, so its junction voltage and
-/// charge are the negatives; the capacitance is the same.
-pub(crate) fn jfet_gate_charge(
-    v: f64,
-    kind: JfetKind,
-    pc: &crate::circuit::JfetParasiticCaps,
-    c0: f64,
-) -> (f64, f64) {
-    let charge = sindr_devices::diode::JunctionCharge {
-        cjo: c0,
-        vj: pc.pb,
-        m: pc.m,
-        fc: pc.fc,
-        tt: 0.0,
-    };
-    let sign = match kind {
-        JfetKind::NChannel => 1.0,
-        JfetKind::PChannel => -1.0,
-    };
-    let (q, c) = charge.charge(sign * v, 0.0, 0.0);
-    (sign * q, c)
-}
-
-/// The history of component `id`'s parasitic capacitor at `junction`
-/// (uncharged before its first step).
-fn parasitic_history(parasitic: &FastMap<History>, id: &str, junction: &str) -> History {
-    parasitic
-        .get(&format!("{id}-{junction}"))
-        .copied()
-        .unwrap_or_default()
-}
-
-/// Key suffix, in the parasitic-history map, of a diode's stored charge
-/// (CJO/TT). Its history holds charges (C), not voltages.
-const DIODE_CHARGE: &str = "q";
-
 /// Add each charge-storing diode's charging current, the rate just pushed
 /// onto its history, to its result, so `current_through` is the terminal
 /// current (reverse recovery included). `power` stays the junction's
@@ -3063,81 +2612,6 @@ fn add_diode_charge_currents(
         if let Some(result) = results.iter_mut().find(|r| &r.id == id) {
             result.current_through += history.y1;
         }
-    }
-}
-
-/// Key suffix, in the parasitic-history map, of a modelled op-amp's gain
-/// stage. It starts from rest (0 V) like the capacitors.
-const OP_AMP_STAGE: &str = "stage";
-
-/// A transformer's inductance matrix `[[L1, M], [M, L2]]`, M = k·√(L1·L2).
-fn transformer_inductances(l1: f64, l2: f64, k: f64) -> [[f64; 2]; 2] {
-    let m = k * (l1 * l2).sqrt();
-    [[l1, m], [m, l2]]
-}
-
-/// Winding fluxes (Wb) and incremental inductance matrix `dλ/di` (H) of a
-/// transformer with a saturating core, at winding currents `i` (A).
-///
-/// Each winding has leakage `(1 − k)·L`; the magnetising inductance `k·L1`
-/// on the primary carries `im = i1 + n·i2`, n = √(L2/L1), and saturates as
-/// `sat`. Its flux links the primary once and the secondary n times:
-/// `λ1 = (1 − k)·L1·i1 + λm(im)`, `λ2 = (1 − k)·L2·i2 + n·λm(im)`. With a
-/// linear λm = k·L1·im these are the coupled inductors of
-/// [`transformer_inductances`].
-pub(crate) fn transformer_flux(
-    l1: f64,
-    l2: f64,
-    k: f64,
-    sat: &inductor::InductorSaturation,
-    i: [f64; 2],
-) -> ([f64; 2], [[f64; 2]; 2]) {
-    let n = (l2 / l1).sqrt();
-    let lm = k * l1;
-    let im = i[0] + n * i[1];
-    let flux_m = inductor::flux(im, lm, sat);
-    let lm_inc = inductor::incremental_inductance(im, lm, sat);
-    let (ll1, ll2) = ((1.0 - k) * l1, (1.0 - k) * l2);
-    (
-        [ll1 * i[0] + flux_m, ll2 * i[1] + n * flux_m],
-        [
-            [ll1 + lm_inc, n * lm_inc],
-            [n * lm_inc, ll2 + n * n * lm_inc],
-        ],
-    )
-}
-
-/// Stamp a companion branch between `nodes`: conductance `g` plus the
-/// history current `i_hist`, so the current from `nodes[0]` to `nodes[1]`
-/// is `g·v + i_hist`.
-fn stamp_companion(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    g: f64,
-    i_hist: f64,
-) {
-    stamp_companion_at(
-        system,
-        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
-        g,
-        i_hist,
-    );
-}
-
-/// [`stamp_companion`] between matrix indices (`None` is ground).
-fn stamp_companion_at(system: &mut MnaSystem, [p, q]: [Option<usize>; 2], g: f64, i_hist: f64) {
-    if let Some(pi) = p {
-        system.a[(pi, pi)] += g;
-        system.b[pi] -= i_hist;
-    }
-    if let Some(qi) = q {
-        system.a[(qi, qi)] += g;
-        system.b[qi] += i_hist;
-    }
-    if let (Some(pi), Some(qi)) = (p, q) {
-        system.a[(pi, qi)] -= g;
-        system.a[(qi, pi)] -= g;
     }
 }
 

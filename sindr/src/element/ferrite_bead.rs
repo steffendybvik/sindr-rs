@@ -4,7 +4,7 @@
 use crate::circuit::FerriteBeadParams;
 use crate::error::SimError;
 
-use super::{stamped_as_parts, DcStamp, Device};
+use super::{stamped_as_parts, DcStamp, Device, TranStamp};
 
 /// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC,
 /// lossy and inductive at high frequency. Its result's `power` is what
@@ -26,5 +26,10 @@ impl Device for FerriteBead {
 
     fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
         Err(stamped_as_parts(&self.id))
+    }
+
+    /// Nothing: the transient steps its parts.
+    fn stamp_transient(&self, _: &mut TranStamp<'_>) -> Result<(), SimError> {
+        Ok(())
     }
 }

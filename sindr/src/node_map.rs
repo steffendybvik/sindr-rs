@@ -156,12 +156,6 @@ impl Terminals {
     pub(crate) fn of(&self, k: usize) -> &[Option<usize>] {
         &self.index[self.start[k]..self.start[k + 1]]
     }
-
-    /// Element `k`'s first two terminals, for a two-terminal element.
-    pub(crate) fn pair(&self, k: usize) -> [Option<usize>; 2] {
-        let t = self.of(k);
-        [t[0], t[1]]
-    }
 }
 
 #[cfg(test)]
@@ -240,7 +234,7 @@ mod tests {
         );
         let nm = NodeMap::from_circuit(&circuit);
         let t = Terminals::new(&circuit, &nm);
-        assert_eq!(t.pair(0), [nm.index("b"), nm.index("a")]);
+        assert_eq!(t.of(0), [nm.index("b"), nm.index("a")]);
         assert_eq!(t.of(1), [None, nm.index("b")]);
     }
 

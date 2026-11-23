@@ -78,10 +78,6 @@ impl Layout {
     /// # Panics
     ///
     /// If `k` is past the last element.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the transient doesn't use it yet")
-    )]
     pub(crate) fn capacitor(&self, k: usize) -> usize {
         self.slots(k).capacitor
     }
@@ -91,10 +87,6 @@ impl Layout {
     /// # Panics
     ///
     /// If `k` is past the last element.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the transient doesn't use it yet")
-    )]
     pub(crate) fn inductor(&self, k: usize) -> usize {
         self.slots(k).inductor
     }

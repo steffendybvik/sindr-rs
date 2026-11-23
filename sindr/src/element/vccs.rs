@@ -2,7 +2,6 @@
 
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
 
 use super::{Check, DcStamp, Device};
 
@@ -54,25 +53,8 @@ impl Device for Vccs {
 ///
 /// I_out = gm * V_control
 /// nodes: [from, to] (current flows from->to), control_nodes: [ctrl+, ctrl-]
-pub(crate) fn stamp_vccs(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    control_nodes: &[String; 2],
-    gm: f64,
-) {
-    stamp_vccs_at(
-        system,
-        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
-        [
-            node_map.index(&control_nodes[0]),
-            node_map.index(&control_nodes[1]),
-        ],
-        gm,
-    );
-}
-
-/// [`stamp_vccs`] between matrix indices (`None` is ground).
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_vccs_at(
     system: &mut MnaSystem,
     [from, to]: [Option<usize>; 2],

@@ -1,8 +1,11 @@
 //! An inductor, linear or with a saturating core.
 
-use crate::error::SimError;
+use sindr_devices::inductor;
 
-use super::{Check, DcStamp, Device};
+use crate::error::SimError;
+use crate::stamp::stamp_companion_at;
+
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
 /// solves DC as a single algebraic step, not as t→∞ of a transient);
@@ -36,6 +39,28 @@ impl Device for Inductor {
     fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
         // Nothing of its own: the DC analyses short it with a 0 V source
         // first (`dc_equivalent`).
+        Ok(())
+    }
+
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let history = s.inductor(0);
+        let nodes = s.nodes();
+        let (g, i_hist) = match &self.saturation {
+            None => s.integ.inductor(self.inductance, history),
+            Some(sat) => {
+                // Its history holds fluxes. At the Newton iterate's
+                // voltage the step ends at flux λ(v), carrying i(λ);
+                // di/dv = (dλ/dv)/L(i).
+                let [a, b] = nodes;
+                let v = s.voltage(a) - s.voltage(b);
+                let lambda = s.integ.flux(v, history);
+                let i = inductor::current_from_flux(lambda, self.inductance, sat);
+                let l = inductor::incremental_inductance(i, self.inductance, sat);
+                let g = s.integ.flux_per_volt() / l;
+                (g, i - g * v)
+            }
+        };
+        stamp_companion_at(s.system, nodes, g, i_hist);
         Ok(())
     }
 

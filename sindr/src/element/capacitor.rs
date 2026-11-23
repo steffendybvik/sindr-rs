@@ -2,7 +2,9 @@
 
 use crate::error::SimError;
 
-use super::{Check, DcStamp, Device};
+use crate::stamp::stamp_companion_at;
+
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// Capacitor. Open-circuit in DC analysis; charges/discharges in
 /// transient. `voltage_across` is reported as `nodes[0] − nodes[1]`.
@@ -23,6 +25,13 @@ impl Device for Capacitor {
 
     fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
         // Open at DC.
+        Ok(())
+    }
+
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let (g, i_hist) = s.integ.capacitor(self.capacitance, s.capacitor(0));
+        let nodes = s.nodes();
+        stamp_companion_at(s.system, nodes, g, i_hist);
         Ok(())
     }
 

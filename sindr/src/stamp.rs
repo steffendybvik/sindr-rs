@@ -1,15 +1,17 @@
 //! Component → MNA matrix stamps.
 //!
-//! Each element's DC stamp lives with its device in [`crate::element`]:
+//! Each element's DC and transient stamps live with its device in
+//! [`crate::element`]:
 //! a routine that writes its conductance / constraint contributions into
 //! the [`MnaSystem`]. For nonlinear devices, the stamp evaluates the
 //! device's companion model at the current operating point passed in via
 //! the optional `v_prev` solution vector — Newton–Raphson re-stamps every
 //! iteration as the operating point moves.
 //!
-//! [`stamp_circuit`] is the dispatcher used by every analysis path; the
+//! [`stamp_circuit`] is the DC dispatcher used by every analysis path; the
 //! helpers several elements share (`stamp_resistor`, `stamp_voltage_source`,
-//! …) are also exposed for the transient and AC pipelines.
+//! the transient's `stamp_companion_at`, …) are also exposed for the
+//! transient and AC pipelines.
 
 use nalgebra::DVector;
 
@@ -195,12 +197,32 @@ pub(crate) fn stamp_current_source_at(
     }
 }
 
-/// Stamp a diode/LED companion model into the MNA system.
-///
-/// Evaluates the companion model at the current operating point (from v_prev)
-/// and stamps the resulting conductance and current source.
-///
-/// nodes[0] = anode, nodes[1] = cathode.
+/// Stamp a transient companion branch between matrix indices `[p, q]`
+/// (`None` is ground): conductance `g` plus the history current `i_hist`,
+/// so the current from `p` to `q` is `g·v + i_hist`. Every capacitor,
+/// inductor and stored charge over one step takes this form.
+pub(crate) fn stamp_companion_at(
+    system: &mut MnaSystem,
+    [p, q]: [Option<usize>; 2],
+    g: f64,
+    i_hist: f64,
+) {
+    if let Some(pi) = p {
+        system.a[(pi, pi)] += g;
+        system.b[pi] -= i_hist;
+    }
+    if let Some(qi) = q {
+        system.a[(qi, qi)] += g;
+        system.b[qi] += i_hist;
+    }
+    if let (Some(pi), Some(qi)) = (p, q) {
+        system.a[(pi, qi)] -= g;
+        system.a[(qi, pi)] -= g;
+    }
+}
+
+/// [`stamp_diode_companion_at`] by node name.
+#[cfg(test)]
 pub(crate) fn stamp_diode_companion(
     system: &mut MnaSystem,
     node_map: &NodeMap,
@@ -216,8 +238,14 @@ pub(crate) fn stamp_diode_companion(
     );
 }
 
-/// [`stamp_diode_companion`] between matrix indices `[anode, cathode]`
-/// (`None` is ground).
+/// Stamp a diode/LED companion model into the MNA system.
+///
+/// Evaluates the companion model at the current operating point (from v_prev)
+/// and stamps the resulting conductance and current source.
+///
+/// nodes[0] = anode, nodes[1] = cathode.
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_diode_companion_at(
     system: &mut MnaSystem,
     [p, q]: [Option<usize>; 2],
@@ -259,27 +287,8 @@ pub(crate) fn stamp_diode_companion_at(
 /// nodes: [out+, out-], control_nodes: [ctrl+, ctrl-]
 ///
 /// MNA stamp: adds a branch equation V(out+) - V(out-) = mu * (V(ctrl+) - V(ctrl-))
-pub fn stamp_vcvs(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    control_nodes: &[String; 2],
-    gain: f64,
-    branch: usize,
-) {
-    stamp_vcvs_at(
-        system,
-        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
-        [
-            node_map.index(&control_nodes[0]),
-            node_map.index(&control_nodes[1]),
-        ],
-        gain,
-        branch,
-    );
-}
-
-/// [`stamp_vcvs`] between matrix indices (`None` is ground).
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_vcvs_at(
     system: &mut MnaSystem,
     [p, q]: [Option<usize>; 2],

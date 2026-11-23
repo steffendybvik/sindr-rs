@@ -3,9 +3,9 @@
 use crate::circuit::DiodeModel;
 use crate::device_params;
 use crate::error::SimError;
-use crate::stamp::stamp_diode_companion_at;
+use crate::stamp::{stamp_companion_at, stamp_diode_companion_at};
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// Diode (Shockley model, silicon unless `model` says otherwise).
 /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
@@ -34,6 +34,10 @@ pub struct Diode {
     pub model: Option<DiodeModel>,
 }
 
+/// Key suffix, in the transient's per-element history map, of a diode's
+/// stored charge (CJO/TT). Its history holds charges (C), not voltages.
+pub(crate) const DIODE_CHARGE: &str = "q";
+
 impl Device for Diode {
     device_identity!();
 
@@ -42,6 +46,23 @@ impl Device for Diode {
             let params = device_params::diode(self.model.as_ref(), self.temperature);
             let nodes = s.nodes();
             stamp_diode_companion_at(s.system, nodes, vp, &params);
+        }
+        Ok(())
+    }
+
+    /// The junction at the iterate, and with a CJO or TT its stored charge
+    /// over the step.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let params = device_params::diode(self.model.as_ref(), self.temperature);
+        let nodes = s.nodes();
+        stamp_diode_companion_at(s.system, nodes, s.v_prev, &params);
+        if let Some(charge) = device_params::diode_charge(self.model.as_ref()) {
+            let [anode, cathode] = nodes;
+            let v = s.voltage(anode) - s.voltage(cathode);
+            let (q, c) = sindr_devices::diode::diode_charge(v, &params, &charge);
+            let history = s.history(&self.id, DIODE_CHARGE);
+            let (g, i_hist) = s.integ.charge(q, c, v, &history);
+            stamp_companion_at(s.system, nodes, g, i_hist);
         }
         Ok(())
     }

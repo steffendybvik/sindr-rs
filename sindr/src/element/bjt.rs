@@ -7,9 +7,9 @@ use crate::circuit::{BjtModel, BjtParasiticCaps};
 use crate::device_params;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
+use crate::stamp::stamp_companion_at;
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
 /// DC, transient and AC.
@@ -60,6 +60,19 @@ impl Device for Bjt {
         Ok(())
     }
 
+    /// Its DC model at the iterate, and its parasitic capacitors over the
+    /// step.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        self.stamp_dc(&mut s.dc())?;
+        if let Some(pc) = &self.parasitic_caps {
+            for (junction, c, a, b) in bjt_parasitics(&s.nodes(), pc) {
+                let (g, i_hist) = s.integ.capacitor(c, &s.history(&self.id, junction));
+                stamp_companion_at(s.system, [a, b], g, i_hist);
+            }
+        }
+        Ok(())
+    }
+
     fn is_nonlinear(&self) -> bool {
         true
     }
@@ -94,17 +107,25 @@ fn default_bf() -> f64 {
     100.0
 }
 
-/// Stamp a BJT Ebers-Moll companion model into the MNA system.
-///
-/// The exact Newton linearisation at the current operating point (from
-/// v_prev): the 3×3 terminal Jacobian from `bjt_terminal_jacobian` (Early
-/// effect included) plus 3 RHS entries.
-///
-/// nodes: [base, collector, emitter].
-/// PNP is handled via polarity multiplier on junction voltages and output currents.
+/// A BJT's parasitic capacitors as `(junction, C, terminal, terminal)`,
+/// from its terminals `[base, collector, emitter]` (names or matrix
+/// indices): Cbe base–emitter and Cbc base–collector, each only if > 0.
+pub(crate) fn bjt_parasitics<T: Clone>(
+    nodes: &[T; 3],
+    pc: &BjtParasiticCaps,
+) -> Vec<(&'static str, f64, T, T)> {
+    let [b, c, e] = nodes.clone();
+    [("be", pc.cbe, b.clone(), e), ("bc", pc.cbc, b, c)]
+        .into_iter()
+        .filter(|cap| cap.1 > 0.0)
+        .collect()
+}
+
+/// [`stamp_bjt_companion_at`] by node name.
+#[cfg(test)]
 pub(crate) fn stamp_bjt_companion(
     system: &mut MnaSystem,
-    node_map: &NodeMap,
+    node_map: &crate::node_map::NodeMap,
     nodes: &[String; 3],
     v_prev: &DVector<f64>,
     params: &BjtParams,
@@ -114,8 +135,16 @@ pub(crate) fn stamp_bjt_companion(
     stamp_bjt_companion_at(system, [b, c, e], v_prev, params, kind);
 }
 
-/// [`stamp_bjt_companion`] between matrix indices `[base, collector,
-/// emitter]` (`None` is ground).
+/// Stamp a BJT Ebers-Moll companion model into the MNA system.
+///
+/// The exact Newton linearisation at the current operating point (from
+/// v_prev): the 3×3 terminal Jacobian from `bjt_terminal_jacobian` (Early
+/// effect included) plus 3 RHS entries.
+///
+/// nodes: [base, collector, emitter].
+/// PNP is handled via polarity multiplier on junction voltages and output currents.
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_bjt_companion_at(
     system: &mut MnaSystem,
     [b, c, e]: [Option<usize>; 3],

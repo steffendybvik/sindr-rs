@@ -6,9 +6,9 @@ use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 use crate::circuit::{DiodeModel, MosfetParasiticCaps};
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
+use crate::stamp::stamp_companion_at;
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
 /// to the source).
@@ -57,6 +57,19 @@ impl Device for Mosfet {
         Ok(())
     }
 
+    /// Its DC model at the iterate, and its parasitic capacitors over the
+    /// step.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        self.stamp_dc(&mut s.dc())?;
+        if let Some(pc) = &self.parasitic_caps {
+            for (junction, c, a, b) in mosfet_parasitics(&s.nodes(), pc) {
+                let (g, i_hist) = s.integ.capacitor(c, &s.history(&self.id, junction));
+                stamp_companion_at(s.system, [a, b], g, i_hist);
+            }
+        }
+        Ok(())
+    }
+
     fn is_nonlinear(&self) -> bool {
         true
     }
@@ -76,17 +89,25 @@ impl Device for Mosfet {
     }
 }
 
-/// Stamp a MOSFET companion model into the MNA system.
-///
-/// Linearizes the Level 1 MOSFET model at the current operating point
-/// and stamps the resulting conductances + current sources.
-///
-/// nodes: [gate, drain, source].
-/// PMOS is handled via polarity flip on terminal voltages. The body is tied
-/// to the source.
+/// A MOSFET's parasitic capacitors as `(junction, C, terminal, terminal)`,
+/// from its terminals `[gate, drain, source]` (names or matrix indices):
+/// Cgs gate–source and Cgd gate–drain, each only if > 0.
+pub(crate) fn mosfet_parasitics<T: Clone>(
+    nodes: &[T; 3],
+    pc: &MosfetParasiticCaps,
+) -> Vec<(&'static str, f64, T, T)> {
+    let [g, d, s] = nodes.clone();
+    [("gs", pc.cgs, g.clone(), s), ("gd", pc.cgd, g, d)]
+        .into_iter()
+        .filter(|cap| cap.1 > 0.0)
+        .collect()
+}
+
+/// [`stamp_mosfet_companion_at`] by node name.
+#[cfg(test)]
 pub(crate) fn stamp_mosfet_companion(
     system: &mut MnaSystem,
-    node_map: &NodeMap,
+    node_map: &crate::node_map::NodeMap,
     nodes: &[String; 3],
     v_prev: &DVector<f64>,
     params: &MosfetParams,
@@ -96,8 +117,16 @@ pub(crate) fn stamp_mosfet_companion(
     stamp_mosfet_companion_at(system, [g, d, s], v_prev, params, kind);
 }
 
-/// [`stamp_mosfet_companion`] between matrix indices `[gate, drain,
-/// source]` (`None` is ground).
+/// Stamp a MOSFET companion model into the MNA system.
+///
+/// Linearizes the Level 1 MOSFET model at the current operating point
+/// and stamps the resulting conductances + current sources.
+///
+/// nodes: [gate, drain, source].
+/// PMOS is handled via polarity flip on terminal voltages. The body is tied
+/// to the source.
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_mosfet_companion_at(
     system: &mut MnaSystem,
     [g, d, s]: [Option<usize>; 3],

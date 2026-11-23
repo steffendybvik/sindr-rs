@@ -4,7 +4,7 @@
 use crate::circuit::CrystalParams;
 use crate::error::SimError;
 
-use super::{stamped_as_parts, DcStamp, Device};
+use super::{stamped_as_parts, DcStamp, Device, TranStamp};
 
 /// Quartz crystal: the Butterworth–Van Dyke model ([`CrystalParams`]).
 /// An open circuit at DC. Its result's `power` is what the motional
@@ -27,5 +27,10 @@ impl Device for Crystal {
 
     fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
         Err(stamped_as_parts(&self.id))
+    }
+
+    /// Nothing: the transient steps its parts.
+    fn stamp_transient(&self, _: &mut TranStamp<'_>) -> Result<(), SimError> {
+        Ok(())
     }
 }
