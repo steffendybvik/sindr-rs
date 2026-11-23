@@ -11,6 +11,7 @@
 const GMIN: f64 = 1e-12; // minimum conductance floor
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 /// JFET channel polarity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum JfetKind {

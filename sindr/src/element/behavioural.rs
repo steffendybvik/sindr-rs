@@ -35,6 +35,7 @@ use super::Device;
 /// [`CircuitElement::VoltageSource`]: crate::CircuitElement::VoltageSource
 /// [`CircuitElement::CurrentSource`]: crate::CircuitElement::CurrentSource
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Behavioural {
     /// Unique component identifier.

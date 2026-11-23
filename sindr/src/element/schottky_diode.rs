@@ -7,6 +7,7 @@ use super::{Check, Device};
 /// Schottky diode: lower forward voltage (~0.3V) than silicon diode.
 /// nodes: [anode, cathode]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchottkyDiode {
     /// Unique component identifier.

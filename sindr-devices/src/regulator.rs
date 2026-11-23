@@ -27,6 +27,7 @@ const LIMIT_SHARPNESS: f64 = 0.01;
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RegulatorParams {

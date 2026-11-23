@@ -12,6 +12,7 @@ use crate::datasheet::{positive, DatasheetError, MosfetDatasheet};
 
 /// MOSFET type (NMOS or PMOS).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MosfetKind {
     /// N-channel MOSFET (electrons are majority carriers in the channel).
@@ -39,6 +40,7 @@ impl MosfetKind {
 
 /// Operating region of a MOSFET.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MosfetRegion {
     /// Below threshold — channel off, negligible drain current.
@@ -65,6 +67,7 @@ impl MosfetRegion {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MosfetParams {
     /// Transconductance parameter (A/V^2). SPICE KP parameter.

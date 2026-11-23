@@ -15,6 +15,7 @@ use crate::transfer_function::{Port, TfOutput};
 
 /// AC sensitivity configuration. Build one with [`AcSensConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct AcSensConfig {
@@ -46,6 +47,7 @@ impl AcSensConfig {
 /// The sensitivity of the small-signal output to one parameter, at one
 /// frequency.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct AcSensEntry {
@@ -57,14 +59,17 @@ pub struct AcSensEntry {
     pub value: f64,
     /// d(output)/d(parameter), a phasor: the output's unit (V or A) per the
     /// parameter's unit.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub sensitivity: Complex64,
     /// Change in the output phasor for a 1 % rise in the parameter:
     /// `sensitivity · value / 100`.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub per_percent: Complex64,
 }
 
 /// The output and its sensitivities at one frequency.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct AcSensPoint {
@@ -72,6 +77,7 @@ pub struct AcSensPoint {
     pub frequency: f64,
     /// The output phasor (V or A), as [`solve_ac`](crate::ac_analysis::solve_ac)
     /// gives it.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub output: Complex64,
     /// One entry per supported parameter, in circuit order.
     pub entries: Vec<AcSensEntry>,
@@ -94,6 +100,7 @@ impl AcSensPoint {
 
 /// Result of an AC sensitivity analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct AcSensResult {

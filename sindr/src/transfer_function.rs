@@ -18,6 +18,7 @@ use crate::node_map::NodeMap;
 
 /// What a transfer function is measured at.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum TfOutput {
@@ -75,6 +76,7 @@ impl TfOutput {
 /// Transfer-function analysis configuration. Build one with
 /// [`TfConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TfConfig {
@@ -108,6 +110,7 @@ impl TfConfig {
 /// The gain's unit follows the input and output: V/V for a voltage in and
 /// out, A/A for a current in and out, Ω or S for a mix.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TfResult {

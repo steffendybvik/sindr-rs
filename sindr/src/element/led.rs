@@ -7,6 +7,7 @@ use super::{Check, Device};
 /// LED. `nodes: [anode, cathode]`. Forward voltage drop depends on
 /// `color` (e.g. `"red"` ≈ 1.8 V, `"blue"` ≈ 3.2 V).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Led {
     /// Unique component identifier.

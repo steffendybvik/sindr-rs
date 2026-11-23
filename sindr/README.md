@@ -1046,3 +1046,16 @@ With the default `serde` feature, `Circuit` and `SimulationResult` (and all nest
 ```
 
 Fields with defaults (`bf`, `temperature`, `k`, `coil_resistance`, `position`, `v_pos`, `v_neg`, `parasitic_caps`) can be omitted from JSON and will take their defaults.
+
+### JSON Schema
+
+The optional `schemars` feature derives `schemars::JsonSchema` on every type that has serde, so an app that describes its tools to others (an MCP server, a form, an API) can publish the exact shape of a netlist, bench, circuit, config or result instead of writing it by hand. Complex numbers are `[re, im]` pairs, as serde writes them.
+
+```toml
+sindr = { version = "0.3", features = ["schemars"] }
+```
+
+```rust,ignore
+let schema = schemars::schema_for!(sindr::import::Netlist);
+println!("{}", serde_json::to_string_pretty(&schema)?);
+```

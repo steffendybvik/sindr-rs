@@ -16,6 +16,7 @@ use super::{Check, Device};
 /// resistance, input offset and bias current, and an output clamped to
 /// `v_pos`/`v_neg`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpAmp {
     /// Unique component identifier.

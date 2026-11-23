@@ -51,6 +51,7 @@ pub const PATH_SEPARATOR: char = '.';
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Block {
     /// Port nets, in the order [`Instance::nodes`] binds them.
@@ -74,6 +75,7 @@ pub struct Block {
 
 /// One placement of a [`Block`]: what an `X` line is in SPICE.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Instance {
     /// Instance id, unique in its scope (`"X1"`). Prefixes everything inside
@@ -106,6 +108,7 @@ impl Instance {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Part {
@@ -150,6 +153,7 @@ pub struct Part {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thermal {
@@ -223,6 +227,7 @@ impl Thermal {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Ratings {

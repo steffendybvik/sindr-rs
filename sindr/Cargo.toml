@@ -22,6 +22,7 @@ nalgebra = "0.35"
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
 num-complex = "0.4"
 serde = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 # SPICE netlist parser deps — only pulled in by the `spice` feature.
 winnow = { version = "1.0", optional = true }
@@ -29,6 +30,9 @@ miette = { version = "7", optional = true }
 
 [features]
 default = ["serde"]
+# JSON Schema for every serde type (`schemars::JsonSchema`), for apps that
+# describe sindr's inputs and outputs to other tools. Off by default.
+schemars = ["serde", "dep:schemars", "sindr-devices/schemars"]
 serde = ["dep:serde", "sindr-devices/serde", "num-complex/serde"]
 # The named example circuits with ids and descriptions (`get_examples`).
 examples = []
@@ -51,6 +55,8 @@ serde_json = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { version = "0.8", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }
+# Validates JSON against the schemas the `schemars` feature generates.
+jsonschema = { version = "0.63", default-features = false }
 # Fancy diagnostic rendering used by the SPICE end-to-end tests.
 miette = { version = "7", features = ["fancy"] }
 

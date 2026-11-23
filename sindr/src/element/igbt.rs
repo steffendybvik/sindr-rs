@@ -6,6 +6,7 @@ use super::Device;
 /// Nonlinear element — requires Newton-Raphson iteration.
 /// nodes: [gate, collector, emitter]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Igbt {
     /// Unique component identifier.

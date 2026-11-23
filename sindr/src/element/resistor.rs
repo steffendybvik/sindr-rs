@@ -6,6 +6,7 @@ use super::Device;
 
 /// Resistor between two nodes.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Resistor {
     /// Unique component identifier.

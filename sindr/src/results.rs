@@ -37,6 +37,7 @@ use crate::stamp::{ldr_resistance, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 /// transformer its primary, and a voltage regulator its pass element
 /// (`Vin − Vout`, the output current, and its dissipation).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ComponentResult {
@@ -53,6 +54,7 @@ pub struct ComponentResult {
 /// Per-BJT operating-point results: terminal voltages, terminal currents,
 /// power, and which region of operation the device is in.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct BjtResult {
@@ -80,6 +82,7 @@ pub struct BjtResult {
 
 /// Per-MOSFET operating-point results.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct MosfetResult {
@@ -100,6 +103,7 @@ pub struct MosfetResult {
 
 /// Per-op-amp / comparator results: input/output voltages.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct OpAmpResult {
@@ -117,6 +121,7 @@ pub struct OpAmpResult {
 
 /// Per-relay results: coil voltage and contact state.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct RelayResult {
@@ -131,6 +136,7 @@ pub struct RelayResult {
 /// One timestep of a transient simulation: time, node voltages, per-component
 /// state at that instant.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TimestepSnapshot {
@@ -163,6 +169,7 @@ pub struct TimestepSnapshot {
 /// Present on [`SimulationResult::transient`] when the circuit contains
 /// reactive elements (capacitors, inductors) or time-varying sources.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TransientData {
@@ -181,6 +188,7 @@ pub struct TransientData {
 
 /// Step counts from one transient run.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TransientStats {
@@ -212,6 +220,7 @@ pub struct TransientStats {
 /// - `transient` — for circuits with capacitors, inductors, or waveform
 ///   sources (DC analysis returns `None`)
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct SimulationResult {
@@ -294,6 +303,7 @@ pub struct SimulationResult {
 /// A convergence fallback for nonlinear DC, tried in this order when plain
 /// Newton–Raphson fails.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

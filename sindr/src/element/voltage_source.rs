@@ -8,6 +8,7 @@ use super::{Check, Device};
 /// Independent voltage source. `nodes[0]` is the positive terminal,
 /// `nodes[1]` is the negative terminal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoltageSource {
     /// Unique component identifier.

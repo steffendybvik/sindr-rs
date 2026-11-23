@@ -10,6 +10,7 @@ use super::{Check, Device};
 /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
 /// DC, transient and AC.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bjt {
     /// Unique component identifier.

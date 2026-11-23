@@ -5,6 +5,7 @@ use super::Device;
 /// Pushbutton (momentary switch): identical behaviour to Switch.
 /// When closed = true, current flows; when false, open circuit.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pushbutton {
     /// Unique component identifier.

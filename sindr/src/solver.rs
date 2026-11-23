@@ -49,6 +49,7 @@ use crate::transient::TransientConfig;
 /// so the struct can't be built with a literal outside this crate.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[non_exhaustive]
 pub struct SolverOptions {

@@ -1390,6 +1390,7 @@ fn extract_mosfet_results_from_snapshot(
 /// assert_eq!(config.tstop, 10e-3);
 /// ```
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TransientConfig {
@@ -1480,6 +1481,7 @@ pub struct TransientConfig {
 /// ```
 ///
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]

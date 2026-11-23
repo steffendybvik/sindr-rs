@@ -8,6 +8,7 @@ use super::{Check, Device};
 /// nodes: [top, wiper, bottom]
 /// position = 0.0 → wiper at top, 1.0 → wiper at bottom.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Potentiometer {
     /// Unique component identifier.

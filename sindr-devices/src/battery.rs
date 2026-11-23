@@ -18,6 +18,7 @@
 /// and recover after the load goes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BatteryRc {
     /// Polarisation resistance (Ω).
     pub r: f64,
@@ -28,6 +29,7 @@ pub struct BatteryRc {
 /// A battery's equivalent circuit.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BatteryParams {
     /// Capacity (Ah): the charge from full (SoC 1) to empty (SoC 0).
     pub capacity: f64,

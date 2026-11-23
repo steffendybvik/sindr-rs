@@ -7,6 +7,7 @@ use super::{Check, Device};
 /// Voltage-Controlled Voltage Source: V_out = mu * V_control.
 /// nodes: [out+, out-], control_nodes: [ctrl+, ctrl-]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vcvs {
     /// Unique component identifier.

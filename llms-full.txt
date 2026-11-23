@@ -1241,6 +1241,19 @@ With the default `serde` feature, `Circuit` and `SimulationResult` (and all nest
 
 Fields with defaults (`bf`, `temperature`, `k`, `coil_resistance`, `position`, `v_pos`, `v_neg`, `parasitic_caps`) can be omitted from JSON and will take their defaults.
 
+#### JSON Schema
+
+The optional `schemars` feature derives `schemars::JsonSchema` on every type that has serde, so an app that describes its tools to others (an MCP server, a form, an API) can publish the exact shape of a netlist, bench, circuit, config or result instead of writing it by hand. Complex numbers are `[re, im]` pairs, as serde writes them.
+
+```toml
+sindr = { version = "0.3", features = ["schemars"] }
+```
+
+```rust,ignore
+let schema = schemars::schema_for!(sindr::import::Netlist);
+println!("{}", serde_json::to_string_pretty(&schema)?);
+```
+
 
 # Crate `sindr-devices` README (sindr-devices/README.md)
 
@@ -1614,6 +1627,7 @@ pub struct AcPoint {
     pub frequency: f64,
     /// Complex node voltages (V) keyed by node name. Includes the ground
     /// node (always 0).
+    #[cfg_attr(feature = "schemars", schemars(with = "HashMap<String, [f64; 2]>"))]
     pub node_voltages: HashMap<String, Complex64>,
 }
 
@@ -6266,6 +6280,7 @@ pub struct LoopGainPoint {
     /// Frequency (Hz).
     pub frequency: f64,
     /// The loop gain `T(j·2πf)`.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub gain: Complex64,
     /// Phase of `T` (degrees), unwrapped along the sweep from the first
     /// point's value in (−180°, 180°].
@@ -7088,8 +7103,10 @@ impl PzConfig {
 /// parts. Only finite roots are listed.
 pub struct PzResult {
     /// The poles (rad/s); empty when only zeros were asked for.
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<[f64; 2]>"))]
     pub poles: Vec<Complex64>,
     /// The zeros (rad/s); empty when only poles were asked for.
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<[f64; 2]>"))]
     pub zeros: Vec<Complex64>,
     /// Configuration used to produce this result.
     pub config: PzConfig,
@@ -7850,9 +7867,11 @@ pub struct AcSensEntry {
     pub value: f64,
     /// d(output)/d(parameter), a phasor: the output's unit (V or A) per the
     /// parameter's unit.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub sensitivity: Complex64,
     /// Change in the output phasor for a 1 % rise in the parameter:
     /// `sensitivity · value / 100`.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub per_percent: Complex64,
 }
 
@@ -7862,6 +7881,7 @@ pub struct AcSensPoint {
     pub frequency: f64,
     /// The output phasor (V or A), as [`solve_ac`](crate::ac_analysis::solve_ac)
     /// gives it.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub output: Complex64,
     /// One entry per supported parameter, in circuit order.
     pub entries: Vec<AcSensEntry>,

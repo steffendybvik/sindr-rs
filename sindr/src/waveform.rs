@@ -13,6 +13,7 @@ use std::f64::consts::PI;
 
 /// A time-varying waveform.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
 #[non_exhaustive]

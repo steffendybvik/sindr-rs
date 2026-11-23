@@ -31,6 +31,7 @@ use super::{Check, Device};
 ///
 /// [`Inductor`]: super::Inductor
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Transformer {
     /// Unique component identifier.

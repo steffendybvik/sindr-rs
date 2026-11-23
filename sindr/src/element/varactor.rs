@@ -7,6 +7,7 @@ use super::Device;
 /// transient; in AC, its capacitance at the DC bias point.
 /// nodes: [anode, cathode]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Varactor {
     /// Unique component identifier.

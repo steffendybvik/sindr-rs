@@ -27,6 +27,7 @@ use crate::expression::Expression;
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BjtParasiticCaps {
     /// Base-Emitter junction capacitance (F). Typical: 5–50 pF.
@@ -49,6 +50,7 @@ pub struct BjtParasiticCaps {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiodeModel {
@@ -128,6 +130,7 @@ impl DiodeModel {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BjtModel {
@@ -194,6 +197,7 @@ impl Default for BjtModel {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpAmpModel {
@@ -227,6 +231,7 @@ impl Default for OpAmpModel {
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 /// Optional gate capacitances of a MOSFET, for transient and AC.
 ///
 /// Set the fields you need and fill the rest with `..Default::default()`,
@@ -258,6 +263,7 @@ pub struct MosfetParasiticCaps {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JfetParasiticCaps {
@@ -298,6 +304,7 @@ impl JfetParasiticCaps {
 
 /// What a [`CircuitElement::Behavioural`] source's expression sets.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -311,6 +318,7 @@ pub enum BehaviouralOutput {
 /// Which throw of a [`CircuitElement::SwitchSpdt`] the common terminal
 /// connects to.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SpdtPosition {
@@ -331,6 +339,7 @@ pub enum SpdtPosition {
 /// capacitance a datasheet names isn't part of the crystal: it's the two
 /// capacitors on the board.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CrystalParams {
     /// Series-resonant frequency (Hz), positive.
@@ -367,6 +376,7 @@ impl CrystalParams {
 /// in series with `l ∥ r_ac` (and `c`, when set). Below its peak the bead
 /// is inductive, at the peak it's `r_ac`, and above it `c` takes over.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FerriteBeadParams {
     /// DC resistance (Ω), positive.
@@ -421,6 +431,7 @@ impl FerriteBeadParams {
 /// With the default `serde` feature enabled, `CircuitElement` serialises
 /// using a `type` discriminator: `{"type": "resistor", "id": "R1", ...}`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", serde(tag = "type"))]
 #[non_exhaustive]
@@ -678,6 +689,7 @@ impl CircuitElement {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Circuit {
     /// Top-level components. Order has no semantic meaning.

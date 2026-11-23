@@ -7,6 +7,7 @@ use super::{Check, Device};
 /// Capacitor. Open-circuit in DC analysis; charges/discharges in
 /// transient. `voltage_across` is reported as `nodes[0] − nodes[1]`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Capacitor {
     /// Unique component identifier.

@@ -56,6 +56,7 @@ use crate::node_map::NodeMap;
 /// The transfer function a pole-zero analysis is of: SPICE's `vol` or
 /// `cur`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -70,6 +71,7 @@ pub enum PzTransfer {
 
 /// What a pole-zero analysis finds: SPICE's `pol`, `zer` or `pz`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -87,6 +89,7 @@ pub enum PzFind {
 /// Build one with [`PzConfig::voltage_gain`] or
 /// [`PzConfig::transimpedance`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct PzConfig {
@@ -162,12 +165,15 @@ impl PzConfig {
 /// in conjugate pairs; a stable circuit's poles all have negative real
 /// parts. Only finite roots are listed.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct PzResult {
     /// The poles (rad/s); empty when only zeros were asked for.
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<[f64; 2]>"))]
     pub poles: Vec<Complex64>,
     /// The zeros (rad/s); empty when only poles were asked for.
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<[f64; 2]>"))]
     pub zeros: Vec<Complex64>,
     /// Configuration used to produce this result.
     pub config: PzConfig,

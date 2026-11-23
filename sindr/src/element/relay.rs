@@ -9,6 +9,7 @@ use super::{Check, Device};
 /// Contact closes when |V_coil| >= pickup_voltage. AC and `.tf` take the
 /// contact as open or closed at the DC bias point.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Relay {
     /// Unique component identifier.

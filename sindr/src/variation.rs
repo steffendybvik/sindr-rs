@@ -62,6 +62,7 @@ use crate::{Circuit, CircuitElement, SimError, SimulationResult};
 
 /// Which parameter of a component a [`Tolerance`] varies.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -125,6 +126,7 @@ impl Parameter {
 
 /// How a [`Tolerance`]'s parameter is drawn in [`monte_carlo`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
@@ -142,6 +144,7 @@ pub enum Distribution {
 
 /// How one parameter of one component varies.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Tolerance {
@@ -197,6 +200,7 @@ impl Tolerance {
 
 /// Configuration of a [`monte_carlo`] analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct MonteCarloConfig {
@@ -227,6 +231,7 @@ impl MonteCarloConfig {
 
 /// Where a [`Tolerance`] sits in one corner of a [`corners`] analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Corner {
@@ -240,6 +245,7 @@ pub enum Corner {
 
 /// Which corners a [`corners`] analysis runs.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -256,6 +262,7 @@ pub const MAX_CORNER_TOLERANCES: usize = 16;
 
 /// One run of a [`monte_carlo`] or [`corners`] analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct VariationRun {
@@ -268,6 +275,7 @@ pub struct VariationRun {
 
 /// One measurement's spread over the runs it could be taken on.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct MeasurementStats {
@@ -289,6 +297,7 @@ pub struct MeasurementStats {
 
 /// Result of a [`monte_carlo`] or [`corners`] analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct VariationResult {
@@ -387,6 +396,7 @@ fn spec_margin(spec: &Spec, value: f64) -> (Option<f64>, SpecStatus) {
 /// One run picked out of a variation analysis: which, and the condition
 /// behind it.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct WorstRun {
@@ -403,6 +413,7 @@ pub struct WorstRun {
 
 /// One spec over the runs of a variation analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SpecSpread {
@@ -423,6 +434,7 @@ pub struct SpecSpread {
 
 /// Which runs a [`ratings_over`] analysis makes.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Sampling {
@@ -439,6 +451,7 @@ pub enum Sampling {
 
 /// One part's rating at its worst over the runs of [`ratings_over`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct WorstRating {
@@ -468,6 +481,7 @@ pub struct WorstRating {
 
 /// Result of [`ratings_over`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RatingsSpread {

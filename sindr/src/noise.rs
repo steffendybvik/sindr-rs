@@ -55,6 +55,7 @@ const T_NOISE: f64 = 300.15;
 /// `.noise V(output[,reference]) input_source {dec|lin} points f_start f_stop`.
 /// Build one with [`NoiseConfig::new`] and its `with_*` setters.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NoiseConfig {
@@ -123,6 +124,7 @@ impl NoiseConfig {
 
 /// The physical mechanism behind a noise source.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NoiseKind {
@@ -136,6 +138,7 @@ pub enum NoiseKind {
 
 /// One noise source in the circuit.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NoiseSource {
@@ -150,6 +153,7 @@ pub struct NoiseSource {
 
 /// Noise at one frequency.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NoisePoint {
@@ -182,6 +186,7 @@ impl NoisePoint {
 
 /// Result of a noise analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NoiseResult {
