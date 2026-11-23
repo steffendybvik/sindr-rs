@@ -1,0 +1,61 @@
+//! A battery: open-circuit voltage by state of charge behind its internal
+//! resistance and an optional RC pair.
+
+use crate::error::SimError;
+
+use super::{Check, Device};
+
+/// A battery: open-circuit voltage by state of charge behind a series
+/// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
+/// its open-circuit voltage at `state_of_charge` behind `R0 + R1`. In
+/// transient the RC pair charges and the state of charge falls with the
+/// charge drawn, reported per step in `state_of_charge`. In AC it is
+/// the impedance `R0 + R1‖C1`. `current_through` flows
+/// `nodes[0] → nodes[1]` inside the cell, so it is negative while the
+/// battery discharges, as for a voltage source.
+///
+/// [`BatteryParams`]: sindr_devices::battery::BatteryParams
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Battery {
+    /// Unique component identifier.
+    pub id: String,
+    /// Terminals `[positive, negative]`.
+    pub nodes: [String; 2],
+    /// The cell's equivalent circuit.
+    pub params: sindr_devices::battery::BatteryParams,
+    /// State of charge at the start, 0 (empty) to 1 (full).
+    pub state_of_charge: f64,
+}
+
+impl Device for Battery {
+    device_identity!();
+
+    fn is_reactive(&self) -> bool {
+        self.params.rc.is_some()
+    }
+
+    fn validate(&self) -> Result<(), SimError> {
+        let check = Check::new(&self.id);
+        let params = &self.params;
+        check.positive("params.capacity", params.capacity, " Ah")?;
+        check.positive("params.r_series", params.r_series, " Ω")?;
+        if let Some(pair) = params.rc {
+            check.positive("params.rc.r", pair.r, " Ω")?;
+            check.positive("params.rc.c", pair.c, " F")?;
+        }
+        let bad_curve = params.ocv.is_empty()
+            || params
+                .ocv
+                .iter()
+                .any(|&(soc, v)| !soc.is_finite() || !v.is_finite())
+            || params.ocv.windows(2).any(|w| w[1].0 <= w[0].0);
+        if bad_curve {
+            return Err(check.fail(
+                "params.ocv must be finite (state of charge, volts) points \
+                 with the state of charge rising",
+            ));
+        }
+        check.within("state_of_charge", self.state_of_charge, 1.0)
+    }
+}
