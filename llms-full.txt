@@ -1189,6 +1189,18 @@ A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) tak
 
 Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
 
+#### In the browser
+
+The same solves built for `wasm32-unknown-unknown` (release) take 1.3–1.8× as long as native, on the same Apple M1 Pro:
+
+| Case | Native | Chrome 157 | Ratio | Node 24 | Ratio |
+|---|---:|---:|---:|---:|---:|
+| Operating point, 50 resistors and 50 diodes | 0.30 ms | 0.55 ms | 1.8× | 0.54 ms | 1.8× |
+| Transient, the rectifier over 5 000 steps | 5.3 ms | 8.5 ms | 1.6× | 9.5 ms | 1.8× |
+| AC, 100 RC stages at 100 frequencies | 5.1 ms | 6.4 ms | 1.3× | 6.4 ms | 1.3× |
+
+`sindr/tests/wasm_speed.rs` times them; its header has the commands for native, Node and a browser.
+
 ### Serde
 
 With the default `serde` feature, `Circuit` and `SimulationResult` (and all nested types) implement `Serialize`/`Deserialize`. Component types use snake_case tags:
