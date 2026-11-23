@@ -154,6 +154,14 @@ pub enum SimError {
         step: f64,
     },
 
+    /// A progress hook asked the run to stop
+    /// ([`solve_transient_with_progress`](crate::solve_transient_with_progress)).
+    #[error("cancelled at t = {time:.3e} s")]
+    Cancelled {
+        /// Simulated time of the last accepted step (s).
+        time: f64,
+    },
+
     /// A [`Measurement`](crate::measure::Measurement) couldn't be taken on
     /// a result: an unknown node or component, a window outside the
     /// result, or a level the signal never crosses.

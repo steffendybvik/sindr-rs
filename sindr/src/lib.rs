@@ -369,7 +369,10 @@ pub use sensitivity::{
 pub use solver::{Solver, SolverOptions};
 pub use temp_sweep::{temperature_sweep, TempSweepPoint, TempSweepResult};
 pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
-pub use transient::{solve_transient, IntegrationMethod, TransientConfig, TransientStart};
+pub use transient::{
+    solve_transient, solve_transient_with_progress, Flow, IntegrationMethod, TransientConfig,
+    TransientProgress, TransientStart,
+};
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
 
@@ -610,6 +613,7 @@ fn solve_circuit_parts(
             num_vsources,
             &config,
             opts,
+            None,
         );
     }
 
