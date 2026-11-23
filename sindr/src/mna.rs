@@ -36,9 +36,12 @@ use num_complex::Complex64;
 use crate::error::SimError;
 
 /// Largest system (unknowns) stored and solved densely. Above it the matrix
-/// is sparse. From `benches/mna_solve.rs`: dense and sparse cost about the
-/// same at 100 unknowns (70 µs vs 35–80 µs), dense is 5–7× faster at 10, and
-/// sparse is 50–250× faster at 1 000.
+/// is sparse. From `benches/mna_solve.rs`, the crossover depends on the
+/// circuit's shape: a ladder (three entries a row) goes sparse-faster near
+/// 75 unknowns (41 µs vs 73 µs at 100), while a mesh (five a row) is still
+/// faster dense at 100 (71 µs vs 85 µs). Below 60 dense wins on both by
+/// 1.5–5×, and sparse is 50–250× faster at 1 000. 100 keeps mesh-like
+/// circuits dense and costs a ladder tens of µs a solve.
 pub const DENSE_MAX: usize = 100;
 
 /// A scalar the MNA matrix can hold: `f64` for DC and transient,
