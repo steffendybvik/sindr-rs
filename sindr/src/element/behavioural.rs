@@ -9,7 +9,7 @@ use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
 use crate::stamp::stamp_voltage_source_at;
 
-use super::{DcStamp, Device};
+use super::{DcStamp, Device, TranStamp};
 
 /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
 /// voltage or current set by an [`Expression`] of node voltages,
@@ -78,6 +78,23 @@ impl Device for Behavioural {
             &self.expr,
             x,
             0.0,
+            s.branch,
+        )
+    }
+
+    /// Its expression at the step's end, linearised at the iterate.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let nodes = s.nodes();
+        stamp_behavioural_at(
+            s.system,
+            s.circuit,
+            s.node_map,
+            &self.id,
+            nodes,
+            self.output,
+            &self.expr,
+            s.v_prev,
+            s.t,
             s.branch,
         )
     }
@@ -237,27 +254,8 @@ fn variable_name(variable: &crate::expression::Variable) -> String {
 
 /// Stamps a behavioural source linearised at `x` and time `t`. A voltage
 /// output takes branch row `branch`; a current output takes none.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn stamp_behavioural(
-    system: &mut MnaSystem,
-    circuit: &Circuit,
-    node_map: &NodeMap,
-    id: &str,
-    nodes: &[String; 2],
-    output: BehaviouralOutput,
-    expr: &Expression,
-    x: &DVector<f64>,
-    t: f64,
-    branch: usize,
-) -> Result<(), SimError> {
-    let pins = [node_map.index(&nodes[0]), node_map.index(&nodes[1])];
-    stamp_behavioural_at(
-        system, circuit, node_map, id, pins, output, expr, x, t, branch,
-    )
-}
-
-/// [`stamp_behavioural`] between matrix indices `[n+, n-]` (`None` is
-/// ground).
+///
+/// Terminals as matrix indices (`None` is ground).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn stamp_behavioural_at(
     system: &mut MnaSystem,

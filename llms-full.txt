@@ -3869,6 +3869,10 @@ pub struct Thermistor {
 }
 ```
 
+## `sindr/src/element/tran_stamp.rs`
+
+What an element's transient stamp writes into and reads from.
+
 ## `sindr/src/element/transformer.rs`
 
 A transformer: two coupled windings, linear or with a saturating core.

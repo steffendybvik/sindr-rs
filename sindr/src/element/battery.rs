@@ -1,10 +1,11 @@
 //! A battery: open-circuit voltage by state of charge behind its internal
 //! resistance and an optional RC pair.
 
+use crate::battery_state;
 use crate::error::SimError;
-use crate::stamp::stamp_resistor_at;
+use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// A battery: open-circuit voltage by state of charge behind a series
 /// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
@@ -34,7 +35,7 @@ impl Device for Battery {
     device_identity!();
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
-        let (g, i_hist) = crate::battery_state::dc_norton(&self.params, self.state_of_charge);
+        let (g, i_hist) = battery_state::dc_norton(&self.params, self.state_of_charge);
         let [p, q] = s.nodes();
         stamp_resistor_at(s.system, [p, q], 1.0 / g);
         // The Norton current: −i_hist out of nodes[1] into nodes[0]'s side.
@@ -44,6 +45,17 @@ impl Device for Battery {
         if let Some(q) = q {
             s.system.b[q] += i_hist;
         }
+        Ok(())
+    }
+
+    /// Its Norton form over the step, from the state of charge and RC pair
+    /// it starts the step with.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let soc = s.history(&self.id, battery_state::SOC).x1;
+        let rc = s.history(&self.id, battery_state::RC);
+        let (g, i_hist) = battery_state::step_norton(&self.params, soc, &rc, s.integ);
+        let nodes = s.nodes();
+        stamp_companion_at(s.system, nodes, g, i_hist);
         Ok(())
     }
 

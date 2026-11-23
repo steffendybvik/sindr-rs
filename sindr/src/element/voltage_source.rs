@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::stamp::stamp_voltage_source_at;
 use crate::waveform::Waveform;
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// Independent voltage source. `nodes[0]` is the positive terminal,
 /// `nodes[1]` is the negative terminal.
@@ -32,6 +32,17 @@ impl Device for VoltageSource {
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let nodes = s.nodes();
         stamp_voltage_source_at(s.system, nodes, self.voltage, s.branch);
+        Ok(())
+    }
+
+    /// The DC voltage plus the waveform at the step's end.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let v = match &self.waveform {
+            Some(w) => self.voltage + w.evaluate(s.t),
+            None => self.voltage,
+        };
+        let nodes = s.nodes();
+        stamp_voltage_source_at(s.system, nodes, v, s.branch);
         Ok(())
     }
 

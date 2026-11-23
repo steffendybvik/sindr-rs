@@ -6,9 +6,9 @@ use sindr_devices::jfet::JfetKind;
 use crate::circuit::JfetParasiticCaps;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
+use crate::stamp::stamp_companion_at;
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// N-channel or P-channel JFET (Shockley square-law model).
 /// nodes: [gate, drain, source]
@@ -48,6 +48,22 @@ impl Device for Jfet {
         Ok(())
     }
 
+    /// Its DC model at the iterate, and its gate junctions' charge over
+    /// the step.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        self.stamp_dc(&mut s.dc())?;
+        if let Some(pc) = &self.parasitic_caps {
+            for (junction, c0, a, b) in jfet_junctions(&s.nodes(), pc) {
+                let v = s.voltage(a) - s.voltage(b);
+                let (q, c) = jfet_gate_charge(v, self.kind, pc, c0);
+                let history = s.history(&self.id, junction);
+                let (g, i_hist) = s.integ.charge(q, c, v, &history);
+                stamp_companion_at(s.system, [a, b], g, i_hist);
+            }
+        }
+        Ok(())
+    }
+
     fn is_nonlinear(&self) -> bool {
         true
     }
@@ -81,15 +97,52 @@ fn default_jfet_vp() -> f64 {
     -2.0 // -2V pinch-off (N-channel default)
 }
 
-/// Stamp a JFET companion model into the MNA system.
-///
-/// Linearizes the Shockley square-law JFET model at the current operating point.
-/// nodes: [gate, drain, source].
-/// P-channel: `jfet_companion` works in the mirrored N-channel frame, and the
-/// Norton current is flipped back to the physical one here.
+/// A JFET's gate junctions as `(junction, zero-bias C, terminal,
+/// terminal)`, from its terminals `[gate, drain, source]` (names or matrix
+/// indices): gate–source and gate–drain, each only if its capacitance is
+/// positive. Their histories hold charges (C), not voltages.
+pub(crate) fn jfet_junctions<T: Clone>(
+    nodes: &[T; 3],
+    pc: &JfetParasiticCaps,
+) -> Vec<(&'static str, f64, T, T)> {
+    let [g, d, s] = nodes.clone();
+    [("gs", pc.cgs, g.clone(), s), ("gd", pc.cgd, g, d)]
+        .into_iter()
+        .filter(|j| j.1 > 0.0)
+        .collect()
+}
+
+/// Charge (C) on a JFET gate junction of zero-bias capacitance `c0` (F),
+/// gate side positive, and its capacitance (F) at `v` (V), gate minus the
+/// other terminal. A P-channel part's gate junction points the other way,
+/// so its junction voltage and charge are the negatives; the capacitance
+/// is the same.
+pub(crate) fn jfet_gate_charge(
+    v: f64,
+    kind: JfetKind,
+    pc: &JfetParasiticCaps,
+    c0: f64,
+) -> (f64, f64) {
+    let charge = sindr_devices::diode::JunctionCharge {
+        cjo: c0,
+        vj: pc.pb,
+        m: pc.m,
+        fc: pc.fc,
+        tt: 0.0,
+    };
+    let sign = match kind {
+        JfetKind::NChannel => 1.0,
+        JfetKind::PChannel => -1.0,
+    };
+    let (q, c) = charge.charge(sign * v, 0.0, 0.0);
+    (sign * q, c)
+}
+
+/// [`stamp_jfet_companion_at`] by node name.
+#[cfg(test)]
 pub(crate) fn stamp_jfet_companion(
     system: &mut MnaSystem,
-    node_map: &NodeMap,
+    node_map: &crate::node_map::NodeMap,
     nodes: &[String; 3], // [gate, drain, source]
     kind: JfetKind,
     idss: f64,
@@ -100,8 +153,14 @@ pub(crate) fn stamp_jfet_companion(
     stamp_jfet_companion_at(system, [g, d, s], kind, idss, vp, v_prev);
 }
 
-/// [`stamp_jfet_companion`] between matrix indices `[gate, drain, source]`
-/// (`None` is ground).
+/// Stamp a JFET companion model into the MNA system.
+///
+/// Linearizes the Shockley square-law JFET model at the current operating point.
+/// nodes: [gate, drain, source].
+/// P-channel: `jfet_companion` works in the mirrored N-channel frame, and the
+/// Norton current is flipped back to the physical one here.
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_jfet_companion_at(
     system: &mut MnaSystem,
     [g, d, s]: [Option<usize>; 3],

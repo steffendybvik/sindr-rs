@@ -1,11 +1,12 @@
 //! A transformer: two coupled windings, linear or with a saturating core.
 
+use sindr_devices::inductor;
+
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
 use crate::stamp::stamp_voltage_source_at;
 
-use super::{Check, DcStamp, Device};
+use super::{Check, DcStamp, Device, TranStamp};
 
 /// Ideal transformer with coupled inductors.
 ///
@@ -70,6 +71,29 @@ impl Device for Transformer {
         Ok(())
     }
 
+    /// The coupled windings' companion over the step, on its two branch
+    /// rows.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let (k1, k2) = (s.branch, s.branch + 1);
+        let h = [s.inductor(0), s.inductor(1)];
+        let (z, rhs) = match &self.saturation {
+            None => s
+                .integ
+                .coupled(transformer_inductances(self.l1, self.l2, self.k), h),
+            // Its histories hold fluxes. Linearised at the Newton
+            // iterate's winding currents.
+            Some(sat) => {
+                let at = |k: usize| s.v_prev.get(k).copied().unwrap_or(0.0);
+                let i = [at(k1), at(k2)];
+                let (lambda, l) = transformer_flux(self.l1, self.l2, self.k, sat, i);
+                s.integ.coupled_nonlinear(l, lambda, i, h)
+            }
+        };
+        let nodes = s.nodes();
+        stamp_transformer_companion_at(s.system, nodes, z, rhs, k1, k2);
+        Ok(())
+    }
+
     /// One winding current each, primary then secondary.
     fn branches(&self) -> usize {
         2
@@ -126,26 +150,63 @@ fn default_coupling() -> f64 {
     0.999
 }
 
-/// Stamp a coupled-inductor transformer as two branch-current unknowns.
+/// A transformer's inductance matrix `[[L1, M], [M, L2]]`, M = k·√(L1·L2).
+fn transformer_inductances(l1: f64, l2: f64, k: f64) -> [[f64; 2]; 2] {
+    let m = k * (l1 * l2).sqrt();
+    [[l1, m], [m, l2]]
+}
+
+/// Winding fluxes (Wb) and incremental inductance matrix `dλ/di` (H) of a
+/// transformer with a saturating core, at winding currents `i` (A).
+///
+/// Each winding has leakage `(1 − k)·L`; the magnetising inductance `k·L1`
+/// on the primary carries `im = i1 + n·i2`, n = √(L2/L1), and saturates as
+/// `sat`. Its flux links the primary once and the secondary n times:
+/// `λ1 = (1 − k)·L1·i1 + λm(im)`, `λ2 = (1 − k)·L2·i2 + n·λm(im)`. With a
+/// linear λm = k·L1·im these are the coupled inductors of
+/// [`transformer_inductances`].
+pub(crate) fn transformer_flux(
+    l1: f64,
+    l2: f64,
+    k: f64,
+    sat: &inductor::InductorSaturation,
+    i: [f64; 2],
+) -> ([f64; 2], [[f64; 2]; 2]) {
+    let n = (l2 / l1).sqrt();
+    let lm = k * l1;
+    let im = i[0] + n * i[1];
+    let flux_m = inductor::flux(im, lm, sat);
+    let lm_inc = inductor::incremental_inductance(im, lm, sat);
+    let (ll1, ll2) = ((1.0 - k) * l1, (1.0 - k) * l2);
+    (
+        [ll1 * i[0] + flux_m, ll2 * i[1] + n * flux_m],
+        [
+            [ll1 + lm_inc, n * lm_inc],
+            [n * lm_inc, ll2 + n * n * lm_inc],
+        ],
+    )
+}
+
+/// Stamp a coupled-inductor transformer as two branch-current unknowns,
+/// its terminals `[p1, q1, p2, q2]` as matrix indices (`None` is ground).
 ///
 /// `k1`/`k2` are the MNA rows of the primary and secondary currents, each
 /// flowing from the winding's first terminal to its second. Each winding's
 /// branch row is `V(p) − V(q) + Σ_j z[k][j]·I_j = rhs[k]`, with `z` and `rhs`
 /// from the integration formula (`Integrator::coupled`). For backward Euler,
 /// `z = −L/dt` and `rhs = −(L/dt)·I_prev`, i.e. `V = L·(I − I_prev)/dt`.
-pub(crate) fn stamp_transformer_companion(
+fn stamp_transformer_companion_at(
     system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 4], // [p1, q1, p2, q2]
+    nodes: [Option<usize>; 4],
     z: [[f64; 2]; 2],
     rhs: [f64; 2],
-    k1: usize, // branch row/col index for primary current
-    k2: usize, // branch row/col index for secondary current
+    k1: usize,
+    k2: usize,
 ) {
     let rows = [k1, k2];
     for (w, &k) in rows.iter().enumerate() {
-        let p = node_map.index(&nodes[2 * w]);
-        let q = node_map.index(&nodes[2 * w + 1]);
+        let p = nodes[2 * w];
+        let q = nodes[2 * w + 1];
         if let Some(pi) = p {
             system.a[(pi, k)] += 1.0;
             system.a[(k, pi)] += 1.0;

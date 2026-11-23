@@ -291,21 +291,8 @@ pub(crate) fn limit_regulator_step(
 /// `Iout = −i_branch`. KCL: the output pin takes `i_branch`, the input
 /// gives `Iout + Iq`, and the quiescent current returns through ground
 /// (all mirrored for a negative `voltage`).
-pub(crate) fn stamp_regulator(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 3],
-    voltage: f64,
-    model: &Option<RegulatorParams>,
-    branch: usize,
-    v_prev: Option<&DVector<f64>>,
-) {
-    let pins = pins(node_map, nodes);
-    stamp_regulator_at(system, pins, voltage, model, branch, v_prev);
-}
-
-/// [`stamp_regulator`] between matrix indices `[input, output, gnd]`
-/// (`None` is ground).
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_regulator_at(
     system: &mut MnaSystem,
     [input, out, gnd]: [Option<usize>; 3],

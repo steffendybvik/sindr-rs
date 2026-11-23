@@ -1,9 +1,9 @@
 //! A varactor: a diode used for its voltage-dependent junction capacitance.
 
 use crate::error::SimError;
-use crate::stamp::stamp_resistor_at;
+use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 
-use super::{DcStamp, Device};
+use super::{DcStamp, Device, TranStamp};
 
 /// Varactor diode: voltage-dependent junction capacitance.
 /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
@@ -29,6 +29,16 @@ impl Device for Varactor {
         // Open at DC: a 1e12 Ω shunt, open for practical purposes.
         let nodes = s.nodes();
         stamp_resistor_at(s.system, nodes, 1e12);
+        Ok(())
+    }
+
+    /// Its capacitance linearised at the voltage the step starts from.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let history = s.capacitor(0);
+        let c = sindr_devices::varactor::junction_capacitance(history.x1, &self.params);
+        let (g, i_hist) = s.integ.capacitor(c, history);
+        let nodes = s.nodes();
+        stamp_companion_at(s.system, nodes, g, i_hist);
         Ok(())
     }
 

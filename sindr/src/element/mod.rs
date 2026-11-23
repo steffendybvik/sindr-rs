@@ -14,10 +14,11 @@ use crate::error::SimError;
 
 use dc_stamp::stamped_as_parts;
 pub(crate) use dc_stamp::DcStamp;
+pub(crate) use tran_stamp::{parasitic_history, TranStamp};
 
 /// What sindr knows about a circuit element: its identity and terminals,
 /// the extra unknowns and history it takes, the values its models refuse,
-/// and its DC stamp.
+/// and its DC and transient stamps.
 ///
 /// Every element struct implements it, and [`CircuitElement::device`]
 /// reaches the one inside an element. The provided methods describe a
@@ -88,6 +89,29 @@ pub(crate) trait Device {
     /// an element that only stamps as its parts.
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError>;
 
+    /// Writes the element's model for one transient step into `s.system`:
+    /// its companion over the step, from its histories at the step's
+    /// start, with sources at `s.t`, linearised at `s.v_prev`.
+    ///
+    /// The provided method is the DC stamp at `s.v_prev`, which is only
+    /// right for an element that stores no energy and doesn't change with
+    /// time. Anything with a history, a waveform or a time-dependent
+    /// expression overrides it.
+    ///
+    /// # Errors
+    ///
+    /// As [`stamp_dc`](Self::stamp_dc).
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        debug_assert!(
+            !self.is_reactive()
+                && self.capacitor_histories() == 0
+                && self.inductor_histories() == 0,
+            "`{}` stores energy, so its transient stamp isn't its DC one",
+            self.id()
+        );
+        self.stamp_dc(&mut s.dc())
+    }
+
     /// Rejects a value the models can't use, naming the component, the
     /// field and the value. Left alone, a 0 K junction divides by zero and
     /// fails much later as a bare [`SimError::InvalidSolution`], and a BJT's
@@ -134,7 +158,7 @@ mod comparator;
 mod crystal;
 mod current_source;
 mod dc_stamp;
-mod diode;
+pub(crate) mod diode;
 mod ferrite_bead;
 mod fuse;
 pub(crate) mod igbt;
@@ -154,6 +178,7 @@ mod schottky_diode;
 mod switch;
 mod switch_spdt;
 mod thermistor;
+mod tran_stamp;
 pub(crate) mod transformer;
 mod varactor;
 pub(crate) mod vccs;

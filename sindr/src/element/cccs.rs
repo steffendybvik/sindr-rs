@@ -2,7 +2,6 @@
 
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
 
 use super::{Check, DcStamp, Device};
 
@@ -51,22 +50,8 @@ impl Device for Cccs {
 /// nodes: [from, to] (current flows from->to)
 ///
 /// The controlling current is the branch current of another voltage source.
-pub(crate) fn stamp_cccs(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    alpha: f64,
-    ctrl_branch: usize,
-) {
-    stamp_cccs_at(
-        system,
-        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
-        alpha,
-        ctrl_branch,
-    );
-}
-
-/// [`stamp_cccs`] between matrix indices (`None` is ground).
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_cccs_at(
     system: &mut MnaSystem,
     [from, to]: [Option<usize>; 2],

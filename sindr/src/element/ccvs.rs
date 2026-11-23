@@ -2,7 +2,6 @@
 
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
 
 use super::{Check, DcStamp, Device};
 
@@ -48,24 +47,8 @@ impl Device for Ccvs {
 /// nodes: [out+, out-], rm = transresistance
 ///
 /// The controlling current is the branch current of another voltage source.
-pub(crate) fn stamp_ccvs(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[String; 2],
-    rm: f64,
-    branch: usize,
-    ctrl_branch: usize,
-) {
-    stamp_ccvs_at(
-        system,
-        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
-        rm,
-        branch,
-        ctrl_branch,
-    );
-}
-
-/// [`stamp_ccvs`] between matrix indices (`None` is ground).
+///
+/// Terminals as matrix indices (`None` is ground).
 pub(crate) fn stamp_ccvs_at(
     system: &mut MnaSystem,
     [p, q]: [Option<usize>; 2],

@@ -629,7 +629,7 @@ pub(crate) fn incremental_inductors(circuit: &Circuit, dc: &crate::SimulationRes
             if let Some(sat) = saturation.take() {
                 let current = |w: &str| dc.branch_currents.get(w).copied().unwrap_or(0.0);
                 let i = [current(id), current(&format!("{id}#2"))];
-                let (_, l) = crate::transient::transformer_flux(*l1, *l2, *k, &sat, i);
+                let (_, l) = crate::element::transformer::transformer_flux(*l1, *l2, *k, &sat, i);
                 (*l1, *l2) = (l[0][0], l[1][1]);
                 *k = l[0][1] / (l[0][0] * l[1][1]).sqrt();
             }
@@ -858,7 +858,7 @@ fn build_small_signal(
                 parasitic_caps: Some(pc),
                 ..
             }) => {
-                for (_, c, p, q) in crate::transient::bjt_parasitics(nodes, pc) {
+                for (_, c, p, q) in crate::element::bjt::bjt_parasitics(nodes, pc) {
                     let y = j_omega * c;
                     let (p, q) = (node_map.index(&p), node_map.index(&q));
                     stamp_complex_conductance(&mut a, p, p, y);
@@ -872,7 +872,7 @@ fn build_small_signal(
                 parasitic_caps: Some(pc),
                 ..
             }) => {
-                for (_, c, p, q) in crate::transient::mosfet_parasitics(nodes, pc) {
+                for (_, c, p, q) in crate::element::mosfet::mosfet_parasitics(nodes, pc) {
                     let y = j_omega * c;
                     let (p, q) = (node_map.index(&p), node_map.index(&q));
                     stamp_complex_conductance(&mut a, p, p, y);
@@ -888,9 +888,10 @@ fn build_small_signal(
                 ..
             }) => {
                 // Each gate junction's capacitance at the DC bias.
-                for (_, c0, p, q) in crate::transient::jfet_junctions(nodes, pc) {
+                for (_, c0, p, q) in crate::element::jfet::jfet_junctions(nodes, pc) {
                     let v = |n: &String| node_map.index(n).map_or(0.0, |i| dc_solution[i]);
-                    let (_, c) = crate::transient::jfet_gate_charge(v(&p) - v(&q), *kind, pc, c0);
+                    let (_, c) =
+                        crate::element::jfet::jfet_gate_charge(v(&p) - v(&q), *kind, pc, c0);
                     let y = j_omega * c;
                     let (p, q) = (node_map.index(&p), node_map.index(&q));
                     stamp_complex_conductance(&mut a, p, p, y);
