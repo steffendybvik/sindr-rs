@@ -1347,6 +1347,7 @@ dependencies = [
  "approx",
  "criterion",
  "faer",
+ "js-sys",
  "miette",
  "nalgebra",
  "num-complex",
