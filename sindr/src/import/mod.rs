@@ -120,6 +120,9 @@ use crate::element::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(feature = "spice")]
+mod subckt;
+
 use crate::circuit::{
     BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel, FerriteBeadParams, OpAmpModel,
 };
@@ -486,6 +489,83 @@ pub enum Model {
     Varactor(VaractorParams),
     /// For an IGBT.
     Igbt(IgbtParams),
+    /// A SPICE subcircuit, such as a vendor's op-amp or regulator model,
+    /// standing in for the whole part. See [`SubcktModel`].
+    #[cfg(feature = "spice")]
+    Subckt(SubcktModel),
+}
+
+/// A part simulated by a SPICE subcircuit instead of a built-in element:
+/// the model text a vendor ships, which `.subckt` in it to use, and which
+/// of the component's terminals binds to each of its ports.
+///
+/// A component of any kind with this model is placed as an instance of the
+/// subcircuit under the component's id, so its internal nodes are
+/// `<id>.<node>` in a result. Its terminals are read like a black box's:
+/// any name, through [`ImportOptions::terminal_names`] when given.
+///
+/// ```
+/// use sindr::import::{
+///     simulate, Bench, BenchSource, Component, ComponentKind, Model, Net, Netlist, Simulation,
+///     SubcktModel,
+/// };
+///
+/// // A unity-gain buffer: a vendor-style macromodel with ports in+, in-, out.
+/// let text = "
+/// .subckt buffer inp inn out
+/// Rin inp inn 10meg
+/// E1 mid 0 inp inn 1e5
+/// Rout mid out 10
+/// .ends";
+/// let netlist = Netlist {
+///     components: vec![
+///         Component::new("U1", ComponentKind::BlackBox).with_model(Model::Subckt(
+///             SubcktModel::new(text, "buffer", ["IN+", "IN-", "OUT"]),
+///         )),
+///         Component::new("RL", ComponentKind::Resistor).with_value("10k"),
+///     ],
+///     nets: vec![
+///         Net::new("in", [("U1", "IN+")]),
+///         Net::new("out", [("U1", "IN-"), ("U1", "OUT"), ("RL", "1")]),
+///         Net::new("gnd", [("RL", "2")]),
+///     ],
+/// };
+/// let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "in", 2.0));
+/// let out = simulate(&netlist, &bench).unwrap();
+/// let Simulation::OperatingPoint(r) = &out.result else { unreachable!() };
+/// assert!((r.node_voltages["out"] - 2.0).abs() < 1e-3);
+/// ```
+#[cfg(feature = "spice")]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SubcktModel {
+    /// SPICE text holding the subcircuit: a `.subckt` … `.ends` block, or a
+    /// `.lib` excerpt with several and their `.model` cards. Elements
+    /// outside any `.subckt` are ignored.
+    pub text: String,
+    /// The `.subckt` to use, matched without regard to case.
+    pub name: String,
+    /// The component's terminal for each port, in the subcircuit's port
+    /// order: `pins[0]` binds to its first port.
+    pub pins: Vec<String>,
+}
+
+#[cfg(feature = "spice")]
+impl SubcktModel {
+    /// Subcircuit `name` from `text`, with `pins` the component's terminal
+    /// for each of its ports in order.
+    pub fn new<P: Into<String>>(
+        text: impl Into<String>,
+        name: impl Into<String>,
+        pins: impl IntoIterator<Item = P>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            name: name.into(),
+            pins: pins.into_iter().map(Into::into).collect(),
+        }
+    }
 }
 
 impl Model {
@@ -499,6 +579,8 @@ impl Model {
             Model::Battery(_) => "battery",
             Model::Varactor(_) => "varactor",
             Model::Igbt(_) => "igbt",
+            #[cfg(feature = "spice")]
+            Model::Subckt(_) => "subckt",
         }
     }
 }
@@ -1221,6 +1303,27 @@ pub enum ImportError {
         /// `"isn't in the netlist"` or `"is the name of several nets"`.
         problem: String,
     },
+    /// A [`SubcktModel`]'s text doesn't parse, or has no `.subckt` by its
+    /// name.
+    #[error("component \"{component}\": its subcircuit model {problem}")]
+    SubcktModel {
+        /// The component's id.
+        component: String,
+        /// What's wrong: the parse error, or the missing name.
+        problem: String,
+    },
+    /// A [`SubcktModel`]'s pin map doesn't fit the subcircuit or the
+    /// component.
+    #[error("component \"{component}\": pin \"{pin}\" of its subcircuit model {problem}")]
+    SubcktPin {
+        /// The component's id.
+        component: String,
+        /// The pin as given in [`SubcktModel::pins`], or the port count
+        /// for a map of the wrong length.
+        pin: String,
+        /// What's wrong with it.
+        problem: String,
+    },
     /// The bench attaches to a terminal that's on no net.
     #[error("{item} attaches to terminal \"{terminal}\" of component \"{component}\", which is on no net")]
     AttachedToUnconnected {
@@ -1356,6 +1459,10 @@ impl ImportOptions {
     /// Whether `component` is imported as a black box; an error for an
     /// unknown kind when those are refused.
     fn black_box(&self, component: &Component) -> Result<bool, ImportError> {
+        #[cfg(feature = "spice")]
+        if matches!(component.model, Some(Model::Subckt(_))) {
+            return Ok(true);
+        }
         match &component.kind {
             ComponentKind::BlackBox => Ok(true),
             ComponentKind::Other(_) if self.unknown_kinds == UnknownKinds::BlackBox => Ok(true),
@@ -1712,36 +1819,32 @@ impl Netlist {
         // no net is listed and warned about; its connected pins are left
         // to the high-impedance tie as a black box's are. `true` when it
         // was skipped.
-        let mut skip = |id: &str,
-                        kind: &ComponentKind,
-                        connected: &dyn Fn(usize) -> bool,
-                        warnings: &mut Vec<ImportWarning>|
-         -> bool {
-            if options.unconnected != UnconnectedTerminals::Skip {
-                return false;
-            }
-            let unconnected = missing_terminals(kind, connected);
-            if unconnected.is_empty() {
-                return false;
-            }
-            let list = unconnected
-                .iter()
-                .map(|t| format!("\"{t}\""))
-                .collect::<Vec<_>>()
-                .join(", ");
-            warnings.push(ImportWarning {
-                component: id.to_string(),
-                message: format!(
-                    "left out of the simulation: terminal{} {list} on no net",
-                    if unconnected.len() == 1 { "" } else { "s" }
-                ),
-            });
-            skipped.push(SkippedPart {
-                component: id.to_string(),
-                unconnected,
-            });
-            true
-        };
+        let mut skip =
+            |id: &str, unconnected: Vec<String>, warnings: &mut Vec<ImportWarning>| -> bool {
+                if options.unconnected != UnconnectedTerminals::Skip {
+                    return false;
+                }
+                if unconnected.is_empty() {
+                    return false;
+                }
+                let list = unconnected
+                    .iter()
+                    .map(|t| format!("\"{t}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                warnings.push(ImportWarning {
+                    component: id.to_string(),
+                    message: format!(
+                        "left out of the simulation: terminal{} {list} on no net",
+                        if unconnected.len() == 1 { "" } else { "s" }
+                    ),
+                });
+                skipped.push(SkippedPart {
+                    component: id.to_string(),
+                    unconnected,
+                });
+                true
+            };
         let record = |warnings: &mut Vec<ImportWarning>,
                       models: &mut BTreeMap<String, ModelSource>,
                       id: &str,
@@ -1764,6 +1867,43 @@ impl Netlist {
                 circuit.parts.insert(component.id.clone(), part.clone());
             }
             if options.black_box(component)? {
+                #[cfg(feature = "spice")]
+                if let Some(Model::Subckt(model)) = &component.model {
+                    let terminals: BTreeMap<String, String> = pin_net
+                        .iter()
+                        .filter(|((c, _), _)| *c == component.id)
+                        .filter_map(|((_, slot), net)| match slot {
+                            Slot::Named(t) => Some((t.clone(), node(net))),
+                            Slot::Index(_) => None,
+                        })
+                        .collect();
+                    let ground = circuit.ground_node.clone();
+                    let placed = subckt::place(component, model, &terminals, &ground, options)?;
+                    if !placed.unconnected.is_empty() {
+                        if skip(&component.id, placed.unconnected.clone(), &mut warnings) {
+                            for (n, pin) in pins_of(&component.id) {
+                                unsimulated.entry(n).or_default().push(pin);
+                            }
+                            continue;
+                        }
+                        return Err(ImportError::Unconnected {
+                            component: component.id.clone(),
+                            terminal: placed.unconnected[0].clone(),
+                        });
+                    }
+                    for (name, block) in placed.blocks {
+                        circuit.blocks.insert(name, block);
+                    }
+                    circuit.instances.push(placed.instance);
+                    for global in placed.globals {
+                        if !circuit.globals.contains(&global) {
+                            circuit.globals.push(global);
+                        }
+                    }
+                    warnings.extend(placed.warnings);
+                    models.insert(component.id.clone(), ModelSource::Model);
+                    continue;
+                }
                 let terminals = pin_net
                     .iter()
                     .filter(|((c, _), _)| *c == component.id)
@@ -1789,7 +1929,8 @@ impl Netlist {
             };
             let Some((unit_kind, count)) = component.kind.units() else {
                 let connected = |i: usize| nodes_of(i).is_some();
-                if skip(&component.id, &component.kind, &connected, &mut warnings) {
+                let missing = missing_terminals(&component.kind, &connected);
+                if skip(&component.id, missing, &mut warnings) {
                     for (n, pin) in pins_of(&component.id) {
                         unsimulated.entry(n).or_default().push(pin);
                     }
@@ -1822,7 +1963,8 @@ impl Netlist {
                     return Err(ImportError::DuplicateId { id: unit.id });
                 }
                 let connected = |i: usize| nodes_of(slot(i)).is_some();
-                if skip(&unit.id, &unit.kind, &connected, &mut warnings) {
+                let missing = missing_terminals(&unit.kind, &connected);
+                if skip(&unit.id, missing, &mut warnings) {
                     // The package's other pins may still serve the other
                     // units; only this unit's own nets lose a pin.
                     let own: Vec<String> = (0..3).filter_map(|i| nodes_of(slot(i))).collect();

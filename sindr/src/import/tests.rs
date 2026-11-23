@@ -3473,3 +3473,234 @@ fn skip_ties_open_ends_a_schematic_leaves() {
     assert!(out.circuit.high_impedance.iter().all(|h| h.pins.is_empty()));
     assert!(out.circuit.skipped.is_empty());
 }
+
+#[cfg(feature = "spice")]
+mod subckt_models {
+    use super::*;
+
+    /// A vendor-style op-amp: input resistance, a gain stage with a pole,
+    /// output resistance and clamp diodes to the rails. Ports in+ in- out
+    /// v+ v-.
+    const OPAMP: &str = "
+* vendor op-amp macromodel
+.subckt OPX inp inn out vcc vee
+Rin inp inn 2meg
+G1 0 n1 inp inn 1m
+R1 n1 0 100meg
+C1 n1 0 15n
+E1 n2 0 n1 0 1
+Ro n2 out 50
+D1 out vcc dclamp
+D2 vee out dclamp
+.model dclamp D(IS=1e-14)
+.ends OPX
+";
+
+    /// A regulator: 3.3 V out, or the input less 1 V when that's lower.
+    /// Ports in out gnd.
+    const REG: &str = "
+.subckt reg33 in out gnd
+B1 out gnd V = min(V(in, gnd) - 1, 3.3)
+.ends
+";
+
+    /// An inverting amplifier, gain −10, on ±12 V rails, built around U1.
+    fn inverting_amp(model: SubcktModel) -> Netlist {
+        Netlist {
+            components: vec![
+                Component::new("R1", ComponentKind::Resistor).with_value("10k"),
+                Component::new("R2", ComponentKind::Resistor).with_value("100k"),
+                Component::new("U1", ComponentKind::OpAmp).with_model(Model::Subckt(model)),
+            ],
+            nets: vec![
+                Net::new("in", [("R1", "1")]),
+                Net::new("inv", [("R1", "2"), ("R2", "1"), ("U1", "-")]),
+                Net::new("out", [("R2", "2"), ("U1", "OUT")]),
+                Net::new("vcc", [("U1", "V+")]),
+                Net::new("vee", [("U1", "V-")]),
+                Net::new("gnd", [("U1", "+")]),
+            ],
+        }
+    }
+
+    fn amp_bench() -> Bench {
+        Bench::new("gnd")
+            .with_source(BenchSource::voltage("vin", "in", 0.5))
+            .with_source(BenchSource::voltage("vp", "vcc", 12.0))
+            .with_source(BenchSource::voltage("vn", "vee", -12.0))
+    }
+
+    fn opamp_model() -> SubcktModel {
+        SubcktModel::new(OPAMP, "opx", ["+", "-", "OUT", "V+", "V-"])
+    }
+
+    fn deck_op(deck: &str) -> crate::SimulationResult {
+        let parsed = crate::spice::parse_str(deck).expect("deck parses");
+        crate::solve_circuit(&parsed.circuit).expect("deck solves")
+    }
+
+    #[test]
+    fn a_vendor_op_amp_matches_the_same_deck_run_as_spice() {
+        let r = op(&inverting_amp(opamp_model()), &amp_bench());
+        let deck = format!(
+            "inverting amp\n{OPAMP}\nVIN in 0 0.5\nVP vcc 0 12\nVN vee 0 -12\n\
+             R1 in inv 10k\nR2 inv out 100k\nXU1 0 inv out vcc vee OPX\n.end\n"
+        );
+        let spice = deck_op(&deck);
+        // Two separate Newton solves: equal to within their tolerance.
+        assert!((r.node_voltages["out"] - spice.node_voltages["out"]).abs() < 1e-6);
+        assert!(
+            (r.node_voltages["out"] + 5.0).abs() < 1e-2,
+            "{}",
+            r.node_voltages["out"]
+        );
+        // Internal nodes live under the component's id.
+        assert!(
+            r.node_voltages.contains_key("U1.n1"),
+            "{:?}",
+            r.node_voltages.keys()
+        );
+    }
+
+    #[test]
+    fn a_regulator_model_attaches_by_terminal_names() {
+        let model = SubcktModel::new(REG, "REG33", ["VIN", "VOUT", "GND"]);
+        let netlist = Netlist {
+            components: vec![
+                Component::new("U2", ComponentKind::Regulator).with_model(Model::Subckt(model)),
+                Component::new("RL", ComponentKind::Resistor).with_value("100"),
+            ],
+            nets: vec![
+                Net::new("vin", [("U2", "1")]),
+                Net::new("vout", [("U2", "3"), ("RL", "1")]),
+                Net::new("gnd", [("U2", "2"), ("RL", "2")]),
+            ],
+        };
+        let options = ImportOptions::new()
+            .with_terminal_names("U2", [("1", "VIN"), ("2", "GND"), ("3", "VOUT")]);
+        for (vin, want) in [(5.0, 3.3), (3.8, 2.8)] {
+            let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "vin", vin));
+            let out = simulate_with(&netlist, &bench, &options).expect("simulates");
+            let Simulation::OperatingPoint(r) = &out.result else {
+                panic!()
+            };
+            let deck =
+                format!("reg\n{REG}\nV1 vin 0 {vin}\nXU2 vin vout 0 reg33\nRL vout 0 100\n.end\n");
+            let spice = deck_op(&deck);
+            assert!((r.node_voltages["vout"] - want).abs() < 1e-6);
+            assert!((r.node_voltages["vout"] - spice.node_voltages["vout"]).abs() < 1e-9);
+            assert_eq!(out.circuit.model_source("U2"), Some(ModelSource::Model));
+        }
+    }
+
+    #[test]
+    fn a_pin_that_isnt_a_terminal_is_named_in_the_error() {
+        let model = SubcktModel::new(OPAMP, "OPX", ["+", "-", "OUTPUT", "V+", "V-"]);
+        assert_eq!(
+            inverting_amp(model).to_circuit(&amp_bench()).unwrap_err(),
+            ImportError::SubcktPin {
+                component: "U1".into(),
+                pin: "OUTPUT".into(),
+                problem: "isn't a terminal of the component".into(),
+            }
+        );
+        let twice = SubcktModel::new(OPAMP, "OPX", ["+", "-", "OUT", "V+", "+"]);
+        assert!(matches!(
+            inverting_amp(twice).to_circuit(&amp_bench()).unwrap_err(),
+            ImportError::SubcktPin { pin, .. } if pin == "+"
+        ));
+    }
+
+    #[test]
+    fn a_map_of_the_wrong_length_or_name_is_refused() {
+        let short = SubcktModel::new(OPAMP, "OPX", ["+", "-", "OUT", "V+"]);
+        let e = inverting_amp(short).to_circuit(&amp_bench()).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "component \"U1\": its subcircuit model .subckt \"OPX\" has 5 ports, and the pin \
+             map gives 4"
+        );
+        let missing = SubcktModel::new(OPAMP, "OPA2134", ["+", "-", "OUT", "V+", "V-"]);
+        let e = inverting_amp(missing).to_circuit(&amp_bench()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("has no .subckt \"OPA2134\" (it has \"OPX\")"),
+            "{e}"
+        );
+        let broken = SubcktModel::new(".subckt bad a b\nR1 a b\n.ends", "bad", ["+", "-"]);
+        let e = inverting_amp(broken).to_circuit(&amp_bench()).unwrap_err();
+        assert!(matches!(e, ImportError::SubcktModel { .. }), "{e}");
+    }
+
+    #[test]
+    fn an_unconnected_pin_is_refused_or_skipped() {
+        let mut n = inverting_amp(opamp_model());
+        n.nets.retain(|net| net.id != "vee");
+        assert_eq!(
+            n.to_circuit(&amp_bench().with_source(BenchSource::voltage("vx", "in", 0.0)))
+                .unwrap_err(),
+            ImportError::UnknownNet {
+                item: "vn".into(),
+                net: "vee".into(),
+                problem: "isn't in the netlist".into(),
+            }
+        );
+        let bench = Bench::new("gnd")
+            .with_source(BenchSource::voltage("vin", "in", 0.5))
+            .with_source(BenchSource::voltage("vp", "vcc", 12.0));
+        let options = ImportOptions::new().with_terminal_names(
+            "U1",
+            [
+                ("+", "+"),
+                ("-", "-"),
+                ("OUT", "OUT"),
+                ("V+", "V+"),
+                ("V-", "V-"),
+            ],
+        );
+        assert_eq!(
+            n.to_circuit_with(&bench, &options).unwrap_err(),
+            ImportError::Unconnected {
+                component: "U1".into(),
+                terminal: "V-".into(),
+            }
+        );
+        let skip = options.with_unconnected(UnconnectedTerminals::Skip);
+        let imported = n.to_circuit_with(&bench, &skip).expect("skips");
+        assert_eq!(imported.skipped[0].component, "U1");
+        assert!(imported.circuit.instances.is_empty());
+    }
+
+    #[test]
+    fn two_parts_with_the_same_model_each_get_their_own_copy() {
+        let mut n = inverting_amp(opamp_model());
+        n.components.push(
+            Component::new("U3", ComponentKind::OpAmp).with_model(Model::Subckt(opamp_model())),
+        );
+        n.nets.push(Net::new("buf", [("U3", "-"), ("U3", "OUT")]));
+        for net in &mut n.nets {
+            match net.id.as_str() {
+                "out" => net.pins.push(Pin::new("U3", "+")),
+                "vcc" => net.pins.push(Pin::new("U3", "V+")),
+                "vee" => net.pins.push(Pin::new("U3", "V-")),
+                _ => {}
+            }
+        }
+        let r = op(&n, &amp_bench());
+        assert!((r.node_voltages["buf"] - r.node_voltages["out"]).abs() < 1e-3);
+        let imported = n.to_circuit(&amp_bench()).unwrap();
+        assert_eq!(imported.circuit.blocks.len(), 2);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_subckt_model_reads_from_json() {
+        let json =
+            r#"{"type": "subckt", "text": ".subckt b a\n.ends", "name": "b", "pins": ["1"]}"#;
+        let model: Model = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            model,
+            Model::Subckt(SubcktModel::new(".subckt b a\n.ends", "b", ["1"]))
+        );
+    }
+}
