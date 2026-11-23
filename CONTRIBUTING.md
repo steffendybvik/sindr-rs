@@ -49,7 +49,7 @@ python3 scripts/gen_llms_full.py --check
 
 - Unit tests sit next to the code in `#[cfg(test)] mod tests`.
 - Cross-cutting tests are in `sindr/tests/`. SPICE fixtures live in
-  `sindr/tests/fixtures/`, and those tests need `--features spice`.
+  `sindr/tests/fixtures/`, and those tests need the `spice` feature (on by default).
 - Prefer checks against closed-form answers (a divider, an RC corner
   frequency, `1 − e^(−t/τ)`) over values copied from the current output.
 - `sindr/tests/golden.rs` checks results against ngspice. To add a case or
@@ -93,9 +93,9 @@ python3 scripts/gen_llms_full.py --check
   case is more than 25 % slower. To check locally before pushing:
 
   ```bash
-  cargo bench -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline base
+  cargo bench -p sindr --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline base
   # make the change
-  cargo bench -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline head
+  cargo bench -p sindr --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline head
   python3 scripts/bench_compare.py base head
   ```
 

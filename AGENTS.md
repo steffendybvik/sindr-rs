@@ -43,7 +43,7 @@ sindr-rs/
 │   │   ├── error.rs            # SimError variants
 │   │   ├── import/             # netlist-and-bench import for editors: Netlist, Bench, simulate, parse_value
 │   │   ├── examples.rs         # named example circuits, runnable from list_examples / run_example
-│   │   └── spice/              # SPICE3 netlist parser (optional `spice` feature)
+│   │   └── spice/              # SPICE3 netlist parser (`spice` feature, on by default)
 │   │       └── {mod,parser,preprocess,flatten,build,ast,param_eval,si,
 │   │            analysis,error,export,source_map}.rs
 │   ├── examples/               # cargo run --example targets
@@ -58,7 +58,7 @@ sindr-rs/
 └── .planning/          # local GSD workflow artefacts (gitignored) — IGNORE for normal code work
 ```
 
-`sindr` depends on `sindr-devices`. The data model is `sindr::{circuit, design, waveform}` (`Circuit`, `CircuitElement`, design hierarchy, `Waveform`). Every public analysis entry point flattens a hierarchical `Circuit` first (`circuit.flattened()?`); the internal `mna`/`stamp`/`newton_raphson` code assumes a flat one. SPICE netlist parsing lives in `sindr::spice` behind the optional, default-off `spice` feature, which pulls in `winnow` + `miette`.
+`sindr` depends on `sindr-devices`. The data model is `sindr::{circuit, design, waveform}` (`Circuit`, `CircuitElement`, design hierarchy, `Waveform`). Every public analysis entry point flattens a hierarchical `Circuit` first (`circuit.flattened()?`); the internal `mna`/`stamp`/`newton_raphson` code assumes a flat one. SPICE netlist parsing lives in `sindr::spice` behind the `spice` feature (on by default), which pulls in `winnow` + `miette`.
 
 ## Commands
 
@@ -69,11 +69,11 @@ cargo test --workspace --no-default-features  # serde/examples off (CI)
 cargo test -p sindr                           # solver crate only
 cargo test -p sindr-devices                   # device-physics crate only (includes README doctests)
 cargo run --example voltage_divider           # run a named example
-cargo run --example list_examples --features examples  # list every bundled example circuit
+cargo run --example list_examples  # list every bundled example circuit
 cargo doc --workspace --no-deps --all-features --open  # API docs (CI uses RUSTDOCFLAGS=-D warnings)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint (CI)
 cargo fmt --all                               # format
-cargo bench -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick  # benchmarks (CI gates PRs at +25 %)
+cargo bench -p sindr --bench transient --bench newton --bench analyses --bench spice -- --quick  # benchmarks (CI gates PRs at +25 %)
 python3 scripts/gen_llms_full.py              # regenerate llms-full.txt (CI checks it)
 ```
 
@@ -140,13 +140,13 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Judge a design with specs, not by eye.** `check_specs(&result, &[Spec::new(Measurement::new("vout", Measure::stat(Signal::v("out"), Stat::Final))).between(4.9, 5.1)])` gives each spec's value, pass/fail and margin; attach `check_ratings` with `SpecReport::with_ratings`. `SpecStatus::Unmeasured` (an unknown node, a level never crossed) is never a pass: read its `reason`. Node and component names in a parsed SPICE deck are lowercase.
 - **`ConvergenceFailed { iterations, max_step_volts, node, components, at }`**: `node` is where the circuit won't settle (the largest final Newton step), `components` what's on it, `at` the `SolvePoint` (operating point, DC or temperature sweep point, transient time); the message names all three. Usually a nonlinear element with no DC path to ground, or component values orders of magnitude outside typical ranges. `max_step_volts` is the max Newton step (not a KCL residual). The solver already retries with gmin stepping (`SolverOptions::gmin_steps`, `1e-2` → `1e-10` then none) and then source stepping before giving up; `SimulationResult::convergence_aid` says which one a solve needed. If neither rescues it, perturb the circuit, give a starting guess in `SolverOptions::nodeset`, or raise `max_iterations`, and run it through a `Solver` — don't blindly retry.
 
-When in doubt, run `cargo run --example list_examples --features examples` and copy the closest existing example; the bundled circuits are known-good.
+When in doubt, run `cargo run --example list_examples` and copy the closest existing example; the bundled circuits are known-good.
 
 ## Things NOT to do
 
 - **Don't add `unsafe`.**
-- **Don't add a new dependency without a clear need.** `nalgebra`, `faer` (sparse LU above 100 unknowns), `serde`, `thiserror` are the load-bearing ones; `winnow` + `miette` back the SPICE parser and are pulled in only by the optional `spice` feature.
-- **Don't introduce a CLI or GUI in `sindr` or `sindr-devices`** — those are explicit non-goals; propose a sibling crate instead. Schematic and PCB tools are meant to build on sindr's design model (blocks, instances, parts) from their own crates, not inside these. Heavy *optional* capabilities (like SPICE netlist parsing) belong behind a default-off feature flag with their deps marked `optional`, following the `spice` precedent.
+- **Don't add a new dependency without a clear need.** `nalgebra`, `faer` (sparse LU above 100 unknowns), `serde`, `thiserror` are the load-bearing ones; `winnow` + `miette` back the SPICE parser (the `spice` feature), and `schemars` the JSON Schemas; every feature but `internals` is on by default, and a caller can drop them with `default-features = false`.
+- **Don't introduce a CLI or GUI in `sindr` or `sindr-devices`** — those are explicit non-goals; propose a sibling crate instead. Schematic and PCB tools are meant to build on sindr's design model (blocks, instances, parts) from their own crates, not inside these. Heavy capabilities (like SPICE netlist parsing) go behind a feature flag with their deps marked `optional`, following the `spice` precedent. Features are on by default, so `sindr = "0.3"` gets everything; a caller keeps only some with `default-features = false`. `internals` is the exception: unstable, so off.
 - **Don't implement BSIM / Gummel-Poon / VBIC** speculatively. They are large undertakings; coordinate via an issue first.
 - **Don't bypass `SimError`** with `panic!` / `unwrap()` in solver code.
 - **Don't write to `.planning/`** unless you are explicitly running a GSD command. It is workflow state, not source.

@@ -29,18 +29,19 @@ winnow = { version = "1.0", optional = true }
 miette = { version = "7", optional = true }
 
 [features]
-default = ["serde"]
+# Everything but `internals` is on by default. Turn them off with
+# `default-features = false` and pick the ones you want back.
+default = ["serde", "schemars", "spice", "examples", "parallel"]
 # JSON Schema for every serde type (`schemars::JsonSchema`), for apps that
-# describe sindr's inputs and outputs to other tools. Off by default.
+# describe sindr's inputs and outputs to other tools.
 schemars = ["serde", "dep:schemars", "sindr-devices/schemars"]
 serde = ["dep:serde", "sindr-devices/serde", "num-complex/serde"]
 # The named example circuits with ids and descriptions (`get_examples`).
 examples = []
-# SPICE3 netlist parsing (`sindr::spice`). Off by default to keep the
-# baseline dependency tree lean.
+# SPICE3 netlist parsing and export (`sindr::spice`).
 spice = ["dep:winnow", "dep:miette"]
-# Monte Carlo and corner runs across threads (`sindr::variation`). Off by
-# default: wasm32 has no threads.
+# Monte Carlo and corner runs across threads (`sindr::variation`). Serial
+# where there are no threads (wasm32).
 parallel = []
 # Unstable, not covered by semver: exposes the MNA matrix for sindr's own
 # `mna_solve` bench.

@@ -141,11 +141,11 @@ Use a full SPICE simulator to run existing decks and vendor model libraries as t
 
 ### SPICE netlist input
 
-A SPICE3 netlist parser ships inside `sindr` behind the optional, default-off `spice` feature (it pulls in `winnow` + `miette`, so the baseline build stays lean):
+A SPICE3 netlist parser ships inside `sindr` as the `spice` feature, on by default like every feature (`default-features = false` and a `features` list keeps only the ones you pick):
 
 ```toml
 [dependencies]
-sindr = { version = "0.3", features = ["spice"] }
+sindr = "0.3"
 ```
 
 ```rust,ignore
@@ -160,7 +160,7 @@ It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, 
 A runnable walkthrough (parse → solve → dispatch directives → render a diagnostic) lives in [`sindr/examples/parse_netlist.rs`](./sindr/examples/parse_netlist.rs):
 
 ```bash
-cargo run --example parse_netlist --features spice
+cargo run --example parse_netlist
 ```
 
 ### Status
@@ -207,17 +207,13 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 sindr = "0.3"
 ```
 
-Serde support is on by default. To disable:
+Every feature is on by default: `serde`, `schemars` (JSON Schema), `spice` (netlist parsing and export), `examples` (the named example circuits) and `parallel` (Monte Carlo and corners across threads, serial on wasm). To keep only some, turn the defaults off and list them:
 
 ```toml
-sindr = { version = "0.3", default-features = false }
+sindr = { version = "0.3", default-features = false, features = ["serde", "spice"] }
 ```
 
-To parse SPICE netlists, enable the optional `spice` feature (off by default):
-
-```toml
-sindr = { version = "0.3", features = ["spice"] }
-```
+Parsing a SPICE netlist:
 
 ```rust,ignore
 let netlist = sindr::spice::parse_file("amp.cir")?;
@@ -227,7 +223,7 @@ let result = sindr::solve_circuit(&netlist.circuit)?;
 It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
-cargo run --example parse_netlist --features spice
+cargo run --example parse_netlist
 ```
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
@@ -1152,8 +1148,8 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `temperature_sweep` | Temperature sweep |
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
 | `import_netlist` | Importing a schematic netlist with a test bench |
-| `parse_netlist` | SPICE input (`--features spice`) |
-| `list_examples`, `run_example` | The built-in named circuits (`--features examples`) |
+| `parse_netlist` | SPICE input |
+| `list_examples`, `run_example` | The built-in named circuits |
 
 ### Error handling
 
@@ -1243,11 +1239,7 @@ Fields with defaults (`bf`, `temperature`, `k`, `coil_resistance`, `position`, `
 
 #### JSON Schema
 
-The optional `schemars` feature derives `schemars::JsonSchema` on every type that has serde, so an app that describes its tools to others (an MCP server, a form, an API) can publish the exact shape of a netlist, bench, circuit, config or result instead of writing it by hand. Complex numbers are `[re, im]` pairs, as serde writes them.
-
-```toml
-sindr = { version = "0.3", features = ["schemars"] }
-```
+The `schemars` feature (on by default) derives `schemars::JsonSchema` on every type that has serde, so an app that describes its tools to others (an MCP server, a form, an API) can publish the exact shape of a netlist, bench, circuit, config or result instead of writing it by hand. Complex numbers are `[re, im]` pairs, as serde writes them.
 
 ```rust,ignore
 let schema = schemars::schema_for!(sindr::import::Netlist);
@@ -1444,7 +1436,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The optional `spice` feature (`sindr::spice`) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, M, J, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`, `EG`, `XTI` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF`, `EG`, `XTI` on BJTs. `EG` and `XTI` set how `IS` follows temperature, as SPICE's `IS(T)`; `TNOM` is read only at 27 °C, the temperature sindr's values are at. Temperature moves `IS` and the thermal voltage only: `VJ`, `CJO` and `BF` (`XTB`) stay at their 27 °C values. Anything else (BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The `spice` feature (`sindr::spice`, on by default) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, M, J, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`, `EG`, `XTI` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF`, `EG`, `XTI` on BJTs. `EG` and `XTI` set how `IS` follows temperature, as SPICE's `IS(T)`; `TNOM` is read only at 27 °C, the temperature sindr's values are at. Temperature moves `IS` and the thermal voltage only: `VJ`, `CJO` and `BF` (`XTB`) stay at their 27 °C values. Anything else (BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, M, J, B, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. A MOSFET with flicker noise, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, MOSFET and JFET take level-1 `NMOS`/`PMOS` and `NJF`/`PJF` cards (a JFET's `VTO`, `BETA` and gate capacitances `CGS`, `CGD`, `PB`, `M`, `FC`), and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
@@ -6061,21 +6053,28 @@ The full list of what sindr doesn't do is in
 
 ### Cargo features
 
-- `serde` *(default)* — `Serialize`/`Deserialize` impls on the public
-  types.
+All on by default:
+
+- `serde` — `Serialize`/`Deserialize` impls on the public types.
+- `schemars` — `JsonSchema` on every serde type, for apps that publish
+  the shape of a netlist, config or result to other tools.
+- `spice` — the SPICE3 netlist parser and writer in [`spice`] (see
+  below).
 - `examples` — exposes [`get_examples`]: the built-in named circuits
   (voltage divider, BJT amp, RC transient, etc.) with ids and
   descriptions. The circuits themselves are always in [`examples`].
-- `spice` — the SPICE3 netlist parser in [`spice`] (see below).
-- `parallel` — [`variation`] spreads its runs over one thread per core.
-  Off by default, and serial anyway where there are no threads (wasm).
+- `parallel` — [`variation`] spreads its runs over one thread per core,
+  and runs them one after another where there are no threads (wasm).
+
+`internals` is off by default and outside semver: it exposes the MNA
+matrix for sindr's own benchmarks.
 
 ```toml
 [dependencies]
 sindr = "0.3"
 
-# No serde:
-sindr = { version = "0.3", default-features = false }
+# Only what you pick, here just serde:
+sindr = { version = "0.3", default-features = false, features = ["serde"] }
 ```
 
 ### Transient results
@@ -6140,13 +6139,12 @@ has it. Lines end in `\n`.
 
 ### SPICE netlist input
 
-Parsing SPICE3 `.cir` decks into a [`Circuit`] lives behind the optional
-`spice` feature (off by default, so the heavier parser dependencies stay
-out of the baseline build):
+Parsing SPICE3 `.cir` decks into a [`Circuit`] is the `spice` feature,
+on by default:
 
 ```toml
 [dependencies]
-sindr = { version = "0.3", features = ["spice"] }
+sindr = "0.3"
 ```
 
 (`no_run`: it reads `amp.cir`, which doesn't exist where doctests run.)
@@ -12996,7 +12994,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! parallel throughput, and how both scale with circuit size.
 //!
 //! ```text
-//! cargo run --release -p sindr --example vs_ngspice --features spice
+//! cargo run --release -p sindr --example vs_ngspice
 //! cargo run --release -p sindr --example vs_ngspice --features spice -- --quick
 //! ```
 //!

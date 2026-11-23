@@ -2,7 +2,7 @@
 //! parallel throughput, and how both scale with circuit size.
 //!
 //! ```text
-//! cargo run --release -p sindr --example vs_ngspice --features spice
+//! cargo run --release -p sindr --example vs_ngspice
 //! cargo run --release -p sindr --example vs_ngspice --features spice -- --quick
 //! ```
 //!
