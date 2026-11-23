@@ -216,6 +216,28 @@ impl Solver {
         crate::transient::solve_transient_with(circuit, config, &self.options)
     }
 
+    /// As [`solve_transient_with_progress`](crate::solve_transient_with_progress).
+    ///
+    /// # Errors
+    ///
+    /// As [`transient`](Self::transient), and
+    /// [`SimError::Cancelled`] when the hook returns
+    /// [`Flow::Stop`](crate::Flow::Stop).
+    pub fn transient_with_progress(
+        &self,
+        circuit: &Circuit,
+        config: &TransientConfig,
+        mut progress: impl FnMut(&crate::TransientProgress<'_>) -> crate::Flow,
+    ) -> Result<SimulationResult, SimError> {
+        self.options.validate()?;
+        crate::transient::solve_transient_hooked(
+            circuit,
+            config,
+            &self.options,
+            Some(&mut progress),
+        )
+    }
+
     /// As [`solve_ac`](crate::solve_ac).
     ///
     /// # Errors

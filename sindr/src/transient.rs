@@ -1767,11 +1767,110 @@ pub fn solve_transient(
     solve_transient_with(circuit, config, &SolverOptions::default())
 }
 
+/// Where a transient run is, passed to the hook of
+/// [`solve_transient_with_progress`] after each accepted step.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct TransientProgress<'a> {
+    /// Simulated time reached (s).
+    pub time: f64,
+    /// The run's stop time (s).
+    pub tstop: f64,
+    /// Steps accepted so far.
+    pub accepted_steps: usize,
+    /// The step just accepted, as it will appear in the result's
+    /// [`timesteps`](crate::TransientData::timesteps); `None` before
+    /// [`tstart`](TransientConfig::tstart), where steps aren't recorded.
+    pub step: Option<&'a TimestepSnapshot>,
+}
+
+impl TransientProgress<'_> {
+    /// How far through the run, from 0 to 1.
+    pub fn fraction(&self) -> f64 {
+        (self.time / self.tstop).clamp(0.0, 1.0)
+    }
+}
+
+/// What a progress hook tells the run to do next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Flow {
+    /// Take the next step.
+    Continue,
+    /// Stop now, with [`SimError::Cancelled`].
+    Stop,
+}
+
+/// The progress hook a run calls, if any.
+pub(crate) type Hook<'a> = Option<&'a mut dyn FnMut(&TransientProgress<'_>) -> Flow>;
+
+/// [`solve_transient`], calling `progress` after every accepted step: to
+/// report how far a long run has got, show its waveforms as they grow, or
+/// cancel it.
+///
+/// The hook runs on the solving thread, between steps. In a browser, run
+/// the solve in a web worker: post progress from the hook, and return
+/// [`Flow::Stop`] once a cancel flag the page sets (in shared memory, or
+/// a message the worker has read) says so. The hook is called for every
+/// step, so keep it cheap or throttle it on
+/// [`accepted_steps`](TransientProgress::accepted_steps).
+///
+/// # Errors
+///
+/// As [`solve_transient`], and [`SimError::Cancelled`] when the hook
+/// returns [`Flow::Stop`].
+///
+/// ```
+/// use sindr::{solve_transient_with_progress, Circuit, CircuitElement, Flow, SimError,
+///     TransientConfig};
+///
+/// let circuit = Circuit::new("0", vec![
+///     CircuitElement::VoltageSource {
+///         id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 5.0, waveform: None,
+///     },
+///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()],
+///         resistance: 1e3 },
+///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()],
+///         capacitance: 1e-6 },
+/// ]);
+/// let config = TransientConfig::new(10e-3, 10e-6);
+///
+/// // Stop halfway through.
+/// let e = solve_transient_with_progress(&circuit, &config, |p| {
+///     if p.fraction() < 0.5 { Flow::Continue } else { Flow::Stop }
+/// })
+/// .unwrap_err();
+/// let SimError::Cancelled { time } = e else { panic!("{e}") };
+/// assert!((5e-3..6e-3).contains(&time));
+/// ```
+pub fn solve_transient_with_progress(
+    circuit: &Circuit,
+    config: &TransientConfig,
+    mut progress: impl FnMut(&TransientProgress<'_>) -> Flow,
+) -> Result<SimulationResult, SimError> {
+    solve_transient_hooked(
+        circuit,
+        config,
+        &SolverOptions::default(),
+        Some(&mut progress),
+    )
+}
+
 /// [`solve_transient`] with `opts`.
 pub(crate) fn solve_transient_with(
     circuit: &Circuit,
     config: &TransientConfig,
     opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
+    solve_transient_hooked(circuit, config, opts, None)
+}
+
+/// [`solve_transient`] with `opts` and a progress hook.
+pub(crate) fn solve_transient_hooked(
+    circuit: &Circuit,
+    config: &TransientConfig,
+    opts: &SolverOptions,
+    progress: Hook<'_>,
 ) -> Result<SimulationResult, SimError> {
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
@@ -1781,7 +1880,15 @@ pub(crate) fn solve_transient_with(
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
     let num_vsources = circuit.count_voltage_sources();
-    let mut result = run_transient(circuit, &node_map, num_nodes, num_vsources, config, opts)?;
+    let mut result = run_transient(
+        circuit,
+        &node_map,
+        num_nodes,
+        num_vsources,
+        config,
+        opts,
+        progress,
+    )?;
     crate::composite::fold(original, &mut result);
     Ok(result)
 }
@@ -1803,6 +1910,7 @@ pub(crate) fn run_transient(
     num_vsources: usize,
     config: &TransientConfig,
     opts: &SolverOptions,
+    mut progress: Hook<'_>,
 ) -> Result<SimulationResult, SimError> {
     let tstop = config.tstop;
     let h_max = config.step();
@@ -2126,10 +2234,22 @@ pub(crate) fn run_transient(
             heated.apply(work, &temps);
             snapshot.junction_temperatures = heated.report(&temps);
         }
-        if t_next >= config.tstart - eps {
+        let recorded = t_next >= config.tstart - eps;
+        if recorded {
             timesteps.push(snapshot);
         }
         stats.accepted_steps += 1;
+        if let Some(hook) = progress.as_mut() {
+            let report = TransientProgress {
+                time: t_next,
+                tstop,
+                accepted_steps: stats.accepted_steps,
+                step: if recorded { timesteps.last() } else { None },
+            };
+            if hook(&report) == Flow::Stop {
+                return Err(SimError::Cancelled { time: t_next });
+            }
+        }
         // Steps that stay three decades below `tstep` get nowhere. A sharp
         // edge takes a run of them; a circuit that can't be followed at any
         // step takes them for ever.

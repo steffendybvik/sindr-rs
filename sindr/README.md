@@ -513,6 +513,21 @@ std::fs::write("rc.csv", result.transient.unwrap().to_csv())?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+### Progress and cancel
+
+`solve_transient_with_progress` calls a hook after every accepted step with the time reached, the fraction done, and the step's snapshot, so a caller can show a long run's progress and its waveforms as they grow. Returning `Flow::Stop` ends the run with `SimError::Cancelled`. The hook runs on the solving thread; in a browser, solve in a web worker and stop when the page's cancel flag is set.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+let result = solve_transient_with_progress(&circuit, &TransientConfig::new(1.0, 1e-4), |p| {
+    if p.accepted_steps % 1000 == 0 {
+        println!("{:.0}%", 100.0 * p.fraction());
+    }
+    Flow::Continue
+});
+```
+
 ### Which engine produced a result
 
 `sindr::VERSION` (and `sindr::devices::VERSION`) is the crate's version as a string, such as `"0.3.0"`. Store it with saved results, so a rerun can tell a change in the design from a change in the engine.
