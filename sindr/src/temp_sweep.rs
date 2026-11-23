@@ -14,6 +14,7 @@ use crate::results::SimulationResult;
 
 /// One temperature sweep data point.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempSweepPoint {
@@ -28,6 +29,7 @@ pub struct TempSweepPoint {
 /// One operating-point solution per temperature step. Use the `points`
 /// vector to iterate `(temperature, result)` pairs.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempSweepResult {

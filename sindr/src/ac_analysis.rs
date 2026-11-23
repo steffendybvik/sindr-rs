@@ -30,6 +30,7 @@ use crate::node_map::NodeMap;
 
 /// Frequency sweep spacing.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -44,6 +45,7 @@ pub enum FrequencySpacing {
 /// AC analysis configuration. Build one with [`AcConfig::new`] and its
 /// `with_*` setters.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct AcConfig {
@@ -120,6 +122,7 @@ impl AcConfig {
 
 /// Result at a single frequency point.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct AcPoint {
@@ -127,6 +130,7 @@ pub struct AcPoint {
     pub frequency: f64,
     /// Complex node voltages (V) keyed by node name. Includes the ground
     /// node (always 0).
+    #[cfg_attr(feature = "schemars", schemars(with = "HashMap<String, [f64; 2]>"))]
     pub node_voltages: HashMap<String, Complex64>,
 }
 
@@ -164,6 +168,7 @@ impl AcPoint {
 
 /// Complete AC analysis result.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct AcResult {

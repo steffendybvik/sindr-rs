@@ -9,6 +9,7 @@ use super::{Check, Device};
 /// to `nodes[1]`: drawn out of `nodes[0]` and pushed into `nodes[1]`, as
 /// SPICE's `I`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CurrentSource {
     /// Unique component identifier.

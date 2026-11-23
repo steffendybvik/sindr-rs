@@ -354,6 +354,21 @@ impl<'de> serde::Deserialize<'de> for Expression {
     }
 }
 
+/// An expression is written as its text, so its schema is a string.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for Expression {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Expression".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "A behavioural expression, as SPICE writes it: `V(a, b) * 2`, `min(I(V1), 1m)`."
+        })
+    }
+}
+
 // ------------------------------------------------------------ printing
 
 fn number(f: &mut fmt::Formatter<'_>, value: f64) -> fmt::Result {

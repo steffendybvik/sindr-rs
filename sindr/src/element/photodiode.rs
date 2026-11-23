@@ -7,6 +7,7 @@ use super::{Check, Device};
 /// Photodiode: diode + photocurrent source driven by irradiance.
 /// nodes: [anode, cathode]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Photodiode {
     /// Unique component identifier.

@@ -20,6 +20,7 @@
 /// Saturation of an inductor whose small-signal inductance is `L0`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InductorSaturation {
     /// Current (A) at which the core saturates: the knee of `tanh`. A
     /// datasheet's saturation current (the current at which L has fallen

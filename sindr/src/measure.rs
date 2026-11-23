@@ -74,6 +74,7 @@ use crate::temp_sweep::TempSweepResult;
 
 /// What a signal reads: a voltage or a current.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -97,6 +98,7 @@ pub enum Quantity {
 
 /// How a signal's value is read.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
@@ -114,6 +116,7 @@ pub enum View {
 
 /// A signal to measure: a [`Quantity`] read through a [`View`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Signal {
     /// Voltage or current.
@@ -375,6 +378,7 @@ impl Measurable for AcResult {
 
 /// A statistic over a signal, within the measurement's window.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -398,6 +402,7 @@ pub enum Stat {
 
 /// Which way a signal crosses a level.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
@@ -411,6 +416,7 @@ pub enum Edge {
 
 /// Which crossing counts.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -423,6 +429,7 @@ pub enum Occurrence {
 
 /// A signal crossing a level: SPICE's `WHEN v(out)=2.5 RISE=2`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Crossing {
     /// The signal.
@@ -473,6 +480,7 @@ impl Crossing {
 
 /// What a [`Measurement`] measures. Each variant carries its own signal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -588,6 +596,7 @@ impl Measure {
 
 /// A named measurement, optionally limited to a window of x.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Measurement {
@@ -927,6 +936,7 @@ fn bandwidth(trace: &[(f64, f64)], drop_db: f64) -> Result<f64, String> {
 
 /// A measurement with limits: `V(vout)` 4.9–5.1 V, ripple under 50 mV.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spec {
     /// What is measured; its name names the spec.
@@ -1010,6 +1020,7 @@ impl Spec {
 
 /// How a spec did.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1025,6 +1036,7 @@ pub enum SpecStatus {
 
 /// One spec checked against one result.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SpecCheck {
@@ -1047,6 +1059,7 @@ pub struct SpecCheck {
 
 /// Every spec's verdict, with the ratings checks alongside when attached.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct SpecReport {

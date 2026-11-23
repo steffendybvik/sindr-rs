@@ -9,6 +9,7 @@ use super::{Check, Device};
 /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
 /// positive `voltage_across` corresponds to forward bias.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Diode {
     /// Unique component identifier.

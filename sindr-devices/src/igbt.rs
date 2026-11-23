@@ -16,6 +16,7 @@
 /// so a field added in a later release doesn't break the literal.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct IgbtParams {
     /// Gate threshold voltage (V). Typical: 4.0–6.0 V.
     pub vth: f64,

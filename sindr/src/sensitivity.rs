@@ -27,6 +27,7 @@ use crate::transfer_function::{independent_vsource_branch, Port, TfOutput};
 
 /// Sensitivity-analysis configuration. Build one with [`SensConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SensConfig {
@@ -51,6 +52,7 @@ impl SensConfig {
 
 /// Which parameter of a component a [`SensEntry`] is for.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SensParameter {
@@ -108,6 +110,7 @@ pub enum SensParameter {
 
 /// The sensitivity of the output to one component parameter.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SensEntry {
@@ -127,6 +130,7 @@ pub struct SensEntry {
 
 /// Result of a sensitivity analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SensResult {

@@ -7,6 +7,7 @@ use super::{Check, Device};
 /// NTC thermistor: resistance varies with temperature (passive, no NR).
 /// nodes: [n1, n2]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Thermistor {
     /// Unique component identifier.

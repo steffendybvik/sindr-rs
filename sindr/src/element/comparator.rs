@@ -11,6 +11,7 @@ use super::{Check, Device};
 ///
 /// [`OpAmpModel`]: crate::circuit::OpAmpModel
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Comparator {
     /// Unique component identifier.

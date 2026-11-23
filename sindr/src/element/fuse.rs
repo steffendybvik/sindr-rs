@@ -14,6 +14,7 @@ use super::{Check, Device};
 /// set `blown` to open it. To flag an overcurrent, put
 /// [`Ratings::current`](crate::Ratings::current) on its part.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fuse {
     /// Unique component identifier.

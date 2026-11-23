@@ -77,6 +77,7 @@ use crate::results::{ComponentResult, SimulationResult};
 /// One absolute-maximum rating. Each is a magnitude; see [`Ratings`] for
 /// what it measures.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -166,6 +167,7 @@ impl RatingKind {
 
 /// How a part did against one rating.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -181,6 +183,7 @@ pub enum RatingStatus {
 
 /// One part checked against one rating.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RatingCheck {
@@ -204,6 +207,7 @@ pub struct RatingCheck {
 
 /// Every rating checked on every part, in circuit order.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct RatingsReport {

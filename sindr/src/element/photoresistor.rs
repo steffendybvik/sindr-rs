@@ -7,6 +7,7 @@ use super::{Check, Device};
 /// Photoresistor (LDR): resistance varies logarithmically with light.
 /// light_level = 0.0 → ~1 MΩ (dark), 1.0 → ~1 kΩ (bright).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Photoresistor {
     /// Unique component identifier.

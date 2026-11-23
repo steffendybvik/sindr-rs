@@ -19,6 +19,7 @@ use super::{Check, Device};
 ///
 /// `nodes: [input, output, gnd]`
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoltageRegulator {
     /// Unique component identifier.

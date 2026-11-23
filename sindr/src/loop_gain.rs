@@ -41,6 +41,7 @@ use crate::node_map::NodeMap;
 
 /// Loop-gain analysis configuration. Build one with [`LoopGainConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct LoopGainConfig {
@@ -97,12 +98,14 @@ impl LoopGainConfig {
 
 /// The loop gain at one frequency.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct LoopGainPoint {
     /// Frequency (Hz).
     pub frequency: f64,
     /// The loop gain `T(j·2πf)`.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub gain: Complex64,
     /// Phase of `T` (degrees), unwrapped along the sweep from the first
     /// point's value in (−180°, 180°].
@@ -118,6 +121,7 @@ impl LoopGainPoint {
 
 /// Result of a loop-gain analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct LoopGainResult {

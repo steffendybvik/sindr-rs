@@ -144,6 +144,7 @@ use sindr_devices::varactor::VaractorParams;
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Netlist {
     /// The components, in any order.
@@ -154,6 +155,7 @@ pub struct Netlist {
 
 /// One component of a [`Netlist`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Component {
     /// The caller's id, unique in the netlist. It becomes the element's id,
@@ -238,6 +240,7 @@ impl Component {
 /// A value or parameter: a number in SI base units, text, a flag, or a
 /// typed quantity.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(untagged))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -264,6 +267,7 @@ pub enum Value {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// or build it with [`new`](Self::new) and [`with_text`](Self::with_text).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Quantity {
     /// The number, in the unit's base unit (A, not mA), exact as the
@@ -303,6 +307,7 @@ impl Quantity {
 /// (a gain, a position). [`from_symbol`](Self::from_symbol) also reads
 /// `Ω`; any other symbol is [`Other`](Self::Other).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -404,6 +409,7 @@ impl From<Quantity> for Value {
 /// component that becomes an element, in
 /// [`ImportedCircuit::models`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -469,6 +475,7 @@ impl From<String> for Value {
 
 /// A device model for a [`Component`] whose kind takes one.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -537,6 +544,7 @@ pub enum Model {
 /// ```
 #[cfg(feature = "spice")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SubcktModel {
@@ -688,6 +696,7 @@ impl Model {
 /// `pin_header`, `terminal_block`, `conn` for a connector; `ic` for a
 /// black box.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(missing_docs)]
@@ -1126,6 +1135,7 @@ impl From<ComponentKind> for String {
 
 /// A net: the terminals wired together.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Net {
     /// The caller's id, unique in the netlist. It becomes the node's name.
@@ -1164,6 +1174,7 @@ impl Net {
 
 /// A component's terminal, by the component's id and the terminal's name.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Pin {
     /// The component's id.
@@ -1339,6 +1350,7 @@ pub enum ImportError {
 /// What to do with a component of a kind sindr doesn't know
 /// ([`ComponentKind::Other`]).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1355,6 +1367,7 @@ pub enum UnknownKinds {
 
 /// What to do with a component that has a required terminal on no net.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1397,6 +1410,7 @@ impl UnconnectedTerminals {
 /// assert_eq!(options.terminal_names["q1"]["1"], "Base");
 /// ```
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]

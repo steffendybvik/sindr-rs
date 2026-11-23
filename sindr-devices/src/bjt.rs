@@ -11,6 +11,7 @@ use crate::diode::{thermal_voltage, V_T};
 
 /// BJT polarity.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BjtKind {
     /// NPN (electrons are majority carriers in base region).
@@ -24,6 +25,7 @@ pub enum BjtKind {
 /// Operating region of a BJT — useful for diagnostics and circuit
 /// classification (amplifier biased "active", switch in "saturation", …).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BjtRegion {
     /// Both junctions reverse-biased — negligible currents.

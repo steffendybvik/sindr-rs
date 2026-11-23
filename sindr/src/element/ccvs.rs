@@ -7,6 +7,7 @@ use super::{Check, Device};
 /// Current-Controlled Voltage Source: V_out = rm * I_control.
 /// nodes: [out+, out-], control_source: id of controlling voltage source
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ccvs {
     /// Unique component identifier.

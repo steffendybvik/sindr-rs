@@ -24,6 +24,7 @@ use std::fmt;
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DatasheetValue {
@@ -147,6 +148,7 @@ pub(crate) fn positive(figure: &'static str, v: f64) -> Result<f64, DatasheetErr
 ///
 /// Set the fields you need and fill the rest with `..Default::default()`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DiodeDatasheet {
@@ -186,6 +188,7 @@ impl DiodeDatasheet {
 ///
 /// Set the fields you need and fill the rest with `..Default::default()`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ZenerDatasheet {
@@ -209,6 +212,7 @@ impl ZenerDatasheet {
 ///
 /// Set the fields you need and fill the rest with `..Default::default()`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BjtDatasheet {
@@ -261,6 +265,7 @@ impl BjtDatasheet {
 ///
 /// Set the fields you need and fill the rest with `..Default::default()`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MosfetDatasheet {

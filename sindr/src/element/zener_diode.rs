@@ -15,6 +15,7 @@ use super::{Check, Device};
 /// [`CircuitElement::Diode`]: crate::CircuitElement::Diode
 /// [`DiodeModel`]: crate::circuit::DiodeModel
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ZenerDiode {
     /// Unique component identifier.

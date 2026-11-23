@@ -10,6 +10,7 @@ use super::{Check, Device};
 /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
 /// to the source).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mosfet {
     /// Unique component identifier.

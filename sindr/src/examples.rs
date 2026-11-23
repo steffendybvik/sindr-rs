@@ -396,6 +396,7 @@ mod meta {
 
     /// A named, simulatable example circuit with display metadata.
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
     #[derive(Debug, Clone)]
     pub struct ExampleCircuit {
         /// Stable identifier used for lookup and routing.

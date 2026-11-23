@@ -12,6 +12,7 @@ use super::{Check, Device};
 /// `nodes[0] → nodes[1]`. To get steady-state current, run a
 /// transient long enough to settle.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Inductor {
     /// Unique component identifier.

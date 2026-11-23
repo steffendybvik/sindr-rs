@@ -10,6 +10,7 @@ use super::{Check, Device};
 /// N-channel or P-channel JFET (Shockley square-law model).
 /// nodes: [gate, drain, source]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Jfet {
     /// Unique component identifier.

@@ -16,6 +16,7 @@ use crate::solver::SolverOptions;
 /// One operating point of a DC sweep: the sweep value and the full result
 /// at that value.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct DcSweepPoint {
@@ -31,6 +32,7 @@ pub struct DcSweepPoint {
 /// Use [`DcSweepResult::node_voltage_curve`] or
 /// [`DcSweepResult::component_current_curve`] to extract a plottable curve.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct DcSweepResult {
@@ -80,6 +82,7 @@ impl DcSweepResult {
 /// assert_eq!(axis.stop, 1.0);
 /// ```
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct DcSweepAxis {
@@ -377,6 +380,7 @@ pub(crate) fn dc_sweep_with(
 /// A two-source DC sweep: one [`DcSweepResult`] along the inner source per
 /// value of the outer one.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct NestedDcSweepResult {
@@ -389,6 +393,7 @@ pub struct NestedDcSweepResult {
 /// One curve of a [`NestedDcSweepResult`]: the inner sweep at one value of
 /// the outer source.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct NestedDcSweepCurve {

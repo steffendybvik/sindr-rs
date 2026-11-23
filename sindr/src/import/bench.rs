@@ -14,6 +14,7 @@ use crate::SimError;
 /// Where a bench item connects: a net, or a component's terminal (a
 /// connector pin, a test point) standing for the net it is on.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -45,6 +46,7 @@ impl From<Pin> for Attach {
 
 /// What a [`BenchSource`] drives.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -76,6 +78,7 @@ pub enum SourceKind {
 
 /// A source the bench adds: a supply on a net, or a signal into an input.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct BenchSource {
     /// Its id, unique among components and bench items. Results are keyed
@@ -166,6 +169,7 @@ impl BenchSource {
 
 /// What a [`BenchLoad`] is.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
@@ -261,6 +265,7 @@ impl LoadKind {
 
 /// A load the bench adds: what an output drives, a probe's capacitance.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct BenchLoad {
     /// Its id, unique among components and bench items.
@@ -371,6 +376,7 @@ impl BenchLoad {
 
 /// The analysis a [`Bench`] runs.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -399,6 +405,7 @@ pub enum Analysis {
 /// What a schematic leaves out: the ground net, the sources and loads that
 /// drive it, nets to tie together, and the analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bench {
     /// The reference (0 V) net.
