@@ -3,6 +3,7 @@
 //! every analysis.
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{Behavioural, Resistor, VoltageSource};
 use sindr::expression::Expression;
 use sindr::{
     dc_sweep, solve_op, solve_transient, BehaviouralOutput, Block, Circuit, CircuitElement,
@@ -10,29 +11,29 @@ use sindr::{
 };
 
 fn v(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn b(id: &str, p: &str, n: &str, output: BehaviouralOutput, expr: &str) -> CircuitElement {
-    CircuitElement::Behavioural {
+    CircuitElement::Behavioural(Behavioural {
         id: id.into(),
         nodes: [p.into(), n.into()],
         output,
         expr: Expression::parse(expr).unwrap(),
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {

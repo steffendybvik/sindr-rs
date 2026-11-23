@@ -20,6 +20,7 @@
 //! A comparator is the same stamp with [`COMPARATOR`]: gain 1e5 and no pole,
 //! so its output follows the clamped gain stage instantly.
 
+use crate::element::{Comparator, OpAmp};
 use nalgebra::DVector;
 
 use crate::circuit::{CircuitElement, OpAmpModel};
@@ -77,19 +78,19 @@ impl<'a> OpAmpStamp<'a> {
     /// `branch` is its first MNA branch slot.
     pub(crate) fn of(element: &'a CircuitElement, ground: &'a str, branch: usize) -> Option<Self> {
         let (model, nodes, v_pos, v_neg) = match element {
-            CircuitElement::OpAmp {
+            CircuitElement::OpAmp(OpAmp {
                 nodes,
                 v_pos,
                 v_neg,
                 model: Some(model),
                 ..
-            } => (model, nodes, *v_pos, *v_neg),
-            CircuitElement::Comparator {
+            }) => (model, nodes, *v_pos, *v_neg),
+            CircuitElement::Comparator(Comparator {
                 nodes,
                 v_pos,
                 v_neg,
                 ..
-            } => (&COMPARATOR, nodes, *v_pos, *v_neg),
+            }) => (&COMPARATOR, nodes, *v_pos, *v_neg),
             _ => return None,
         };
         Some(Self {

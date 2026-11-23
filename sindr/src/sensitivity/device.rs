@@ -2,6 +2,7 @@
 //! MOSFET's terminal currents (DC) and small-signal admittances (AC) move
 //! with each of its parameters, the bias held where it is.
 
+use crate::element::{Bjt, Diode, Mosfet};
 use nalgebra::DVector;
 use num_complex::Complex64;
 use sindr_devices::bjt::{bjt_derivatives, BjtDerivative, BjtKind};
@@ -175,12 +176,12 @@ pub(super) fn dc_parameters(
 ) -> Vec<DeviceParameter<DcEntry>> {
     let v = |node: &str| voltage(node_map, x, node);
     match component {
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             nodes,
             temperature,
             model,
             ..
-        } => {
+        }) => {
             let ((p, vp), (q, vq)) = (v(&nodes[0]), v(&nodes[1]));
             let params = device_params::diode(model.as_ref(), *temperature);
             let m = model.unwrap_or_default();
@@ -193,14 +194,14 @@ pub(super) fn dc_parameters(
                 })
                 .collect()
         }
-        CircuitElement::Bjt {
+        CircuitElement::Bjt(Bjt {
             nodes,
             kind,
             bf,
             temperature,
             model,
             ..
-        } => {
+        }) => {
             let ((b, vb), (c, vc), (e, ve)) = (v(&nodes[0]), v(&nodes[1]), v(&nodes[2]));
             let s = bjt_polarity(*kind);
             bjt_parameters(
@@ -218,12 +219,12 @@ pub(super) fn dc_parameters(
             })
             .collect()
         }
-        CircuitElement::Mosfet {
+        CircuitElement::Mosfet(Mosfet {
             nodes,
             kind,
             params,
             ..
-        } => {
+        }) => {
             let ((_, vg), (d_node, vd), (s_node, vs)) = (v(&nodes[0]), v(&nodes[1]), v(&nodes[2]));
             let s = polarity(*kind);
             mosfet_parameters(*kind, params, vg, vd, vs)
@@ -257,12 +258,12 @@ pub(super) fn ac_parameters(
     let v = |node: &str| voltage(node_map, x, node);
     let j_omega = Complex64::new(0.0, omega);
     match component {
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             nodes,
             temperature,
             model,
             ..
-        } => {
+        }) => {
             let ((p, vp), (q, vq)) = (v(&nodes[0]), v(&nodes[1]));
             let v_d = vp - vq;
             let params = device_params::diode(model.as_ref(), *temperature);
@@ -322,14 +323,14 @@ pub(super) fn ac_parameters(
             }
             out
         }
-        CircuitElement::Bjt {
+        CircuitElement::Bjt(Bjt {
             nodes,
             kind,
             bf,
             temperature,
             model,
             ..
-        } => {
+        }) => {
             let ((b, vb), (c, vc), (e, ve)) = (v(&nodes[0]), v(&nodes[1]), v(&nodes[2]));
             let s = bjt_polarity(*kind);
             let terminals = [b, c, e];
@@ -359,12 +360,12 @@ pub(super) fn ac_parameters(
             })
             .collect()
         }
-        CircuitElement::Mosfet {
+        CircuitElement::Mosfet(Mosfet {
             nodes,
             kind,
             params,
             ..
-        } => {
+        }) => {
             let ((g, vg), (d_node, vd), (s_node, vs)) = (v(&nodes[0]), v(&nodes[1]), v(&nodes[2]));
             mosfet_parameters(*kind, params, vg, vd, vs)
                 .into_iter()

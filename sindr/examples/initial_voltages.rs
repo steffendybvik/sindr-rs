@@ -9,6 +9,7 @@
 // Seeds apply to nonlinear DC only, and node names that don't exist are
 // ignored.
 
+use sindr::element::{Diode, Resistor, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::{solve_circuit, Circuit, CircuitElement, Solver, SolverOptions};
@@ -17,29 +18,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "top".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["top".into(), "mid".into()],
                 temperature: 300.15,
                 model: None,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D2".into(),
                 nodes: ["mid".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     };

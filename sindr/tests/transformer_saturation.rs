@@ -4,6 +4,7 @@
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::devices::inductor::InductorSaturation;
+use sindr::element::{Resistor, Transformer, VoltageSource};
 use sindr::{solve_transient, Circuit, CircuitElement, SimError, TransientConfig, Waveform};
 
 const L1: f64 = 10e-3;
@@ -11,31 +12,31 @@ const L2: f64 = 2.5e-3;
 const K: f64 = 0.99;
 
 fn transformer(saturation: Option<InductorSaturation>) -> CircuitElement {
-    CircuitElement::Transformer {
+    CircuitElement::Transformer(Transformer {
         id: "t1".into(),
         nodes: ["p1".into(), "0".into(), "p2".into(), "0".into()],
         l1: L1,
         l2: L2,
         k: K,
         saturation,
-    }
+    })
 }
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn source(id: &str, node: &str, volts: f64, waveform: Option<Waveform>) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [node.into(), "0".into()],
         voltage: volts,
         waveform,
-    }
+    })
 }
 
 /// The magnetising branch saturates at 1 A, keeping a twentieth of
@@ -232,13 +233,15 @@ fn a_saturating_core_is_validated() {
             other => panic!("{field}: {other:?}"),
         }
     };
-    let with = |sat: InductorSaturation, k: f64| CircuitElement::Transformer {
-        id: "t1".into(),
-        nodes: ["p1".into(), "0".into(), "p2".into(), "0".into()],
-        l1: L1,
-        l2: L2,
-        k,
-        saturation: Some(sat),
+    let with = |sat: InductorSaturation, k: f64| {
+        CircuitElement::Transformer(Transformer {
+            id: "t1".into(),
+            nodes: ["p1".into(), "0".into(), "p2".into(), "0".into()],
+            l1: L1,
+            l2: L2,
+            k,
+            saturation: Some(sat),
+        })
     };
     check(
         with(

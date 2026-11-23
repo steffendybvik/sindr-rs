@@ -4,6 +4,11 @@
 //! Only compiled when the `spice` feature is enabled.
 #![cfg(feature = "spice")]
 
+use sindr::element::{
+    Battery, Bjt, Cccs, Ccvs, Comparator, Crystal, Diode, Fuse, Igbt, Inductor, Jfet, Led, Mosfet,
+    OpAmp, Photodiode, Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode,
+    Switch, Thermistor, Varactor, VoltageRegulator, VoltageSource, ZenerDiode,
+};
 use std::collections::HashMap;
 
 use sindr::spice::{parse_str, to_netlist, ExportError};
@@ -92,17 +97,17 @@ fn source_with(waveform: Waveform, dc: f64) -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["a".into(), "0".into()],
                 voltage: dc,
                 waveform: Some(waveform),
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["a".into(), "0".into()],
                 resistance: 1e3,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -111,9 +116,9 @@ fn source_with(waveform: Waveform, dc: f64) -> Circuit {
 /// The source's value at `t`, waveform plus static value, as the solver sums them.
 fn source_value(circuit: &Circuit, t: f64) -> f64 {
     match &circuit.components[0] {
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             voltage, waveform, ..
-        } => voltage + waveform.as_ref().map_or(0.0, |w| w.evaluate(t)),
+        }) => voltage + waveform.as_ref().map_or(0.0, |w| w.evaluate(t)),
         other => panic!("expected a voltage source, got {other:?}"),
     }
 }
@@ -217,23 +222,23 @@ fn models_round_trip() {
     let circuit = Circuit {
         ground_node: "gnd".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "VCC".into(),
                 nodes: ["vcc".into(), "gnd".into()],
                 voltage: 9.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "RB".into(),
                 nodes: ["vcc".into(), "b".into()],
                 resistance: 1e6,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "RC".into(),
                 nodes: ["vcc".into(), "c".into()],
                 resistance: 2.2e3,
-            },
-            CircuitElement::Bjt {
+            }),
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "gnd".into()],
                 kind: BjtKind::Npn,
@@ -241,19 +246,19 @@ fn models_round_trip() {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: Some(bjt),
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["c".into(), "gnd".into()],
                 temperature: 300.15,
                 model: Some(diode),
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D2".into(),
                 nodes: ["c".into(), "gnd".into()],
                 temperature: 300.15,
                 model: Some(diode),
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -262,7 +267,7 @@ fn models_round_trip() {
     assert_eq!(deck.matches(".model").count(), 2, "{deck}");
     let back = parse_str(&deck).unwrap().circuit;
     match &back.components[3] {
-        CircuitElement::Bjt { bf, model, .. } => {
+        CircuitElement::Bjt(Bjt { bf, model, .. }) => {
             assert_eq!(*bf, 416.4);
             assert_eq!(*model, Some(bjt));
         }
@@ -270,7 +275,7 @@ fn models_round_trip() {
     }
     assert!(matches!(
         &back.components[4],
-        CircuitElement::Diode { model: Some(m), .. } if *m == diode
+        CircuitElement::Diode(Diode { model: Some(m), .. }) if *m == diode
     ));
     assert_same_solution(
         "models",
@@ -298,23 +303,23 @@ fn diode_charge_and_breakdown_round_trip() {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["a".into(), "0".into()],
                 voltage: 0.2,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["a".into(), "b".into()],
                 resistance: 10.0,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["b".into(), "0".into()],
                 temperature: 300.15,
                 model: Some(model),
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -326,7 +331,7 @@ fn diode_charge_and_breakdown_round_trip() {
     let back = parse_str(&deck).unwrap().circuit;
     assert!(matches!(
         &back.components[2],
-        CircuitElement::Diode { model: Some(m), .. } if *m == model
+        CircuitElement::Diode(Diode { model: Some(m), .. }) if *m == model
     ));
 
     // A plain card stays as it was.
@@ -335,7 +340,7 @@ fn diode_charge_and_breakdown_round_trip() {
         ..DiodeModel::default()
     };
     let mut circuit = circuit;
-    if let CircuitElement::Diode { model, .. } = &mut circuit.components[2] {
+    if let CircuitElement::Diode(Diode { model, .. }) = &mut circuit.components[2] {
         *model = Some(plain);
     }
     let deck = to_netlist(&circuit, "plain").unwrap();
@@ -350,23 +355,23 @@ fn names_get_their_spice_letter_and_ground_becomes_0() {
     let circuit = Circuit {
         ground_node: "gnd".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "supply".into(),
                 nodes: ["in".into(), "gnd".into()],
                 voltage: 1.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "r_load".into(),
                 nodes: ["in".into(), "gnd".into()],
                 resistance: 50.0,
-            },
-            CircuitElement::Cccs {
+            }),
+            CircuitElement::Cccs(Cccs {
                 id: "mirror".into(),
                 nodes: ["in".into(), "gnd".into()],
                 control_source: "supply".into(),
                 alpha: 2.0,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -380,11 +385,11 @@ fn names_get_their_spice_letter_and_ground_becomes_0() {
 fn one_resistor(id: &str, a: &str, b: &str) -> Circuit {
     Circuit {
         ground_node: "0".into(),
-        components: vec![CircuitElement::Resistor {
+        components: vec![CircuitElement::Resistor(Resistor {
             id: id.into(),
             nodes: [a.into(), b.into()],
             resistance: 1.0,
-        }],
+        })],
         ..Default::default()
     }
 }
@@ -407,21 +412,21 @@ fn names_spice_cannot_hold_are_rejected() {
     }
 
     let mut folded = one_resistor("R1", "Out", "0");
-    folded.components.push(CircuitElement::Resistor {
+    folded.components.push(CircuitElement::Resistor(Resistor {
         id: "R2".into(),
         nodes: ["out".into(), "0".into()],
         resistance: 1.0,
-    });
+    }));
     let err = to_netlist(&folded, "t").unwrap_err();
     assert!(err.to_string().contains("Out"), "{err}");
 
     // `1` becomes `R1`, which another resistor already is.
     let mut clash = one_resistor("1", "a", "0");
-    clash.components.push(CircuitElement::Resistor {
+    clash.components.push(CircuitElement::Resistor(Resistor {
         id: "r1".into(),
         nodes: ["a".into(), "0".into()],
         resistance: 1.0,
-    });
+    }));
     assert!(matches!(
         to_netlist(&clash, "t"),
         Err(ExportError::BadName { .. })
@@ -431,12 +436,12 @@ fn names_spice_cannot_hold_are_rejected() {
 #[test]
 fn what_spice_cannot_express_is_reported() {
     let mut hot = one_resistor("R1", "a", "0");
-    hot.components.push(CircuitElement::Diode {
+    hot.components.push(CircuitElement::Diode(Diode {
         id: "D1".into(),
         nodes: ["a".into(), "0".into()],
         temperature: 350.0,
         model: None,
-    });
+    }));
     let err = to_netlist(&hot, "t").unwrap_err();
     assert!(
         matches!(&err, ExportError::Unsupported { id, .. } if id == "D1"),
@@ -444,7 +449,7 @@ fn what_spice_cannot_express_is_reported() {
     );
 
     let mut nan = one_resistor("R1", "a", "0");
-    if let CircuitElement::Resistor { resistance, .. } = &mut nan.components[0] {
+    if let CircuitElement::Resistor(Resistor { resistance, .. }) = &mut nan.components[0] {
         *resistance = f64::NAN;
     }
     assert!(matches!(
@@ -456,12 +461,12 @@ fn what_spice_cannot_express_is_reported() {
     ));
 
     let mut orphan = one_resistor("R1", "a", "0");
-    orphan.components.push(CircuitElement::Ccvs {
+    orphan.components.push(CircuitElement::Ccvs(Ccvs {
         id: "H1".into(),
         nodes: ["a".into(), "0".into()],
         control_source: "R1".into(),
         rm: 1.0,
-    });
+    }));
     assert!(matches!(
         to_netlist(&orphan, "t"),
         Err(ExportError::BadName { .. })
@@ -532,10 +537,12 @@ fn a_ground_port_is_rejected() {
 
 #[test]
 fn globals_round_trip() {
-    let resistor = |id: &str, a: &str, b: &str, ohms: f64| CircuitElement::Resistor {
-        id: id.into(),
-        nodes: [a.into(), b.into()],
-        resistance: ohms,
+    let resistor = |id: &str, a: &str, b: &str, ohms: f64| {
+        CircuitElement::Resistor(Resistor {
+            id: id.into(),
+            nodes: [a.into(), b.into()],
+            resistance: ohms,
+        })
     };
     // `pullup` reaches the `vcc` rail by name, not through a port.
     let pullup = sindr::Block {
@@ -547,12 +554,12 @@ fn globals_round_trip() {
         ground_node: "0".into(),
         globals: vec!["vcc".into()],
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "v1".into(),
                 nodes: ["vcc".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
+            }),
             resistor("r2", "a", "0", 1000.0),
             resistor("r3", "b", "0", 3000.0),
         ],
@@ -612,13 +619,13 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
     use sindr_devices::mosfet::MosfetParams;
     let t_nom = 300.15;
     let cases = vec![
-        CircuitElement::Battery {
+        CircuitElement::Battery(Battery {
             id: "B1".into(),
             nodes: two("a", "0"),
             params: sindr::battery::BatteryParams::lithium_ion(2.0, 0.05),
             state_of_charge: 0.5,
-        },
-        CircuitElement::Bjt {
+        }),
+        CircuitElement::Bjt(Bjt {
             id: "Q1".into(),
             nodes: three("a", "b", "0"),
             kind: BjtKind::Npn,
@@ -629,8 +636,8 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
                 cbc: 2e-12,
             }),
             model: None,
-        },
-        CircuitElement::Mosfet {
+        }),
+        CircuitElement::Mosfet(Mosfet {
             id: "M1".into(),
             nodes: three("a", "b", "0"),
             kind: sindr::MosfetKind::Nmos,
@@ -641,8 +648,8 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
             },
             parasitic_caps: None,
             body_diode: None,
-        },
-        CircuitElement::Jfet {
+        }),
+        CircuitElement::Jfet(Jfet {
             id: "J1".into(),
             nodes: three("a", "b", "0"),
             kind: sindr::JfetKind::NChannel,
@@ -650,56 +657,56 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
             // SPICE's N-channel VTO is below 0.
             vp: 2.0,
             parasitic_caps: None,
-        },
-        CircuitElement::Igbt {
+        }),
+        CircuitElement::Igbt(Igbt {
             id: "Z1".into(),
             nodes: three("a", "b", "0"),
             params: sindr::IgbtParams::default(),
-        },
-        CircuitElement::ZenerDiode {
+        }),
+        CircuitElement::ZenerDiode(ZenerDiode {
             id: "DZ1".into(),
             nodes: two("a", "0"),
             vz: 5.1,
             temperature: t_nom,
-        },
-        CircuitElement::OpAmp {
+        }),
+        CircuitElement::OpAmp(OpAmp {
             id: "U1".into(),
             nodes: three("a", "b", "c"),
             v_pos: 15.0,
             v_neg: -15.0,
             model: None,
-        },
-        CircuitElement::Comparator {
+        }),
+        CircuitElement::Comparator(Comparator {
             id: "U2".into(),
             nodes: three("a", "b", "c"),
             v_pos: 5.0,
             v_neg: 0.0,
-        },
-        CircuitElement::Relay {
+        }),
+        CircuitElement::Relay(Relay {
             id: "K9".into(),
             nodes: ["a".into(), "0".into(), "b".into(), "c".into()],
             coil_resistance: 100.0,
             pickup_voltage: 3.0,
             inductance: 1e-3,
-        },
-        CircuitElement::Photodiode {
+        }),
+        CircuitElement::Photodiode(Photodiode {
             id: "PD1".into(),
             nodes: two("a", "0"),
             irradiance: 1.0,
             temperature: t_nom,
-        },
-        CircuitElement::Varactor {
+        }),
+        CircuitElement::Varactor(Varactor {
             id: "CV1".into(),
             nodes: two("a", "0"),
             params: sindr::VaractorParams::default(),
-        },
-        CircuitElement::VoltageRegulator {
+        }),
+        CircuitElement::VoltageRegulator(VoltageRegulator {
             id: "REG1".into(),
             nodes: three("a", "b", "0"),
             voltage: 5.0,
             model: None,
-        },
-        CircuitElement::Crystal {
+        }),
+        CircuitElement::Crystal(Crystal {
             id: "Y1".into(),
             nodes: two("a", "0"),
             params: sindr::CrystalParams {
@@ -708,7 +715,7 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
                 c0: 1e-12,
                 cm: 1e-15,
             },
-        },
+        }),
     ];
     for element in cases {
         let id = element.id().to_string();
@@ -770,73 +777,75 @@ fn empty_pwl_round_trips_to_its_static_value() {
 /// the same operating point as the original.
 #[test]
 fn equivalent_parts_round_trip_to_the_same_operating_point() {
-    let supply = CircuitElement::VoltageSource {
+    let supply = CircuitElement::VoltageSource(VoltageSource {
         id: "V1".into(),
         nodes: two("in", "0"),
         voltage: 5.0,
         waveform: None,
-    };
-    let feed = |id: &str, to: &str| CircuitElement::Resistor {
-        id: id.into(),
-        nodes: two("in", to),
-        resistance: 1e3,
+    });
+    let feed = |id: &str, to: &str| {
+        CircuitElement::Resistor(Resistor {
+            id: id.into(),
+            nodes: two("in", to),
+            resistance: 1e3,
+        })
     };
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
             supply,
             feed("R1", "led"),
-            CircuitElement::Led {
+            CircuitElement::Led(Led {
                 id: "D1".into(),
                 nodes: two("led", "0"),
                 color: "red".into(),
                 temperature: 300.15,
-            },
+            }),
             feed("R2", "sch"),
-            CircuitElement::SchottkyDiode {
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 id: "D2".into(),
                 nodes: two("sch", "0"),
                 temperature: 300.15,
-            },
+            }),
             feed("R3", "ldr"),
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 id: "LDR1".into(),
                 nodes: two("ldr", "0"),
                 light_level: 0.3,
-            },
+            }),
             feed("R4", "ntc"),
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id: "TH1".into(),
                 nodes: two("ntc", "0"),
                 temperature: 320.0,
-            },
+            }),
             feed("R5", "sw"),
-            CircuitElement::Switch {
+            CircuitElement::Switch(Switch {
                 id: "S1".into(),
                 nodes: two("sw", "0"),
                 closed: false,
-            },
+            }),
             feed("R6", "pb"),
-            CircuitElement::Pushbutton {
+            CircuitElement::Pushbutton(Pushbutton {
                 id: "S2".into(),
                 nodes: two("pb", "0"),
                 closed: true,
-            },
+            }),
             feed("R7", "fuse"),
-            CircuitElement::Fuse {
+            CircuitElement::Fuse(Fuse {
                 id: "F1".into(),
                 nodes: two("fuse", "0"),
                 rating: 1.0,
                 blown: true,
-            },
+            }),
             // An inductor is a short at DC: `l` sits at 0 V.
             feed("R8", "l"),
-            CircuitElement::Inductor {
+            CircuitElement::Inductor(Inductor {
                 id: "L1".into(),
                 nodes: two("l", "0"),
                 inductance: 1e-3,
                 saturation: None,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -852,29 +861,33 @@ fn equivalent_parts_round_trip_to_the_same_operating_point() {
 /// Identical BJTs share one `.model` card; a different polarity gets its own.
 #[test]
 fn bjts_share_identical_model_cards() {
-    let bjt = |id: &str, nodes: [&str; 3], kind| CircuitElement::Bjt {
-        id: id.into(),
-        nodes: three(nodes[0], nodes[1], nodes[2]),
-        kind,
-        bf: 80.0,
-        temperature: 300.15,
-        parasitic_caps: None,
-        model: None,
+    let bjt = |id: &str, nodes: [&str; 3], kind| {
+        CircuitElement::Bjt(Bjt {
+            id: id.into(),
+            nodes: three(nodes[0], nodes[1], nodes[2]),
+            kind,
+            bf: 80.0,
+            temperature: 300.15,
+            parasitic_caps: None,
+            model: None,
+        })
     };
-    let r = |id: &str, a: &str, b: &str, ohms: f64| CircuitElement::Resistor {
-        id: id.into(),
-        nodes: two(a, b),
-        resistance: ohms,
+    let r = |id: &str, a: &str, b: &str, ohms: f64| {
+        CircuitElement::Resistor(Resistor {
+            id: id.into(),
+            nodes: two(a, b),
+            resistance: ohms,
+        })
     };
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "VCC".into(),
                 nodes: two("vcc", "0"),
                 voltage: 5.0,
                 waveform: None,
-            },
+            }),
             r("RB1", "vcc", "b1", 470e3),
             r("RC1", "vcc", "c1", 1e3),
             bjt("Q1", ["b1", "c1", "0"], BjtKind::Npn),
@@ -906,12 +919,14 @@ fn bjts_share_identical_model_cards() {
 fn names_that_would_clash_once_written_are_rejected() {
     // A potentiometer writes `R<id>_top`, which another resistor already is.
     let mut circuit = one_resistor("Rpot_top", "a", "0");
-    circuit.components.push(CircuitElement::Potentiometer {
-        id: "Rpot".into(),
-        nodes: three("a", "w", "0"),
-        resistance: 1e3,
-        position: 0.5,
-    });
+    circuit
+        .components
+        .push(CircuitElement::Potentiometer(Potentiometer {
+            id: "Rpot".into(),
+            nodes: three("a", "w", "0"),
+            resistance: 1e3,
+            position: 0.5,
+        }));
     match to_netlist(&circuit, "t").unwrap_err() {
         ExportError::BadName { what, name, reason } => {
             assert_eq!((what, name.as_str()), ("element", "Rpot"));
@@ -922,11 +937,11 @@ fn names_that_would_clash_once_written_are_rejected() {
 
     let block = || sindr::Block {
         ports: s(&["p"]),
-        components: vec![CircuitElement::Resistor {
+        components: vec![CircuitElement::Resistor(Resistor {
             id: "R1".into(),
             nodes: two("p", "0"),
             resistance: 1.0,
-        }],
+        })],
         ..Default::default()
     };
     let mut circuit = one_resistor("R1", "a", "0");

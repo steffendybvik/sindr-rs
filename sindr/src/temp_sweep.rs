@@ -8,6 +8,7 @@
 //! temperature field on all IS-bearing components, and calls solve_circuit.
 
 use crate::circuit::{Circuit, CircuitElement};
+use crate::element::{Bjt, Diode, Led, Photodiode, SchottkyDiode, ZenerDiode};
 use crate::error::SimError;
 use crate::results::SimulationResult;
 
@@ -94,22 +95,23 @@ impl TempSweepResult {
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement, temperature_sweep};
+/// use sindr::element::{Diode, VoltageSource};
 ///
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             voltage: 1.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Diode {
+///         }),
+///         CircuitElement::Diode(Diode {
 ///             id: "D1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             temperature: 300.15,
 ///             model: None,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -118,6 +120,7 @@ impl TempSweepResult {
 /// let sweep = temperature_sweep(&circuit, 250.0, 400.0, 4).unwrap();
 /// assert_eq!(sweep.points.len(), 4);
 /// ```
+///
 pub fn temperature_sweep(
     circuit: &Circuit,
     temp_start: f64,
@@ -168,22 +171,22 @@ pub(crate) fn temperature_sweep_with(
         // Scale IS for all temperature-sensitive components
         for component in &mut sweep_circuit.components {
             match component {
-                CircuitElement::Bjt { temperature, .. } => {
+                CircuitElement::Bjt(Bjt { temperature, .. }) => {
                     *temperature = t;
                 }
-                CircuitElement::Diode { temperature, .. } => {
+                CircuitElement::Diode(Diode { temperature, .. }) => {
                     *temperature = t;
                 }
-                CircuitElement::Led { temperature, .. } => {
+                CircuitElement::Led(Led { temperature, .. }) => {
                     *temperature = t;
                 }
-                CircuitElement::ZenerDiode { temperature, .. } => {
+                CircuitElement::ZenerDiode(ZenerDiode { temperature, .. }) => {
                     *temperature = t;
                 }
-                CircuitElement::SchottkyDiode { temperature, .. } => {
+                CircuitElement::SchottkyDiode(SchottkyDiode { temperature, .. }) => {
                     *temperature = t;
                 }
-                CircuitElement::Photodiode { temperature, .. } => {
+                CircuitElement::Photodiode(Photodiode { temperature, .. }) => {
                     *temperature = t;
                 }
                 _ => {}
@@ -228,6 +231,7 @@ mod tests {
     use super::*;
     use crate::circuit::Circuit;
     use crate::circuit::CircuitElement;
+    use crate::element::{Resistor, VoltageSource};
     use sindr_devices::bjt::BjtKind;
 
     /// A simple resistor circuit swept 250K → 350K with 11 steps returns 11 points.
@@ -236,17 +240,17 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "0".into()],
                     resistance: 1000.0,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -272,29 +276,29 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "Vcc".into(),
                     nodes: ["vcc".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::VoltageSource {
+                }),
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "Vbb".into(),
                     nodes: ["base_in".into(), "0".into()],
                     voltage: 0.7,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "Rb".into(),
                     nodes: ["base_in".into(), "base".into()],
                     resistance: 10_000.0,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "Rc".into(),
                     nodes: ["vcc".into(), "collector".into()],
                     resistance: 1_000.0,
-                },
-                CircuitElement::Bjt {
+                }),
+                CircuitElement::Bjt(Bjt {
                     id: "Q1".into(),
                     nodes: ["base".into(), "collector".into(), "0".into()],
                     kind: BjtKind::Npn,
@@ -302,7 +306,7 @@ mod tests {
                     temperature: 300.15, // will be overridden in sweep
                     parasitic_caps: None,
                     model: None,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -344,17 +348,17 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "0".into()],
                     resistance: 1000.0,
-                },
+                }),
             ],
             ..Default::default()
         };

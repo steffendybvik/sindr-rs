@@ -5,23 +5,24 @@
 //!     cargo bench -p sindr --bench newton
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use sindr::element::{Bjt, Diode, Resistor, VoltageSource};
 use sindr::{solve_circuit, BjtKind, Circuit, CircuitElement};
 
 fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id,
         nodes: [a, b],
         resistance,
-    }
+    })
 }
 
 fn supply(node: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: format!("V{node}"),
         nodes: [node.into(), "0".into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 /// Each stage: 1 kΩ from the previous node, a diode to ground. Every diode
@@ -36,12 +37,12 @@ fn diode_chain(n: usize) -> Circuit {
             1e3,
         ));
         components.push(r(format!("RP{i}"), "n0".into(), format!("n{i}"), 10e3));
-        components.push(CircuitElement::Diode {
+        components.push(CircuitElement::Diode(Diode {
             id: format!("D{i}"),
             nodes: [format!("n{i}"), "0".into()],
             temperature: 300.15,
             model: None,
-        });
+        }));
     }
     Circuit::new("0", components)
 }
@@ -59,7 +60,7 @@ fn bjt_row(n: usize) -> Circuit {
         components.push(r(format!("RB{i}"), feed, format!("b{i}"), 100e3));
         components.push(r(format!("RC{i}"), "vcc".into(), format!("c{i}"), 1e3));
         components.push(r(format!("RE{i}"), format!("e{i}"), "0".into(), 100.0));
-        components.push(CircuitElement::Bjt {
+        components.push(CircuitElement::Bjt(Bjt {
             id: format!("Q{i}"),
             nodes: [format!("b{i}"), format!("c{i}"), format!("e{i}")],
             kind: BjtKind::Npn,
@@ -67,7 +68,7 @@ fn bjt_row(n: usize) -> Circuit {
             temperature: 300.15,
             parasitic_caps: None,
             model: None,
-        });
+        }));
     }
     Circuit::new("0", components)
 }

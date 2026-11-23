@@ -7,23 +7,24 @@
 //! stopping point, not to the last bit: tolerances here are 1e-7 V and
 //! 1e-6 relative, well inside sindr's VNTOL (1 µV) and RELTOL (1e-3).
 
+use sindr::element::{Bjt, Resistor, VoltageSource};
 use sindr::{solve_op, BjtKind, Circuit, CircuitElement};
 
 fn r(id: String, a: String, b: String, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id,
         nodes: [a, b],
         resistance: ohms,
-    }
+    })
 }
 
 fn supply(id: &str, node: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [node.into(), "0".into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 /// `stages` common-emitter stages in a row, each fed from the one before.
@@ -49,7 +50,7 @@ fn row(stages: usize, shared: bool) -> Circuit {
         parts.push(r(format!("RB{i}"), feed, format!("b{i}"), 100e3));
         parts.push(r(format!("RC{i}"), rail, format!("c{i}"), 1e3));
         parts.push(r(format!("RE{i}"), format!("e{i}"), "0".into(), 100.0));
-        parts.push(CircuitElement::Bjt {
+        parts.push(CircuitElement::Bjt(Bjt {
             id: format!("Q{i}"),
             nodes: [format!("b{i}"), format!("c{i}"), format!("e{i}")],
             kind: BjtKind::Npn,
@@ -57,7 +58,7 @@ fn row(stages: usize, shared: bool) -> Circuit {
             temperature: 300.15,
             parasitic_caps: None,
             model: None,
-        });
+        }));
     }
     Circuit::new("0", parts)
 }

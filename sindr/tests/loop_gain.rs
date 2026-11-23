@@ -1,5 +1,6 @@
 //! Loop gain and stability margins against closed-form op-amp loops.
 
+use sindr::element::{Capacitor, OpAmp, Resistor, VoltageSource};
 use std::f64::consts::PI;
 
 use num_complex::Complex64;
@@ -10,7 +11,7 @@ const A0: f64 = 1e5;
 const GBW: f64 = 1e6;
 
 fn opamp(r_out: f64) -> CircuitElement {
-    CircuitElement::OpAmp {
+    CircuitElement::OpAmp(OpAmp {
         id: "U1".into(),
         nodes: ["0".into(), "fb".into(), "out".into()],
         v_pos: 15.0,
@@ -21,32 +22,32 @@ fn opamp(r_out: f64) -> CircuitElement {
             r_out,
             ..Default::default()
         }),
-    }
+    })
 }
 
 fn probe(driven: &str, driving: &str) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: "Vprobe".into(),
         nodes: [driven.into(), driving.into()],
         voltage: 0.0,
         waveform: None,
-    }
+    })
 }
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn c(id: &str, a: &str, b: &str, farads: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance: farads,
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -185,12 +186,12 @@ fn probe_must_be_a_floating_voltage_source() {
     ));
 
     let mut grounded = parts;
-    grounded.push(CircuitElement::VoltageSource {
+    grounded.push(CircuitElement::VoltageSource(VoltageSource {
         id: "Vg".into(),
         nodes: ["out".into(), "0".into()],
         voltage: 0.0,
         waveform: None,
-    });
+    }));
     let config = LoopGainConfig::new("Vg", 1.0, 1e6, 11);
     assert!(matches!(
         solve_loop_gain(&circuit(grounded), &config),

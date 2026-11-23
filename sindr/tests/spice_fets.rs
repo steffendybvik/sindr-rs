@@ -8,6 +8,7 @@
 
 use sindr::circuit::{JfetParasiticCaps, MosfetParasiticCaps};
 use sindr::devices::mosfet::MosfetParams;
+use sindr::element::{Diode, Jfet, Mosfet};
 use sindr::spice::{
     parse_str, parse_str_with_options, to_netlist, ExportError, ParseOptions, ParsedNetlist,
     SpiceParseError,
@@ -41,14 +42,14 @@ const NMOS: &str = "t\nM1 d g s s nch\n.model nch NMOS\n.end\n";
 #[test]
 fn bare_card_takes_spice_level_1_defaults() {
     let netlist = parse_str(NMOS).unwrap();
-    let CircuitElement::Mosfet {
+    let CircuitElement::Mosfet(Mosfet {
         nodes,
         kind,
         params,
         parasitic_caps,
         body_diode,
         ..
-    } = find(&netlist.circuit, "m1")
+    }) = find(&netlist.circuit, "m1")
     else {
         panic!()
     };
@@ -73,13 +74,13 @@ fn card_and_line_scale_into_the_element() {
         + CGSO=0.5n CGDO=0.4n CGBO=0.1n IS=0 CBD=2p CBS=2p PB=0.7 MJ=0.33 FC=0.4 RD=0 RS=0)\n\
         .end\n";
     let netlist = parse_str(deck).unwrap();
-    let CircuitElement::Mosfet {
+    let CircuitElement::Mosfet(Mosfet {
         kind,
         params,
         parasitic_caps,
         body_diode,
         ..
-    } = find(&netlist.circuit, "m1")
+    }) = find(&netlist.circuit, "m1")
     else {
         panic!()
     };
@@ -103,7 +104,7 @@ fn card_and_line_scale_into_the_element() {
 #[test]
 fn no_junction_means_no_body_diode() {
     let netlist = parse_str("t\nM1 d g 0 0 n1\n.model n1 NMOS(IS=0)\n.end\n").unwrap();
-    let CircuitElement::Mosfet { body_diode, .. } = find(&netlist.circuit, "m1") else {
+    let CircuitElement::Mosfet(Mosfet { body_diode, .. }) = find(&netlist.circuit, "m1") else {
         panic!()
     };
     assert_eq!(*body_diode, None);
@@ -120,7 +121,7 @@ fn mosfet_inside_a_subckt_checks_its_own_bulk() {
         .end\n";
     let netlist = parse_str(deck).unwrap();
     let flat = netlist.circuit.flatten().unwrap();
-    let CircuitElement::Mosfet { nodes, .. } = find(&flat, "x1.m1") else {
+    let CircuitElement::Mosfet(Mosfet { nodes, .. }) = find(&flat, "x1.m1") else {
         panic!()
     };
     assert_eq!(nodes, &["gate".to_string(), "out".into(), "0".into()]);
@@ -134,7 +135,7 @@ fn bulk_off_the_source_is_refused_in_strict_and_warned_in_lenient() {
     assert!(netlist.warnings.iter().any(|w| w.message.contains("bulk")));
     assert!(matches!(
         find(&netlist.circuit, "m1"),
-        CircuitElement::Mosfet { .. }
+        CircuitElement::Mosfet(Mosfet { .. })
     ));
 }
 
@@ -200,13 +201,13 @@ fn jfet_maps_beta_and_vto_onto_idss_and_pinch_off() {
         .model pj PJF(VTO=-1.5 BETA=2m)\n\
         .end\n";
     let netlist = parse_str(deck).unwrap();
-    let CircuitElement::Jfet {
+    let CircuitElement::Jfet(Jfet {
         nodes,
         kind,
         idss,
         vp,
         ..
-    } = find(&netlist.circuit, "j1")
+    }) = find(&netlist.circuit, "j1")
     else {
         panic!()
     };
@@ -215,7 +216,7 @@ fn jfet_maps_beta_and_vto_onto_idss_and_pinch_off() {
     // SPICE's defaults: VTO = −2 V, BETA = 1e-4 A/V².
     assert!(close(*idss, 1e-4 * 4.0));
     assert!(close(*vp, -2.0));
-    let CircuitElement::Jfet { kind, idss, vp, .. } = find(&netlist.circuit, "j2") else {
+    let CircuitElement::Jfet(Jfet { kind, idss, vp, .. }) = find(&netlist.circuit, "j2") else {
         panic!()
     };
     assert_eq!(*kind, JfetKind::PChannel);
@@ -238,7 +239,7 @@ fn jfet_card_caps_are_its_gate_junctions() {
         .end\n";
     let netlist = parse_str(deck).unwrap();
     let caps = |id: &str| match find(&netlist.circuit, id) {
-        CircuitElement::Jfet { parasitic_caps, .. } => *parasitic_caps,
+        CircuitElement::Jfet(Jfet { parasitic_caps, .. }) => *parasitic_caps,
         _ => panic!(),
     };
     let j1 = caps("j1").expect("j1 caps");
@@ -275,7 +276,7 @@ fn round_trip(element: CircuitElement) -> Circuit {
 
 #[test]
 fn mosfet_round_trips_exactly() {
-    let original = CircuitElement::Mosfet {
+    let original = CircuitElement::Mosfet(Mosfet {
         id: "m1".into(),
         nodes: ["g".into(), "d".into(), "s".into()],
         kind: MosfetKind::Pmos,
@@ -297,21 +298,21 @@ fn mosfet_round_trips_exactly() {
             fc: 0.45,
             ..DiodeModel::default()
         }),
-    };
+    });
     let back = round_trip(original.clone());
     assert_eq!(find(&back, "m1"), &original);
 }
 
 #[test]
 fn mosfet_without_caps_or_body_diode_round_trips() {
-    let original = CircuitElement::Mosfet {
+    let original = CircuitElement::Mosfet(Mosfet {
         id: "m1".into(),
         nodes: ["g".into(), "d".into(), "0".into()],
         kind: MosfetKind::Nmos,
         params: MosfetParams::default_nmos(),
         parasitic_caps: None,
         body_diode: None,
-    };
+    });
     assert_eq!(find(&round_trip(original.clone()), "m1"), &original);
 }
 
@@ -324,20 +325,20 @@ fn body_diode_spice_junctions_lack_becomes_its_own_diode() {
         bv: Some(100.0),
         ..DiodeModel::default()
     };
-    let back = round_trip(CircuitElement::Mosfet {
+    let back = round_trip(CircuitElement::Mosfet(Mosfet {
         id: "m1".into(),
         nodes: ["g".into(), "d".into(), "s".into()],
         kind: MosfetKind::Nmos,
         params: MosfetParams::default_nmos(),
         parasitic_caps: None,
         body_diode: Some(body),
-    });
-    let CircuitElement::Mosfet { body_diode, .. } = find(&back, "m1") else {
+    }));
+    let CircuitElement::Mosfet(Mosfet { body_diode, .. }) = find(&back, "m1") else {
         panic!()
     };
     assert_eq!(*body_diode, None);
     // Anode at the source, cathode at the drain, for an NMOS.
-    let CircuitElement::Diode { nodes, model, .. } = find(&back, "dm1_body") else {
+    let CircuitElement::Diode(Diode { nodes, model, .. }) = find(&back, "dm1_body") else {
         panic!()
     };
     assert_eq!(nodes, &["s".to_string(), "d".into()]);
@@ -348,7 +349,7 @@ fn body_diode_spice_junctions_lack_becomes_its_own_diode() {
 fn mosfet_flicker_noise_isnt_written() {
     let circuit = Circuit {
         ground_node: "0".into(),
-        components: vec![CircuitElement::Mosfet {
+        components: vec![CircuitElement::Mosfet(Mosfet {
             id: "m1".into(),
             nodes: ["g".into(), "d".into(), "0".into()],
             kind: MosfetKind::Nmos,
@@ -358,7 +359,7 @@ fn mosfet_flicker_noise_isnt_written() {
             },
             parasitic_caps: None,
             body_diode: None,
-        }],
+        })],
         ..Default::default()
     };
     assert!(matches!(
@@ -375,27 +376,27 @@ fn jfets_round_trip() {
         // sindr's P-channel reads either sign of `vp` as |vp|.
         (JfetKind::PChannel, -1.7, 4e-3, 1.7),
     ] {
-        let back = round_trip(CircuitElement::Jfet {
+        let back = round_trip(CircuitElement::Jfet(Jfet {
             id: "j1".into(),
             nodes: ["g".into(), "d".into(), "s".into()],
             kind,
             idss,
             vp,
             parasitic_caps: None,
-        });
+        }));
         assert!(matches!(
             find(&back, "j1"),
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 parasitic_caps: None,
                 ..
-            }
+            })
         ));
-        let CircuitElement::Jfet {
+        let CircuitElement::Jfet(Jfet {
             kind: k,
             idss: i,
             vp: v,
             ..
-        } = find(&back, "j1")
+        }) = find(&back, "j1")
         else {
             panic!()
         };
@@ -414,18 +415,18 @@ fn jfet_gate_caps_round_trip() {
             m,
             fc: 0.3,
         };
-        let back = round_trip(CircuitElement::Jfet {
+        let back = round_trip(CircuitElement::Jfet(Jfet {
             id: "j1".into(),
             nodes: ["g".into(), "d".into(), "s".into()],
             kind: JfetKind::PChannel,
             idss: 4e-3,
             vp: 1.7,
             parasitic_caps: Some(caps),
-        });
-        let CircuitElement::Jfet {
+        }));
+        let CircuitElement::Jfet(Jfet {
             parasitic_caps: Some(got),
             ..
-        } = find(&back, "j1")
+        }) = find(&back, "j1")
         else {
             panic!("no caps after the round trip")
         };
@@ -438,14 +439,14 @@ fn jfet_gate_caps_round_trip() {
 fn n_channel_jfet_pinching_off_above_zero_isnt_written() {
     let circuit = Circuit {
         ground_node: "0".into(),
-        components: vec![CircuitElement::Jfet {
+        components: vec![CircuitElement::Jfet(Jfet {
             id: "j1".into(),
             nodes: ["g".into(), "d".into(), "0".into()],
             kind: JfetKind::NChannel,
             idss: 1e-3,
             vp: 2.0,
             parasitic_caps: None,
-        }],
+        })],
         ..Default::default()
     };
     assert!(matches!(

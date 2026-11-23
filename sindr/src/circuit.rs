@@ -7,19 +7,20 @@
 //! "net" objects.
 //!
 //! [`CircuitElement`] is the open-ended enum of supported component types
-//! (resistors, sources, semiconductors, magnetics, …). Each variant carries
-//! its own parameters and a fixed-size `nodes` array; sign conventions are
-//! documented per variant.
-
-use sindr_devices::bjt::BjtKind;
-use sindr_devices::jfet::JfetKind;
-use sindr_devices::mosfet::{MosfetKind, MosfetParams};
+//! (resistors, sources, semiconductors, magnetics, …). Each variant wraps a
+//! struct from [`crate::element`] carrying its parameters and a fixed-size
+//! `nodes` array; sign conventions are documented per struct.
 
 use std::collections::BTreeMap;
 
 use crate::design::{Block, Instance, Part};
+use crate::element::{
+    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, Diode,
+    FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor,
+    Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt, Thermistor,
+    Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+};
 use crate::expression::Expression;
-use crate::waveform::Waveform;
 
 /// BJT parasitic capacitances. All values in Farads. Default 0.0 disables each cap.
 ///
@@ -426,817 +427,220 @@ impl FerriteBeadParams {
 pub enum CircuitElement {
     /// Resistor between two nodes.
     #[cfg_attr(feature = "serde", serde(rename = "resistor"))]
-    Resistor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// Resistance (Ω).
-        resistance: f64,
-    },
+    Resistor(Resistor),
 
-    /// Independent voltage source. `nodes[0]` is the positive terminal,
-    /// `nodes[1]` is the negative terminal.
+    /// Independent voltage source.
     #[cfg_attr(feature = "serde", serde(rename = "voltage_source"))]
-    VoltageSource {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[positive, negative]`.
-        nodes: [String; 2],
-        /// DC voltage (V); also the offset added to any `waveform`.
-        voltage: f64,
-        /// Optional time-varying waveform added on top of `voltage`.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        waveform: Option<Waveform>,
-    },
+    VoltageSource(VoltageSource),
 
-    /// Independent current source. Current flows through it from `nodes[0]`
-    /// to `nodes[1]`: drawn out of `nodes[0]` and pushed into `nodes[1]`, as
-    /// SPICE's `I`.
+    /// Independent current source.
     #[cfg_attr(feature = "serde", serde(rename = "current_source"))]
-    CurrentSource {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[from, to]`; current flows from `nodes[0]` to `nodes[1]`.
-        nodes: [String; 2],
-        /// DC current (A); also the offset added to any `waveform`.
-        current: f64,
-        /// Optional time-varying waveform added on top of `current`.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        waveform: Option<Waveform>,
-    },
+    CurrentSource(CurrentSource),
 
-    /// Switch between two nodes. Modeled as a resistor with very low (closed)
-    /// or very high (open) resistance for DC analysis.
+    /// Switch between two nodes.
     #[cfg_attr(feature = "serde", serde(rename = "switch"))]
-    Switch {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// When true the switch conducts (closed); when false it is open.
-        closed: bool,
-    },
+    Switch(Switch),
 
-    /// Capacitor. Open-circuit in DC analysis; charges/discharges in
-    /// transient. `voltage_across` is reported as `nodes[0] − nodes[1]`.
+    /// Capacitor.
     #[cfg_attr(feature = "serde", serde(rename = "capacitor"))]
-    Capacitor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// Capacitance (F).
-        capacitance: f64,
-    },
+    Capacitor(Capacitor),
 
     /// A battery: open-circuit voltage by state of charge behind a series
-    /// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
-    /// its open-circuit voltage at `state_of_charge` behind `R0 + R1`. In
-    /// transient the RC pair charges and the state of charge falls with the
-    /// charge drawn, reported per step in `state_of_charge`. In AC it is
-    /// the impedance `R0 + R1‖C1`. `current_through` flows
-    /// `nodes[0] → nodes[1]` inside the cell, so it is negative while the
-    /// battery discharges, as for a voltage source.
-    ///
-    /// [`BatteryParams`]: sindr_devices::battery::BatteryParams
+    /// resistance and an optional RC pair
+    /// ([`BatteryParams`](sindr_devices::battery::BatteryParams)).
     #[cfg_attr(feature = "serde", serde(rename = "battery"))]
-    Battery {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[positive, negative]`.
-        nodes: [String; 2],
-        /// The cell's equivalent circuit.
-        params: sindr_devices::battery::BatteryParams,
-        /// State of charge at the start, 0 (empty) to 1 (full).
-        state_of_charge: f64,
-    },
+    Battery(Battery),
 
-    /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
-    /// solves DC as a single algebraic step, not as t→∞ of a transient);
-    /// integrates `dI/dt` properly during transient. The DC bias point that
-    /// AC, `.tf` and `.sens` linearise around shorts it instead. `voltage_across` is
-    /// reported as `nodes[0] − nodes[1]`, `current_through` flows
-    /// `nodes[0] → nodes[1]`. To get steady-state current, run a
-    /// transient long enough to settle.
+    /// Inductor.
     #[cfg_attr(feature = "serde", serde(rename = "inductor"))]
-    Inductor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`; `current_through` flows `nodes[0] → nodes[1]`.
-        nodes: [String; 2],
-        /// Inductance (H): the small-signal value, at zero current.
-        inductance: f64,
-        /// Core saturation: the inductance falls towards `l_sat` as the
-        /// current passes `i_sat`. `None` is a linear inductor.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        saturation: Option<sindr_devices::inductor::InductorSaturation>,
-    },
+    Inductor(Inductor),
 
     /// Diode (Shockley model, silicon unless `model` says otherwise).
-    /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
-    /// positive `voltage_across` corresponds to forward bias.
     #[cfg_attr(feature = "serde", serde(rename = "diode"))]
-    Diode {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-        /// Model parameters (IS, N, RS). `None` is the built-in silicon diode,
-        /// the same as `Some(DiodeModel::default())`.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        model: Option<DiodeModel>,
-    },
+    Diode(Diode),
 
-    /// LED. `nodes: [anode, cathode]`. Forward voltage drop depends on
-    /// `color` (e.g. `"red"` ≈ 1.8 V, `"blue"` ≈ 3.2 V).
+    /// LED.
     #[cfg_attr(feature = "serde", serde(rename = "led"))]
-    Led {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Emission colour, any case: `"red"`, `"orange"`, `"amber"`,
-        /// `"yellow"`, `"green"`, `"blue"` or `"white"`
-        /// ([`led::COLORS`](sindr_devices::led::COLORS)); sets the forward
-        /// voltage drop. Any other name is red.
-        color: String,
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-    },
+    Led(Led),
 
     /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
     /// DC, transient and AC.
     #[cfg_attr(feature = "serde", serde(rename = "bjt"))]
-    Bjt {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[base, collector, emitter]`.
-        nodes: [String; 3], // [base, collector, emitter]
-        /// Polarity (NPN or PNP).
-        kind: BjtKind,
-        /// Forward current gain β (unitless), positive and finite. Default 100.
-        #[cfg_attr(feature = "serde", serde(default = "default_bf"))]
-        bf: f64,
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-        /// Optional parasitic capacitances (Cbe, Cbc). None = no parasitic caps (default).
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        parasitic_caps: Option<BjtParasiticCaps>,
-        /// Ebers–Moll parameters besides `bf` (IS, BR, NF, NR, VAF). `None`
-        /// is the built-in transistor, the same as `Some(BjtModel::default())`.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        model: Option<BjtModel>,
-    },
+    Bjt(Bjt),
 
-    /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
-    /// to the source).
+    /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied to
+    /// the source).
     #[cfg_attr(feature = "serde", serde(rename = "mosfet"))]
-    Mosfet {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[gate, drain, source]`.
-        nodes: [String; 3], // [gate, drain, source]
-        /// Channel type (NMOS or PMOS).
-        kind: MosfetKind,
-        /// Model parameters (threshold voltage, transconductance, etc.).
-        #[cfg_attr(feature = "serde", serde(default))]
-        params: MosfetParams,
-        /// Optional parasitic capacitances (Cgs, Cgd). None = no parasitic caps (default).
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        parasitic_caps: Option<MosfetParasiticCaps>,
-        /// A power MOSFET's body diode, as a SPICE diode card: anode at the
-        /// source and cathode at the drain for NMOS, the other way round for
-        /// PMOS. It conducts when the drain is pulled past the source, as
-        /// in a bridge's freewheeling interval. Every analysis solves it as
-        /// a [`CircuitElement::Diode`] with id `<id>.body`, which is where
-        /// its current is reported. `None` (default) is no body diode.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        body_diode: Option<DiodeModel>,
-    },
+    Mosfet(Mosfet),
 
     /// N-channel or P-channel JFET (Shockley square-law model).
-    /// nodes: [gate, drain, source]
     #[cfg_attr(feature = "serde", serde(rename = "jfet"))]
-    Jfet {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[gate, drain, source]`.
-        nodes: [String; 3], // [gate, drain, source]
-        /// Channel type (N-channel or P-channel).
-        kind: JfetKind,
-        /// Drain saturation current at Vgs=0 (A). Typical: 1–20 mA.
-        #[cfg_attr(feature = "serde", serde(default = "default_jfet_idss"))]
-        idss: f64,
-        /// Pinch-off voltage (V, negative for N-channel, e.g. -2.0).
-        #[cfg_attr(feature = "serde", serde(default = "default_jfet_vp"))]
-        vp: f64,
-        /// Optional gate capacitances (CGS, CGD as SPICE junctions). None =
-        /// no capacitance (default).
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        parasitic_caps: Option<JfetParasiticCaps>,
-    },
+    Jfet(Jfet),
 
     /// Voltage-Controlled Voltage Source: V_out = mu * V_control.
-    /// nodes: [out+, out-], control_nodes: [ctrl+, ctrl-]
     #[cfg_attr(feature = "serde", serde(rename = "vcvs"))]
-    Vcvs {
-        /// Unique component identifier.
-        id: String,
-        /// Output terminals `[out+, out-]`.
-        nodes: [String; 2],
-        /// Sensing terminals `[ctrl+, ctrl-]`.
-        control_nodes: [String; 2],
-        /// Voltage gain μ (V/V): `V_out = gain * V_control`.
-        gain: f64, // mu
-    },
+    Vcvs(Vcvs),
 
     /// Voltage-Controlled Current Source: I_out = gm * V_control.
-    /// nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-]
-    ///
-    /// Like [`CircuitElement::CurrentSource`] and SPICE's `G n+ n-`, a
-    /// positive `I_out` flows through the source from `nodes[0]` to
-    /// `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`.
     #[cfg_attr(feature = "serde", serde(rename = "vccs"))]
-    Vccs {
-        /// Unique component identifier.
-        id: String,
-        /// Output terminals `[out_from, out_to]`.
-        nodes: [String; 2],
-        /// Sensing terminals `[ctrl+, ctrl-]`.
-        control_nodes: [String; 2],
-        /// Transconductance gm (A/V): `I_out = gm * V_control`.
-        gm: f64,
-    },
+    Vccs(Vccs),
 
     /// Current-Controlled Voltage Source: V_out = rm * I_control.
-    /// nodes: [out+, out-], control_source: id of controlling voltage source
     #[cfg_attr(feature = "serde", serde(rename = "ccvs"))]
-    Ccvs {
-        /// Unique component identifier.
-        id: String,
-        /// Output terminals `[out+, out-]`.
-        nodes: [String; 2],
-        /// Id of the voltage source whose current is sensed.
-        control_source: String,
-        /// Transresistance rm (Ω): `V_out = rm * I_control`.
-        rm: f64,
-    },
+    Ccvs(Ccvs),
 
     /// Current-Controlled Current Source: I_out = alpha * I_control.
-    /// nodes: [out_from, out_to], control_source: id of controlling voltage source
-    ///
-    /// Like [`CircuitElement::CurrentSource`] and SPICE's `F n+ n-`, a
-    /// positive `I_out` flows through the source from `nodes[0]` to
-    /// `nodes[1]`. `I_control` is the controlling source's branch current,
-    /// positive from its `+` terminal through it to `-`, as in SPICE.
     #[cfg_attr(feature = "serde", serde(rename = "cccs"))]
-    Cccs {
-        /// Unique component identifier.
-        id: String,
-        /// Output terminals `[out_from, out_to]`.
-        nodes: [String; 2],
-        /// Id of the voltage source whose current is sensed.
-        control_source: String,
-        /// Current gain α (A/A): `I_out = alpha * I_control`.
-        alpha: f64,
-    },
+    Cccs(Cccs),
 
     /// Pushbutton (momentary switch): identical behaviour to Switch.
-    /// When closed = true, current flows; when false, open circuit.
     #[cfg_attr(feature = "serde", serde(rename = "pushbutton"))]
-    Pushbutton {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// When true the button conducts (pressed); when false it is open.
-        closed: bool,
-    },
+    Pushbutton(Pushbutton),
 
     /// Relay: 4-terminal component with a coil and a contact pair.
-    /// nodes: [coil+, coil-, contact1, contact2]
-    /// Contact closes when |V_coil| >= pickup_voltage. AC and `.tf` take the
-    /// contact as open or closed at the DC bias point.
     #[cfg_attr(feature = "serde", serde(rename = "relay"))]
-    Relay {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[coil+, coil-, contact1, contact2]`.
-        nodes: [String; 4],
-        /// Coil resistance (Ω). Default 500.
-        #[cfg_attr(feature = "serde", serde(default = "default_relay_coil_resistance"))]
-        coil_resistance: f64,
-        /// Coil voltage magnitude at which the contact closes (V).
-        pickup_voltage: f64,
-        /// Coil inductance in Henry, in series with `coil_resistance` in
-        /// transient. 0.0 = purely resistive coil.
-        #[cfg_attr(feature = "serde", serde(default))]
-        inductance: f64,
-    },
+    Relay(Relay),
 
     /// Photoresistor (LDR): resistance varies logarithmically with light.
-    /// light_level = 0.0 → ~1 MΩ (dark), 1.0 → ~1 kΩ (bright).
     #[cfg_attr(feature = "serde", serde(rename = "photoresistor"))]
-    Photoresistor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// Incident light level, 0.0 (dark, ~1 MΩ) to 1.0 (bright, ~1 kΩ).
-        light_level: f64,
-    },
+    Photoresistor(Photoresistor),
 
     /// Potentiometer: 3-terminal voltage divider.
-    /// nodes: [top, wiper, bottom]
-    /// position = 0.0 → wiper at top, 1.0 → wiper at bottom.
     #[cfg_attr(feature = "serde", serde(rename = "potentiometer"))]
-    Potentiometer {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[top, wiper, bottom]`.
-        nodes: [String; 3],
-        /// End-to-end resistance (Ω).
-        resistance: f64,
-        /// Wiper position, 0.0 (at top) to 1.0 (at bottom).
-        position: f64,
-    },
+    Potentiometer(Potentiometer),
 
     /// Zener diode between two nodes: a silicon diode with SPICE reverse
-    /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
-    /// (the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`), so it holds about
-    /// `vz` at a small zener's 5 mA test current and rises 1 V per amp past
-    /// it. For another knee, use a [`CircuitElement::Diode`] with a
-    /// [`DiodeModel`] setting `bv` and `ibv`.
-    /// nodes: [anode, cathode]
+    /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance (the
+    /// card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`), so it holds about `vz` at a
+    /// small zener's 5 mA test current and rises 1 V per amp past it.
     #[cfg_attr(feature = "serde", serde(rename = "zener_diode"))]
-    ZenerDiode {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Reverse breakdown (Zener) voltage (V).
-        vz: f64,
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-    },
+    ZenerDiode(ZenerDiode),
 
     /// Op-amp, output referred to ground.
-    ///
-    /// With `model: None` it is the near-ideal VCVS sindr has always used:
-    /// gain 1e5, no frequency response, no output resistance, and `v_pos` /
-    /// `v_neg` not enforced. With an [`OpAmpModel`] it gets a dominant pole
-    /// from the gain-bandwidth product, slew-rate limiting, output
-    /// resistance, input offset and bias current, and an output clamped to
-    /// `v_pos`/`v_neg`.
     #[cfg_attr(feature = "serde", serde(rename = "op_amp"))]
-    OpAmp {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[in_plus, in_minus, out]`.
-        nodes: [String; 3], // [in_plus, in_minus, out]
-        /// Positive supply rail (V): the output's upper limit with a
-        /// `model`. Default 15.
-        #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
-        v_pos: f64,
-        /// Negative supply rail (V): the output's lower limit with a
-        /// `model`. Default -15.
-        #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
-        v_neg: f64,
-        /// Macromodel parameters; `None` for the near-ideal VCVS.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        model: Option<OpAmpModel>,
-    },
+    OpAmp(OpAmp),
 
-    /// Comparator, output referred to ground: gain 1e5 from `v₊ − v₋` with
-    /// no frequency response, its output clamped to `[v_neg, v_pos]`. It is
-    /// an op-amp with an [`OpAmpModel`] of that gain and no pole, so it makes
-    /// the circuit nonlinear (Newton). No hysteresis, no open-collector output.
+    /// Comparator, output referred to ground: gain 1e5 from `v₊ − v₋` with no
+    /// frequency response, its output clamped to `[v_neg, v_pos]`.
     #[cfg_attr(feature = "serde", serde(rename = "comparator"))]
-    Comparator {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[in_plus, in_minus, out]`.
-        nodes: [String; 3], // [in_plus, in_minus, out]
-        /// Output high level (V): the output's upper limit. Default 15.
-        #[cfg_attr(feature = "serde", serde(default = "default_v_pos"))]
-        v_pos: f64,
-        /// Output low level (V): the output's lower limit, below
-        /// `v_pos`. Default -15.
-        #[cfg_attr(feature = "serde", serde(default = "default_v_neg"))]
-        v_neg: f64,
-    },
+    Comparator(Comparator),
 
     /// Schottky diode: lower forward voltage (~0.3V) than silicon diode.
-    /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "schottky_diode"))]
-    SchottkyDiode {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-    },
+    SchottkyDiode(SchottkyDiode),
 
     /// NTC thermistor: resistance varies with temperature (passive, no NR).
-    /// nodes: [n1, n2]
     #[cfg_attr(feature = "serde", serde(rename = "thermistor"))]
-    Thermistor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[n1, n2]`.
-        nodes: [String; 2],
-        /// Temperature in Kelvin, positive and finite. Default: 298.15 K (25°C).
-        #[cfg_attr(feature = "serde", serde(default = "default_temperature"))]
-        temperature: f64,
-    },
+    Thermistor(Thermistor),
 
     /// Photodiode: diode + photocurrent source driven by irradiance.
-    /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "photodiode"))]
-    Photodiode {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Incident irradiance in W (optical power, not W/m²).
-        /// 0.0 = dark, 0.1 = ~50mA photocurrent with default responsivity.
-        #[cfg_attr(feature = "serde", serde(default))]
-        irradiance: f64,
-        /// Junction temperature (K), positive and finite. Default 300.15 K.
-        /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
-        #[cfg_attr(feature = "serde", serde(default = "default_junction_temperature"))]
-        temperature: f64,
-    },
+    Photodiode(Photodiode),
 
     /// Varactor diode: voltage-dependent junction capacitance.
-    /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
-    /// transient; in AC, its capacitance at the DC bias point.
-    /// nodes: [anode, cathode]
     #[cfg_attr(feature = "serde", serde(rename = "varactor"))]
-    Varactor {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[anode, cathode]`.
-        nodes: [String; 2],
-        /// Model parameters (zero-bias capacitance, grading, etc.).
-        #[cfg_attr(feature = "serde", serde(default))]
-        params: sindr_devices::varactor::VaractorParams,
-    },
+    Varactor(Varactor),
 
     /// IGBT: MOSFET gate control + BJT output characteristics.
-    /// Nonlinear element — requires Newton-Raphson iteration.
-    /// nodes: [gate, collector, emitter]
     #[cfg_attr(feature = "serde", serde(rename = "igbt"))]
-    Igbt {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[gate, collector, emitter]`.
-        nodes: [String; 3],
-        /// Model parameters (threshold voltage, transconductance, etc.).
-        #[cfg_attr(feature = "serde", serde(default))]
-        params: sindr_devices::igbt::IgbtParams,
-    },
+    Igbt(Igbt),
 
     /// Ideal transformer with coupled inductors.
-    ///
-    /// nodes: [p1, q1, p2, q2] where:
-    ///   - [p1, q1]: primary winding (+ and - terminals)
-    ///   - [p2, q2]: secondary winding (+ and - terminals)
-    ///
-    /// Coupling: M = k * sqrt(L1 * L2) where k ∈ [0, 1).
-    /// k=1 is ideal (no leakage), but mathematically singular — use k<=0.999.
-    ///
-    /// In DC analysis: both windings stamped as short circuits; the bias point
-    /// for AC, `.tf` and `.sens` shorts each with a 0 V source.
-    /// In AC: the coupled pair `V = jω·[[L1, M], [M, L2]]·I`.
-    /// In transient: coupled-inductor companion with 2 branch current unknowns,
-    /// each winding `V = L·dI/dt` plus the mutual term. The windings start at
-    /// 0 A; an initial current on a transformer is rejected.
-    ///
-    /// With `saturation`, the core is modelled as a leakage inductance
-    /// `(1 − k)·L` on each winding and a magnetising inductance `k·L1` on the
-    /// primary carrying the shared core flux, driven by the magnetising
-    /// current `i1 + n·i2` (n = √(L2/L1), the turns ratio). That branch
-    /// saturates as a saturating [`Inductor`](Self::Inductor) does, so a
-    /// winding driven past its volt-second rating, or with a DC bias, draws
-    /// a magnetising current that climbs once the core saturates. Without
-    /// it the pair is linear and identical to the coupled inductors above.
     #[cfg_attr(feature = "serde", serde(rename = "transformer"))]
-    Transformer {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[p1, q1, p2, q2]`: primary `[p1, q1]`, secondary `[p2, q2]`.
-        nodes: [String; 4], // [p1, q1, p2, q2]
-        /// Primary winding inductance (H).
-        l1: f64, // Primary inductance (H)
-        /// Secondary winding inductance (H).
-        l2: f64, // Secondary inductance (H)
-        /// Coupling coefficient (unitless) in `[0, 0.999]`. Default 0.999 (near-ideal).
-        #[cfg_attr(feature = "serde", serde(default = "default_coupling"))]
-        k: f64, // Coupling coefficient [0, 0.999]. Default 0.999 (near-ideal).
-        /// Core saturation, on the magnetising branch: `i_sat` is the
-        /// magnetising current referred to the primary, and `l_sat` at
-        /// most the magnetising inductance `k·l1`. `None` is a linear core.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        saturation: Option<sindr_devices::inductor::InductorSaturation>,
-    },
+    Transformer(Transformer),
 
     /// Fuse between two nodes.
-    ///
-    /// Intact (blown=false): stamped as 0.001 Ω (1 mΩ) — negligible voltage drop.
-    /// Blown (blown=true): stamped as 1e9 Ω — effectively open circuit.
-    ///
-    /// NOTE: Do NOT use 0 Ω — that would cause a singular MNA matrix.
-    /// `rating` is stored for display only: the fuse never blows by itself;
-    /// set `blown` to open it. To flag an overcurrent, put
-    /// [`Ratings::current`](crate::Ratings::current) on its part.
     #[cfg_attr(feature = "serde", serde(rename = "fuse"))]
-    Fuse {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// Current rating (A), for display only: the fuse never blows by itself.
-        #[cfg_attr(feature = "serde", serde(default = "default_fuse_rating"))]
-        rating: f64,
-        /// When true, fuse is blown (open circuit). User-settable, like switch.closed.
-        #[cfg_attr(feature = "serde", serde(default))]
-        blown: bool,
-    },
+    Fuse(Fuse),
 
-    /// Linear voltage regulator: holds the output at `voltage` above its
-    /// ground pin while it has headroom, and draws its output current plus
-    /// its quiescent current from the input.
-    ///
-    /// Piecewise linear (see `sindr_devices::regulator`): out of headroom
-    /// the output follows the input down by the dropout; past the current
-    /// limit it holds the current. `model` sets dropout, quiescent current,
-    /// current limit and line and load regulation;
-    /// `RegulatorParams::lm7805()` and `::ams1117()` are datasheet presets.
-    /// Its result is the pass element: `Vin − Vout`, the output current,
-    /// and the power it dissipates.
-    ///
-    /// `nodes: [input, output, gnd]`
+    /// Linear voltage regulator: holds the output at `voltage` above its ground
+    /// pin while it has headroom, and draws its output current plus its
+    /// quiescent current from the input.
     #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
-    VoltageRegulator {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[input, output, gnd]`.
-        nodes: [String; 3], // [input, output, gnd]
-        /// Regulated output voltage (V) from the ground pin. E.g. 5.0 for a
-        /// 7805, or −5.0 for a 7905, whose input sits below ground and whose
-        /// output current flows in at the output pin.
-        voltage: f64,
-        /// Dropout, quiescent current, limit and regulation. `None` is an
-        /// ideal regulator that still can't put out more than it gets in.
-        #[cfg_attr(
-            feature = "serde",
-            serde(default, skip_serializing_if = "Option::is_none")
-        )]
-        model: Option<sindr_devices::regulator::RegulatorParams>,
-    },
-    /// Single-pole double-throw switch: `nodes: [common, a, b]`. The common
-    /// terminal connects to `a` or `b` as [`Switch`](Self::Switch) does
-    /// (0.01 Ω), and the other throw is open (1 GΩ). Its result is the path
-    /// in use: `voltage_across` from common to the selected throw and the
-    /// current from common into it.
+    VoltageRegulator(VoltageRegulator),
+
+    /// Single-pole double-throw switch: `nodes: [common, a, b]`.
     #[cfg_attr(feature = "serde", serde(rename = "switch_spdt"))]
-    SwitchSpdt {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[common, a, b]`.
-        nodes: [String; 3],
-        /// Which throw the common terminal is switched to.
-        #[cfg_attr(feature = "serde", serde(default))]
-        position: SpdtPosition,
-    },
+    SwitchSpdt(SwitchSpdt),
 
     /// Quartz crystal: the Butterworth–Van Dyke model ([`CrystalParams`]).
-    /// An open circuit at DC. Its result's `power` is what the motional
-    /// resistance dissipates: the drive level a datasheet limits.
-    /// `nodes: [a, b]`
     #[cfg_attr(feature = "serde", serde(rename = "crystal"))]
-    Crystal {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// The equivalent circuit.
-        params: CrystalParams,
-    },
+    Crystal(Crystal),
 
-    /// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC,
-    /// lossy and inductive at high frequency. Its result's `power` is what
-    /// its two resistances dissipate. `nodes: [a, b]`
+    /// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC, lossy and
+    /// inductive at high frequency.
     #[cfg_attr(feature = "serde", serde(rename = "ferrite_bead"))]
-    FerriteBead {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[a, b]`.
-        nodes: [String; 2],
-        /// The equivalent circuit.
-        params: FerriteBeadParams,
-    },
+    FerriteBead(FerriteBead),
 
-    /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
-    /// voltage or current set by an [`Expression`] of node voltages,
-    /// branch currents and time.
-    ///
-    /// A voltage output holds `V(nodes[0]) − V(nodes[1])` at the
-    /// expression, and like a [`CircuitElement::VoltageSource`] has a
-    /// branch current others can read with `i(id)`. A current output
-    /// drives the expression's value through the source from `nodes[0]` to
-    /// `nodes[1]`, as a [`CircuitElement::CurrentSource`] does. Newton
-    /// stamps it with the expression's exact gradient, AC analysis
-    /// linearises it at the bias point, and `time` reads the transient's
-    /// time (0 elsewhere).
-    ///
-    /// ```
-    /// use sindr::{BehaviouralOutput, CircuitElement};
-    /// use sindr::expression::Expression;
-    ///
-    /// let multiplier = CircuitElement::Behavioural {
-    ///     id: "b1".into(),
-    ///     nodes: ["out".into(), "0".into()],
-    ///     output: BehaviouralOutput::Voltage,
-    ///     expr: Expression::parse("v(a)*v(b)")?,
-    /// };
-    /// # Ok::<(), sindr::expression::ExpressionError>(())
-    /// ```
+    /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a voltage
+    /// or current set by an [`Expression`] of node voltages, branch currents
+    /// and time.
     #[cfg_attr(feature = "serde", serde(rename = "behavioural"))]
-    Behavioural {
-        /// Unique component identifier.
-        id: String,
-        /// Terminals `[n+, n-]`.
-        nodes: [String; 2],
-        /// Whether the expression is a voltage or a current.
-        output: BehaviouralOutput,
-        /// The value, in volts or amperes.
-        expr: Expression,
-    },
-}
-
-#[cfg(feature = "serde")]
-fn default_bf() -> f64 {
-    100.0
-}
-
-#[cfg(feature = "serde")]
-fn default_temperature() -> f64 {
-    298.15
-}
-
-/// Default junction temperature for IS-bearing devices (K).
-/// 300.15 K = 27°C, the SPICE reference temperature for IS.
-#[cfg(feature = "serde")]
-fn default_junction_temperature() -> f64 {
-    300.15
-}
-
-#[cfg(feature = "serde")]
-fn default_relay_coil_resistance() -> f64 {
-    500.0
-}
-
-#[cfg(feature = "serde")]
-fn default_v_pos() -> f64 {
-    15.0
-}
-
-#[cfg(feature = "serde")]
-fn default_v_neg() -> f64 {
-    -15.0
-}
-
-#[cfg(feature = "serde")]
-fn default_coupling() -> f64 {
-    0.999
-}
-
-#[cfg(feature = "serde")]
-fn default_fuse_rating() -> f64 {
-    1.0
-}
-
-#[cfg(feature = "serde")]
-fn default_jfet_idss() -> f64 {
-    10e-3 // 10 mA typical
-}
-
-#[cfg(feature = "serde")]
-fn default_jfet_vp() -> f64 {
-    -2.0 // -2V pinch-off (N-channel default)
+    Behavioural(Behavioural),
 }
 
 impl CircuitElement {
     /// Returns a reference to the node array for this component.
     pub fn nodes(&self) -> &[String] {
         match self {
-            CircuitElement::Resistor { nodes, .. } => nodes,
-            CircuitElement::VoltageSource { nodes, .. } => nodes,
-            CircuitElement::CurrentSource { nodes, .. } => nodes,
-            CircuitElement::Switch { nodes, .. } => nodes,
-            CircuitElement::Capacitor { nodes, .. } => nodes,
-            CircuitElement::Inductor { nodes, .. } => nodes,
-            CircuitElement::Diode { nodes, .. } => nodes,
-            CircuitElement::Led { nodes, .. } => nodes,
-            CircuitElement::Bjt { nodes, .. } => nodes,
-            CircuitElement::Mosfet { nodes, .. } => nodes,
-            CircuitElement::Jfet { nodes, .. } => nodes,
-            CircuitElement::Vcvs { nodes, .. } => nodes,
-            CircuitElement::Vccs { nodes, .. } => nodes,
-            CircuitElement::Ccvs { nodes, .. } => nodes,
-            CircuitElement::Cccs { nodes, .. } => nodes,
-            CircuitElement::Pushbutton { nodes, .. } => nodes,
-            CircuitElement::Relay { nodes, .. } => nodes,
-            CircuitElement::Photoresistor { nodes, .. } => nodes,
-            CircuitElement::Potentiometer { nodes, .. } => nodes,
-            CircuitElement::ZenerDiode { nodes, .. } => nodes,
-            CircuitElement::OpAmp { nodes, .. } => nodes,
-            CircuitElement::Comparator { nodes, .. } => nodes,
-            CircuitElement::SchottkyDiode { nodes, .. } => nodes,
-            CircuitElement::Thermistor { nodes, .. } => nodes,
-            CircuitElement::Battery { nodes, .. } => nodes,
-            CircuitElement::Photodiode { nodes, .. } => nodes,
-            CircuitElement::Varactor { nodes, .. } => nodes,
-            CircuitElement::Igbt { nodes, .. } => nodes,
-            CircuitElement::Transformer { nodes, .. } => nodes,
-            CircuitElement::Fuse { nodes, .. } => nodes,
-            CircuitElement::VoltageRegulator { nodes, .. } => nodes,
-            CircuitElement::SwitchSpdt { nodes, .. } => nodes,
-            CircuitElement::Crystal { nodes, .. } => nodes,
-            CircuitElement::FerriteBead { nodes, .. } => nodes,
-            CircuitElement::Behavioural { nodes, .. } => nodes,
+            CircuitElement::Resistor(Resistor { nodes, .. }) => nodes,
+            CircuitElement::VoltageSource(VoltageSource { nodes, .. }) => nodes,
+            CircuitElement::CurrentSource(CurrentSource { nodes, .. }) => nodes,
+            CircuitElement::Switch(Switch { nodes, .. }) => nodes,
+            CircuitElement::Capacitor(Capacitor { nodes, .. }) => nodes,
+            CircuitElement::Inductor(Inductor { nodes, .. }) => nodes,
+            CircuitElement::Diode(Diode { nodes, .. }) => nodes,
+            CircuitElement::Led(Led { nodes, .. }) => nodes,
+            CircuitElement::Bjt(Bjt { nodes, .. }) => nodes,
+            CircuitElement::Mosfet(Mosfet { nodes, .. }) => nodes,
+            CircuitElement::Jfet(Jfet { nodes, .. }) => nodes,
+            CircuitElement::Vcvs(Vcvs { nodes, .. }) => nodes,
+            CircuitElement::Vccs(Vccs { nodes, .. }) => nodes,
+            CircuitElement::Ccvs(Ccvs { nodes, .. }) => nodes,
+            CircuitElement::Cccs(Cccs { nodes, .. }) => nodes,
+            CircuitElement::Pushbutton(Pushbutton { nodes, .. }) => nodes,
+            CircuitElement::Relay(Relay { nodes, .. }) => nodes,
+            CircuitElement::Photoresistor(Photoresistor { nodes, .. }) => nodes,
+            CircuitElement::Potentiometer(Potentiometer { nodes, .. }) => nodes,
+            CircuitElement::ZenerDiode(ZenerDiode { nodes, .. }) => nodes,
+            CircuitElement::OpAmp(OpAmp { nodes, .. }) => nodes,
+            CircuitElement::Comparator(Comparator { nodes, .. }) => nodes,
+            CircuitElement::SchottkyDiode(SchottkyDiode { nodes, .. }) => nodes,
+            CircuitElement::Thermistor(Thermistor { nodes, .. }) => nodes,
+            CircuitElement::Battery(Battery { nodes, .. }) => nodes,
+            CircuitElement::Photodiode(Photodiode { nodes, .. }) => nodes,
+            CircuitElement::Varactor(Varactor { nodes, .. }) => nodes,
+            CircuitElement::Igbt(Igbt { nodes, .. }) => nodes,
+            CircuitElement::Transformer(Transformer { nodes, .. }) => nodes,
+            CircuitElement::Fuse(Fuse { nodes, .. }) => nodes,
+            CircuitElement::VoltageRegulator(VoltageRegulator { nodes, .. }) => nodes,
+            CircuitElement::SwitchSpdt(SwitchSpdt { nodes, .. }) => nodes,
+            CircuitElement::Crystal(Crystal { nodes, .. }) => nodes,
+            CircuitElement::FerriteBead(FerriteBead { nodes, .. }) => nodes,
+            CircuitElement::Behavioural(Behavioural { nodes, .. }) => nodes,
         }
     }
 
     /// Returns all node names referenced by this component, including control nodes.
     pub fn all_nodes(&self) -> Vec<&String> {
         match self {
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 nodes,
                 control_nodes,
                 ..
-            } => {
+            }) => {
                 vec![&nodes[0], &nodes[1], &control_nodes[0], &control_nodes[1]]
             }
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 nodes,
                 control_nodes,
                 ..
-            } => {
+            }) => {
                 vec![&nodes[0], &nodes[1], &control_nodes[0], &control_nodes[1]]
             }
-            CircuitElement::Ccvs { nodes, .. } => vec![&nodes[0], &nodes[1]],
-            CircuitElement::Cccs { nodes, .. } => vec![&nodes[0], &nodes[1]],
-            CircuitElement::Behavioural { nodes, expr, .. } => {
+            CircuitElement::Ccvs(Ccvs { nodes, .. }) => vec![&nodes[0], &nodes[1]],
+            CircuitElement::Cccs(Cccs { nodes, .. }) => vec![&nodes[0], &nodes[1]],
+            CircuitElement::Behavioural(Behavioural { nodes, expr, .. }) => {
                 let mut all: Vec<&String> = nodes.iter().collect();
                 for node in expr.nodes() {
                     if !all.contains(&node) {
@@ -1252,41 +656,41 @@ impl CircuitElement {
     /// Returns the component identifier.
     pub fn id(&self) -> &str {
         match self {
-            CircuitElement::Resistor { id, .. } => id,
-            CircuitElement::VoltageSource { id, .. } => id,
-            CircuitElement::CurrentSource { id, .. } => id,
-            CircuitElement::Switch { id, .. } => id,
-            CircuitElement::Capacitor { id, .. } => id,
-            CircuitElement::Inductor { id, .. } => id,
-            CircuitElement::Diode { id, .. } => id,
-            CircuitElement::Led { id, .. } => id,
-            CircuitElement::Bjt { id, .. } => id,
-            CircuitElement::Mosfet { id, .. } => id,
-            CircuitElement::Jfet { id, .. } => id,
-            CircuitElement::Vcvs { id, .. } => id,
-            CircuitElement::Vccs { id, .. } => id,
-            CircuitElement::Ccvs { id, .. } => id,
-            CircuitElement::Cccs { id, .. } => id,
-            CircuitElement::Pushbutton { id, .. } => id,
-            CircuitElement::Relay { id, .. } => id,
-            CircuitElement::Photoresistor { id, .. } => id,
-            CircuitElement::Potentiometer { id, .. } => id,
-            CircuitElement::ZenerDiode { id, .. } => id,
-            CircuitElement::OpAmp { id, .. } => id,
-            CircuitElement::Comparator { id, .. } => id,
-            CircuitElement::SchottkyDiode { id, .. } => id,
-            CircuitElement::Thermistor { id, .. } => id,
-            CircuitElement::Battery { id, .. } => id,
-            CircuitElement::Photodiode { id, .. } => id,
-            CircuitElement::Varactor { id, .. } => id,
-            CircuitElement::Igbt { id, .. } => id,
-            CircuitElement::Transformer { id, .. } => id,
-            CircuitElement::Fuse { id, .. } => id,
-            CircuitElement::VoltageRegulator { id, .. } => id,
-            CircuitElement::SwitchSpdt { id, .. } => id,
-            CircuitElement::Crystal { id, .. } => id,
-            CircuitElement::FerriteBead { id, .. } => id,
-            CircuitElement::Behavioural { id, .. } => id,
+            CircuitElement::Resistor(Resistor { id, .. }) => id,
+            CircuitElement::VoltageSource(VoltageSource { id, .. }) => id,
+            CircuitElement::CurrentSource(CurrentSource { id, .. }) => id,
+            CircuitElement::Switch(Switch { id, .. }) => id,
+            CircuitElement::Capacitor(Capacitor { id, .. }) => id,
+            CircuitElement::Inductor(Inductor { id, .. }) => id,
+            CircuitElement::Diode(Diode { id, .. }) => id,
+            CircuitElement::Led(Led { id, .. }) => id,
+            CircuitElement::Bjt(Bjt { id, .. }) => id,
+            CircuitElement::Mosfet(Mosfet { id, .. }) => id,
+            CircuitElement::Jfet(Jfet { id, .. }) => id,
+            CircuitElement::Vcvs(Vcvs { id, .. }) => id,
+            CircuitElement::Vccs(Vccs { id, .. }) => id,
+            CircuitElement::Ccvs(Ccvs { id, .. }) => id,
+            CircuitElement::Cccs(Cccs { id, .. }) => id,
+            CircuitElement::Pushbutton(Pushbutton { id, .. }) => id,
+            CircuitElement::Relay(Relay { id, .. }) => id,
+            CircuitElement::Photoresistor(Photoresistor { id, .. }) => id,
+            CircuitElement::Potentiometer(Potentiometer { id, .. }) => id,
+            CircuitElement::ZenerDiode(ZenerDiode { id, .. }) => id,
+            CircuitElement::OpAmp(OpAmp { id, .. }) => id,
+            CircuitElement::Comparator(Comparator { id, .. }) => id,
+            CircuitElement::SchottkyDiode(SchottkyDiode { id, .. }) => id,
+            CircuitElement::Thermistor(Thermistor { id, .. }) => id,
+            CircuitElement::Battery(Battery { id, .. }) => id,
+            CircuitElement::Photodiode(Photodiode { id, .. }) => id,
+            CircuitElement::Varactor(Varactor { id, .. }) => id,
+            CircuitElement::Igbt(Igbt { id, .. }) => id,
+            CircuitElement::Transformer(Transformer { id, .. }) => id,
+            CircuitElement::Fuse(Fuse { id, .. }) => id,
+            CircuitElement::VoltageRegulator(VoltageRegulator { id, .. }) => id,
+            CircuitElement::SwitchSpdt(SwitchSpdt { id, .. }) => id,
+            CircuitElement::Crystal(Crystal { id, .. }) => id,
+            CircuitElement::FerriteBead(FerriteBead { id, .. }) => id,
+            CircuitElement::Behavioural(Behavioural { id, .. }) => id,
         }
     }
 
@@ -1296,17 +700,18 @@ impl CircuitElement {
     /// comparator (its output current, then its internal gain-stage voltage).
     pub fn branch_slots(&self) -> usize {
         match self {
-            CircuitElement::OpAmp { model: Some(_), .. } | CircuitElement::Comparator { .. } => 2,
-            CircuitElement::Behavioural {
+            CircuitElement::OpAmp(OpAmp { model: Some(_), .. })
+            | CircuitElement::Comparator(Comparator { .. }) => 2,
+            CircuitElement::Behavioural(Behavioural {
                 output: BehaviouralOutput::Voltage,
                 ..
-            }
-            | CircuitElement::VoltageSource { .. }
-            | CircuitElement::Vcvs { .. }
-            | CircuitElement::Ccvs { .. }
-            | CircuitElement::OpAmp { .. }
-            | CircuitElement::VoltageRegulator { .. } => 1,
-            CircuitElement::Transformer { .. } => 2,
+            })
+            | CircuitElement::VoltageSource(VoltageSource { .. })
+            | CircuitElement::Vcvs(Vcvs { .. })
+            | CircuitElement::Ccvs(Ccvs { .. })
+            | CircuitElement::OpAmp(OpAmp { .. })
+            | CircuitElement::VoltageRegulator(VoltageRegulator { .. }) => 1,
+            CircuitElement::Transformer(Transformer { .. }) => 2,
             _ => 0,
         }
     }
@@ -1314,90 +719,90 @@ impl CircuitElement {
     /// Mutable [`nodes`](Self::nodes), for renaming nets.
     pub fn nodes_mut(&mut self) -> &mut [String] {
         match self {
-            CircuitElement::Resistor { nodes, .. } => nodes,
-            CircuitElement::VoltageSource { nodes, .. } => nodes,
-            CircuitElement::CurrentSource { nodes, .. } => nodes,
-            CircuitElement::Switch { nodes, .. } => nodes,
-            CircuitElement::Capacitor { nodes, .. } => nodes,
-            CircuitElement::Inductor { nodes, .. } => nodes,
-            CircuitElement::Diode { nodes, .. } => nodes,
-            CircuitElement::Led { nodes, .. } => nodes,
-            CircuitElement::Bjt { nodes, .. } => nodes,
-            CircuitElement::Mosfet { nodes, .. } => nodes,
-            CircuitElement::Jfet { nodes, .. } => nodes,
-            CircuitElement::Vcvs { nodes, .. } => nodes,
-            CircuitElement::Vccs { nodes, .. } => nodes,
-            CircuitElement::Ccvs { nodes, .. } => nodes,
-            CircuitElement::Cccs { nodes, .. } => nodes,
-            CircuitElement::Pushbutton { nodes, .. } => nodes,
-            CircuitElement::Relay { nodes, .. } => nodes,
-            CircuitElement::Photoresistor { nodes, .. } => nodes,
-            CircuitElement::Potentiometer { nodes, .. } => nodes,
-            CircuitElement::ZenerDiode { nodes, .. } => nodes,
-            CircuitElement::OpAmp { nodes, .. } => nodes,
-            CircuitElement::Comparator { nodes, .. } => nodes,
-            CircuitElement::SchottkyDiode { nodes, .. } => nodes,
-            CircuitElement::Thermistor { nodes, .. } => nodes,
-            CircuitElement::Battery { nodes, .. } => nodes,
-            CircuitElement::Photodiode { nodes, .. } => nodes,
-            CircuitElement::Varactor { nodes, .. } => nodes,
-            CircuitElement::Igbt { nodes, .. } => nodes,
-            CircuitElement::Transformer { nodes, .. } => nodes,
-            CircuitElement::Fuse { nodes, .. } => nodes,
-            CircuitElement::VoltageRegulator { nodes, .. } => nodes,
-            CircuitElement::SwitchSpdt { nodes, .. } => nodes,
-            CircuitElement::Crystal { nodes, .. } => nodes,
-            CircuitElement::FerriteBead { nodes, .. } => nodes,
-            CircuitElement::Behavioural { nodes, .. } => nodes,
+            CircuitElement::Resistor(Resistor { nodes, .. }) => nodes,
+            CircuitElement::VoltageSource(VoltageSource { nodes, .. }) => nodes,
+            CircuitElement::CurrentSource(CurrentSource { nodes, .. }) => nodes,
+            CircuitElement::Switch(Switch { nodes, .. }) => nodes,
+            CircuitElement::Capacitor(Capacitor { nodes, .. }) => nodes,
+            CircuitElement::Inductor(Inductor { nodes, .. }) => nodes,
+            CircuitElement::Diode(Diode { nodes, .. }) => nodes,
+            CircuitElement::Led(Led { nodes, .. }) => nodes,
+            CircuitElement::Bjt(Bjt { nodes, .. }) => nodes,
+            CircuitElement::Mosfet(Mosfet { nodes, .. }) => nodes,
+            CircuitElement::Jfet(Jfet { nodes, .. }) => nodes,
+            CircuitElement::Vcvs(Vcvs { nodes, .. }) => nodes,
+            CircuitElement::Vccs(Vccs { nodes, .. }) => nodes,
+            CircuitElement::Ccvs(Ccvs { nodes, .. }) => nodes,
+            CircuitElement::Cccs(Cccs { nodes, .. }) => nodes,
+            CircuitElement::Pushbutton(Pushbutton { nodes, .. }) => nodes,
+            CircuitElement::Relay(Relay { nodes, .. }) => nodes,
+            CircuitElement::Photoresistor(Photoresistor { nodes, .. }) => nodes,
+            CircuitElement::Potentiometer(Potentiometer { nodes, .. }) => nodes,
+            CircuitElement::ZenerDiode(ZenerDiode { nodes, .. }) => nodes,
+            CircuitElement::OpAmp(OpAmp { nodes, .. }) => nodes,
+            CircuitElement::Comparator(Comparator { nodes, .. }) => nodes,
+            CircuitElement::SchottkyDiode(SchottkyDiode { nodes, .. }) => nodes,
+            CircuitElement::Thermistor(Thermistor { nodes, .. }) => nodes,
+            CircuitElement::Battery(Battery { nodes, .. }) => nodes,
+            CircuitElement::Photodiode(Photodiode { nodes, .. }) => nodes,
+            CircuitElement::Varactor(Varactor { nodes, .. }) => nodes,
+            CircuitElement::Igbt(Igbt { nodes, .. }) => nodes,
+            CircuitElement::Transformer(Transformer { nodes, .. }) => nodes,
+            CircuitElement::Fuse(Fuse { nodes, .. }) => nodes,
+            CircuitElement::VoltageRegulator(VoltageRegulator { nodes, .. }) => nodes,
+            CircuitElement::SwitchSpdt(SwitchSpdt { nodes, .. }) => nodes,
+            CircuitElement::Crystal(Crystal { nodes, .. }) => nodes,
+            CircuitElement::FerriteBead(FerriteBead { nodes, .. }) => nodes,
+            CircuitElement::Behavioural(Behavioural { nodes, .. }) => nodes,
         }
     }
 
     /// Mutable [`id`](Self::id), for renaming.
     pub fn id_mut(&mut self) -> &mut String {
         match self {
-            CircuitElement::Resistor { id, .. } => id,
-            CircuitElement::VoltageSource { id, .. } => id,
-            CircuitElement::CurrentSource { id, .. } => id,
-            CircuitElement::Switch { id, .. } => id,
-            CircuitElement::Capacitor { id, .. } => id,
-            CircuitElement::Inductor { id, .. } => id,
-            CircuitElement::Diode { id, .. } => id,
-            CircuitElement::Led { id, .. } => id,
-            CircuitElement::Bjt { id, .. } => id,
-            CircuitElement::Mosfet { id, .. } => id,
-            CircuitElement::Jfet { id, .. } => id,
-            CircuitElement::Vcvs { id, .. } => id,
-            CircuitElement::Vccs { id, .. } => id,
-            CircuitElement::Ccvs { id, .. } => id,
-            CircuitElement::Cccs { id, .. } => id,
-            CircuitElement::Pushbutton { id, .. } => id,
-            CircuitElement::Relay { id, .. } => id,
-            CircuitElement::Photoresistor { id, .. } => id,
-            CircuitElement::Potentiometer { id, .. } => id,
-            CircuitElement::ZenerDiode { id, .. } => id,
-            CircuitElement::OpAmp { id, .. } => id,
-            CircuitElement::Comparator { id, .. } => id,
-            CircuitElement::SchottkyDiode { id, .. } => id,
-            CircuitElement::Thermistor { id, .. } => id,
-            CircuitElement::Battery { id, .. } => id,
-            CircuitElement::Photodiode { id, .. } => id,
-            CircuitElement::Varactor { id, .. } => id,
-            CircuitElement::Igbt { id, .. } => id,
-            CircuitElement::Transformer { id, .. } => id,
-            CircuitElement::Fuse { id, .. } => id,
-            CircuitElement::VoltageRegulator { id, .. } => id,
-            CircuitElement::SwitchSpdt { id, .. } => id,
-            CircuitElement::Crystal { id, .. } => id,
-            CircuitElement::FerriteBead { id, .. } => id,
-            CircuitElement::Behavioural { id, .. } => id,
+            CircuitElement::Resistor(Resistor { id, .. }) => id,
+            CircuitElement::VoltageSource(VoltageSource { id, .. }) => id,
+            CircuitElement::CurrentSource(CurrentSource { id, .. }) => id,
+            CircuitElement::Switch(Switch { id, .. }) => id,
+            CircuitElement::Capacitor(Capacitor { id, .. }) => id,
+            CircuitElement::Inductor(Inductor { id, .. }) => id,
+            CircuitElement::Diode(Diode { id, .. }) => id,
+            CircuitElement::Led(Led { id, .. }) => id,
+            CircuitElement::Bjt(Bjt { id, .. }) => id,
+            CircuitElement::Mosfet(Mosfet { id, .. }) => id,
+            CircuitElement::Jfet(Jfet { id, .. }) => id,
+            CircuitElement::Vcvs(Vcvs { id, .. }) => id,
+            CircuitElement::Vccs(Vccs { id, .. }) => id,
+            CircuitElement::Ccvs(Ccvs { id, .. }) => id,
+            CircuitElement::Cccs(Cccs { id, .. }) => id,
+            CircuitElement::Pushbutton(Pushbutton { id, .. }) => id,
+            CircuitElement::Relay(Relay { id, .. }) => id,
+            CircuitElement::Photoresistor(Photoresistor { id, .. }) => id,
+            CircuitElement::Potentiometer(Potentiometer { id, .. }) => id,
+            CircuitElement::ZenerDiode(ZenerDiode { id, .. }) => id,
+            CircuitElement::OpAmp(OpAmp { id, .. }) => id,
+            CircuitElement::Comparator(Comparator { id, .. }) => id,
+            CircuitElement::SchottkyDiode(SchottkyDiode { id, .. }) => id,
+            CircuitElement::Thermistor(Thermistor { id, .. }) => id,
+            CircuitElement::Battery(Battery { id, .. }) => id,
+            CircuitElement::Photodiode(Photodiode { id, .. }) => id,
+            CircuitElement::Varactor(Varactor { id, .. }) => id,
+            CircuitElement::Igbt(Igbt { id, .. }) => id,
+            CircuitElement::Transformer(Transformer { id, .. }) => id,
+            CircuitElement::Fuse(Fuse { id, .. }) => id,
+            CircuitElement::VoltageRegulator(VoltageRegulator { id, .. }) => id,
+            CircuitElement::SwitchSpdt(SwitchSpdt { id, .. }) => id,
+            CircuitElement::Crystal(Crystal { id, .. }) => id,
+            CircuitElement::FerriteBead(FerriteBead { id, .. }) => id,
+            CircuitElement::Behavioural(Behavioural { id, .. }) => id,
         }
     }
 
     /// The control-net pair of a VCVS or VCCS.
     pub fn control_nodes_mut(&mut self) -> Option<&mut [String; 2]> {
         match self {
-            CircuitElement::Vcvs { control_nodes, .. }
-            | CircuitElement::Vccs { control_nodes, .. } => Some(control_nodes),
+            CircuitElement::Vcvs(Vcvs { control_nodes, .. })
+            | CircuitElement::Vccs(Vccs { control_nodes, .. }) => Some(control_nodes),
             _ => None,
         }
     }
@@ -1405,8 +810,8 @@ impl CircuitElement {
     /// The controlling source id of a CCVS or CCCS.
     pub fn control_source_mut(&mut self) -> Option<&mut String> {
         match self {
-            CircuitElement::Ccvs { control_source, .. }
-            | CircuitElement::Cccs { control_source, .. } => Some(control_source),
+            CircuitElement::Ccvs(Ccvs { control_source, .. })
+            | CircuitElement::Cccs(Cccs { control_source, .. }) => Some(control_source),
             _ => None,
         }
     }
@@ -1415,7 +820,7 @@ impl CircuitElement {
     /// sources it reads.
     pub(crate) fn expression_mut(&mut self) -> Option<&mut Expression> {
         match self {
-            CircuitElement::Behavioural { expr, .. } => Some(expr),
+            CircuitElement::Behavioural(Behavioural { expr, .. }) => Some(expr),
             _ => None,
         }
     }
@@ -1434,21 +839,22 @@ impl CircuitElement {
 ///
 /// ```
 /// use sindr::{Circuit, CircuitElement};
+/// use sindr::element::{Resistor, VoltageSource};
 ///
 /// let circuit = Circuit::new(
 ///     "0",
 ///     vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             voltage: 9.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["n1".into(), "0".into()],
 ///             resistance: 1_000.0,
-///         },
+///         }),
 ///     ],
 /// );
 /// assert!(circuit.is_flat());
@@ -1543,29 +949,29 @@ impl Circuit {
         self.components.iter().any(|c| {
             matches!(
                 c,
-                CircuitElement::OpAmp { model: Some(_), .. }
-                    | CircuitElement::Comparator { .. }
-                    | CircuitElement::Inductor {
+                CircuitElement::OpAmp(OpAmp { model: Some(_), .. })
+                    | CircuitElement::Comparator(Comparator { .. })
+                    | CircuitElement::Inductor(Inductor {
                         saturation: Some(_),
                         ..
-                    }
-                    | CircuitElement::Transformer {
+                    })
+                    | CircuitElement::Transformer(Transformer {
                         saturation: Some(_),
                         ..
-                    }
-                    | CircuitElement::Diode { .. }
-                    | CircuitElement::Led { .. }
-                    | CircuitElement::Bjt { .. }
-                    | CircuitElement::Mosfet { .. }
-                    | CircuitElement::Relay { .. }
-                    | CircuitElement::ZenerDiode { .. }
-                    | CircuitElement::SchottkyDiode { .. }
-                    | CircuitElement::Photodiode { .. }
-                    | CircuitElement::Igbt { .. }
-                    | CircuitElement::Jfet { .. }
-                    | CircuitElement::Behavioural { .. }
-                    | CircuitElement::VoltageRegulator { .. } // Thermistor is passive (temperature-dependent resistance, no NR)
-                                                              // Varactor is passive in DC (open circuit), no NR needed
+                    })
+                    | CircuitElement::Diode(Diode { .. })
+                    | CircuitElement::Led(Led { .. })
+                    | CircuitElement::Bjt(Bjt { .. })
+                    | CircuitElement::Mosfet(Mosfet { .. })
+                    | CircuitElement::Relay(Relay { .. })
+                    | CircuitElement::ZenerDiode(ZenerDiode { .. })
+                    | CircuitElement::SchottkyDiode(SchottkyDiode { .. })
+                    | CircuitElement::Photodiode(Photodiode { .. })
+                    | CircuitElement::Igbt(Igbt { .. })
+                    | CircuitElement::Jfet(Jfet { .. })
+                    | CircuitElement::Behavioural(Behavioural { .. })
+                    | CircuitElement::VoltageRegulator(VoltageRegulator { .. }) // Thermistor is passive (temperature-dependent resistance, no NR)
+                                                                                // Varactor is passive in DC (open circuit), no NR needed
             )
         })
     }
@@ -1575,27 +981,27 @@ impl Circuit {
     /// or a diode whose model stores charge).
     pub fn has_reactive_elements(&self) -> bool {
         self.components.iter().any(|c| match c {
-            CircuitElement::Capacitor { .. }
-            | CircuitElement::Inductor { .. }
-            | CircuitElement::Varactor { .. }
-            | CircuitElement::Transformer { .. } => true,
-            CircuitElement::Relay { inductance, .. } if *inductance > 0.0 => true,
-            CircuitElement::Battery { params, .. } => params.rc.is_some(),
-            CircuitElement::Bjt {
+            CircuitElement::Capacitor(Capacitor { .. })
+            | CircuitElement::Inductor(Inductor { .. })
+            | CircuitElement::Varactor(Varactor { .. })
+            | CircuitElement::Transformer(Transformer { .. }) => true,
+            CircuitElement::Relay(Relay { inductance, .. }) if *inductance > 0.0 => true,
+            CircuitElement::Battery(Battery { params, .. }) => params.rc.is_some(),
+            CircuitElement::Bjt(Bjt {
                 parasitic_caps: Some(caps),
                 ..
-            } if caps.cbe > 0.0 || caps.cbc > 0.0 => true,
-            CircuitElement::Mosfet {
+            }) if caps.cbe > 0.0 || caps.cbc > 0.0 => true,
+            CircuitElement::Mosfet(Mosfet {
                 parasitic_caps: Some(caps),
                 ..
-            } if caps.cgs > 0.0 || caps.cgd > 0.0 => true,
-            CircuitElement::Diode {
+            }) if caps.cgs > 0.0 || caps.cgd > 0.0 => true,
+            CircuitElement::Diode(Diode {
                 model: Some(model), ..
-            } => model.stores_charge(),
-            CircuitElement::Jfet {
+            }) => model.stores_charge(),
+            CircuitElement::Jfet(Jfet {
                 parasitic_caps: Some(caps),
                 ..
-            } => caps.stores_charge(),
+            }) => caps.stores_charge(),
             _ => false,
         })
     }
@@ -1603,8 +1009,8 @@ impl Circuit {
     /// Returns true if any source has a time-varying waveform.
     pub fn has_waveform_sources(&self) -> bool {
         self.components.iter().any(|c| match c {
-            CircuitElement::VoltageSource { waveform, .. }
-            | CircuitElement::CurrentSource { waveform, .. } => waveform.is_some(),
+            CircuitElement::VoltageSource(VoltageSource { waveform, .. })
+            | CircuitElement::CurrentSource(CurrentSource { waveform, .. }) => waveform.is_some(),
             _ => false,
         })
     }
@@ -1617,15 +1023,15 @@ impl Circuit {
             let slots = component.branch_slots();
             let has_current = matches!(
                 component,
-                CircuitElement::Behavioural {
+                CircuitElement::Behavioural(Behavioural {
                     output: BehaviouralOutput::Voltage,
                     ..
-                } | CircuitElement::VoltageSource { .. }
-                    | CircuitElement::Vcvs { .. }
-                    | CircuitElement::Ccvs { .. }
-                    | CircuitElement::OpAmp { .. }
-                    | CircuitElement::Comparator { .. }
-                    | CircuitElement::VoltageRegulator { .. }
+                }) | CircuitElement::VoltageSource(VoltageSource { .. })
+                    | CircuitElement::Vcvs(Vcvs { .. })
+                    | CircuitElement::Ccvs(Ccvs { .. })
+                    | CircuitElement::OpAmp(OpAmp { .. })
+                    | CircuitElement::Comparator(Comparator { .. })
+                    | CircuitElement::VoltageRegulator(VoltageRegulator { .. })
             );
             if has_current && component.id() == source_id {
                 return Some(idx);
@@ -1639,16 +1045,19 @@ impl Circuit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sindr_devices::bjt::BjtKind;
+    use sindr_devices::jfet::JfetKind;
+    use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 
     #[test]
     fn has_reactive_elements_true_with_capacitor() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Capacitor {
+            components: vec![CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["n1".into(), "0".into()],
                 capacitance: 100e-6,
-            }],
+            })],
             ..Default::default()
         };
         assert!(circuit.has_reactive_elements());
@@ -1658,12 +1067,12 @@ mod tests {
     fn has_reactive_elements_true_with_inductor() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Inductor {
+            components: vec![CircuitElement::Inductor(Inductor {
                 id: "L1".into(),
                 nodes: ["n1".into(), "0".into()],
                 inductance: 10e-3,
                 saturation: None,
-            }],
+            })],
             ..Default::default()
         };
         assert!(circuit.has_reactive_elements());
@@ -1673,11 +1082,11 @@ mod tests {
     fn has_reactive_elements_false_resistor_only() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Resistor {
+            components: vec![CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "0".into()],
                 resistance: 1000.0,
-            }],
+            })],
             ..Default::default()
         };
         assert!(!circuit.has_reactive_elements());
@@ -1686,12 +1095,12 @@ mod tests {
     #[test]
     fn diode_storing_charge_is_reactive() {
         let diode = |model: Option<DiodeModel>| Circuit {
-            components: vec![CircuitElement::Diode {
+            components: vec![CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 300.15,
                 model,
-            }],
+            })],
             ..Default::default()
         };
         assert!(!diode(None).has_reactive_elements());
@@ -1716,7 +1125,7 @@ mod tests {
     fn bjt_with_parasitic_caps_is_reactive() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Bjt {
+            components: vec![CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "e".into()],
                 kind: sindr_devices::bjt::BjtKind::Npn,
@@ -1727,7 +1136,7 @@ mod tests {
                     cbc: 0.0,
                 }),
                 model: None,
-            }],
+            })],
             ..Default::default()
         };
         assert!(
@@ -1740,7 +1149,7 @@ mod tests {
     fn bjt_without_parasitic_caps_not_reactive() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Bjt {
+            components: vec![CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "e".into()],
                 kind: sindr_devices::bjt::BjtKind::Npn,
@@ -1748,7 +1157,7 @@ mod tests {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            }],
+            })],
             ..Default::default()
         };
         // BJT without parasitic caps is not reactive (nonlinear, but not reactive)
@@ -1762,7 +1171,7 @@ mod tests {
     fn mosfet_with_parasitic_caps_is_reactive() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Mosfet {
+            components: vec![CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "s".into()],
                 kind: sindr_devices::mosfet::MosfetKind::Nmos,
@@ -1772,7 +1181,7 @@ mod tests {
                     cgd: 50e-12,
                 }),
                 body_diode: None,
-            }],
+            })],
             ..Default::default()
         };
         assert!(
@@ -1814,7 +1223,7 @@ mod tests {
         }"#;
         let circuit: Circuit = serde_json::from_str(json).unwrap();
         match &circuit.components[0] {
-            CircuitElement::Bjt { bf, .. } => assert_eq!(*bf, 100.0),
+            CircuitElement::Bjt(Bjt { bf, .. }) => assert_eq!(*bf, 100.0),
             _ => panic!("Expected Bjt variant"),
         }
     }
@@ -1834,10 +1243,10 @@ mod tests {
         let circuit: Circuit = serde_json::from_str(json).unwrap();
         assert!(matches!(
             &circuit.components[0],
-            CircuitElement::Diode { model: None, .. }
+            CircuitElement::Diode(Diode { model: None, .. })
         ));
         match &circuit.components[1] {
-            CircuitElement::Diode { model, .. } => assert_eq!(
+            CircuitElement::Diode(Diode { model, .. }) => assert_eq!(
                 *model,
                 Some(DiodeModel {
                     rs: 0.5,
@@ -1847,7 +1256,7 @@ mod tests {
             other => panic!("expected Diode, got {other:?}"),
         }
         match &circuit.components[2] {
-            CircuitElement::Bjt { model, .. } => assert_eq!(
+            CircuitElement::Bjt(Bjt { model, .. }) => assert_eq!(
                 *model,
                 Some(BjtModel {
                     is: 1e-15,
@@ -1866,7 +1275,7 @@ mod tests {
     fn has_nonlinear_elements_true_with_bjt() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Bjt {
+            components: vec![CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "e".into()],
                 kind: sindr_devices::bjt::BjtKind::Npn,
@@ -1874,7 +1283,7 @@ mod tests {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            }],
+            })],
             ..Default::default()
         };
         assert!(circuit.has_nonlinear_elements());
@@ -1884,13 +1293,13 @@ mod tests {
     fn relay_has_nonlinear_returns_true() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Relay {
+            components: vec![CircuitElement::Relay(Relay {
                 id: "K1".into(),
                 nodes: ["coil_p".into(), "0".into(), "c1".into(), "c2".into()],
                 coil_resistance: 500.0,
                 pickup_voltage: 5.0,
                 inductance: 0.0,
-            }],
+            })],
             ..Default::default()
         };
         assert!(circuit.has_nonlinear_elements());
@@ -1900,13 +1309,13 @@ mod tests {
     fn relay_with_inductance_has_reactive_elements() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Relay {
+            components: vec![CircuitElement::Relay(Relay {
                 id: "K1".into(),
                 nodes: ["coil_p".into(), "0".into(), "c1".into(), "c2".into()],
                 coil_resistance: 500.0,
                 pickup_voltage: 5.0,
                 inductance: 0.1,
-            }],
+            })],
             ..Default::default()
         };
         assert!(circuit.has_reactive_elements());
@@ -1916,13 +1325,13 @@ mod tests {
     fn relay_without_inductance_not_reactive() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Relay {
+            components: vec![CircuitElement::Relay(Relay {
                 id: "K1".into(),
                 nodes: ["coil_p".into(), "0".into(), "c1".into(), "c2".into()],
                 coil_resistance: 500.0,
                 pickup_voltage: 5.0,
                 inductance: 0.0,
-            }],
+            })],
             ..Default::default()
         };
         assert!(!circuit.has_reactive_elements());
@@ -1932,11 +1341,11 @@ mod tests {
     fn pushbutton_has_nonlinear_returns_false() {
         let circuit = Circuit {
             ground_node: "0".into(),
-            components: vec![CircuitElement::Pushbutton {
+            components: vec![CircuitElement::Pushbutton(Pushbutton {
                 id: "PB1".into(),
                 nodes: ["n1".into(), "0".into()],
                 closed: true,
-            }],
+            })],
             ..Default::default()
         };
         assert!(!circuit.has_nonlinear_elements());
@@ -1953,9 +1362,9 @@ mod tests {
         }"#;
         let circuit: Circuit = serde_json::from_str(json).unwrap();
         match &circuit.components[0] {
-            CircuitElement::Relay {
+            CircuitElement::Relay(Relay {
                 coil_resistance, ..
-            } => {
+            }) => {
                 assert_eq!(*coil_resistance, 500.0)
             }
             _ => panic!("Expected Relay variant"),
@@ -1990,7 +1399,7 @@ mod tests {
         let circuit: Circuit = serde_json::from_str(json).unwrap();
         assert_eq!(circuit.components.len(), 1);
         match &circuit.components[0] {
-            CircuitElement::ZenerDiode { id, vz, .. } => {
+            CircuitElement::ZenerDiode(ZenerDiode { id, vz, .. }) => {
                 assert_eq!(id, "Z1");
                 assert_eq!(*vz, 5.1);
             }
@@ -2004,19 +1413,19 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::OpAmp {
+                CircuitElement::OpAmp(OpAmp {
                     id: "U1".into(),
                     nodes: ["in_p".into(), "in_m".into(), "out".into()],
                     v_pos: 15.0,
                     v_neg: -15.0,
                     model: None,
-                },
-                CircuitElement::Comparator {
+                }),
+                CircuitElement::Comparator(Comparator {
                     id: "U2".into(),
                     nodes: ["in_p".into(), "in_m".into(), "out2".into()],
                     v_pos: 5.0,
                     v_neg: 0.0,
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -2037,7 +1446,7 @@ mod tests {
         }"#;
         let circuit: Circuit = serde_json::from_str(json).unwrap();
         match &circuit.components[0] {
-            CircuitElement::OpAmp { v_pos, v_neg, .. } => {
+            CircuitElement::OpAmp(OpAmp { v_pos, v_neg, .. }) => {
                 assert_eq!(*v_pos, 15.0);
                 assert_eq!(*v_neg, -15.0);
             }
@@ -2052,58 +1461,58 @@ mod tests {
             std::array::from_fn(|k| format!("{id}.{k}"))
         }
         vec![
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id: "R".into(),
                 nodes: n("R"),
                 resistance: 1.0,
-            },
-            CircuitElement::VoltageSource {
+            }),
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V".into(),
                 nodes: n("V"),
                 voltage: 1.0,
                 waveform: None,
-            },
-            CircuitElement::CurrentSource {
+            }),
+            CircuitElement::CurrentSource(CurrentSource {
                 id: "I".into(),
                 nodes: n("I"),
                 current: 1.0,
                 waveform: None,
-            },
-            CircuitElement::Switch {
+            }),
+            CircuitElement::Switch(Switch {
                 id: "S".into(),
                 nodes: n("S"),
                 closed: true,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C".into(),
                 nodes: n("C"),
                 capacitance: 1.0,
-            },
-            CircuitElement::Battery {
+            }),
+            CircuitElement::Battery(Battery {
                 id: "B".into(),
                 nodes: n("B"),
                 params: sindr_devices::battery::BatteryParams::constant(3.0, 1.0, 0.1),
                 state_of_charge: 1.0,
-            },
-            CircuitElement::Inductor {
+            }),
+            CircuitElement::Inductor(Inductor {
                 id: "L".into(),
                 nodes: n("L"),
                 inductance: 1.0,
                 saturation: None,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D".into(),
                 nodes: n("D"),
                 temperature: 300.15,
                 model: None,
-            },
-            CircuitElement::Led {
+            }),
+            CircuitElement::Led(Led {
                 id: "LED".into(),
                 nodes: n("LED"),
                 color: "red".into(),
                 temperature: 300.15,
-            },
-            CircuitElement::Bjt {
+            }),
+            CircuitElement::Bjt(Bjt {
                 id: "Q".into(),
                 nodes: n("Q"),
                 kind: BjtKind::Npn,
@@ -2111,150 +1520,150 @@ mod tests {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            },
-            CircuitElement::Mosfet {
+            }),
+            CircuitElement::Mosfet(Mosfet {
                 id: "M".into(),
                 nodes: n("M"),
                 kind: MosfetKind::Nmos,
                 params: MosfetParams::default_nmos(),
                 parasitic_caps: None,
                 body_diode: None,
-            },
-            CircuitElement::Jfet {
+            }),
+            CircuitElement::Jfet(Jfet {
                 id: "J".into(),
                 nodes: n("J"),
                 kind: JfetKind::NChannel,
                 idss: 1e-3,
                 vp: -2.0,
                 parasitic_caps: None,
-            },
-            CircuitElement::Vcvs {
+            }),
+            CircuitElement::Vcvs(Vcvs {
                 id: "E".into(),
                 nodes: n("E"),
                 control_nodes: ["E.c0".into(), "E.c1".into()],
                 gain: 1.0,
-            },
-            CircuitElement::Vccs {
+            }),
+            CircuitElement::Vccs(Vccs {
                 id: "G".into(),
                 nodes: n("G"),
                 control_nodes: ["G.c0".into(), "G.c1".into()],
                 gm: 1.0,
-            },
-            CircuitElement::Ccvs {
+            }),
+            CircuitElement::Ccvs(Ccvs {
                 id: "H".into(),
                 nodes: n("H"),
                 control_source: "V".into(),
                 rm: 1.0,
-            },
-            CircuitElement::Cccs {
+            }),
+            CircuitElement::Cccs(Cccs {
                 id: "F".into(),
                 nodes: n("F"),
                 control_source: "V".into(),
                 alpha: 1.0,
-            },
-            CircuitElement::Pushbutton {
+            }),
+            CircuitElement::Pushbutton(Pushbutton {
                 id: "PB".into(),
                 nodes: n("PB"),
                 closed: false,
-            },
-            CircuitElement::Relay {
+            }),
+            CircuitElement::Relay(Relay {
                 id: "K".into(),
                 nodes: n("K"),
                 coil_resistance: 500.0,
                 pickup_voltage: 3.0,
                 inductance: 0.0,
-            },
-            CircuitElement::Photoresistor {
+            }),
+            CircuitElement::Photoresistor(Photoresistor {
                 id: "LDR".into(),
                 nodes: n("LDR"),
                 light_level: 0.5,
-            },
-            CircuitElement::Potentiometer {
+            }),
+            CircuitElement::Potentiometer(Potentiometer {
                 id: "POT".into(),
                 nodes: n("POT"),
                 resistance: 1e3,
                 position: 0.5,
-            },
-            CircuitElement::ZenerDiode {
+            }),
+            CircuitElement::ZenerDiode(ZenerDiode {
                 id: "DZ".into(),
                 nodes: n("DZ"),
                 vz: 5.1,
                 temperature: 300.15,
-            },
-            CircuitElement::OpAmp {
+            }),
+            CircuitElement::OpAmp(OpAmp {
                 id: "U".into(),
                 nodes: n("U"),
                 v_pos: 15.0,
                 v_neg: -15.0,
                 model: None,
-            },
-            CircuitElement::Comparator {
+            }),
+            CircuitElement::Comparator(Comparator {
                 id: "CMP".into(),
                 nodes: n("CMP"),
                 v_pos: 5.0,
                 v_neg: 0.0,
-            },
-            CircuitElement::SchottkyDiode {
+            }),
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 id: "DS".into(),
                 nodes: n("DS"),
                 temperature: 300.15,
-            },
-            CircuitElement::Thermistor {
+            }),
+            CircuitElement::Thermistor(Thermistor {
                 id: "TH".into(),
                 nodes: n("TH"),
                 temperature: 298.15,
-            },
-            CircuitElement::Photodiode {
+            }),
+            CircuitElement::Photodiode(Photodiode {
                 id: "PD".into(),
                 nodes: n("PD"),
                 irradiance: 1.0,
                 temperature: 300.15,
-            },
-            CircuitElement::Varactor {
+            }),
+            CircuitElement::Varactor(Varactor {
                 id: "CV".into(),
                 nodes: n("CV"),
                 params: sindr_devices::varactor::VaractorParams::default(),
-            },
-            CircuitElement::Igbt {
+            }),
+            CircuitElement::Igbt(Igbt {
                 id: "Z".into(),
                 nodes: n("Z"),
                 params: sindr_devices::igbt::IgbtParams::default(),
-            },
-            CircuitElement::Transformer {
+            }),
+            CircuitElement::Transformer(Transformer {
                 id: "T".into(),
                 nodes: n("T"),
                 l1: 1.0,
                 l2: 1.0,
                 k: 0.99,
                 saturation: None,
-            },
-            CircuitElement::Fuse {
+            }),
+            CircuitElement::Fuse(Fuse {
                 id: "FU".into(),
                 nodes: n("FU"),
                 rating: 1.0,
                 blown: false,
-            },
-            CircuitElement::VoltageRegulator {
+            }),
+            CircuitElement::VoltageRegulator(VoltageRegulator {
                 id: "REG".into(),
                 nodes: n("REG"),
                 voltage: 5.0,
                 model: None,
-            },
-            CircuitElement::SwitchSpdt {
+            }),
+            CircuitElement::SwitchSpdt(SwitchSpdt {
                 id: "SW".into(),
                 nodes: n("SW"),
                 position: SpdtPosition::default(),
-            },
-            CircuitElement::Crystal {
+            }),
+            CircuitElement::Crystal(Crystal {
                 id: "X".into(),
                 nodes: n("X"),
                 params: CrystalParams::from_datasheet(32768.0, 35e3, 1.5e-12),
-            },
-            CircuitElement::FerriteBead {
+            }),
+            CircuitElement::FerriteBead(FerriteBead {
                 id: "FB".into(),
                 nodes: n("FB"),
                 params: FerriteBeadParams::from_datasheet(600.0, 0.1),
-            },
+            }),
         ]
     }
 
@@ -2295,31 +1704,33 @@ mod tests {
     /// modelled op-amp.
     #[test]
     fn vsource_branch_index_counts_earlier_branch_slots() {
-        let v = |id: &str| CircuitElement::VoltageSource {
-            id: id.into(),
-            nodes: ["a".into(), "0".into()],
-            voltage: 1.0,
-            waveform: None,
+        let v = |id: &str| {
+            CircuitElement::VoltageSource(VoltageSource {
+                id: id.into(),
+                nodes: ["a".into(), "0".into()],
+                voltage: 1.0,
+                waveform: None,
+            })
         };
         let circuit = Circuit::new(
             "0",
             vec![
                 v("V1"),
-                CircuitElement::OpAmp {
+                CircuitElement::OpAmp(OpAmp {
                     id: "U1".into(),
                     nodes: ["a".into(), "b".into(), "c".into()],
                     v_pos: 15.0,
                     v_neg: -15.0,
                     model: Some(OpAmpModel::default()),
-                },
-                CircuitElement::Transformer {
+                }),
+                CircuitElement::Transformer(Transformer {
                     id: "T1".into(),
                     nodes: ["a".into(), "0".into(), "b".into(), "0".into()],
                     l1: 1.0,
                     l2: 1.0,
                     k: 0.99,
                     saturation: None,
-                },
+                }),
                 v("V2"),
             ],
         );
@@ -2336,7 +1747,7 @@ mod tests {
     fn jfet_gate_caps_left_out_of_json_take_spice_defaults() {
         let json = r#"{"type": "jfet", "id": "J1", "nodes": ["g", "d", "s"],
                        "kind": "pchannel", "parasitic_caps": {"cgs": 5e-12}}"#;
-        let CircuitElement::Jfet { parasitic_caps, .. } = serde_json::from_str(json).unwrap()
+        let CircuitElement::Jfet(Jfet { parasitic_caps, .. }) = serde_json::from_str(json).unwrap()
         else {
             panic!("not a JFET");
         };
@@ -2368,35 +1779,35 @@ mod tests {
         }"#;
         let circuit: Circuit = serde_json::from_str(json).unwrap();
         let expected = [
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id: "TH1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 298.15,
-            },
-            CircuitElement::Transformer {
+            }),
+            CircuitElement::Transformer(Transformer {
                 id: "T1".into(),
                 nodes: ["a".into(), "0".into(), "b".into(), "0".into()],
                 l1: 1e-3,
                 l2: 4e-3,
                 k: 0.999,
                 saturation: None,
-            },
-            CircuitElement::Fuse {
+            }),
+            CircuitElement::Fuse(Fuse {
                 id: "F1".into(),
                 nodes: ["a".into(), "b".into()],
                 rating: 1.0,
                 blown: false,
-            },
-            CircuitElement::Jfet {
+            }),
+            CircuitElement::Jfet(Jfet {
                 id: "J1".into(),
                 nodes: ["g".into(), "d".into(), "s".into()],
                 kind: JfetKind::NChannel,
                 idss: 10e-3,
                 vp: -2.0,
                 parasitic_caps: None,
-            },
+            }),
             // No flicker noise unless asked: kf 0, af 1.
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "s".into()],
                 kind: MosfetKind::Nmos,
@@ -2411,7 +1822,7 @@ mod tests {
                 },
                 parasitic_caps: None,
                 body_diode: None,
-            },
+            }),
         ];
         assert_eq!(circuit.components, expected);
     }

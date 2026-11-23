@@ -23,21 +23,22 @@
 //! use sindr::measure::{Measure, Measurement, Signal, Stat};
 //! use sindr::variation::{monte_carlo, MonteCarloConfig, Parameter, Tolerance};
 //! use sindr::{solve_op, Circuit, CircuitElement};
+//! use sindr::element::{Resistor, VoltageSource};
 //!
-//! let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+//! let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor(Resistor {
 //!     id: id.into(),
 //!     nodes: [a.into(), b.into()],
 //!     resistance: 10e3,
-//! };
+//! });
 //! let divider = Circuit::new(
 //!     "0",
 //!     vec![
-//!         CircuitElement::VoltageSource {
+//!         CircuitElement::VoltageSource(VoltageSource {
 //!             id: "v1".into(),
 //!             nodes: ["in".into(), "0".into()],
 //!             voltage: 10.0,
 //!             waveform: None,
-//!         },
+//!         }),
 //!         r("r1", "in", "out"),
 //!         r("r2", "out", "0"),
 //!     ],
@@ -52,7 +53,9 @@
 //! assert!(stats.min > 4.9 && stats.max < 5.1);
 //! # Ok::<(), sindr::SimError>(())
 //! ```
+//!
 
+use crate::element::{Capacitor, CurrentSource, Inductor, Resistor, VoltageSource};
 use crate::measure::{Measurable, Measurement, Spec, SpecStatus};
 use crate::ratings::{check_ratings, RatingKind, RatingStatus};
 use crate::{Circuit, CircuitElement, SimError, SimulationResult};
@@ -79,36 +82,40 @@ impl Parameter {
     /// The parameter on `element`, if it has it.
     fn get(self, element: &CircuitElement) -> Option<f64> {
         match (self, element) {
-            (Parameter::Resistance, CircuitElement::Resistor { resistance, .. }) => {
+            (Parameter::Resistance, CircuitElement::Resistor(Resistor { resistance, .. })) => {
                 Some(*resistance)
             }
-            (Parameter::Capacitance, CircuitElement::Capacitor { capacitance, .. }) => {
+            (Parameter::Capacitance, CircuitElement::Capacitor(Capacitor { capacitance, .. })) => {
                 Some(*capacitance)
             }
-            (Parameter::Inductance, CircuitElement::Inductor { inductance, .. }) => {
+            (Parameter::Inductance, CircuitElement::Inductor(Inductor { inductance, .. })) => {
                 Some(*inductance)
             }
-            (Parameter::Voltage, CircuitElement::VoltageSource { voltage, .. }) => Some(*voltage),
-            (Parameter::Current, CircuitElement::CurrentSource { current, .. }) => Some(*current),
+            (Parameter::Voltage, CircuitElement::VoltageSource(VoltageSource { voltage, .. })) => {
+                Some(*voltage)
+            }
+            (Parameter::Current, CircuitElement::CurrentSource(CurrentSource { current, .. })) => {
+                Some(*current)
+            }
             _ => None,
         }
     }
 
     fn set(self, element: &mut CircuitElement, value: f64) {
         match (self, element) {
-            (Parameter::Resistance, CircuitElement::Resistor { resistance, .. }) => {
+            (Parameter::Resistance, CircuitElement::Resistor(Resistor { resistance, .. })) => {
                 *resistance = value;
             }
-            (Parameter::Capacitance, CircuitElement::Capacitor { capacitance, .. }) => {
+            (Parameter::Capacitance, CircuitElement::Capacitor(Capacitor { capacitance, .. })) => {
                 *capacitance = value;
             }
-            (Parameter::Inductance, CircuitElement::Inductor { inductance, .. }) => {
+            (Parameter::Inductance, CircuitElement::Inductor(Inductor { inductance, .. })) => {
                 *inductance = value;
             }
-            (Parameter::Voltage, CircuitElement::VoltageSource { voltage, .. }) => {
+            (Parameter::Voltage, CircuitElement::VoltageSource(VoltageSource { voltage, .. })) => {
                 *voltage = value;
             }
-            (Parameter::Current, CircuitElement::CurrentSource { current, .. }) => {
+            (Parameter::Current, CircuitElement::CurrentSource(CurrentSource { current, .. })) => {
                 *current = value;
             }
             _ => {}

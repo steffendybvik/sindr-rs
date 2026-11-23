@@ -1,6 +1,7 @@
 //! `.ic` initial conditions for transient analysis and `.nodeset` seeds,
 //! from the Rust API and from SPICE decks.
 
+use sindr::element::{Bjt, Capacitor, Inductor, Relay, Resistor, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
@@ -9,11 +10,11 @@ use sindr::{
 };
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn last(circuit: &Circuit, config: &TransientConfig) -> sindr::TimestepSnapshot {
@@ -35,11 +36,11 @@ fn capacitor_starts_at_its_initial_voltage() {
         ground_node: "0".into(),
         components: vec![
             resistor("R1", "a", "b", 1e3),
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["a".into(), "b".into()],
                 capacitance: 1e-6,
-            },
+            }),
             resistor("R2", "b", "0", 1e-3),
         ],
         ..Default::default()
@@ -65,12 +66,12 @@ fn inductor_starts_at_its_initial_current() {
     let rl = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::Inductor {
+            CircuitElement::Inductor(Inductor {
                 id: "L1".into(),
                 nodes: ["a".into(), "0".into()],
                 inductance: 10e-3,
                 saturation: None,
-            },
+            }),
             resistor("R1", "a", "0", 100.0),
         ],
         ..Default::default()
@@ -97,17 +98,17 @@ fn lc_tank_rings_from_its_initial_charge() {
     let tank = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::Inductor {
+            CircuitElement::Inductor(Inductor {
                 id: "L1".into(),
                 nodes: ["a".into(), "0".into()],
                 inductance: l,
                 saturation: None,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["a".into(), "0".into()],
                 capacitance: c,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -176,20 +177,20 @@ fn ac_bias_point_takes_a_nodeset() {
     let stage = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "VIN".into(),
                 nodes: ["b".into(), "0".into()],
                 voltage: 0.7,
                 waveform: None,
-            },
-            CircuitElement::VoltageSource {
+            }),
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "VCC".into(),
                 nodes: ["vcc".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
+            }),
             resistor("RC", "vcc", "c", 1e3),
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "0".into()],
                 kind: BjtKind::Npn,
@@ -197,7 +198,7 @@ fn ac_bias_point_takes_a_nodeset() {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -223,25 +224,25 @@ fn impossible_initial_conditions_are_rejected() {
     let circuit = Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
+            }),
             resistor("R1", "in", "a", 1e3),
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["a".into(), "0".into()],
                 capacitance: 1e-6,
-            },
-            CircuitElement::Relay {
+            }),
+            CircuitElement::Relay(Relay {
                 id: "K1".into(),
                 nodes: ["in".into(), "0".into(), "in".into(), "x".into()],
                 coil_resistance: 500.0,
                 pickup_voltage: 3.0,
                 inductance: 0.0,
-            },
+            }),
             resistor("RX", "x", "0", 1e3),
         ],
         ..Default::default()

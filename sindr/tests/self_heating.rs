@@ -1,6 +1,7 @@
 //! Self-heating: junction temperature from dissipation, fed back into the
 //! solve.
 
+use sindr::element::{Bjt, CurrentSource, Led, Resistor, Thermistor, VoltageSource};
 use sindr::{
     check_ratings, solve_ac, solve_circuit, solve_noise, solve_tf, solve_transient, AcConfig,
     BjtKind, Circuit, CircuitElement, FrequencySpacing, NoiseConfig, Part, RatingKind,
@@ -10,24 +11,24 @@ use sindr::{
 const AMBIENT: f64 = 300.15;
 
 fn vsrc(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn res(id: &str, p: &str, n: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [p.into(), n.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn npn(id: &str, b: &str, c: &str, e: &str) -> CircuitElement {
-    CircuitElement::Bjt {
+    CircuitElement::Bjt(Bjt {
         id: id.into(),
         nodes: [b.into(), c.into(), e.into()],
         kind: BjtKind::Npn,
@@ -35,7 +36,7 @@ fn npn(id: &str, b: &str, c: &str, e: &str) -> CircuitElement {
         temperature: AMBIENT,
         parasitic_caps: None,
         model: None,
-    }
+    })
 }
 
 fn heated(thermal: Thermal) -> Part {
@@ -52,12 +53,12 @@ fn led_circuit() -> Circuit {
         vec![
             vsrc("V1", "in", "0", 5.0),
             res("R1", "in", "a", 150.0),
-            CircuitElement::Led {
+            CircuitElement::Led(Led {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 color: "red".into(),
                 temperature: AMBIENT,
-            },
+            }),
         ],
     )
 }
@@ -234,17 +235,17 @@ fn fed_ntc(cth: Option<f64>) -> Circuit {
     let mut c = Circuit::new(
         "0",
         vec![
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 id: "I1".into(),
                 nodes: ["0".into(), "a".into()],
                 current: 5e-3,
                 waveform: None,
-            },
-            CircuitElement::Thermistor {
+            }),
+            CircuitElement::Thermistor(Thermistor {
                 id: "TH1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: AMBIENT,
-            },
+            }),
         ],
     );
     c.parts.insert(
@@ -308,7 +309,7 @@ fn at_fixed_temperature(circuit: &Circuit, temperature: f64) -> Circuit {
     let mut c = circuit.clone();
     c.parts.clear();
     for e in &mut c.components {
-        if let CircuitElement::Bjt { temperature: t, .. } = e {
+        if let CircuitElement::Bjt(Bjt { temperature: t, .. }) = e {
             *t = temperature;
         }
     }
@@ -499,11 +500,11 @@ fn thermal_ambient_replaces_the_element_temperature() {
             vec![
                 vsrc("V1", "a", "0", 1.0),
                 res("R1", "a", "t", 10e3),
-                CircuitElement::Thermistor {
+                CircuitElement::Thermistor(Thermistor {
                     id: "TH1".into(),
                     nodes: ["t".into(), "0".into()],
                     temperature,
-                },
+                }),
             ],
         )
     };

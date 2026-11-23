@@ -1,6 +1,7 @@
 //! The transient integration methods on circuits where they differ:
 //! nonlinear devices, a stiff time constant, a nonlinear capacitor.
 
+use sindr::element::{Bjt, Capacitor, Diode, Resistor, Varactor, VoltageSource};
 use sindr::{
     solve_transient, BjtKind, Circuit, CircuitElement, IntegrationMethod, TransientConfig,
     VaractorParams, Waveform,
@@ -13,28 +14,28 @@ const METHODS: [IntegrationMethod; 3] = [
 ];
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64, waveform: Option<Waveform>) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn capacitor(id: &str, a: &str, b: &str, capacitance: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance,
-    }
+    })
 }
 
 fn sine(amplitude: f64, frequency: f64) -> Option<Waveform> {
@@ -73,12 +74,12 @@ fn trace(circuit: &Circuit, config: &TransientConfig, node: &str) -> Vec<f64> {
 fn rectifier_converges_under_every_method() {
     let rectifier = circuit(vec![
         vsource("V1", "in", "0", 0.0, sine(5.0, 50.0)),
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["in".into(), "out".into()],
             temperature: 300.15,
             model: None,
-        },
+        }),
         resistor("RL", "out", "0", 1e3),
         capacitor("C1", "out", "0", 100e-6),
     ]);
@@ -110,7 +111,7 @@ fn bjt_switch_converges_under_every_method() {
         vsource("VCC", "vcc", "0", 5.0, None),
         resistor("RB", "in", "b", 10e3),
         resistor("RC", "vcc", "c", 1e3),
-        CircuitElement::Bjt {
+        CircuitElement::Bjt(Bjt {
             id: "Q1".into(),
             nodes: ["b".into(), "c".into(), "0".into()],
             kind: BjtKind::Npn,
@@ -121,7 +122,7 @@ fn bjt_switch_converges_under_every_method() {
                 cbc: 5e-12,
             }),
             model: None,
-        },
+        }),
     ]);
     for m in METHODS {
         let config = TransientConfig::new(3e-3, 2e-6).with_method(m);
@@ -176,11 +177,11 @@ fn varactor_settles_at_the_source_voltage() {
     let varactor = circuit(vec![
         vsource("V1", "in", "0", -2.0, None),
         resistor("R1", "in", "out", 1e3),
-        CircuitElement::Varactor {
+        CircuitElement::Varactor(Varactor {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             params: VaractorParams::default(),
-        },
+        }),
     ]);
     for m in METHODS {
         let v = trace(

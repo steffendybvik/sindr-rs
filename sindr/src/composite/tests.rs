@@ -1,24 +1,25 @@
 use super::*;
 use crate::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
 use crate::design::{Part, Ratings};
+use crate::element::{Crystal, FerriteBead, Resistor, SwitchSpdt, VoltageSource};
 use crate::{check_ratings, solve_circuit, solve_transient, RatingKind, RatingStatus};
 use crate::{TransientConfig, Waveform};
 
 fn v(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn spdt(position: SpdtPosition) -> Circuit {
@@ -26,11 +27,11 @@ fn spdt(position: SpdtPosition) -> Circuit {
         "0",
         vec![
             v("v1", "in", "0", 10.0),
-            CircuitElement::SwitchSpdt {
+            CircuitElement::SwitchSpdt(SwitchSpdt {
                 id: "s1".into(),
                 nodes: ["in".into(), "a".into(), "b".into()],
                 position,
-            },
+            }),
             r("ra", "a", "0", 1e3),
             r("rb", "b", "0", 2e3),
         ],
@@ -84,7 +85,7 @@ fn bead_circuit() -> Circuit {
         "0",
         vec![
             v("v1", "in", "0", 1.0),
-            CircuitElement::FerriteBead {
+            CircuitElement::FerriteBead(FerriteBead {
                 id: "fb1".into(),
                 nodes: ["in".into(), "out".into()],
                 params: FerriteBeadParams {
@@ -93,7 +94,7 @@ fn bead_circuit() -> Circuit {
                     r_ac: 600.0,
                     c: None,
                 },
-            },
+            }),
             r("rl", "out", "0", 9.5),
         ],
     )
@@ -139,10 +140,12 @@ fn crystal_impedance_is_the_bvd_network() {
         c0: 4e-12,
         cm: 15e-15,
     };
-    let crystal = || CircuitElement::Crystal {
-        id: "y1".into(),
-        nodes: ["in".into(), "out".into()],
-        params: p,
+    let crystal = || {
+        CircuitElement::Crystal(Crystal {
+            id: "y1".into(),
+            nodes: ["in".into(), "out".into()],
+            params: p,
+        })
     };
     for f in [1e6, 7.99e6, 8e6, 8.01e6, 8.02e6, 30e6] {
         let w = 2.0 * std::f64::consts::PI * f;
@@ -165,11 +168,11 @@ fn crystal_impedance_is_the_bvd_network() {
 fn bead_impedance_matches_its_datasheet_point() {
     let p = FerriteBeadParams::from_datasheet(600.0, 0.15);
     let z = ac_impedance(
-        CircuitElement::FerriteBead {
+        CircuitElement::FerriteBead(FerriteBead {
             id: "fb1".into(),
             nodes: ["in".into(), "out".into()],
             params: p,
-        },
+        }),
         100e6,
     );
     // jωL ∥ R with ωL = R = 600 Ω has magnitude 600/√2, plus r_dc.
@@ -212,7 +215,7 @@ fn crystal_drive_level_is_its_esr_power() {
     let circuit = Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "v1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
@@ -222,12 +225,12 @@ fn crystal_drive_level_is_its_esr_power() {
                     phase: 0.0,
                     offset: 0.0,
                 }),
-            },
-            CircuitElement::Crystal {
+            }),
+            CircuitElement::Crystal(Crystal {
                 id: "y1".into(),
                 nodes: ["in".into(), "0".into()],
                 params: p,
-            },
+            }),
         ],
     );
     let res = solve_transient(&circuit, &TransientConfig::new(2e-6, 2e-9)).unwrap();
@@ -244,7 +247,7 @@ fn result_in<'a>(results: &'a [ComponentResult], id: &str) -> &'a ComponentResul
 #[test]
 fn bad_parameters_name_the_part() {
     let mut circuit = bead_circuit();
-    if let CircuitElement::FerriteBead { params, .. } = &mut circuit.components[1] {
+    if let CircuitElement::FerriteBead(FerriteBead { params, .. }) = &mut circuit.components[1] {
         params.l = 0.0;
     }
     match solve_circuit(&circuit) {
@@ -256,7 +259,7 @@ fn bad_parameters_name_the_part() {
 }
 
 fn crystal_with(c0: f64) -> CircuitElement {
-    CircuitElement::Crystal {
+    CircuitElement::Crystal(Crystal {
         id: "y1".into(),
         nodes: ["in".into(), "out".into()],
         params: CrystalParams {
@@ -265,7 +268,7 @@ fn crystal_with(c0: f64) -> CircuitElement {
             c0,
             cm: 15e-15,
         },
-    }
+    })
 }
 
 #[test]
@@ -344,10 +347,10 @@ fn serde_round_trip() {
     let elements: Vec<CircuitElement> = serde_json::from_str(json).unwrap();
     assert!(matches!(
         elements[1],
-        CircuitElement::SwitchSpdt {
+        CircuitElement::SwitchSpdt(SwitchSpdt {
             position: SpdtPosition::A,
             ..
-        }
+        })
     ));
     let back: Vec<CircuitElement> =
         serde_json::from_str(&serde_json::to_string(&elements).unwrap()).unwrap();

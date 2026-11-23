@@ -11,23 +11,28 @@
 //! magnitude, which is what the device's defining equation pins down.
 
 use approx::assert_relative_eq;
+use sindr::element::{
+    Capacitor, Cccs, Ccvs, Comparator, CurrentSource, Fuse, Jfet, Mosfet, Photoresistor,
+    Potentiometer, Pushbutton, Resistor, Switch, Thermistor, Vccs, Vcvs, VoltageRegulator,
+    VoltageSource,
+};
 use sindr::{solve_circuit, Circuit, CircuitElement, SimError, SimulationResult};
 
 fn vsrc(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn node(r: &SimulationResult, n: &str) -> f64 {
@@ -53,12 +58,12 @@ fn vcvs_output_is_gain_times_control_voltage() {
         ground_node: "0".into(),
         components: vec![
             vsrc("V1", "c", "0", 2.0),
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 id: "E1".into(),
                 nodes: ["out".into(), "0".into()],
                 control_nodes: ["c".into(), "0".into()],
                 gain: 4.0,
-            },
+            }),
             resistor("Rload", "out", "0", 1_000.0),
         ],
         ..Default::default()
@@ -79,12 +84,12 @@ fn vccs_load_current_is_gm_times_control_voltage() {
         ground_node: "0".into(),
         components: vec![
             vsrc("V1", "c", "0", 2.0),
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id: "G1".into(),
                 nodes: ["out".into(), "0".into()],
                 control_nodes: ["c".into(), "0".into()],
                 gm: 0.002,
-            },
+            }),
             resistor("Rload", "out", "0", 500.0),
         ],
         ..Default::default()
@@ -108,18 +113,18 @@ fn vccs_drives_current_the_way_a_current_source_does() {
         ],
         ..Default::default()
     };
-    let vccs = with(CircuitElement::Vccs {
+    let vccs = with(CircuitElement::Vccs(Vccs {
         id: "G1".into(),
         nodes: ["out".into(), "0".into()],
         control_nodes: ["c".into(), "0".into()],
         gm: 0.002,
-    });
-    let isrc = with(CircuitElement::CurrentSource {
+    }));
+    let isrc = with(CircuitElement::CurrentSource(CurrentSource {
         id: "I1".into(),
         nodes: ["out".into(), "0".into()],
         current: 0.004,
         waveform: None,
-    });
+    }));
     let a = solve_circuit(&vccs).expect("solve vccs");
     let b = solve_circuit(&isrc).expect("solve current source");
     assert_relative_eq!(node(&a, "out"), node(&b, "out"), epsilon = 1e-9);
@@ -138,12 +143,12 @@ fn ccvs_output_is_rm_times_control_current() {
         components: vec![
             vsrc("V1", "c", "0", 1.0),
             resistor("Rsense", "c", "0", 100.0),
-            CircuitElement::Ccvs {
+            CircuitElement::Ccvs(Ccvs {
                 id: "H1".into(),
                 nodes: ["out".into(), "0".into()],
                 control_source: "V1".into(),
                 rm: 200.0,
-            },
+            }),
             resistor("Rload", "out", "0", 1_000.0),
         ],
         ..Default::default()
@@ -165,12 +170,12 @@ fn cccs_output_current_is_alpha_times_control_current() {
         components: vec![
             vsrc("V1", "c", "0", 1.0),
             resistor("Rsense", "c", "0", 100.0),
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id: "F1".into(),
                 nodes: ["out".into(), "0".into()],
                 control_source: "V1".into(),
                 alpha: 5.0,
-            },
+            }),
             resistor("Rload", "out", "0", 40.0),
         ],
         ..Default::default()
@@ -188,12 +193,12 @@ fn voltage_regulator_holds_output_independent_of_input() {
         ground_node: "0".into(),
         components: vec![
             vsrc("Vin", "in", "0", vin),
-            CircuitElement::VoltageRegulator {
+            CircuitElement::VoltageRegulator(VoltageRegulator {
                 id: "U1".into(),
                 nodes: ["in".into(), "out".into(), "0".into()],
                 voltage: 5.0,
                 model: None,
-            },
+            }),
             resistor("Rload", "out", "0", 1_000.0),
         ],
         ..Default::default()
@@ -214,11 +219,11 @@ fn switch_closed_shorts_open_blocks() {
         components: vec![
             vsrc("V1", "t", "0", 10.0),
             resistor("R1", "t", "n", 1_000.0),
-            CircuitElement::Switch {
+            CircuitElement::Switch(Switch {
                 id: "S1".into(),
                 nodes: ["n".into(), "0".into()],
                 closed,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -245,12 +250,12 @@ fn fuse_intact_conducts_blown_opens() {
         components: vec![
             vsrc("V1", "t", "0", 10.0),
             resistor("R1", "t", "n", 1_000.0),
-            CircuitElement::Fuse {
+            CircuitElement::Fuse(Fuse {
                 id: "F1".into(),
                 nodes: ["n".into(), "0".into()],
                 rating: 1.0,
                 blown,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -281,12 +286,12 @@ fn potentiometer_loaded_wiper_divides_voltage() {
         ground_node: "0".into(),
         components: vec![
             vsrc("V1", "t", "0", 10.0),
-            CircuitElement::Potentiometer {
+            CircuitElement::Potentiometer(Potentiometer {
                 id: "P1".into(),
                 nodes: ["t".into(), "w".into(), "0".into()],
                 resistance: 1_000.0,
                 position: pos,
-            },
+            }),
             resistor("Rload", "w", "0", 750.0),
         ],
         ..Default::default()
@@ -309,12 +314,12 @@ fn potentiometer_unloaded_wiper_is_rejected_as_floating() {
         ground_node: "0".into(),
         components: vec![
             vsrc("V1", "t", "0", 10.0),
-            CircuitElement::Potentiometer {
+            CircuitElement::Potentiometer(Potentiometer {
                 id: "P1".into(),
                 nodes: ["t".into(), "w".into(), "0".into()],
                 resistance: 1_000.0,
                 position: 0.5,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -339,14 +344,14 @@ fn jfet_self_bias(kind: sindr::JfetKind) -> Circuit {
             resistor("RD", "rail", "d", 1_000.0),
             resistor("RS", "s", "0", 220.0),
             resistor("RG", "g", "0", 1e6),
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id: "J1".into(),
                 nodes: ["g".into(), "d".into(), "s".into()],
                 kind,
                 idss: 10e-3,
                 vp,
                 parasitic_caps: None,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -372,11 +377,11 @@ fn p_channel_jfet_mirrors_n_channel() {
 fn p_channel_jfet_mirrors_n_channel_in_transient() {
     let with_cap = |kind| {
         let mut c = jfet_self_bias(kind);
-        c.components.push(CircuitElement::Capacitor {
+        c.components.push(CircuitElement::Capacitor(Capacitor {
             id: "CS".into(),
             nodes: ["s".into(), "0".into()],
             capacitance: 1e-6,
-        });
+        }));
         solve_circuit(&c).unwrap().transient.unwrap()
     };
     let n = with_cap(sindr::JfetKind::NChannel);
@@ -394,14 +399,14 @@ fn p_channel_jfet_mirrors_n_channel_in_transient() {
 }
 
 fn mosfet(kind: sindr::MosfetKind, params: sindr_devices::mosfet::MosfetParams) -> CircuitElement {
-    CircuitElement::Mosfet {
+    CircuitElement::Mosfet(Mosfet {
         id: "M1".into(),
         nodes: ["g".into(), "d".into(), "s".into()],
         kind,
         params,
         parasitic_caps: None,
         body_diode: None,
-    }
+    })
 }
 
 #[test]
@@ -437,11 +442,11 @@ fn pmos_stage_mirrors_nmos_stage() {
             vsrc("VDD", "vdd", "0", sign * 10.0),
             vsrc("VG", "g", "0", sign * 2.0),
             resistor("RD", "vdd", "d", 20_000.0),
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id: "RS".into(),
                 nodes: ["s".into(), "0".into()],
                 resistance: 1e-3,
-            },
+            }),
             mosfet(kind, params),
         ],
         ..Default::default()
@@ -474,11 +479,11 @@ fn pushbutton_pressed_shorts_released_blocks() {
         components: vec![
             vsrc("V1", "t", "0", 10.0),
             resistor("R1", "t", "n", 1_000.0),
-            CircuitElement::Pushbutton {
+            CircuitElement::Pushbutton(Pushbutton {
                 id: "B1".into(),
                 nodes: ["n".into(), "0".into()],
                 closed,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -508,11 +513,11 @@ fn photoresistor_divider_follows_light_level() {
         components: vec![
             vsrc("V1", "t", "0", 5.0),
             resistor("R1", "t", "out", 10_000.0),
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 id: "LDR1".into(),
                 nodes: ["out".into(), "0".into()],
                 light_level,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -538,11 +543,11 @@ fn thermistor_divider_follows_temperature() {
         components: vec![
             vsrc("V1", "t", "0", 5.0),
             resistor("R1", "t", "out", 10_000.0),
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id: "TH1".into(),
                 nodes: ["out".into(), "0".into()],
                 temperature,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -565,12 +570,12 @@ fn thermistor_divider_follows_temperature() {
 // the rails; 1 V of overdrive either way pins the output to a rail.
 
 fn comparator(v_pos: f64, v_neg: f64) -> CircuitElement {
-    CircuitElement::Comparator {
+    CircuitElement::Comparator(Comparator {
         id: "U1".into(),
         nodes: ["in".into(), "ref".into(), "out".into()],
         v_pos,
         v_neg,
-    }
+    })
 }
 
 #[test]
@@ -608,12 +613,12 @@ fn comparator_saturates_in_a_feedback_loop() {
         ground_node: "0".into(),
         components: vec![
             vsrc("Vin", "in", "0", 1.0),
-            CircuitElement::Comparator {
+            CircuitElement::Comparator(Comparator {
                 id: "U1".into(),
                 nodes: ["in".into(), "fb".into(), "out".into()],
                 v_pos: 5.0,
                 v_neg: 0.0,
-            },
+            }),
             resistor("Rf", "out", "fb", 10_000.0),
             resistor("Rg", "fb", "0", 1_000.0),
         ],
@@ -652,7 +657,7 @@ fn comparator_switches_between_rails_in_transient() {
             ground_node: "0".into(),
             components: vec![
                 vsrc("Vref", "ref", "0", 0.0),
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "Vin".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: 0.0,
@@ -665,7 +670,7 @@ fn comparator_switches_between_rails_in_transient() {
                         pulse_width: 1.0,
                         period: 2.0,
                     }),
-                },
+                }),
                 comparator(5.0, -3.0),
                 resistor("Rload", "out", "0", 10_000.0),
             ],
@@ -734,14 +739,14 @@ fn body_diode_circuit(kind: sindr::MosfetKind, drain_volts: f64) -> Circuit {
             vsrc("VG", "g", "s", 0.0),
             vsrc("VD", "a", "0", drain_volts),
             resistor("R1", "a", "d", 100.0),
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "s".into()],
                 kind,
                 params,
                 parasitic_caps: None,
                 body_diode: Some(sindr::DiodeModel::default()),
-            },
+            }),
         ],
         ..Default::default()
     }

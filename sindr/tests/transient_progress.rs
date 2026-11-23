@@ -1,5 +1,6 @@
 //! The progress hook on a transient: what it reports, and stopping a run.
 
+use sindr::element::{Capacitor, Resistor, VoltageSource};
 use sindr::{
     solve_transient, solve_transient_with_progress, Circuit, CircuitElement, Flow, SimError,
     Solver, TransientConfig, Waveform,
@@ -10,7 +11,7 @@ fn rc_square() -> Circuit {
     Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
@@ -23,17 +24,17 @@ fn rc_square() -> Circuit {
                     pulse_width: 0.5e-3,
                     period: 1e-3,
                 }),
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "out".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
     )
 }

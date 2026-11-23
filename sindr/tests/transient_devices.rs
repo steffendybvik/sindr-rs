@@ -3,6 +3,7 @@
 //! DC current, and a step whose Newton iteration fails.
 
 use sindr::circuit::{JfetParasiticCaps, MosfetParasiticCaps};
+use sindr::element::{Capacitor, Diode, Jfet, Mosfet, Photodiode, Relay, Resistor, VoltageSource};
 use sindr::{
     solve_transient, Circuit, CircuitElement, JfetKind, MosfetKind, SimError, SolvePoint, Solver,
     SolverOptions, TransientConfig, TransientStart, Waveform,
@@ -10,20 +11,20 @@ use sindr::{
 use sindr_devices::mosfet::MosfetParams;
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn v(id: &str, p: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), "0".into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 /// An NMOS whose gate is driven through `RG` from `vg`, with only Cgs.
@@ -35,7 +36,7 @@ fn gate_rc(vg: f64) -> Circuit {
             r("RG", "in", "g", 10e3),
             v("VDD", "vdd", 10.0),
             r("RD", "vdd", "d", 1e3),
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "0".into()],
                 kind: MosfetKind::Nmos,
@@ -45,7 +46,7 @@ fn gate_rc(vg: f64) -> Circuit {
                     cgd: 0.0,
                 }),
                 body_diode: None,
-            },
+            }),
         ],
     )
 }
@@ -100,7 +101,7 @@ fn jfet_gate_rc(kind: JfetKind, vg: f64, step: f64, caps: JfetParasiticCaps) -> 
         JfetKind::NChannel => 1.0,
         JfetKind::PChannel => -1.0,
     };
-    let source = CircuitElement::VoltageSource {
+    let source = CircuitElement::VoltageSource(VoltageSource {
         id: "VG".into(),
         nodes: ["in".into(), "0".into()],
         // The waveform rides on `voltage`, so that is 0 when there is one.
@@ -114,7 +115,7 @@ fn jfet_gate_rc(kind: JfetKind, vg: f64, step: f64, caps: JfetParasiticCaps) -> 
             pulse_width: 1.0,
             period: 0.0,
         }),
-    };
+    });
     Circuit::new(
         "0",
         vec![
@@ -122,14 +123,14 @@ fn jfet_gate_rc(kind: JfetKind, vg: f64, step: f64, caps: JfetParasiticCaps) -> 
             r("RG", "in", "g", 100e3),
             v("VDD", "vdd", sign * 12.0),
             r("RD", "vdd", "d", 1e3),
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id: "J1".into(),
                 nodes: ["g".into(), "d".into(), "0".into()],
                 kind,
                 idss: 10e-3,
                 vp: -sign * 2.0,
                 parasitic_caps: Some(caps),
-            },
+            }),
         ],
     )
 }
@@ -223,13 +224,13 @@ fn relay_coil_starts_with_its_dc_current() {
         "0",
         vec![
             v("V1", "vcc", 5.0),
-            CircuitElement::Relay {
+            CircuitElement::Relay(Relay {
                 id: "K1".into(),
                 nodes: ["vcc".into(), "0".into(), "c1".into(), "c2".into()],
                 coil_resistance: 500.0,
                 pickup_voltage: 3.0,
                 inductance: 0.1,
-            },
+            }),
             v("V2", "c1", 1.0),
             r("RC", "c2", "0", 1e3),
         ],
@@ -260,17 +261,17 @@ fn diode_rc() -> Circuit {
         vec![
             v("V1", "in", 5.0),
             r("R1", "in", "a", 1e3),
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["a".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
     )
 }
@@ -333,13 +334,13 @@ fn relay(coil_volts: f64) -> Circuit {
         "0",
         vec![
             v("V1", "vcc", coil_volts),
-            CircuitElement::Relay {
+            CircuitElement::Relay(Relay {
                 id: "K1".into(),
                 nodes: ["vcc".into(), "0".into(), "c1".into(), "c2".into()],
                 coil_resistance: 500.0,
                 pickup_voltage: 3.0,
                 inductance: 0.1,
-            },
+            }),
             v("V2", "c1", 1.0),
             r("RC", "c2", "0", 1e3),
         ],
@@ -401,12 +402,12 @@ fn photodiode_between_live_nodes_matches_dc() {
         vec![
             v("V1", "k", 5.0),
             v("V2", "m", 1.0),
-            CircuitElement::Photodiode {
+            CircuitElement::Photodiode(Photodiode {
                 id: "PD1".into(),
                 nodes: ["a".into(), "k".into()],
                 irradiance: 1.0,
                 temperature: 300.15,
-            },
+            }),
             r("R1", "a", "m", 10e3),
         ],
     );

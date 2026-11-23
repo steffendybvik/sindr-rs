@@ -5,27 +5,28 @@
 //!     cargo bench -p sindr --bench transient
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use sindr::element::{Capacitor, Diode, Resistor, VoltageSource};
 use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig, Waveform};
 
 fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id,
         nodes: [a, b],
         resistance,
-    }
+    })
 }
 
 fn c(id: String, a: String, b: String, capacitance: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id,
         nodes: [a, b],
         capacitance,
-    }
+    })
 }
 
 /// 1 kΩ / 1 nF stages driven by a 1 V step: τ = 1 µs per stage.
 fn rc_ladder(stages: usize) -> Circuit {
-    let mut components = vec![CircuitElement::VoltageSource {
+    let mut components = vec![CircuitElement::VoltageSource(VoltageSource {
         id: "V1".into(),
         nodes: ["n0".into(), "0".into()],
         voltage: 0.0,
@@ -38,7 +39,7 @@ fn rc_ladder(stages: usize) -> Circuit {
             pulse_width: 1.0,
             period: 2.0,
         }),
-    }];
+    })];
     for i in 1..=stages {
         components.push(r(
             format!("R{i}"),
@@ -56,7 +57,7 @@ fn rectifier() -> Circuit {
     Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["ac".into(), "0".into()],
                 voltage: 0.0,
@@ -66,14 +67,14 @@ fn rectifier() -> Circuit {
                     offset: 0.0,
                     phase: 0.0,
                 }),
-            },
+            }),
             r("Rs".into(), "ac".into(), "a".into(), 1.0),
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "out".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
             c("C1".into(), "out".into(), "0".into(), 1e-3),
             r("RL".into(), "out".into(), "0".into(), 100.0),
         ],

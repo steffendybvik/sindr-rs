@@ -1,6 +1,7 @@
 //! Timestep control: steps land on waveform breakpoints, shrink where the
 //! local truncation error demands, and grow on smooth stretches.
 
+use sindr::element::{Capacitor, CurrentSource, FerriteBead, Resistor, VoltageSource};
 use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig, TransientData, Waveform};
 
 /// 0 → 1 V pulse at 10 µs with 1 ns edges, 40 µs wide, into RC with τ = 1 µs.
@@ -13,7 +14,7 @@ fn pulse_rc() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
@@ -26,17 +27,17 @@ fn pulse_rc() -> Circuit {
                     pulse_width: WIDTH,
                     period: 1.0,
                 }),
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "out".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: TAU / 1e3,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -155,17 +156,17 @@ fn a_node_that_ramps_without_limit_stops_with_timestep_too_small() {
     let circuit = sindr::Circuit::new(
         "0",
         vec![
-            sindr::CircuitElement::CurrentSource {
+            sindr::CircuitElement::CurrentSource(CurrentSource {
                 id: "I1".into(),
                 nodes: ["0".into(), "a".into()],
                 current: 1.0,
                 waveform: None,
-            },
-            sindr::CircuitElement::FerriteBead {
+            }),
+            sindr::CircuitElement::FerriteBead(FerriteBead {
                 id: "FB1".into(),
                 nodes: ["a".into(), "open".into()],
                 params: sindr::FerriteBeadParams::from_datasheet(1e3, 0.1),
-            },
+            }),
         ],
     );
     let started = std::time::Instant::now();

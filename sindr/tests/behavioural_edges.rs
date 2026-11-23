@@ -3,6 +3,7 @@
 //! analysis. `behavioural.rs` has the closed forms near the answer.
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{Behavioural, Capacitor, Inductor, Resistor, VoltageSource};
 use sindr::expression::Expression;
 use sindr::{
     dc_sweep, solve_op, solve_transient, BehaviouralOutput, Circuit, CircuitElement,
@@ -15,37 +16,37 @@ const VT: f64 = 0.02585;
 const IS: f64 = 1e-14;
 
 fn v(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn c(id: &str, a: &str, b: &str, farads: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance: farads,
-    }
+    })
 }
 
 fn b(id: &str, p: &str, n: &str, output: BehaviouralOutput, expr: &str) -> CircuitElement {
-    CircuitElement::Behavioural {
+    CircuitElement::Behavioural(Behavioural {
         id: id.into(),
         nodes: [p.into(), n.into()],
         output,
         expr: Expression::parse(expr).unwrap(),
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -589,12 +590,12 @@ fn a_source_reading_its_own_branch_current_with_an_inductor() {
     let result = solve_transient(
         &circuit(vec![
             b("b1", "a", "0", V, "1 + 100*i(b1)"),
-            CircuitElement::Inductor {
+            CircuitElement::Inductor(Inductor {
                 id: "l1".into(),
                 nodes: ["a".into(), "0".into()],
                 inductance: 1e-3,
                 saturation: None,
-            },
+            }),
         ]),
         &TransientConfig::new(50e-6, 0.1e-6),
     );
@@ -609,7 +610,7 @@ fn a_source_reading_its_own_branch_current_with_an_inductor() {
 fn an_overflow_mid_transient_shortens_the_step() {
     let result = solve_transient(
         &circuit(vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "v1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
@@ -622,7 +623,7 @@ fn an_overflow_mid_transient_shortens_the_step() {
                     pulse_width: 1.0,
                     period: 2.0,
                 }),
-            },
+            }),
             r("r1", "in", "a", 1e3),
             b("b1", "a", "0", I, &diode_expr("a")),
             c("c1", "a", "0", 1e-12),

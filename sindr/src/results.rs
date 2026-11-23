@@ -6,6 +6,12 @@
 //! per-device fields are populated only when the matching component types
 //! appear in the circuit.
 
+use crate::element::{
+    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, Diode,
+    FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor,
+    Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt, Thermistor,
+    Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+};
 use std::collections::HashMap;
 
 use nalgebra::DVector;
@@ -324,11 +330,12 @@ impl SimulationResult {
     ///
     /// ```
     /// use sindr::{solve_circuit, Circuit, CircuitElement};
+    /// use sindr::element::{Resistor, VoltageSource};
     ///
     /// let circuit = Circuit::new("0", vec![
-    ///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 10.0, waveform: None },
-    ///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
-    ///     CircuitElement::Resistor { id: "R2".into(), nodes: ["out".into(), "0".into()], resistance: 1e3 },
+    ///     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 10.0, waveform: None }),
+    ///     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 }),
+    ///     CircuitElement::Resistor(Resistor { id: "R2".into(), nodes: ["out".into(), "0".into()], resistance: 1e3 }),
     /// ]);
     /// let result = solve_circuit(&circuit)?;
     /// assert!((result.voltage("out").unwrap() - 5.0).abs() < 1e-9);
@@ -336,6 +343,7 @@ impl SimulationResult {
     /// assert_eq!(result.voltage("nope"), None);
     /// # Ok::<(), sindr::SimError>(())
     /// ```
+    ///
     pub fn voltage(&self, node: &str) -> Option<f64> {
         self.node_voltages.get(node).copied()
     }
@@ -402,12 +410,13 @@ impl SimulationResult {
     ///
     /// ```
     /// use sindr::{solve_circuit, Block, Circuit, CircuitElement, Instance};
+    /// use sindr::element::{Resistor, VoltageSource};
     ///
-    /// let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+    /// let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor(Resistor {
     ///     id: id.into(), nodes: [a.into(), b.into()], resistance: 1e3,
-    /// };
+    /// });
     /// let mut circuit = Circuit::new("0", vec![
-    ///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 4.0, waveform: None },
+    ///     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 4.0, waveform: None }),
     /// ]);
     /// circuit.blocks.insert("ladder".into(), sindr::Block {
     ///     ports: vec!["top".into()],
@@ -543,11 +552,12 @@ impl TransientData {
     ///
     /// ```
     /// use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+    /// use sindr::element::{Capacitor, Resistor, VoltageSource};
     ///
     /// let circuit = Circuit::new("0", vec![
-    ///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 5.0, waveform: None },
-    ///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
-    ///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+    ///     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 5.0, waveform: None }),
+    ///     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 }),
+    ///     CircuitElement::Capacitor(Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 }),
     /// ]);
     /// let result = solve_transient(&circuit, &TransientConfig::new(5e-3, 1e-5))?;
     /// let tran = result.transient.unwrap();
@@ -559,6 +569,7 @@ impl TransientData {
     /// assert!((v_tau - 5.0 * (1.0 - (-1.0f64).exp())).abs() < 0.02);
     /// # Ok::<(), sindr::SimError>(())
     /// ```
+    ///
     pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> {
         self.timesteps
             .iter()
@@ -688,14 +699,14 @@ pub(crate) fn extract_results(
     for component in &circuit.components {
         match component {
             // Split into their parts by `solver_circuit` first.
-            CircuitElement::SwitchSpdt { .. }
-            | CircuitElement::Crystal { .. }
-            | CircuitElement::FerriteBead { .. } => {}
-            CircuitElement::Resistor {
+            CircuitElement::SwitchSpdt(SwitchSpdt { .. })
+            | CircuitElement::Crystal(Crystal { .. })
+            | CircuitElement::FerriteBead(FerriteBead { .. }) => {}
+            CircuitElement::Resistor(Resistor {
                 id,
                 nodes,
                 resistance,
-            } => {
+            }) => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -708,12 +719,12 @@ pub(crate) fn extract_results(
                     power,
                 });
             }
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id,
                 nodes: _,
                 voltage,
                 ..
-            } => {
+            }) => {
                 let i_through = solution[num_nodes + vsource_index];
                 let power = voltage * i_through;
                 branch_currents.insert(id.clone(), i_through);
@@ -725,9 +736,9 @@ pub(crate) fn extract_results(
                 });
                 vsource_index += 1;
             }
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 id, nodes, current, ..
-            } => {
+            }) => {
                 // Passive sign convention: V_across = v(from) - v(to)
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
@@ -740,7 +751,7 @@ pub(crate) fn extract_results(
                     power,
                 });
             }
-            CircuitElement::Switch { id, nodes, closed } => {
+            CircuitElement::Switch(Switch { id, nodes, closed }) => {
                 // Switch modeled as resistor: R_closed = 0.01, R_open = 1e9
                 let resistance = if *closed { 0.01 } else { 1e9 };
                 let vp = node_voltage(&nodes[0], node_map, solution);
@@ -755,12 +766,12 @@ pub(crate) fn extract_results(
                     power,
                 });
             }
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 model,
                 id,
                 nodes,
                 temperature,
-            } => {
+            }) => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -774,13 +785,13 @@ pub(crate) fn extract_results(
                     power,
                 });
             }
-            CircuitElement::Led {
+            CircuitElement::Led(Led {
                 id,
                 nodes,
                 color,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -795,7 +806,8 @@ pub(crate) fn extract_results(
                 });
             }
             // Stubs: open-circuit in DC, return 0V/0A/0W
-            CircuitElement::Capacitor { id, .. } | CircuitElement::Inductor { id, .. } => {
+            CircuitElement::Capacitor(Capacitor { id, .. })
+            | CircuitElement::Inductor(Inductor { id, .. }) => {
                 component_results.push(ComponentResult {
                     id: id.clone(),
                     voltage_across: 0.0,
@@ -803,7 +815,7 @@ pub(crate) fn extract_results(
                     power: 0.0,
                 });
             }
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 model,
                 id,
                 nodes,
@@ -811,7 +823,7 @@ pub(crate) fn extract_results(
                 bf,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let vb = node_voltage(&nodes[0], node_map, solution);
                 let vc = node_voltage(&nodes[1], node_map, solution);
                 let ve = node_voltage(&nodes[2], node_map, solution);
@@ -858,13 +870,13 @@ pub(crate) fn extract_results(
                     region: region.as_str().to_string(),
                 });
             }
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id,
                 nodes,
                 kind,
                 params,
                 ..
-            } => {
+            }) => {
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
@@ -895,12 +907,12 @@ pub(crate) fn extract_results(
                     region: comp.region.as_str().to_string(),
                 });
             }
-            CircuitElement::Behavioural {
+            CircuitElement::Behavioural(Behavioural {
                 id,
                 nodes,
                 output,
                 expr,
-            } => {
+            }) => {
                 let result = behavioural_result(
                     circuit,
                     node_map,
@@ -918,7 +930,8 @@ pub(crate) fn extract_results(
                 component_results.push(result);
                 vsource_index += component.branch_slots();
             }
-            CircuitElement::Vcvs { id, nodes, .. } | CircuitElement::Ccvs { id, nodes, .. } => {
+            CircuitElement::Vcvs(Vcvs { id, nodes, .. })
+            | CircuitElement::Ccvs(Ccvs { id, nodes, .. }) => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -933,12 +946,12 @@ pub(crate) fn extract_results(
                 });
                 vsource_index += 1;
             }
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id,
                 nodes,
                 control_nodes,
                 gm,
-            } => {
+            }) => {
                 let v_ctrl_p = node_voltage(&control_nodes[0], node_map, solution);
                 let v_ctrl_n = node_voltage(&control_nodes[1], node_map, solution);
                 let v_ctrl = v_ctrl_p - v_ctrl_n;
@@ -953,12 +966,12 @@ pub(crate) fn extract_results(
                     power: v_across * i_out,
                 });
             }
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id,
                 nodes,
                 control_source,
                 alpha,
-            } => {
+            }) => {
                 // Find controlling current from its branch
                 let ctrl_branch = circuit.vsource_branch_index(control_source);
                 let i_ctrl = ctrl_branch.map_or(0.0, |b| solution[num_nodes + b]);
@@ -973,7 +986,7 @@ pub(crate) fn extract_results(
                     power: v_across * i_out,
                 });
             }
-            CircuitElement::Pushbutton { id, nodes, closed } => {
+            CircuitElement::Pushbutton(Pushbutton { id, nodes, closed }) => {
                 let resistance = if *closed {
                     SWITCH_R_CLOSED
                 } else {
@@ -990,11 +1003,11 @@ pub(crate) fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 id,
                 nodes,
                 light_level,
-            } => {
+            }) => {
                 let resistance = ldr_resistance(*light_level);
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
@@ -1007,7 +1020,7 @@ pub(crate) fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::Potentiometer { id, nodes, .. } => {
+            CircuitElement::Potentiometer(Potentiometer { id, nodes, .. }) => {
                 let v_top = node_voltage(&nodes[0], node_map, solution);
                 let v_bot = node_voltage(&nodes[2], node_map, solution);
                 let v_across = v_top - v_bot;
@@ -1018,13 +1031,13 @@ pub(crate) fn extract_results(
                     power: 0.0,
                 });
             }
-            CircuitElement::Relay {
+            CircuitElement::Relay(Relay {
                 id,
                 nodes,
                 coil_resistance,
                 pickup_voltage,
                 ..
-            } => {
+            }) => {
                 let vc_pos = node_voltage(&nodes[0], node_map, solution);
                 let vc_neg = node_voltage(&nodes[1], node_map, solution);
                 let coil_voltage = vc_pos - vc_neg;
@@ -1042,13 +1055,13 @@ pub(crate) fn extract_results(
                     contact_closed,
                 });
             }
-            CircuitElement::ZenerDiode {
+            CircuitElement::ZenerDiode(ZenerDiode {
                 id,
                 nodes,
                 vz,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
@@ -1061,12 +1074,12 @@ pub(crate) fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::SchottkyDiode {
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 id,
                 nodes,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
@@ -1079,12 +1092,12 @@ pub(crate) fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::Battery {
+            CircuitElement::Battery(Battery {
                 id,
                 nodes,
                 params,
                 state_of_charge,
-            } => {
+            }) => {
                 let (g, i_hist) = crate::battery_state::dc_norton(params, *state_of_charge);
                 let v_across = node_voltage(&nodes[0], node_map, solution)
                     - node_voltage(&nodes[1], node_map, solution);
@@ -1096,11 +1109,11 @@ pub(crate) fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id,
                 nodes,
                 temperature,
-            } => {
+            }) => {
                 let r = crate::device_params::thermistor_resistance(*temperature);
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
@@ -1113,12 +1126,12 @@ pub(crate) fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::Photodiode {
+            CircuitElement::Photodiode(Photodiode {
                 id,
                 nodes,
                 irradiance,
                 temperature,
-            } => {
+            }) => {
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
                 let v_across = va - vk;
@@ -1135,7 +1148,7 @@ pub(crate) fn extract_results(
                     power: v_across * i_through,
                 });
             }
-            CircuitElement::Varactor { id, nodes, .. } => {
+            CircuitElement::Varactor(Varactor { id, nodes, .. }) => {
                 // Varactor in DC: open circuit — report terminal voltage, zero current
                 let va = node_voltage(&nodes[0], node_map, solution);
                 let vk = node_voltage(&nodes[1], node_map, solution);
@@ -1147,9 +1160,9 @@ pub(crate) fn extract_results(
                     power: 0.0,
                 });
             }
-            CircuitElement::Igbt {
+            CircuitElement::Igbt(Igbt {
                 id, nodes, params, ..
-            } => {
+            }) => {
                 // IGBT: report gate-emitter voltage, collector-emitter voltage, and drain current
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vc = node_voltage(&nodes[1], node_map, solution);
@@ -1164,7 +1177,7 @@ pub(crate) fn extract_results(
                     power: (comp.ids * vce).abs(),
                 });
             }
-            CircuitElement::Transformer { id, nodes, .. } => {
+            CircuitElement::Transformer(Transformer { id, nodes, .. }) => {
                 // In DC analysis, transformer is stamped as near-short-circuits (1e-9 Ohm).
                 // Report primary and secondary voltages; DC current is indeterminate (use 0.0).
                 let v_p1 = node_voltage(&nodes[0], node_map, solution);
@@ -1178,14 +1191,14 @@ pub(crate) fn extract_results(
                 });
                 vsource_index += 2; // Transformer uses 2 branch current slots in MNA
             }
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id,
                 nodes,
                 kind,
                 idss,
                 vp,
                 ..
-            } => {
+            }) => {
                 let vg = node_voltage(&nodes[0], node_map, solution);
                 let vd = node_voltage(&nodes[1], node_map, solution);
                 let vs = node_voltage(&nodes[2], node_map, solution);
@@ -1199,9 +1212,9 @@ pub(crate) fn extract_results(
                     power,
                 });
             }
-            CircuitElement::Fuse {
+            CircuitElement::Fuse(Fuse {
                 id, nodes, blown, ..
-            } => {
+            }) => {
                 let vp = node_voltage(&nodes[0], node_map, solution);
                 let vq = node_voltage(&nodes[1], node_map, solution);
                 let v_across = vp - vq;
@@ -1215,12 +1228,12 @@ pub(crate) fn extract_results(
                     power,
                 });
             }
-            CircuitElement::VoltageRegulator {
+            CircuitElement::VoltageRegulator(VoltageRegulator {
                 id,
                 nodes,
                 voltage,
                 model,
-            } => {
+            }) => {
                 let branch = num_nodes + vsource_index;
                 branch_currents.insert(id.clone(), solution[branch]);
                 component_results.push(regulator_result(
@@ -1228,8 +1241,8 @@ pub(crate) fn extract_results(
                 ));
                 vsource_index += 1;
             }
-            CircuitElement::OpAmp { id, nodes, .. }
-            | CircuitElement::Comparator { id, nodes, .. } => {
+            CircuitElement::OpAmp(OpAmp { id, nodes, .. })
+            | CircuitElement::Comparator(Comparator { id, nodes, .. }) => {
                 // VCVS: read output voltage from solution; read branch current
                 let v_in_plus = node_voltage(&nodes[0], node_map, solution);
                 let v_in_minus = node_voltage(&nodes[1], node_map, solution);
@@ -1270,11 +1283,11 @@ pub(crate) fn extract_results(
             .components
             .iter()
             .filter_map(|c| match c {
-                CircuitElement::Battery {
+                CircuitElement::Battery(Battery {
                     id,
                     state_of_charge,
                     ..
-                } => Some((id.clone(), *state_of_charge)),
+                }) => Some((id.clone(), *state_of_charge)),
                 _ => None,
             })
             .collect(),
@@ -1293,8 +1306,8 @@ pub(crate) fn op_amp_and_relay_results(
     let mut relays = Vec::new();
     for component in &circuit.components {
         match component {
-            CircuitElement::OpAmp { id, nodes, .. }
-            | CircuitElement::Comparator { id, nodes, .. } => {
+            CircuitElement::OpAmp(OpAmp { id, nodes, .. })
+            | CircuitElement::Comparator(Comparator { id, nodes, .. }) => {
                 let (v_in_plus, v_in_minus) = (v(&nodes[0]), v(&nodes[1]));
                 op_amps.push(OpAmpResult {
                     id: id.clone(),
@@ -1304,12 +1317,12 @@ pub(crate) fn op_amp_and_relay_results(
                     v_out: v(&nodes[2]),
                 });
             }
-            CircuitElement::Relay {
+            CircuitElement::Relay(Relay {
                 id,
                 nodes,
                 pickup_voltage,
                 ..
-            } => {
+            }) => {
                 let coil_voltage = v(&nodes[0]) - v(&nodes[1]);
                 relays.push(RelayResult {
                     id: id.clone(),
@@ -1438,42 +1451,42 @@ mod extract_tests {
         let circuit = Circuit::new(
             "0",
             vec![
-                CircuitElement::ZenerDiode {
+                CircuitElement::ZenerDiode(ZenerDiode {
                     id: "DZ1".into(),
                     nodes: two("0", "a"),
                     vz: 5.1,
                     temperature: 300.15,
-                },
-                CircuitElement::Varactor {
+                }),
+                CircuitElement::Varactor(Varactor {
                     id: "CV1".into(),
                     nodes: two("b", "a"),
                     params: sindr_devices::varactor::VaractorParams::default(),
-                },
-                CircuitElement::Capacitor {
+                }),
+                CircuitElement::Capacitor(Capacitor {
                     id: "C1".into(),
                     nodes: two("a", "0"),
                     capacitance: 1e-6,
-                },
-                CircuitElement::Inductor {
+                }),
+                CircuitElement::Inductor(Inductor {
                     id: "L1".into(),
                     nodes: two("a", "b"),
                     inductance: 1e-3,
                     saturation: None,
-                },
-                CircuitElement::Transformer {
+                }),
+                CircuitElement::Transformer(Transformer {
                     id: "T1".into(),
                     nodes: ["a".into(), "b".into(), "b".into(), "0".into()],
                     l1: 1e-3,
                     l2: 1e-3,
                     k: 0.99,
                     saturation: None,
-                },
-                CircuitElement::VoltageSource {
+                }),
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: two("a", "0"),
                     voltage: 6.0,
                     waveform: None,
-                },
+                }),
             ],
         );
         let node_map = NodeMap::from_circuit(&circuit);

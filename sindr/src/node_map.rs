@@ -167,6 +167,7 @@ impl Terminals {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::element::Resistor;
 
     #[test]
     fn three_nodes_with_ground() {
@@ -225,16 +226,16 @@ mod tests {
         let circuit = Circuit::new(
             "0",
             vec![
-                CircuitElement::Resistor {
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["b".into(), "a".into()],
                     resistance: 1.0,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R2".into(),
                     nodes: ["0".into(), "b".into()],
                     resistance: 1.0,
-                },
+                }),
             ],
         );
         let nm = NodeMap::from_circuit(&circuit);

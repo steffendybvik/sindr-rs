@@ -5,6 +5,7 @@
 //! Only compiled when the `spice` feature is enabled.
 #![cfg(feature = "spice")]
 
+use sindr::element::{Bjt, Diode, Resistor, VoltageSource};
 use std::path::{Path, PathBuf};
 
 use sindr::measure::{Crossing, Measure, Signal, Stat};
@@ -37,7 +38,7 @@ fn element<'a>(netlist: &'a ParsedNetlist, id: &str) -> &'a CircuitElement {
 
 fn resistance(netlist: &ParsedNetlist, id: &str) -> f64 {
     match element(netlist, id) {
-        CircuitElement::Resistor { resistance, .. } => *resistance,
+        CircuitElement::Resistor(Resistor { resistance, .. }) => *resistance,
         other => panic!("`{id}` isn't a resistor: {other:?}"),
     }
 }
@@ -149,7 +150,7 @@ fn params_inside_a_subckt_are_per_instance() {
         .unwrap()
         .into_owned();
     let r = |id: &str| match flat.components.iter().find(|c| c.id() == id) {
-        Some(CircuitElement::Resistor { resistance, .. }) => *resistance,
+        Some(CircuitElement::Resistor(Resistor { resistance, .. })) => *resistance,
         other => panic!("{id}: {other:?}"),
     };
     assert_eq!((r("x1.r1"), r("x2.r1")), (2e3, 10e3));
@@ -175,7 +176,7 @@ fn bjt_substrate_node_is_dropped_with_a_warning() {
         parse_str_with_options(deck, lenient()).unwrap(),
     ] {
         match element(&netlist, "q1") {
-            CircuitElement::Bjt { nodes, bf, .. } => {
+            CircuitElement::Bjt(Bjt { nodes, bf, .. }) => {
                 assert_eq!(nodes, &["b", "c", "0"]);
                 assert_eq!(*bf, 50.0);
             }
@@ -205,7 +206,7 @@ fn sin_delay_becomes_phase_and_damping_is_refused() {
     let netlist = parse_str_with_options(deck, lenient()).unwrap();
     assert_eq!(warnings(&netlist), ["SIN damping factor (theta) ignored"]);
     match element(&netlist, "v1") {
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             waveform:
                 Some(Waveform::Sine {
                     amplitude,
@@ -214,7 +215,7 @@ fn sin_delay_becomes_phase_and_damping_is_refused() {
                     phase,
                 }),
             ..
-        } => {
+        }) => {
             assert_eq!((*amplitude, *frequency, *offset), (2.0, 1e3, 0.5));
             // A quarter period late is −π/2.
             assert!(
@@ -313,7 +314,7 @@ D2 a 0 d1n
         flat.components
             .iter()
             .find_map(|c| match c {
-                CircuitElement::Diode { id: i, model, .. } if i == id => *model,
+                CircuitElement::Diode(Diode { id: i, model, .. }) if i == id => *model,
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no diode {id}"))
@@ -509,13 +510,13 @@ fn temperature_coefficients_are_read() {
     let netlist = parse_str(deck).unwrap();
     assert!(netlist.warnings.is_empty(), "{:?}", warnings(&netlist));
     match element(&netlist, "d1") {
-        CircuitElement::Diode { model: Some(m), .. } => {
+        CircuitElement::Diode(Diode { model: Some(m), .. }) => {
             assert_eq!((m.eg, m.xti), (0.69, 2.0));
         }
         other => panic!("{other:?}"),
     }
     match element(&netlist, "q1") {
-        CircuitElement::Bjt { model: Some(m), .. } => assert_eq!((m.eg, m.xti), (1.12, 3.5)),
+        CircuitElement::Bjt(Bjt { model: Some(m), .. }) => assert_eq!((m.eg, m.xti), (1.12, 3.5)),
         other => panic!("{other:?}"),
     }
 }

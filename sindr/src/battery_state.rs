@@ -6,6 +6,7 @@
 //! form here is written as the current from `nodes[0]` to `nodes[1]`
 //! inside the cell, `g·v + i_hist`, which is `−i`.
 
+use crate::element::Battery;
 use crate::node_map::FastMap;
 use std::collections::HashMap;
 
@@ -72,12 +73,12 @@ pub(crate) fn initial_histories(
     histories: &mut FastMap<History>,
 ) {
     for component in &circuit.components {
-        let CircuitElement::Battery {
+        let CircuitElement::Battery(Battery {
             id,
             nodes,
             params,
             state_of_charge,
-        } = component
+        }) = component
         else {
             continue;
         };
@@ -115,9 +116,9 @@ pub(crate) fn finish_step(
 ) -> HashMap<String, f64> {
     let mut states = HashMap::new();
     for component in &circuit.components {
-        let CircuitElement::Battery {
+        let CircuitElement::Battery(Battery {
             id, nodes, params, ..
-        } = component
+        }) = component
         else {
             continue;
         };

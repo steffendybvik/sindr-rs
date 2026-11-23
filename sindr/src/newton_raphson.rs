@@ -5,6 +5,10 @@
 //! with companion models evaluated at the current operating point,
 //! solves it, applies voltage limiting, and checks convergence.
 
+use crate::element::{
+    Behavioural, Bjt, Comparator, CurrentSource, Diode, Igbt, Led, Mosfet, OpAmp, Photodiode,
+    Resistor, SchottkyDiode, VoltageRegulator, VoltageSource, ZenerDiode,
+};
 use nalgebra::DVector;
 
 use sindr_devices::bjt::BjtKind;
@@ -171,9 +175,11 @@ fn scale_sources(circuit: &Circuit, factor: f64) -> Circuit {
     let mut scaled = circuit.clone();
     for component in &mut scaled.components {
         match component {
-            CircuitElement::VoltageSource { voltage, .. }
-            | CircuitElement::VoltageRegulator { voltage, .. } => *voltage *= factor,
-            CircuitElement::CurrentSource { current, .. } => *current *= factor,
+            CircuitElement::VoltageSource(VoltageSource { voltage, .. })
+            | CircuitElement::VoltageRegulator(VoltageRegulator { voltage, .. }) => {
+                *voltage *= factor
+            }
+            CircuitElement::CurrentSource(CurrentSource { current, .. }) => *current *= factor,
             _ => {}
         }
     }
@@ -443,7 +449,9 @@ fn stamp_first(
 fn switch_off(circuit: &mut Circuit, id: &str) -> bool {
     let zero = crate::expression::Expression::parse("0").expect("0 parses");
     circuit.components.iter_mut().any(|c| match c {
-        CircuitElement::Behavioural { id: this, expr, .. } if this == id && *expr != zero => {
+        CircuitElement::Behavioural(Behavioural { id: this, expr, .. })
+            if this == id && *expr != zero =>
+        {
             *expr = zero.clone();
             true
         }
@@ -465,8 +473,8 @@ fn without_op_amp_rails(circuit: &Circuit) -> Option<Circuit> {
     let clamped = |c: &CircuitElement| {
         matches!(
             c,
-            CircuitElement::OpAmp { model: Some(_), v_pos, .. }
-                | CircuitElement::Comparator { v_pos, .. }
+            CircuitElement::OpAmp(OpAmp { model: Some(_), v_pos, .. })
+                | CircuitElement::Comparator(Comparator { v_pos, .. })
                 if *v_pos < UNCLAMPED_RAIL
         )
     };
@@ -475,13 +483,13 @@ fn without_op_amp_rails(circuit: &Circuit) -> Option<Circuit> {
     }
     let mut open = circuit.clone();
     for c in &mut open.components {
-        if let CircuitElement::OpAmp {
+        if let CircuitElement::OpAmp(OpAmp {
             v_pos,
             v_neg,
             model: Some(_),
             ..
-        }
-        | CircuitElement::Comparator { v_pos, v_neg, .. } = c
+        })
+        | CircuitElement::Comparator(Comparator { v_pos, v_neg, .. }) = c
         {
             *v_pos = UNCLAMPED_RAIL;
             *v_neg = -UNCLAMPED_RAIL;
@@ -530,12 +538,12 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
 
     for component in &circuit.components {
         match component {
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 model,
                 nodes,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let params = device_params::diode(model.as_ref(), *temperature);
                 let bv = params.breakdown.map(|b| b.bv);
                 info.push(DiodeLimitInfo {
@@ -551,12 +559,12 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     held: [false; 2],
                 });
             }
-            CircuitElement::Led {
+            CircuitElement::Led(Led {
                 nodes,
                 color,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let params = device_params::led(color, *temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
@@ -571,12 +579,12 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     held: [false; 2],
                 });
             }
-            CircuitElement::ZenerDiode {
+            CircuitElement::ZenerDiode(ZenerDiode {
                 nodes,
                 vz,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let params = device_params::zener_diode(*vz, *temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
@@ -591,9 +599,9 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     held: [false; 2],
                 });
             }
-            CircuitElement::SchottkyDiode {
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 nodes, temperature, ..
-            } => {
+            }) => {
                 let params = device_params::schottky(*temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
@@ -608,9 +616,9 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     held: [false; 2],
                 });
             }
-            CircuitElement::Photodiode {
+            CircuitElement::Photodiode(Photodiode {
                 nodes, temperature, ..
-            } => {
+            }) => {
                 let photo_params = device_params::photodiode(*temperature);
                 info.push(DiodeLimitInfo {
                     anode_idx: node_map.index(&nodes[0]),
@@ -629,14 +637,14 @@ pub(crate) fn collect_diode_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<D
                     held: [false; 2],
                 });
             }
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 model,
                 nodes,
                 kind,
                 bf,
                 temperature,
                 ..
-            } => {
+            }) => {
                 let params = device_params::bjt(*bf, model.as_ref(), *temperature);
 
                 // B-E junction: standard diode limiting (splits between anode/cathode
@@ -705,7 +713,7 @@ fn held_nodes(circuit: &Circuit, node_map: &NodeMap) -> Vec<bool> {
         .components
         .iter()
         .filter_map(|c| match c {
-            CircuitElement::VoltageSource { nodes, .. } => {
+            CircuitElement::VoltageSource(VoltageSource { nodes, .. }) => {
                 Some([node_map.index(&nodes[0]), node_map.index(&nodes[1])])
             }
             _ => None,
@@ -873,7 +881,7 @@ pub(crate) fn collect_igbt_info(circuit: &Circuit, node_map: &NodeMap) -> Vec<Ig
         .components
         .iter()
         .filter_map(|component| match component {
-            CircuitElement::Igbt { nodes, .. } => Some(IgbtLimitInfo {
+            CircuitElement::Igbt(Igbt { nodes, .. }) => Some(IgbtLimitInfo {
                 collector_idx: node_map.index(&nodes[1]),
                 emitter_idx: node_map.index(&nodes[2]),
             }),
@@ -1038,11 +1046,11 @@ fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector
     let has_nonlinear = circuit.components.iter().any(|c| {
         matches!(
             c,
-            CircuitElement::Bjt { .. }
-                | CircuitElement::Mosfet { .. }
-                | CircuitElement::ZenerDiode { .. }
-                | CircuitElement::SchottkyDiode { .. }
-                | CircuitElement::Photodiode { .. }
+            CircuitElement::Bjt(Bjt { .. })
+                | CircuitElement::Mosfet(Mosfet { .. })
+                | CircuitElement::ZenerDiode(ZenerDiode { .. })
+                | CircuitElement::SchottkyDiode(SchottkyDiode { .. })
+                | CircuitElement::Photodiode(Photodiode { .. })
         )
     });
     if !has_nonlinear {
@@ -1059,17 +1067,17 @@ fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector
     let mut vsource_index: usize = 0;
     for component in &circuit.components {
         match component {
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 nodes, resistance, ..
-            } if *resistance > 0.0 => {
+            }) if *resistance > 0.0 => {
                 stamp::stamp_resistor(&mut system, node_map, nodes, *resistance);
             }
-            CircuitElement::VoltageSource { nodes, voltage, .. } => {
+            CircuitElement::VoltageSource(VoltageSource { nodes, voltage, .. }) => {
                 let branch = num_nodes + vsource_index;
                 stamp::stamp_voltage_source(&mut system, node_map, nodes, *voltage, branch);
                 vsource_index += 1;
             }
-            CircuitElement::CurrentSource { nodes, current, .. } => {
+            CircuitElement::CurrentSource(CurrentSource { nodes, current, .. }) => {
                 stamp::stamp_current_source(&mut system, node_map, nodes, *current);
             }
             _ => {} // Skip BJTs, diodes, etc.
@@ -1088,7 +1096,7 @@ fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector
 
     // Step 2: Adjust base voltages for BJT Vbe guess
     for component in &circuit.components {
-        if let CircuitElement::Bjt { nodes, kind, .. } = component {
+        if let CircuitElement::Bjt(Bjt { nodes, kind, .. }) = component {
             let base_idx = node_map.index(&nodes[0]);
             let emitter_idx = node_map.index(&nodes[2]);
 
@@ -1157,23 +1165,23 @@ mod tests {
         Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["n1".into(), "0".into()],
                     voltage: vsource,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["n1".into(), "n2".into()],
                     resistance: 100.0,
-                },
-                CircuitElement::Diode {
+                }),
+                CircuitElement::Diode(Diode {
                     id: "D1".into(),
                     nodes: ["n2".into(), "0".into()],
                     temperature: 300.15,
                     model: None,
-                },
+                }),
             ],
             ..Default::default()
         }
@@ -1191,26 +1199,28 @@ mod tests {
 
     #[test]
     fn convergence_failed_names_the_node_and_its_components() {
-        let diode = |id: &str| CircuitElement::Diode {
-            id: id.into(),
-            nodes: ["a".into(), "0".into()],
-            temperature: 300.15,
-            model: None,
+        let diode = |id: &str| {
+            CircuitElement::Diode(Diode {
+                id: id.into(),
+                nodes: ["a".into(), "0".into()],
+                temperature: 300.15,
+                model: None,
+            })
         };
         let circuit = Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["in".into(), "a".into()],
                     resistance: 1e3,
-                },
+                }),
                 diode("D1"),
                 diode("D2"),
             ],
@@ -1382,17 +1392,17 @@ mod tests {
         Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: 5.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["in".into(), "out".into()],
                     resistance: 1_000.0,
-                },
+                }),
                 element,
             ],
             ..Default::default()
@@ -1408,12 +1418,12 @@ mod tests {
             ground_node: "0".into(),
             components: vec![
                 vsource("V1", "vcc", 9.0),
-                CircuitElement::Led {
+                CircuitElement::Led(Led {
                     id: "D1".into(),
                     nodes: ["vcc".into(), "k".into()],
                     color: "red".into(),
                     temperature: 300.15,
-                },
+                }),
                 resistor("R1", "k", "0", 470.0),
             ],
             ..Default::default()
@@ -1434,11 +1444,11 @@ mod tests {
 
     #[test]
     fn forward_schottky_behind_5v_converges() {
-        let circuit = junction_behind(CircuitElement::SchottkyDiode {
+        let circuit = junction_behind(CircuitElement::SchottkyDiode(SchottkyDiode {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
-        });
+        }));
         let result = crate::solve_circuit(&circuit).unwrap();
         let want = shockley_drop(5.0, 1_000.0, 1e-8, 1.0);
         assert!((result.node_voltages["out"] - want).abs() < 1e-5);
@@ -1446,12 +1456,12 @@ mod tests {
 
     #[test]
     fn forward_photodiode_behind_5v_converges() {
-        let circuit = junction_behind(CircuitElement::Photodiode {
+        let circuit = junction_behind(CircuitElement::Photodiode(Photodiode {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             irradiance: 0.0,
             temperature: 300.15,
-        });
+        }));
         let result = crate::solve_circuit(&circuit).unwrap();
         let want = shockley_drop(5.0, 1_000.0, 1e-12, 1.0);
         assert!((result.node_voltages["out"] - want).abs() < 1e-5);
@@ -1461,24 +1471,24 @@ mod tests {
     fn silicon_diode_next_to_a_bjt_converges() {
         // The BJT sends the solver through the linear pre-solve, which used
         // to leave the diode with the full 5 V across it.
-        let mut circuit = junction_behind(CircuitElement::Diode {
+        let mut circuit = junction_behind(CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["out".into(), "0".into()],
             temperature: 300.15,
             model: None,
-        });
+        }));
         circuit.components.extend([
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id: "RB".into(),
                 nodes: ["in".into(), "b".into()],
                 resistance: 470_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "RC".into(),
                 nodes: ["in".into(), "c".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Bjt {
+            }),
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["b".into(), "c".into(), "0".into()],
                 kind: BjtKind::Npn,
@@ -1486,7 +1496,7 @@ mod tests {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            },
+            }),
         ]);
         let result = crate::solve_circuit(&circuit).unwrap();
         let want = shockley_drop(5.0, 1_000.0, 1e-14, 1.0);
@@ -1494,20 +1504,20 @@ mod tests {
     }
 
     fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-        CircuitElement::Resistor {
+        CircuitElement::Resistor(Resistor {
             id: id.into(),
             nodes: [a.into(), b.into()],
             resistance,
-        }
+        })
     }
 
     fn vsource(id: &str, node: &str, voltage: f64) -> CircuitElement {
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: id.into(),
             nodes: [node.into(), "0".into()],
             voltage,
             waveform: None,
-        }
+        })
     }
 
     fn assert_rel(actual: f64, expected: f64, what: &str) {
@@ -1527,12 +1537,12 @@ mod tests {
             components: vec![
                 vsource("V1", "vcc", 10.0),
                 resistor("R1", "vcc", "a", 1_000.0),
-                CircuitElement::Diode {
+                CircuitElement::Diode(Diode {
                     id: "D1".into(),
                     nodes: ["a".into(), "k".into()],
                     temperature: 300.15,
                     model: None,
-                },
+                }),
                 resistor("R2", "k", "0", 1_000.0),
             ],
             ..Default::default()
@@ -1560,7 +1570,7 @@ mod tests {
                 resistor("RB", "in", "b", 10_000.0),
                 resistor("RC", "c", rc_to, 1_000.0),
                 resistor("RE", "e", re_to, 100.0),
-                CircuitElement::Bjt {
+                CircuitElement::Bjt(Bjt {
                     id: "Q1".into(),
                     nodes: ["b".into(), "c".into(), "e".into()],
                     kind,
@@ -1568,7 +1578,7 @@ mod tests {
                     temperature: 300.15,
                     parasitic_caps: None,
                     model: None,
-                },
+                }),
             ],
             ..Default::default()
         }
@@ -1626,17 +1636,17 @@ mod tests {
     /// then `m1`, `m2`, … between diodes.
     fn diode_chain(diodes: Vec<CircuitElement>) -> Circuit {
         let mut components = vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "out".into()],
                 resistance: 1_000.0,
-            },
+            }),
         ];
         components.extend(diodes);
         Circuit {
@@ -1647,12 +1657,12 @@ mod tests {
     }
 
     fn silicon(id: &str, a: &str, k: &str) -> CircuitElement {
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             id: id.into(),
             nodes: [a.into(), k.into()],
             temperature: 300.15,
             model: None,
-        }
+        })
     }
 
     /// A BJT junction stepping back from forward bias is not an overshoot:
@@ -1723,11 +1733,11 @@ mod tests {
     #[test]
     fn schottky_over_silicon_in_series_converges() {
         let circuit = diode_chain(vec![
-            CircuitElement::SchottkyDiode {
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 id: "D1".into(),
                 nodes: ["out".into(), "m1".into()],
                 temperature: 300.15,
-            },
+            }),
             silicon("D2", "m1", "0"),
         ]);
         let result = crate::solve_circuit(&circuit).unwrap();
@@ -1747,28 +1757,28 @@ mod tests {
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "Vg".into(),
                     nodes: ["g".into(), "0".into()],
                     voltage: vge,
                     waveform: None,
-                },
-                CircuitElement::VoltageSource {
+                }),
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "Vcc".into(),
                     nodes: ["vcc".into(), "0".into()],
                     voltage: vcc,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R".into(),
                     nodes: ["vcc".into(), "c".into()],
                     resistance: r,
-                },
-                CircuitElement::Igbt {
+                }),
+                CircuitElement::Igbt(Igbt {
                     id: "Q1".into(),
                     nodes: ["g".into(), "c".into(), "0".into()],
                     params: params.clone(),
-                },
+                }),
             ],
             ..Default::default()
         };
@@ -1791,23 +1801,23 @@ mod tests {
         let circuit = Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: 12.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["in".into(), "k".into()],
                     resistance: 1e3,
-                },
-                CircuitElement::ZenerDiode {
+                }),
+                CircuitElement::ZenerDiode(ZenerDiode {
                     id: "DZ1".into(),
                     nodes: ["0".into(), "k".into()],
                     vz: 5.1,
                     temperature: 300.15,
-                },
+                }),
             ],
         );
         let node_map = NodeMap::from_circuit(&circuit);

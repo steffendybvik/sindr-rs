@@ -6,6 +6,9 @@
 //! `examples` and intended for HTTP/UI consumers that need ids and descriptions.
 
 use crate::circuit::{Circuit, CircuitElement};
+use crate::element::{
+    Bjt, Capacitor, CurrentSource, Fuse, Led, Resistor, Transformer, VoltageSource,
+};
 use crate::waveform::Waveform;
 use sindr_devices::bjt::BjtKind;
 
@@ -18,22 +21,22 @@ pub fn voltage_divider() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 1000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["n2".into(), "0".into()],
                 resistance: 2000.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -44,22 +47,22 @@ pub fn current_divider() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 12.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "0".into()],
                 resistance: 3000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["n1".into(), "0".into()],
                 resistance: 6000.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -70,27 +73,27 @@ pub fn series_resistors() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 9.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 1000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["n2".into(), "n3".into()],
                 resistance: 2000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R3".into(),
                 nodes: ["n3".into(), "0".into()],
                 resistance: 3000.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -101,23 +104,23 @@ pub fn led_circuit() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 9.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 330.0,
-            },
-            CircuitElement::Led {
+            }),
+            CircuitElement::Led(Led {
                 id: "LED1".into(),
                 nodes: ["n2".into(), "0".into()],
                 color: "red".into(),
                 temperature: 300.15,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -128,23 +131,23 @@ pub fn fuse_protection() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Fuse {
+            }),
+            CircuitElement::Fuse(Fuse {
                 id: "F1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 rating: 1.0,
                 blown: false,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n2".into(), "0".into()],
                 resistance: 100.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -159,28 +162,28 @@ pub fn mixed_sources() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 1000.0,
-            },
-            CircuitElement::CurrentSource {
+            }),
+            CircuitElement::CurrentSource(CurrentSource {
                 id: "I1".into(),
                 nodes: ["0".into(), "n2".into()],
                 current: 0.002,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["n2".into(), "0".into()],
                 resistance: 2000.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -191,37 +194,37 @@ pub fn wheatstone_bridge() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 1000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["n2".into(), "0".into()],
                 resistance: 2000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R3".into(),
                 nodes: ["n1".into(), "n3".into()],
                 resistance: 1000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R4".into(),
                 nodes: ["n3".into(), "0".into()],
                 resistance: 2000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R_bridge".into(),
                 nodes: ["n2".into(), "n3".into()],
                 resistance: 5000.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -232,7 +235,7 @@ pub fn sine_wave_source() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 0.0,
@@ -242,12 +245,12 @@ pub fn sine_wave_source() -> Circuit {
                     offset: 0.0,
                     phase: 0.0,
                 }),
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "0".into()],
                 resistance: 1000.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -258,22 +261,22 @@ pub fn rc_lowpass_filter() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["n1".into(), "n2".into()],
                 resistance: 1000.0,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["n2".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -284,25 +287,25 @@ pub fn transformer_stepdown() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["n1".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
-            CircuitElement::Transformer {
+            }),
+            CircuitElement::Transformer(Transformer {
                 id: "T1".into(),
                 nodes: ["n1".into(), "0".into(), "n2".into(), "0".into()],
                 l1: 1.0,
                 l2: 0.25,
                 k: 0.999,
                 saturation: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R_load".into(),
                 nodes: ["n2".into(), "0".into()],
                 resistance: 100.0,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -317,23 +320,23 @@ pub fn npn_common_emitter() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "Vcc".into(),
                 nodes: ["vcc".into(), "0".into()],
                 voltage: 10.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "Rb".into(),
                 nodes: ["vcc".into(), "base".into()],
                 resistance: 470_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "Rc".into(),
                 nodes: ["vcc".into(), "collector".into()],
                 resistance: 1000.0,
-            },
-            CircuitElement::Bjt {
+            }),
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["base".into(), "collector".into(), "0".into()],
                 kind: BjtKind::Npn,
@@ -341,7 +344,7 @@ pub fn npn_common_emitter() -> Circuit {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -352,23 +355,23 @@ pub fn npn_switch() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "Vcc".into(),
                 nodes: ["vcc".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "Rb".into(),
                 nodes: ["vcc".into(), "base".into()],
                 resistance: 10_000.0,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "Rc".into(),
                 nodes: ["vcc".into(), "collector".into()],
                 resistance: 470.0,
-            },
-            CircuitElement::Bjt {
+            }),
+            CircuitElement::Bjt(Bjt {
                 id: "Q1".into(),
                 nodes: ["base".into(), "collector".into(), "0".into()],
                 kind: BjtKind::Npn,
@@ -376,7 +379,7 @@ pub fn npn_switch() -> Circuit {
                 temperature: 300.15,
                 parasitic_caps: None,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     }

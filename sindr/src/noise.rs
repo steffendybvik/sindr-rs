@@ -27,6 +27,10 @@
 //! Integrated noise assumes each PSD follows a power law between points, as
 //! ngspice does.
 
+use crate::element::{
+    Bjt, CurrentSource, Diode, Jfet, Led, Mosfet, Photodiode, Photoresistor, Potentiometer,
+    Resistor, SchottkyDiode, Thermistor, VoltageSource, ZenerDiode,
+};
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -223,18 +227,20 @@ struct Generator {
 /// ```
 /// use sindr::{Circuit, CircuitElement};
 /// use sindr::noise::{solve_noise, NoiseConfig};
+/// use sindr::element::{Capacitor, Resistor, VoltageSource};
 ///
 /// // A 1 kΩ / 1 µF low-pass: the output noise integrates to √(kT/C).
 /// let circuit = Circuit::new("0", vec![
-///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None },
-///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
-///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+///     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None }),
+///     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 }),
+///     CircuitElement::Capacitor(Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 }),
 /// ]);
 /// let noise = solve_noise(&circuit, &NoiseConfig::new("out", "V1", 0.01, 1e7, 91))?;
 /// let kt_over_c = (1.380649e-23 * 300.15 / 1e-6_f64).sqrt();
 /// assert!((noise.total_output_noise / kt_over_c - 1.0).abs() < 0.01);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_noise(circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResult, SimError> {
     solve_noise_with(circuit, config, &crate::SolverOptions::default())
 }
@@ -278,7 +284,7 @@ pub(crate) fn solve_noise_with(
         .transpose()?
         .flatten();
     let is_input = circuit.components.iter().any(|c| {
-        matches!(c, CircuitElement::VoltageSource { id, .. } | CircuitElement::CurrentSource { id, .. } if *id == config.input_source)
+        matches!(c, CircuitElement::VoltageSource(VoltageSource { id, .. }) | CircuitElement::CurrentSource(CurrentSource { id, .. }) if *id == config.input_source)
     });
     if !is_input {
         return Err(invalid(format!(
@@ -420,17 +426,17 @@ fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> V
     let mut out = Vec::new();
     for c in &circuit.components {
         match c {
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id,
                 nodes,
                 resistance,
-            } => out.push(thermal(id, "", &nodes[0], &nodes[1], *resistance, T_NOISE)),
-            CircuitElement::Potentiometer {
+            }) => out.push(thermal(id, "", &nodes[0], &nodes[1], *resistance, T_NOISE)),
+            CircuitElement::Potentiometer(Potentiometer {
                 id,
                 nodes,
                 resistance,
                 position,
-            } => {
+            }) => {
                 let pos = position.clamp(0.001, 0.999);
                 out.push(thermal(
                     id,
@@ -449,40 +455,40 @@ fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> V
                     T_NOISE,
                 ));
             }
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id,
                 nodes,
                 temperature,
-            } => {
+            }) => {
                 let r = crate::device_params::thermistor_resistance(*temperature);
                 out.push(thermal(id, "", &nodes[0], &nodes[1], r, *temperature));
             }
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 id,
                 nodes,
                 light_level,
-            } => {
+            }) => {
                 let r = crate::stamp::ldr_resistance(*light_level);
                 out.push(thermal(id, "", &nodes[0], &nodes[1], r, T_NOISE));
             }
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id, nodes, model, ..
-            } => {
+            }) => {
                 let i = current(id);
                 out.push(shot(id, "", &nodes[0], &nodes[1], i));
                 if let Some(m) = model.filter(|m| m.kf > 0.0) {
                     out.push(flicker(id, "", &nodes[0], &nodes[1], i, m.kf, m.af));
                 }
             }
-            CircuitElement::Led { id, nodes, .. }
-            | CircuitElement::SchottkyDiode { id, nodes, .. }
-            | CircuitElement::ZenerDiode { id, nodes, .. }
-            | CircuitElement::Photodiode { id, nodes, .. } => {
+            CircuitElement::Led(Led { id, nodes, .. })
+            | CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes, .. })
+            | CircuitElement::ZenerDiode(ZenerDiode { id, nodes, .. })
+            | CircuitElement::Photodiode(Photodiode { id, nodes, .. }) => {
                 out.push(shot(id, "", &nodes[0], &nodes[1], current(id)));
             }
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id, nodes, model, ..
-            } => {
+            }) => {
                 let Some(bjt) = dc.bjt_results.iter().find(|b| b.id == *id) else {
                     continue;
                 };
@@ -493,13 +499,13 @@ fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> V
                     out.push(flicker(id, "ib", b, e, bjt.ib, m.kf, m.af));
                 }
             }
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id,
                 nodes,
                 kind,
                 params,
                 ..
-            } => {
+            }) => {
                 let [g, d, s] = nodes;
                 let comp = crate::device_params::mosfet_op(
                     *kind,
@@ -518,14 +524,14 @@ fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> V
                     out.push(flicker(id, "", d, s, comp.id, params.kf, params.af));
                 }
             }
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id,
                 nodes,
                 kind,
                 idss,
                 vp,
                 ..
-            } => {
+            }) => {
                 let [g, d, s] = nodes;
                 let (vg, vd, vs) = (voltage(g), voltage(d), voltage(s));
                 let comp = sindr_devices::jfet::jfet_companion(vg - vs, vd - vs, *kind, *idss, *vp);

@@ -14,6 +14,7 @@ mod device;
 
 pub use ac::{solve_ac_sensitivity, AcSensConfig, AcSensEntry, AcSensPoint, AcSensResult};
 
+use crate::element::{Cccs, Ccvs, CurrentSource, Resistor, Vccs, Vcvs, VoltageSource};
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -147,27 +148,28 @@ impl SensResult {
     ///
     /// ```
     /// use sindr::{solve_sensitivity, Circuit, CircuitElement, SensConfig, SensParameter, TfOutput};
+    /// use sindr::element::{Diode, Resistor, VoltageSource};
     ///
     /// let circuit = Circuit {
     ///     ground_node: "0".into(),
     ///     components: vec![
-    ///         CircuitElement::VoltageSource {
+    ///         CircuitElement::VoltageSource(VoltageSource {
     ///             id: "V1".into(),
     ///             nodes: ["in".into(), "0".into()],
     ///             voltage: 5.0,
     ///             waveform: None,
-    ///         },
-    ///         CircuitElement::Resistor {
+    ///         }),
+    ///         CircuitElement::Resistor(Resistor {
     ///             id: "R1".into(),
     ///             nodes: ["in".into(), "a".into()],
     ///             resistance: 1_000.0,
-    ///         },
-    ///         CircuitElement::Diode {
+    ///         }),
+    ///         CircuitElement::Diode(Diode {
     ///             id: "D1".into(),
     ///             nodes: ["a".into(), "0".into()],
     ///             temperature: 300.15,
     ///             model: None,
-    ///         },
+    ///         }),
     ///     ],
     ///     ..Default::default()
     /// };
@@ -177,6 +179,7 @@ impl SensResult {
     /// assert!(is.sensitivity < 0.0);
     /// # Ok::<(), sindr::SimError>(())
     /// ```
+    ///
     pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&SensEntry> {
         self.entries
             .iter()
@@ -209,27 +212,28 @@ impl SensResult {
 ///
 /// ```
 /// use sindr::{solve_sensitivity, Circuit, CircuitElement, SensConfig, TfOutput};
+/// use sindr::element::{Resistor, VoltageSource};
 ///
 /// // 4 V over 1 kΩ / 3 kΩ: V(out) = V1 · R2 / (R1 + R2) = 3 V.
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["in".into(), "0".into()],
 ///             voltage: 4.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["in".into(), "out".into()],
 ///             resistance: 1_000.0,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R2".into(),
 ///             nodes: ["out".into(), "0".into()],
 ///             resistance: 3_000.0,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -242,6 +246,7 @@ impl SensResult {
 /// assert!((sens.get("R1").unwrap().sensitivity + 0.75e-3).abs() < 1e-12);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
@@ -294,36 +299,36 @@ pub(crate) fn solve_sensitivity_with(
             push(component.id(), d.parameter, d.value, s);
         }
         let (id, parameter, value, sensitivity) = match component {
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id,
                 nodes,
                 resistance,
-            } => {
+            }) => {
                 let (p, q) = (node(&nodes[0]), node(&nodes[1]));
                 let dvolts = v(p) - v(q);
                 let dlambda = lambda(p) - lambda(q);
                 let s = dvolts * dlambda / (resistance * resistance);
                 (id, SensParameter::Resistance, *resistance, s)
             }
-            CircuitElement::VoltageSource { id, voltage, .. } => {
+            CircuitElement::VoltageSource(VoltageSource { id, voltage, .. }) => {
                 let Some(branch) = independent_vsource_branch(circuit, &system, id) else {
                     continue;
                 };
                 (id, SensParameter::Voltage, *voltage, adjoint[branch].re)
             }
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 id, nodes, current, ..
-            } => {
+            }) => {
                 // Injects into nodes[1] and draws from nodes[0].
                 let s = lambda(node(&nodes[1])) - lambda(node(&nodes[0]));
                 (id, SensParameter::Current, *current, s)
             }
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 id,
                 control_nodes,
                 gain,
                 ..
-            } => {
+            }) => {
                 let Some(branch) = dc.vsource_branch_index(id) else {
                     continue;
                 };
@@ -331,34 +336,34 @@ pub(crate) fn solve_sensitivity_with(
                 let s = adjoint[node_map.num_nodes() + branch].re * control;
                 (id, SensParameter::VoltageGain, *gain, s)
             }
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id,
                 nodes,
                 control_nodes,
                 gm,
-            } => {
+            }) => {
                 let control = v(node(&control_nodes[0])) - v(node(&control_nodes[1]));
                 let s = (lambda(node(&nodes[1])) - lambda(node(&nodes[0]))) * control;
                 (id, SensParameter::Transconductance, *gm, s)
             }
-            CircuitElement::Ccvs {
+            CircuitElement::Ccvs(Ccvs {
                 id,
                 control_source,
                 rm,
                 ..
-            } => {
+            }) => {
                 let Some(branch) = dc.vsource_branch_index(id) else {
                     continue;
                 };
                 let s = adjoint[node_map.num_nodes() + branch].re * control(control_source);
                 (id, SensParameter::Transresistance, *rm, s)
             }
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id,
                 nodes,
                 control_source,
                 alpha,
-            } => {
+            }) => {
                 let s =
                     (lambda(node(&nodes[1])) - lambda(node(&nodes[0]))) * control(control_source);
                 (id, SensParameter::CurrentGain, *alpha, s)

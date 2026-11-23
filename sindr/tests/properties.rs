@@ -2,6 +2,7 @@
 //! with proptest: KCL and power balance, reciprocity, invariance under
 //! renaming nodes and reordering components, and linear scaling.
 
+use sindr::element::{Capacitor, CurrentSource, Inductor, Resistor, Transformer, VoltageSource};
 use std::collections::HashMap;
 
 use proptest::prelude::*;
@@ -36,58 +37,58 @@ impl Network {
     fn elements(&self, reactive: bool) -> Vec<CircuitElement> {
         let mut out = Vec::new();
         for (i, &r) in self.chain.iter().enumerate() {
-            out.push(CircuitElement::Resistor {
+            out.push(CircuitElement::Resistor(Resistor {
                 id: format!("RC{i}"),
                 nodes: [node(i), node((i + 1) % (self.nodes + 1))],
                 resistance: r,
-            });
+            }));
         }
         for (k, &(a, b, kind, value)) in self.extras.iter().enumerate() {
             let nodes = [node(a), node(b)];
             let id = format!("X{k}");
             match if reactive { kind } else { 0 } {
-                1 => out.push(CircuitElement::Capacitor {
+                1 => out.push(CircuitElement::Capacitor(Capacitor {
                     id,
                     nodes,
                     capacitance: value * 1e-9,
-                }),
+                })),
                 2 => {
                     let mid = format!("x{k}");
-                    out.push(CircuitElement::Inductor {
+                    out.push(CircuitElement::Inductor(Inductor {
                         id,
                         nodes: [nodes[0].clone(), mid.clone()],
                         inductance: value * 1e-6,
                         saturation: None,
-                    });
-                    out.push(CircuitElement::Resistor {
+                    }));
+                    out.push(CircuitElement::Resistor(Resistor {
                         id: format!("XR{k}"),
                         nodes: [mid, nodes[1].clone()],
                         resistance: 1.0,
-                    });
+                    }));
                 }
                 3 => {
                     let (m1, m2) = (format!("x{k}"), format!("y{k}"));
-                    out.push(CircuitElement::Transformer {
+                    out.push(CircuitElement::Transformer(Transformer {
                         id,
                         nodes: [nodes[0].clone(), m1.clone(), nodes[1].clone(), m2.clone()],
                         l1: value * 1e-6,
                         l2: value * 0.5e-6,
                         k: 0.9,
                         saturation: None,
-                    });
+                    }));
                     for (i, mid) in [m1, m2].into_iter().enumerate() {
-                        out.push(CircuitElement::Resistor {
+                        out.push(CircuitElement::Resistor(Resistor {
                             id: format!("XR{k}_{i}"),
                             nodes: [mid, "0".into()],
                             resistance: 1.0,
-                        });
+                        }));
                     }
                 }
-                _ => out.push(CircuitElement::Resistor {
+                _ => out.push(CircuitElement::Resistor(Resistor {
                     id,
                     nodes,
                     resistance: value,
-                }),
+                })),
             }
         }
         out
@@ -111,12 +112,12 @@ fn network() -> impl Strategy<Value = Network> {
 }
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -133,12 +134,12 @@ fn resistor_current_out(circuit: &Circuit, v: &HashMap<String, f64>, node: &str)
         .components
         .iter()
         .map(|c| match c {
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 nodes, resistance, ..
-            } if nodes[0] == node => (v[&nodes[0]] - v[&nodes[1]]) / resistance,
-            CircuitElement::Resistor {
+            }) if nodes[0] == node => (v[&nodes[0]] - v[&nodes[1]]) / resistance,
+            CircuitElement::Resistor(Resistor {
                 nodes, resistance, ..
-            } if nodes[1] == node => (v[&nodes[1]] - v[&nodes[0]]) / resistance,
+            }) if nodes[1] == node => (v[&nodes[1]] - v[&nodes[0]]) / resistance,
             _ => 0.0,
         })
         .sum()
@@ -164,7 +165,7 @@ proptest! {
         }
         let delivered = volts * resistor_current_out(&c, &v, &top);
         let burned: f64 = c.components.iter().map(|e| match e {
-            CircuitElement::Resistor { nodes, resistance, .. } => {
+            CircuitElement::Resistor(Resistor { nodes, resistance, .. }) => {
                 (v[&nodes[0]] - v[&nodes[1]]).powi(2) / resistance
             }
             _ => 0.0,
@@ -189,12 +190,12 @@ proptest! {
         let drive = |from: &str, to: &str| {
             let mut elements = net.elements(true);
             elements.push(vsource("V1", "src", "0", 0.0));
-            elements.push(CircuitElement::Resistor {
+            elements.push(CircuitElement::Resistor(Resistor {
                 id: "RSRC".into(), nodes: ["src".into(), from.into()], resistance: 50.0,
-            });
-            elements.push(CircuitElement::Resistor {
+            }));
+            elements.push(CircuitElement::Resistor(Resistor {
                 id: "RLOAD".into(), nodes: [to.into(), "0".into()], resistance: 50.0,
-            });
+            }));
             let config = AcConfig::new("V1", f, f, 1).with_spacing(FrequencySpacing::Linear);
             solve_ac(&circuit(elements), &config).unwrap().points[0].node_voltages[to]
         };
@@ -223,8 +224,8 @@ proptest! {
         let renamed: Vec<CircuitElement> = elements.iter().rev().map(|e| {
             let mut e = e.clone();
             match &mut e {
-                CircuitElement::Resistor { nodes, .. }
-                | CircuitElement::VoltageSource { nodes, .. } => {
+                CircuitElement::Resistor(Resistor { nodes, .. })
+                | CircuitElement::VoltageSource(VoltageSource { nodes, .. }) => {
                     *nodes = [rename(&nodes[0]), rename(&nodes[1])];
                 }
                 _ => unreachable!(),
@@ -249,10 +250,10 @@ proptest! {
         let solve = |scale: f64| {
             let mut elements = net.elements(false);
             elements.push(vsource("V1", &node(net.nodes), "0", scale * volts));
-            elements.push(CircuitElement::CurrentSource {
+            elements.push(CircuitElement::CurrentSource(CurrentSource {
                 id: "I1".into(), nodes: ["0".into(), node(1)],
                 current: scale * amps, waveform: None,
-            });
+            }));
             solve_circuit(&circuit(elements)).unwrap().node_voltages
         };
         let (base, scaled) = (solve(1.0), solve(k));

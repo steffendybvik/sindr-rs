@@ -14,6 +14,7 @@ sindr-rs/
 │   ├── src/
 │   │   ├── lib.rs              # public API surface, re-exports
 │   │   ├── circuit.rs          # data model: Circuit, CircuitElement
+│   │   ├── element.rs          # one struct per CircuitElement variant
 │   │   ├── design.rs           # hierarchy: Block, Instance, Part, flatten
 │   │   ├── waveform.rs         # sine, pulse, square, triangle, PWM, PWL
 │   │   ├── mna.rs              # MNA matrix assembly
@@ -95,7 +96,7 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 
 ## Adding a new circuit element
 
-1. Add a variant to `CircuitElement` in `sindr/src/circuit.rs` (with serde tags), and to its `nodes`/`nodes_mut`/`id`/`id_mut` matches.
+1. Add a struct for its fields in `sindr/src/element.rs` (serde attributes on the fields) and a variant wrapping it to `CircuitElement` in `sindr/src/circuit.rs` (with the serde `rename`), and add it to the enum's `nodes`/`nodes_mut`/`id`/`id_mut` matches.
 2. If it has device physics, add a module in `sindr-devices/src/` exposing a companion-model function.
 3. Implement matrix stamping in `sindr/src/stamp.rs` (and Newton-Raphson contribution if nonlinear).
 4. If it stores state across timesteps (charge, current), thread it through the transient state in `sindr/src/transient.rs`.
@@ -165,7 +166,7 @@ When in doubt, run `cargo run --example list_examples --features examples` and c
 
 | Question | File |
 |----------|------|
-| "What components exist?" | `sindr/src/circuit.rs` (`CircuitElement` enum) |
+| "What components exist?" | `sindr/src/circuit.rs` (`CircuitElement` enum) and `sindr/src/element.rs` (its structs) |
 | "What does the solver do for circuit X?" | routing table in `sindr/README.md`, plus `sindr/src/lib.rs::solve_circuit` |
 | "How is element Y stamped?" | `sindr/src/stamp.rs` |
 | "Why did this fail?" | `sindr/src/error.rs` (`SimError` variants) |

@@ -7,6 +7,7 @@
 //! [`ComponentResult`] under the element's own id, from its parts', and the
 //! parts and internal nodes gone.
 
+use crate::element::{Capacitor, Crystal, FerriteBead, Inductor, Resistor, Switch, SwitchSpdt};
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement, CrystalParams, FerriteBeadParams, SpdtPosition};
@@ -17,9 +18,9 @@ use crate::SimError;
 pub(crate) fn is_composite(element: &CircuitElement) -> bool {
     matches!(
         element,
-        CircuitElement::SwitchSpdt { .. }
-            | CircuitElement::Crystal { .. }
-            | CircuitElement::FerriteBead { .. }
+        CircuitElement::SwitchSpdt(SwitchSpdt { .. })
+            | CircuitElement::Crystal(Crystal { .. })
+            | CircuitElement::FerriteBead(FerriteBead { .. })
     )
 }
 
@@ -45,27 +46,27 @@ fn part(id: &str, suffix: &str) -> String {
 /// finite.
 pub(crate) fn lower(element: &CircuitElement) -> Result<Option<Vec<CircuitElement>>, SimError> {
     let parts = match element {
-        CircuitElement::SwitchSpdt {
+        CircuitElement::SwitchSpdt(SwitchSpdt {
             id,
             nodes,
             position,
-        } => {
+        }) => {
             let [com, a, b] = nodes.clone();
             vec![
-                CircuitElement::Switch {
+                CircuitElement::Switch(Switch {
                     id: part(id, "a"),
                     nodes: [com.clone(), a],
                     closed: *position == SpdtPosition::A,
-                },
-                CircuitElement::Switch {
+                }),
+                CircuitElement::Switch(Switch {
                     id: part(id, "b"),
                     nodes: [com, b],
                     closed: *position == SpdtPosition::B,
-                },
+                }),
             ]
         }
-        CircuitElement::Crystal { id, nodes, params } => crystal(id, nodes, params)?,
-        CircuitElement::FerriteBead { id, nodes, params } => bead(id, nodes, params)?,
+        CircuitElement::Crystal(Crystal { id, nodes, params }) => crystal(id, nodes, params)?,
+        CircuitElement::FerriteBead(FerriteBead { id, nodes, params }) => bead(id, nodes, params)?,
         _ => return Ok(None),
     };
     Ok(Some(parts))
@@ -89,29 +90,29 @@ fn crystal(
     let [a, b] = nodes.clone();
     let (m1, m2) = (part(id, "m1"), part(id, "m2"));
     let mut parts = vec![
-        CircuitElement::Resistor {
+        CircuitElement::Resistor(Resistor {
             id: part(id, "rm"),
             nodes: [a.clone(), m1.clone()],
             resistance: esr,
-        },
-        CircuitElement::Inductor {
+        }),
+        CircuitElement::Inductor(Inductor {
             id: part(id, "lm"),
             nodes: [m1, m2.clone()],
             inductance: lm,
             saturation: None,
-        },
-        CircuitElement::Capacitor {
+        }),
+        CircuitElement::Capacitor(Capacitor {
             id: part(id, "cm"),
             nodes: [m2, b.clone()],
             capacitance: cm,
-        },
+        }),
     ];
     if p.c0 > 0.0 {
-        parts.push(CircuitElement::Capacitor {
+        parts.push(CircuitElement::Capacitor(Capacitor {
             id: part(id, "c0"),
             nodes: [a, b],
             capacitance: p.c0,
-        });
+        }));
     }
     Ok(parts)
 }
@@ -127,29 +128,29 @@ fn bead(
     let [a, b] = nodes.clone();
     let mid = part(id, "m");
     let mut parts = vec![
-        CircuitElement::Resistor {
+        CircuitElement::Resistor(Resistor {
             id: part(id, "rdc"),
             nodes: [a, mid.clone()],
             resistance: r_dc,
-        },
-        CircuitElement::Inductor {
+        }),
+        CircuitElement::Inductor(Inductor {
             id: part(id, "l"),
             nodes: [mid.clone(), b.clone()],
             inductance: l,
             saturation: None,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: part(id, "rac"),
             nodes: [mid.clone(), b.clone()],
             resistance: r_ac,
-        },
+        }),
     ];
     if let Some(c) = p.c {
-        parts.push(CircuitElement::Capacitor {
+        parts.push(CircuitElement::Capacitor(Capacitor {
             id: part(id, "c"),
             nodes: [mid, b],
             capacitance: positive(id, "c (F)", c)?,
-        });
+        }));
     }
     Ok(parts)
 }
@@ -170,11 +171,11 @@ fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
         .components
         .iter()
         .filter_map(|c| match c {
-            CircuitElement::SwitchSpdt {
+            CircuitElement::SwitchSpdt(SwitchSpdt {
                 id,
                 nodes,
                 position,
-            } => {
+            }) => {
                 let (throw, suffix) = match position {
                     SpdtPosition::A => (&nodes[1], "a"),
                     SpdtPosition::B => (&nodes[2], "b"),
@@ -186,13 +187,13 @@ fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
                     power: vec![part(id, "a"), part(id, "b")],
                 })
             }
-            CircuitElement::Crystal { id, nodes, .. } => Some(Recipe {
+            CircuitElement::Crystal(Crystal { id, nodes, .. }) => Some(Recipe {
                 id,
                 across: [&nodes[0], &nodes[1]],
                 current: vec![part(id, "rm"), part(id, "c0")],
                 power: vec![part(id, "rm")],
             }),
-            CircuitElement::FerriteBead { id, nodes, .. } => Some(Recipe {
+            CircuitElement::FerriteBead(FerriteBead { id, nodes, .. }) => Some(Recipe {
                 id,
                 across: [&nodes[0], &nodes[1]],
                 current: vec![part(id, "rdc")],

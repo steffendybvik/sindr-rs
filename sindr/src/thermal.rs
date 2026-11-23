@@ -12,6 +12,7 @@
 //! Other parts (resistors, MOSFETs, IGBTs, …) have no temperature in their
 //! model, so their junction temperature is reported but changes nothing.
 
+use crate::element::{Bjt, Diode, Led, Photodiode, SchottkyDiode, Thermistor, ZenerDiode};
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -50,13 +51,13 @@ pub(crate) struct Heated {
 
 pub(crate) fn temperature_mut(element: &mut CircuitElement) -> Option<&mut f64> {
     match element {
-        CircuitElement::Diode { temperature, .. }
-        | CircuitElement::Led { temperature, .. }
-        | CircuitElement::ZenerDiode { temperature, .. }
-        | CircuitElement::SchottkyDiode { temperature, .. }
-        | CircuitElement::Photodiode { temperature, .. }
-        | CircuitElement::Bjt { temperature, .. }
-        | CircuitElement::Thermistor { temperature, .. } => Some(temperature),
+        CircuitElement::Diode(Diode { temperature, .. })
+        | CircuitElement::Led(Led { temperature, .. })
+        | CircuitElement::ZenerDiode(ZenerDiode { temperature, .. })
+        | CircuitElement::SchottkyDiode(SchottkyDiode { temperature, .. })
+        | CircuitElement::Photodiode(Photodiode { temperature, .. })
+        | CircuitElement::Bjt(Bjt { temperature, .. })
+        | CircuitElement::Thermistor(Thermistor { temperature, .. }) => Some(temperature),
         _ => None,
     }
 }
