@@ -3287,3 +3287,149 @@ fn a_net_named_0v_is_a_ground_not_a_supply() {
     let r = op(&netlist, &bench);
     assert!((r.current("r1").unwrap().abs() - 5e-3).abs() < 1e-12);
 }
+
+/// The divider, with r3 wired at one end only and u1 excluded from
+/// simulation (a black box across `out` and `gnd`).
+fn half_wired() -> Netlist {
+    let mut n = divider("1k", "1k");
+    n.components
+        .push(Component::new("r3", ComponentKind::Resistor).with_value("1k"));
+    n.components
+        .push(Component::new("u1", ComponentKind::BlackBox));
+    n.nets[1].pins.push(Pin::new("r3", "1"));
+    n.nets[1].pins.push(Pin::new("u1", "1"));
+    n.nets[2].pins.push(Pin::new("u1", "2"));
+    n
+}
+
+#[test]
+fn a_half_wired_part_is_refused_by_default() {
+    assert_eq!(
+        half_wired()
+            .to_circuit_with(&gnd_bench(), &ImportOptions::new())
+            .expect_err("refused"),
+        ImportError::Unconnected {
+            component: "r3".into(),
+            terminal: "2".into()
+        }
+    );
+}
+
+#[test]
+fn skip_leaves_a_half_wired_part_out_and_simulates_the_rest() {
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&half_wired(), &gnd_bench(), &options).expect("simulates");
+    let Simulation::OperatingPoint(r) = &out.result else {
+        panic!()
+    };
+    // r3 carries nothing, so the divider is undisturbed.
+    assert!((r.node_voltages["out"] - 0.5).abs() < 1e-9);
+    assert!(r.component_results.iter().all(|c| c.id != "r3"));
+
+    let imported = &out.circuit;
+    assert_eq!(
+        imported.skipped,
+        vec![SkippedPart {
+            component: "r3".into(),
+            unconnected: vec!["2".into()],
+        }]
+    );
+    assert_eq!(
+        imported.warnings,
+        vec![ImportWarning {
+            component: "r3".into(),
+            message: "left out of the simulation: terminal \"2\" on no net".into(),
+        }]
+    );
+    // The excluded part is a black box, reported as one.
+    assert_eq!(imported.black_boxes.len(), 1);
+    assert_eq!(imported.black_boxes[0].component, "u1");
+    assert!(imported.high_impedance.is_empty());
+}
+
+#[test]
+fn a_part_with_no_terminals_wired_is_skipped_too() {
+    let mut n = divider("1k", "1k");
+    n.components.push(Component::new("q1", ComponentKind::Npn));
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let imported = n.to_circuit_with(&gnd_bench(), &options).expect("builds");
+    assert_eq!(
+        imported.skipped,
+        vec![SkippedPart {
+            component: "q1".into(),
+            unconnected: vec!["base".into(), "collector".into(), "emitter".into()],
+        }]
+    );
+    assert!(imported.warnings[0]
+        .message
+        .contains("terminals \"base\", \"collector\", \"emitter\""));
+}
+
+#[test]
+fn a_skipped_part_leaves_its_net_to_the_high_impedance_tie() {
+    // r3 hangs off its own net `tap`, which only it reaches: skipped, the
+    // net would float, so it's tied as a black box's would be.
+    let mut n = divider("1k", "1k");
+    n.components
+        .push(Component::new("r3", ComponentKind::Resistor).with_value("1k"));
+    n.components.push(Component::new("q1", ComponentKind::Npn));
+    n.nets.push(Net::new("tap", [("q1", "base"), ("r3", "1")]));
+    n.nets[1].pins.push(Pin::new("r3", "2"));
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &gnd_bench(), &options).expect("simulates");
+    assert_eq!(out.circuit.skipped[0].component, "q1");
+    assert_eq!(out.circuit.high_impedance.len(), 1);
+    assert_eq!(out.circuit.high_impedance[0].node, "tap");
+}
+
+#[test]
+fn skip_leaves_out_a_half_wired_unit_and_keeps_the_other() {
+    let n = Netlist {
+        components: vec![
+            Component::new("r1", ComponentKind::Resistor).with_value("1k"),
+            Component::new("r2", ComponentKind::Resistor).with_value("1k"),
+            Component::new("u1", ComponentKind::DualOpAmp),
+        ],
+        nets: vec![
+            Net::new("in", [("r1", "1"), ("u1", "v+")]),
+            Net::new(
+                "mid",
+                [("r1", "2"), ("r2", "1"), ("u1", "a_in+"), ("u1", "b_in+")],
+            ),
+            Net::new("buf", [("u1", "a_in-"), ("u1", "a_out")]),
+            Net::new("gnd", [("r2", "2"), ("u1", "v-")]),
+        ],
+    };
+    let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "in", 10.0));
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &bench, &options).expect("simulates");
+    let Simulation::OperatingPoint(r) = &out.result else {
+        panic!()
+    };
+    assert!(
+        (r.node_voltages["buf"] - 5.0).abs() < 1e-3,
+        "{}",
+        r.node_voltages["buf"]
+    );
+    assert_eq!(
+        out.circuit.skipped,
+        vec![SkippedPart {
+            component: "u1.b".into(),
+            unconnected: vec!["in-".into(), "out".into()],
+        }]
+    );
+    assert!(r.component_results.iter().any(|c| c.id == "u1.a"));
+    assert!(r.component_results.iter().all(|c| c.id != "u1.b"));
+    assert!(n.to_circuit_with(&bench, &ImportOptions::new()).is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn the_unconnected_option_reads_from_json() {
+    let options: ImportOptions = serde_json::from_str(r#"{"unconnected":"skip"}"#).unwrap();
+    assert_eq!(options.unconnected, UnconnectedTerminals::Skip);
+    assert_eq!(
+        ImportOptions::new().unconnected,
+        UnconnectedTerminals::Error
+    );
+}

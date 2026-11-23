@@ -48,6 +48,20 @@
 //! [`HIGH_IMPEDANCE_OHMS`], the pin's leakage, so the rest of the circuit
 //! solves; each is listed in [`ImportedCircuit::high_impedance`].
 //!
+//! An editor's "exclude from simulation" attribute maps onto the same
+//! thing: send that part as a [`ComponentKind::BlackBox`], and its nets
+//! stay for the bench without an element.
+//!
+//! # Schematics still being drawn
+//!
+//! A required terminal on no net refuses the import with
+//! [`ImportError::Unconnected`]. A schematic being drawn always has loose
+//! ends, so [`UnconnectedTerminals::Skip`] leaves such a component out
+//! instead: it adds no element, its connected nets stay, an
+//! [`ImportWarning`] names it, and it is listed in
+//! [`ImportedCircuit::skipped`], so the finished part of the design still
+//! simulates.
+//!
 //! # Models from part data
 //!
 //! A part's model comes from its [`Component::model`], its value (an LED's
@@ -571,7 +585,7 @@ impl Model {
 /// `v-` (or `vcc`, `vee`, `positive supply` …), without a unit. A unit
 /// with none of its terminals connected (a spare half) adds no element;
 /// one connected in part is an [`ImportError::Unconnected`] as for a
-/// single op-amp.
+/// single op-amp (or skipped, under [`UnconnectedTerminals::Skip`]).
 ///
 /// Names besides the canonical ones: `resistor_iec`, `resistor_us`, `res`;
 /// `cap`, `capacitor_polarised`, `capacitor_electrolytic`, `electrolytic`;
@@ -1228,8 +1242,33 @@ pub enum UnknownKinds {
     BlackBox,
 }
 
+/// What to do with a component that has a required terminal on no net.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UnconnectedTerminals {
+    /// Refuse the import with [`ImportError::Unconnected`], naming the
+    /// first such terminal. The default, and what [`Netlist::to_circuit`]
+    /// does.
+    #[default]
+    Error,
+    /// Leave the component out: no element, its connected nets kept, an
+    /// [`ImportWarning`] naming it, and listed in
+    /// [`ImportedCircuit::skipped`]. For a schematic still being drawn.
+    Skip,
+}
+
+impl UnconnectedTerminals {
+    #[cfg(feature = "serde")]
+    fn is_error(&self) -> bool {
+        *self == Self::Error
+    }
+}
+
 /// How [`Netlist::to_circuit_with`] and [`simulate_with`] read a netlist:
-/// what to do with unknown kinds, and each component's terminal names.
+/// what to do with unknown kinds and unconnected terminals, and each
+/// component's terminal names.
 ///
 /// Built with [`new`](Self::new) and the `with_*` setters. The default
 /// reads a netlist as [`Netlist::to_circuit`] does.
@@ -1249,6 +1288,12 @@ pub enum UnknownKinds {
 pub struct ImportOptions {
     /// What to do with a component of a kind sindr doesn't know.
     pub unknown_kinds: UnknownKinds,
+    /// What to do with a component that has a required terminal on no net.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "UnconnectedTerminals::is_error")
+    )]
+    pub unconnected: UnconnectedTerminals,
     /// Terminal names by component id, then terminal id: the table a
     /// schematic tool keeps on each component (`"1"` is `"Base"`). A pin
     /// whose terminal has a name here is matched by that name, then by its
@@ -1269,6 +1314,12 @@ impl ImportOptions {
     /// Sets [`unknown_kinds`](Self::unknown_kinds).
     pub fn with_unknown_kinds(mut self, unknown_kinds: UnknownKinds) -> Self {
         self.unknown_kinds = unknown_kinds;
+        self
+    }
+
+    /// Sets [`unconnected`](Self::unconnected).
+    pub fn with_unconnected(mut self, unconnected: UnconnectedTerminals) -> Self {
+        self.unconnected = unconnected;
         self
     }
 
@@ -1303,6 +1354,18 @@ impl ImportOptions {
             _ => Ok(false),
         }
     }
+}
+
+/// A component left out under [`UnconnectedTerminals::Skip`] because a
+/// terminal its element needs is on no net.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SkippedPart {
+    /// The component's id, or a dual or quad unit's (`<id>.a`).
+    pub component: String,
+    /// The required terminals on no net, by canonical name, in terminal
+    /// order.
+    pub unconnected: Vec<String>,
 }
 
 /// A component imported as a black box: a [`ComponentKind::BlackBox`],
@@ -1432,6 +1495,10 @@ pub struct ImportedCircuit {
     /// ground through [`HIGH_IMPEDANCE_OHMS`] so the rest of the circuit
     /// solves. See [`HighImpedanceNet`].
     pub high_impedance: Vec<HighImpedanceNet>,
+    /// Components left out under [`UnconnectedTerminals::Skip`], in
+    /// netlist order. Like a black box, none of them is in
+    /// [`circuit`](Self::circuit).
+    pub skipped: Vec<SkippedPart>,
 }
 
 impl ImportedCircuit {
@@ -1626,7 +1693,45 @@ impl Netlist {
         };
         let mut models = BTreeMap::new();
         let mut warnings = Vec::new();
-        let mut record = |id: &str, built: &Built| {
+        let mut skipped = Vec::new();
+        // Under `Skip`, a component (or unit) with a required terminal on
+        // no net is listed and warned about; its connected pins are left
+        // to the high-impedance tie as a black box's are. `true` when it
+        // was skipped.
+        let mut skip = |id: &str,
+                        kind: &ComponentKind,
+                        connected: &dyn Fn(usize) -> bool,
+                        warnings: &mut Vec<ImportWarning>|
+         -> bool {
+            if options.unconnected != UnconnectedTerminals::Skip {
+                return false;
+            }
+            let unconnected = missing_terminals(kind, connected);
+            if unconnected.is_empty() {
+                return false;
+            }
+            let list = unconnected
+                .iter()
+                .map(|t| format!("\"{t}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            warnings.push(ImportWarning {
+                component: id.to_string(),
+                message: format!(
+                    "left out of the simulation: terminal{} {list} on no net",
+                    if unconnected.len() == 1 { "" } else { "s" }
+                ),
+            });
+            skipped.push(SkippedPart {
+                component: id.to_string(),
+                unconnected,
+            });
+            true
+        };
+        let record = |warnings: &mut Vec<ImportWarning>,
+                      models: &mut BTreeMap<String, ModelSource>,
+                      id: &str,
+                      built: &Built| {
             if let Some(source) = built.source {
                 models.entry(id.to_string()).or_insert(source);
             }
@@ -1669,8 +1774,15 @@ impl Netlist {
                     .map(|net| node(net))
             };
             let Some((unit_kind, count)) = component.kind.units() else {
+                let connected = |i: usize| nodes_of(i).is_some();
+                if skip(&component.id, &component.kind, &connected, &mut warnings) {
+                    for (n, pin) in pins_of(&component.id) {
+                        unsimulated.entry(n).or_default().push(pin);
+                    }
+                    continue;
+                }
                 let built = build_element(component, nodes_of, &supply)?;
-                record(&component.id, &built);
+                record(&mut warnings, &mut models, &component.id, &built);
                 if built.element.is_none() {
                     for (n, pin) in pins_of(&component.id) {
                         unsimulated.entry(n).or_default().push(pin);
@@ -1695,8 +1807,20 @@ impl Netlist {
                 if ids.contains(unit.id.as_str()) {
                     return Err(ImportError::DuplicateId { id: unit.id });
                 }
+                let connected = |i: usize| nodes_of(slot(i)).is_some();
+                if skip(&unit.id, &unit.kind, &connected, &mut warnings) {
+                    // The package's other pins may still serve the other
+                    // units; only this unit's own nets lose a pin.
+                    let own: Vec<String> = (0..3).filter_map(|i| nodes_of(slot(i))).collect();
+                    for (n, pin) in pins_of(&component.id) {
+                        if own.contains(&n) {
+                            unsimulated.entry(n).or_default().push(pin);
+                        }
+                    }
+                    continue;
+                }
                 let built = build_element(&unit, |i| nodes_of(slot(i)), &supply)?;
-                record(&component.id, &built);
+                record(&mut warnings, &mut models, &component.id, &built);
                 circuit.components.extend(built.element);
             }
         }
@@ -1725,6 +1849,7 @@ impl Netlist {
             models,
             warnings,
             high_impedance,
+            skipped,
         })
     }
 }
@@ -2005,6 +2130,23 @@ struct Built {
     element: Option<CircuitElement>,
     source: Option<ModelSource>,
     warnings: Vec<String>,
+}
+
+/// The canonical names of `kind`'s required terminals that aren't
+/// connected, in terminal order.
+fn missing_terminals(kind: &ComponentKind, connected: &dyn Fn(usize) -> bool) -> Vec<String> {
+    if kind.is_passive() {
+        return Vec::new();
+    }
+    let terminals = kind.terminals();
+    let required = terminals.len() - kind.optional_terminals();
+    terminals
+        .iter()
+        .enumerate()
+        .take(required)
+        .filter(|(i, _)| !connected(*i))
+        .map(|(_, names)| names[0].to_string())
+        .collect()
 }
 
 /// The element for `component`, or `None` for a passive one. `node(i)` is
