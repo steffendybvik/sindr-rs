@@ -1,5 +1,6 @@
 //! MNA solve cost against circuit size, dense and sparse: a resistor ladder
-//! and an RC mesh at 10 to 10 000 nodes. `DENSE_MAX` in `src/mna.rs` comes
+//! and an RC mesh at 10 to 10 000 nodes, closely spaced around the
+//! crossover. `DENSE_MAX` in `src/mna.rs` comes
 //! from where the two cross.
 //!
 //!     cargo bench -p sindr --features internals --bench mna_solve
@@ -56,13 +57,17 @@ fn bench(c: &mut Criterion) {
         (
             "ladder",
             ladder as fn(&mut MnaMatrix<f64>, usize),
-            [10, 100, 1_000, 10_000],
+            &[10, 20, 40, 60, 80, 100, 1_000, 10_000][..],
         ),
-        ("rc_mesh", rc_mesh, [9, 100, 1_024, 10_000]),
+        (
+            "rc_mesh",
+            rc_mesh,
+            &[9, 16, 36, 49, 64, 81, 100, 1_024, 10_000],
+        ),
     ] {
         let mut group = c.benchmark_group(name);
         group.sample_size(10);
-        for n in sizes {
+        for &n in sizes {
             let size = n + 1;
             let b = DVector::from_fn(size, |i, _| if i == size - 1 { 1.0 } else { 0.0 });
             // Dense stops at 1 000 nodes: 10 000 would be an 800 MB matrix.
