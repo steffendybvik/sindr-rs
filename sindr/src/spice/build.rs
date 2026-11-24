@@ -43,7 +43,9 @@ use crate::devices::mosfet::MosfetParams;
 use crate::{BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind, Waveform};
 use miette::NamedSource;
 
-use crate::spice::analysis::{AcStimulus, AcSweep, AnalysisRequest, MeasureRequest};
+use crate::spice::analysis::{
+    AcStimulus, AcSweep, AnalysisRequest, FourierRequest, MeasureRequest,
+};
 use crate::spice::ast::{
     AcSweepKind, NodeValueKind, ParamExpr, PolyControls, RawAnalysis, RawCrossing, RawElementBody,
     RawMeasure, RawMeasureKind, RawModel, RawWaveform, SourceKind,
@@ -174,6 +176,23 @@ pub(crate) fn build_netlist(
         .map(|(raw, span)| build_measure(raw, &top_scope).map_err(|e| e.locate(span)))
         .collect::<Result<Vec<_>, _>>()?;
 
+    let mut fourier = Vec::new();
+    for (f0, signals, span) in &flat.fours {
+        let f0 = eval_or_lift(f0, &top_scope).map_err(|e| e.locate(span))?;
+        if !(f0.is_finite() && f0 > 0.0) {
+            return Err(SpiceParseError::Syntax {
+                message: format!("`.four`: the fundamental must be a positive frequency, not {f0}"),
+                src: NamedSource::new("<build>", String::new()),
+                bad_span: (0, 0).into(),
+            }
+            .locate(span));
+        }
+        fourier.extend(signals.iter().map(|signal| FourierRequest {
+            signal: signal.clone(),
+            fourier: crate::fourier::Fourier::new(f0),
+        }));
+    }
+
     Ok(ParsedNetlist {
         circuit,
         analyses,
@@ -181,6 +200,7 @@ pub(crate) fn build_netlist(
         nodesets,
         options,
         measurements,
+        fourier,
         ac_stimuli,
         warnings: warnings.clone(),
         source_map: flat.source_map,

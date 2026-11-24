@@ -335,7 +335,7 @@ struct Probe<'a> {
     circuit: &'a Circuit,
     node_map: &'a NodeMap,
     dc_solution: &'a nalgebra::DVector<f64>,
-    ss_models: &'a [SmallSignalModel],
+    ss_models: &'a SmallSignalModel,
     id: &'a str,
     /// Row of the probe's driven terminal, `nodes[0]`.
     driven: Option<usize>,

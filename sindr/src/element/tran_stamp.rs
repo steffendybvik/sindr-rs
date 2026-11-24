@@ -2,10 +2,9 @@
 
 use nalgebra::DVector;
 
-use crate::circuit::Circuit;
 use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
-use crate::node_map::{FastMap, NodeMap, Terminals};
+use crate::node_map::{FastMap, NodeMap, Sensed, Terminals};
 
 use super::layout::Layout;
 use super::DcStamp;
@@ -29,12 +28,7 @@ pub(crate) struct TranStamp<'a> {
     pub(crate) t: f64,
     /// The step's integration formula.
     pub(crate) integ: &'a Integrator,
-    /// For the nets an element reads without connecting to them: a
-    /// controlled source's control pair, the nodes an expression reads, the
-    /// circuit's ground.
-    pub(crate) node_map: &'a NodeMap,
-    /// The circuit being stamped.
-    pub(crate) circuit: &'a Circuit,
+    node_map: &'a NodeMap,
     k: usize,
     terminals: &'a Terminals,
     layout: &'a Layout,
@@ -51,7 +45,6 @@ impl<'a> TranStamp<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         system: &'a mut MnaSystem,
-        circuit: &'a Circuit,
         node_map: &'a NodeMap,
         layout: &'a Layout,
         terminals: &'a Terminals,
@@ -70,7 +63,6 @@ impl<'a> TranStamp<'a> {
             t,
             integ,
             node_map,
-            circuit,
             k,
             terminals,
             layout,
@@ -85,6 +77,12 @@ impl<'a> TranStamp<'a> {
     pub(crate) fn nodes<const N: usize>(&self) -> [Option<usize>; N] {
         let terminals = self.terminals.of(self.k);
         std::array::from_fn(|i| terminals[i])
+    }
+
+    /// What the element reads without connecting to, in
+    /// [`Device::sensed`](super::Device::sensed) order.
+    pub(crate) fn sensed(&self) -> &'a [Sensed] {
+        self.terminals.sensed(self.k)
     }
 
     /// The voltage at matrix index `node` in the iterate (0 V for ground).
@@ -117,7 +115,6 @@ impl<'a> TranStamp<'a> {
     pub(crate) fn dc(&mut self) -> DcStamp<'_> {
         DcStamp::new(
             self.system,
-            self.circuit,
             self.node_map,
             self.layout,
             self.terminals,

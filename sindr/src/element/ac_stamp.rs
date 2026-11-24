@@ -7,7 +7,7 @@ use num_complex::Complex64;
 
 use crate::circuit::Circuit;
 use crate::mna::MnaMatrix;
-use crate::node_map::{NodeMap, Terminals};
+use crate::node_map::{NodeMap, Sensed, Terminals};
 
 use super::layout::Layout;
 
@@ -85,6 +85,7 @@ pub(crate) struct AcStamp<'a> {
     /// The circuit being stamped.
     pub(crate) circuit: &'a Circuit,
     terminals: &'a [Option<usize>],
+    sensed: &'a [Sensed],
     layout: &'a Layout,
     next_aux: &'a mut usize,
     vsource_branches: &'a mut HashMap<String, usize>,
@@ -117,6 +118,7 @@ impl<'a> AcStamp<'a> {
             node_map,
             circuit,
             terminals: terminals.of(k),
+            sensed: terminals.sensed(k),
             layout,
             next_aux,
             vsource_branches,
@@ -127,6 +129,12 @@ impl<'a> AcStamp<'a> {
     /// order (`None` is ground).
     pub(crate) fn nodes<const N: usize>(&self) -> [Option<usize>; N] {
         std::array::from_fn(|i| self.terminals[i])
+    }
+
+    /// What the element reads without connecting to, in
+    /// [`Device::sensed`](super::Device::sensed) order.
+    pub(crate) fn sensed(&self) -> &'a [Sensed] {
+        self.sensed
     }
 
     /// The bias voltage at matrix index `node` (0 V for ground).
