@@ -87,6 +87,7 @@ impl RegulatorParams {
 
 /// Which part of its characteristic a regulator is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegulatorRegion {
     /// Holding its set voltage (less line and load regulation).
     Regulating,

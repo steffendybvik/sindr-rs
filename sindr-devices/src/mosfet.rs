@@ -41,7 +41,9 @@ impl MosfetKind {
 /// Operating region of a MOSFET.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum MosfetRegion {
     /// Below threshold — channel off, negligible drain current.
     Cutoff,
@@ -59,6 +61,12 @@ impl MosfetRegion {
             MosfetRegion::Triode => "triode",
             MosfetRegion::Saturation => "saturation",
         }
+    }
+}
+
+impl std::fmt::Display for MosfetRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

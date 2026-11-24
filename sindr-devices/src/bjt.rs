@@ -26,7 +26,9 @@ pub enum BjtKind {
 /// classification (amplifier biased "active", switch in "saturation", …).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum BjtRegion {
     /// Both junctions reverse-biased — negligible currents.
     Cutoff,
@@ -44,6 +46,12 @@ impl BjtRegion {
             BjtRegion::Active => "active",
             BjtRegion::Saturation => "saturation",
         }
+    }
+}
+
+impl std::fmt::Display for BjtRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

@@ -556,12 +556,23 @@ mod tests {
 
     #[test]
     fn bjt_examples_sit_in_their_intended_regions() {
+        use crate::BjtRegion;
         let region = |circuit: Circuit| {
             let result = solve_circuit(&circuit).unwrap();
-            result.bjt("Q1").unwrap().region.clone()
+            result.bjt("Q1").unwrap().region
         };
-        assert_eq!(region(npn_common_emitter()), "active");
-        assert_eq!(region(npn_switch()), "saturation");
+        assert_eq!(region(npn_common_emitter()), BjtRegion::Active);
+        assert_eq!(region(npn_switch()), BjtRegion::Saturation);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn regions_serialise_as_the_strings_they_replaced() {
+        use crate::{BjtRegion, MosfetRegion};
+        assert_eq!(serde_json::to_string(&BjtRegion::Active).unwrap(), "\"active\"");
+        assert_eq!(serde_json::to_string(&MosfetRegion::Triode).unwrap(), "\"triode\"");
+        let back: BjtRegion = serde_json::from_str("\"saturation\"").unwrap();
+        assert_eq!(back, BjtRegion::Saturation);
     }
 
     #[test]

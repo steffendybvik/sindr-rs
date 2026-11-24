@@ -478,12 +478,12 @@ pub struct ComponentResult {
 pub struct BjtResult {
     pub id: String, pub vbe: f64, pub vce: f64,
     pub ib: f64, pub ic: f64, pub ie: f64,
-    pub power: f64, pub region: String, // "active" | "saturation" | "cutoff"
+    pub power: f64, pub region: BjtRegion, // Active | Saturation | Cutoff
 }
 
 pub struct MosfetResult {
     pub id: String, pub vgs: f64, pub vds: f64,
-    pub id_current: f64, pub power: f64, pub region: String, // "cutoff" | "triode" | "saturation"
+    pub id_current: f64, pub power: f64, pub region: MosfetRegion, // Cutoff | Triode | Saturation
 }
 ```
 

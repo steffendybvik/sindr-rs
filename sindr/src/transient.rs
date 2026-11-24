@@ -914,7 +914,7 @@ fn extract_bjt_results_from_snapshot(
                 ic,
                 ie,
                 power,
-                region: region.as_str().to_string(),
+                region,
             });
         }
     }
@@ -970,7 +970,7 @@ fn extract_mosfet_results_from_snapshot(
                 vds: vds_phys,
                 id_current,
                 power,
-                region: comp.region.as_str().to_string(),
+                region: comp.region,
             });
         }
     }
