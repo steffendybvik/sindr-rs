@@ -269,6 +269,13 @@ impl Waveform {
     /// [`MAX_BREAKPOINTS`].
     #[doc(hidden)]
     pub fn capped_breakpoints(&self, t_end: f64) -> (Vec<f64>, bool) {
+        self.breakpoints_between(0.0, t_end)
+    }
+
+    /// [`Self::capped_breakpoints`] in `(t_from, t_end)` only, without
+    /// walking the periods before `t_from`: a transient session asks for
+    /// one window at a time.
+    pub(crate) fn breakpoints_between(&self, t_from: f64, t_end: f64) -> (Vec<f64>, bool) {
         let mut out = Vec::new();
         let mut capped = false;
         // Corners at `start + k·period + offset` for each offset, k ≥ 0.
@@ -277,7 +284,9 @@ impl Waveform {
                 out.extend(offsets.iter().map(|o| start + o));
                 return;
             }
-            let mut k = 0.0;
+            // The period before the one `t_from` falls in: its last
+            // offsets can still land past `t_from`.
+            let mut k = ((t_from - start) / period).floor().max(1.0) - 1.0;
             while start + k * period < t_end {
                 if out.len() >= MAX_BREAKPOINTS {
                     capped = true;
@@ -311,7 +320,7 @@ impl Waveform {
             }
             Waveform::Pwl { points } => out.extend(points.iter().map(|p| p.0)),
         }
-        out.retain(|t| *t > 0.0 && *t < t_end && t.is_finite());
+        out.retain(|t| *t > t_from.max(0.0) && *t < t_end && t.is_finite());
         out.sort_by(f64::total_cmp);
         out.dedup();
         capped |= out.len() > MAX_BREAKPOINTS;

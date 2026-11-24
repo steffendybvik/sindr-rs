@@ -543,6 +543,31 @@ let result = solve_transient_with_progress(&circuit, &TransientConfig::new(1.0, 
 });
 ```
 
+### Transient sessions
+
+`solve_transient` runs to `tstop` in one call. A `TransientSession` holds the run open, for a circuit paired with something outside it: firmware on an emulated microcontroller, a user turning a knob, a sensor whose surroundings change. It follows FMI 3.0 co-simulation: `advance_to(t)` integrates to `t` (FMI's `doStep`), `set_source(id, value)` and `set_param(id, Param::…)` change an input at the time reached, and `run_until(t_max, &[Event])` stops early at the first event, located to its tolerance.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+let mut sim = TransientSession::new(&circuit, &TransientConfig::new(10.0, 100e-6))?;
+sim.keep_steps(false); // read voltages, don't build up 10 s of snapshots
+for k in 1..=10_000 {
+    sim.advance_to(k as f64 * 1e-3)?;                 // one firmware tick
+    let adc = sim.voltage("adc0").unwrap();
+    sim.set_source("D13", if adc > 2.5 { 5.0 } else { 0.0 })?;
+}
+let hit = sim.run_until(10.0, &[Event::crosses("int0", 2.5, Edge::Rising)])?;
+# Ok::<(), SimError>(())
+```
+
+- **A change is a breakpoint.** The step that reached the time saw the old value, the next sees the new, and the integration restarts there with a short backward-Euler step, as at a waveform's corner. Writing a value a source already has changes nothing.
+- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, and the temperature of a thermistor or a junction device that isn't self-heated.
+- **Events** are a node crossing a level (`Edge::Rising`, `Falling`, `Either`). The session steps back and re-steps until the crossing is inside the event's tolerance (`Event::within`, default 10⁻⁴ of `tstep`), and stops just after it with the node past the level. Steps tried and undone along the way aren't kept.
+- **State survives between calls:** the flat circuit, node map, matrix layout and histories are set up once. Each step still assembles and factors its matrix.
+- **Results stream:** `drain_steps()` takes the steps kept since the last call; `voltage(node)` reads the solution directly, and `current(id)` and `last_step()` the latest step. `advance_to_with_progress` takes the same hook as `solve_transient_with_progress`, and a cancelled session carries on from where it stopped. No threads are needed, so it runs as is in `wasm32`.
+- The session ends at the config's `tstop` and records from its `tstart`. After an error other than `Cancelled` it refuses to go on.
+
 ### Which engine produced a result
 
 `sindr::VERSION` (and `sindr::devices::VERSION`) is the crate's version as a string, such as `"0.3.0"`. Store it with saved results, so a rerun can tell a change in the design from a change in the engine.
@@ -1031,7 +1056,7 @@ Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple
 | DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
 | Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
 
-A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. A transient session a microcontroller drives for 10 s, writing a pin and reading the filtered output every millisecond (10 000 updates, 130 000 steps at a 100 µs `tstep`), takes 73 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
 
 Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
 
@@ -1044,6 +1069,7 @@ The same solves built for `wasm32-unknown-unknown` (release) take 1.3–1.8× as
 | Operating point, 50 resistors and 50 diodes | 0.30 ms | 0.55 ms | 1.8× | 0.54 ms | 1.8× |
 | Transient, the rectifier over 5 000 steps | 5.3 ms | 8.5 ms | 1.6× | 9.5 ms | 1.8× |
 | AC, 100 RC stages at 100 frequencies | 5.1 ms | 6.4 ms | 1.3× | 6.4 ms | 1.3× |
+| Transient session, a pin written every 1 ms for 10 s (130 000 steps) | 73 ms | — | — | 134 ms | 1.8× |
 
 `sindr/tests/wasm_speed.rs` times them; its header has the commands for native, Node and a browser.
 

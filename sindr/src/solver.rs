@@ -242,6 +242,21 @@ impl Solver {
         )
     }
 
+    /// As [`TransientSession::new`](crate::TransientSession::new).
+    ///
+    /// # Errors
+    ///
+    /// As [`TransientSession::new`](crate::TransientSession::new), and
+    /// [`SolverOptions::validate`].
+    pub fn transient_session(
+        &self,
+        circuit: &Circuit,
+        config: &TransientConfig,
+    ) -> Result<crate::TransientSession, SimError> {
+        self.options.validate()?;
+        crate::TransientSession::with_options(circuit, config, &self.options)
+    }
+
     /// As [`solve_ac`](crate::solve_ac).
     ///
     /// # Errors

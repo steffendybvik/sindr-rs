@@ -15,7 +15,7 @@
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::spice::parse_str;
-use sindr::{solve_circuit, solve_transient, Circuit, TransientConfig};
+use sindr::{solve_circuit, solve_transient, Circuit, TransientConfig, TransientSession};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::wasm_bindgen_test as test_case;
@@ -128,5 +128,28 @@ fn speed() {
     assert_eq!(solve_ac(&rc, &ac).unwrap().points.len(), 100);
     time("ac/rc_ladder_100_stages_100_points", || {
         solve_ac(&rc, &ac).unwrap();
+    });
+
+    // A pin a microcontroller writes every millisecond for 10 s, into
+    // 1 kΩ and 1 µF, its output read back each time: 10 000 updates.
+    let pin = circuit("pin rc\nVPIN pin 0 0\nR1 pin out 1k\nC1 out 0 1u\n.end\n");
+    let source = pin.components[0].id().to_string();
+    let config = TransientConfig::new(10.0, 100e-6);
+    let session = || {
+        let mut sim = TransientSession::new(&pin, &config).unwrap();
+        sim.keep_steps(false);
+        let mut adc = 0.0;
+        for k in 1..=10_000u32 {
+            sim.advance_to(f64::from(k) * 1e-3).unwrap();
+            adc += sim.voltage("out").unwrap();
+            let level = if (k / 2) % 2 == 0 { 5.0 } else { 0.0 };
+            sim.set_source(&source, level).unwrap();
+        }
+        adc
+    };
+    // High half the time: the output averages about half the rail.
+    assert!((session() / 10_000.0 - 2.5).abs() < 0.2);
+    time("session/10s_1khz_updates", || {
+        session();
     });
 }

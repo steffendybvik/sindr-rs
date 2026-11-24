@@ -54,6 +54,13 @@ through `ParsedNetlist::transient_config()`, so these check the deck's
 semantics (operating point or `UIC`, `.ic`, `tstart`) and not only the
 solver.
 
+### A deck driven from outside
+
+`tran_session_square` is an RC driven by a `PULSE` square in the deck. sindr
+drops the waveform and runs a `TransientSession` instead, setting the
+source to each level at each millisecond as firmware would set a pin, and
+checks that against ngspice's run of the pulse.
+
 ### Decks written by `to_netlist`
 
 `op_exported_controlled` and `ac_exported_transformer` build their circuit in
