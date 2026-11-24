@@ -88,6 +88,7 @@
 //! | Monte Carlo and corners | [`variation::monte_carlo`], [`variation::corners`] | Any analysis repeated with parts drawn within their tolerances (uniform or Gaussian, seeded) or at every low/high corner; each [`measure::Measurement`] per run, with mean, standard deviation, min, max and yield; specs and ratings at their worst run, with the condition behind it ([`variation::ratings_over`]) |
 //! | Ratings check | [`check_ratings`] | Each part against its absolute maximum [`Ratings`], at the operating point or every transient step. Missing ratings report unverified |
 //! | Measurements and specs (`.meas`) | [`check_specs`] | [`Measurement`]s (value at x, min/max/avg/RMS, crossings, delay, rise/fall, settling, −3 dB) on any result; [`Spec`] limits give pass/fail and margin |
+//! | Fourier (`.four`) and FFT | [`Fourier`], [`Fft`] | Harmonics and THD of a transient signal at a fundamental, as ngspice's `.four` (last period, 200-point linear resample); a windowed (Hann, Hamming, Blackman, flat-top or none) radix-2 FFT of a uniform resample, scaled to peak amplitude |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 //!
 //! Not available: distortion, pole-zero,
@@ -319,6 +320,7 @@ pub mod design;
 mod device_params;
 pub mod element;
 pub mod error;
+pub mod fourier;
 pub mod import;
 mod integration;
 pub mod loop_gain;
@@ -362,6 +364,7 @@ pub use circuit::{
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepAxis, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::{SimError, SolvePoint};
+pub use fourier::{Fft, Fourier, FourierResult, Harmonic, Spectrum, SpectrumBin, Window};
 pub use loop_gain::{solve_loop_gain, LoopGainConfig, LoopGainPoint, LoopGainResult};
 pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
 pub use noise::{solve_noise, NoiseConfig, NoiseResult};

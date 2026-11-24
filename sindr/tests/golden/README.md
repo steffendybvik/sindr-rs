@@ -121,6 +121,12 @@ where it holds up:
   `tran_bjt_switch`'s collector is checked to 3 %: in the active region
   ic = IS·exp(vbe/Vt) turns the base's 0.4 mV error into about 2.7 % of ic
   on an edge that falls 5 V in 3 µs. The base itself is held to 0.1 %.
+- **Fourier (`.four`):** the golden is ngspice's waveform; ngspice's
+  `fourier` table, printed when the `.ctl` runs, is copied into the test.
+  `Fourier` on ngspice's own waveform matches that table to 1e-5 relative
+  in magnitude and 1e-3° in phase, which pins the algorithm. On sindr's
+  waveform each harmonic is held to 0.1 % of the fundamental and the THD
+  to 0.05 points (sindr reads 29.067 % against ngspice's 29.034 %).
 - **Sensitivity:** 1e-6 relative for elements and controlled sources,
   DC and AC (each part of an AC phasor to 1e-6 of its magnitude); 1e-5 for
   device-model parameters against ngspice's central differences.
@@ -137,6 +143,7 @@ where it holds up:
 | Diode charge | `cv_1n4148`, `cv_1n5819`: sindr's AC admittance at each bias of an ngspice sweep, against ngspice's `gd` and `cd` behind the card's RS |
 | AC | `ac_rc_lowpass`, `ac_partial_decade` (`.ac dec` over 1.7 decades: ngspice's 17-point grid), `ac_rlc_bandpass`, `ac_bjt_ce`, `ac_bjt_caps` (Cbe, Cbc), `ac_diode` (1N4148 with its charge), `ac_mosfet_cs` (Cgs, Cgd), `ac_jfet`, `ac_jfet_caps` (CGS, CGD as graded junctions, from the `NJF` card), `ac_exported_transformer`, `ac_exported_crystal` (through both resonances), `ac_exported_ferrite_bead` (past its self-resonance) |
 | Transient | `tran_rc_step`, `tran_rl_step`, `tran_op_start` (operating-point start), `tran_ic_op` and `tran_ic_uic` (`.ic` without and with `UIC`), `tran_tstart`, `tran_halfwave` (sine into a diode and filter cap), `tran_bjt_switch` (pulse through an RC into an NPN; collector to 3 %, see below), `tran_rlc_ring`, `tran_flasher` (a two-transistor LED flasher from rest: its period and the on LED's current, since each edge is a jump a fraction of a millisecond either way), `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
+| Fourier | `four_diode_clipper` (2 V sine through 1 kΩ into antiparallel diodes: odd harmonics to the 9th and a THD of 29 %) |
 | Noise | `noise_rc_lowpass`, `noise_rc_total`, `noise_bjt_ce`, `noise_partial_decade` (`.noise dec` over 1.7 decades, which stops short of fstop) |
 | Pole-zero | `pz_rlc_vol` (`.pz … vol pz`: a complex pole pair and a complex zero pair), `pz_ladder_cur` (`.pz … cur pz`: three poles and a zero at DC). ngspice writes nine significant digits, so roots are held to 1e-8 relative, and to 1e-8 of the largest root absolute (sindr's zero at DC comes out at round-off) |
 | Temperature | `temp_diode` |

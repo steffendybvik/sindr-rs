@@ -1598,6 +1598,71 @@ fn tran_halfwave() {
     check_deck_tran("tran_halfwave", &["v(b)", "i(v1)"]);
 }
 
+/// `.four` on a sine clipped by antiparallel diodes, against ngspice's
+/// `fourier 1k v(out)` on the same run (THD 29.0343 %, 200-point grid,
+/// linear interpolation, one period). Two checks: `Fourier` on ngspice's
+/// own waveform reproduces ngspice's table, which pins the algorithm; and
+/// `Fourier` on sindr's waveform agrees with it, which pins the solve.
+/// The golden is the waveform; ngspice prints the table it's checked
+/// against when the `.ctl` is run, and it is copied in here.
+#[test]
+fn four_diode_clipper() {
+    use sindr::fourier::Fourier;
+    use sindr::measure::Signal;
+
+    let case = "four_diode_clipper";
+    // (harmonic, magnitude, phase in degrees) from ngspice 47.
+    let ngspice = [
+        (1, 0.814221, 0.000163373),
+        (3, 0.214814, 0.000766763),
+        (5, 0.0907753, 0.00218746),
+        (7, 0.0372933, 0.0055055),
+        (9, 0.0105286, 0.0137194),
+    ];
+    let golden = Golden::load(case);
+    let trace: Vec<(f64, f64)> = golden
+        .column("time")
+        .into_iter()
+        .zip(golden.column("v(out)"))
+        .collect();
+    let four = Fourier::new(1e3);
+
+    let from_ngspice = four.of(&trace).unwrap();
+    assert!(
+        (from_ngspice.thd_percent - 29.0343).abs() < 1e-3,
+        "{case}: THD of ngspice's waveform {} %",
+        from_ngspice.thd_percent
+    );
+    for (k, mag, phase) in ngspice {
+        let h = from_ngspice.harmonic(k).unwrap();
+        assert!(
+            (h.magnitude - mag).abs() < 1e-5 * mag.max(0.01),
+            "{case}: {h:?}"
+        );
+        assert!((h.phase - phase).abs() < 1e-3, "{case}: {h:?}");
+    }
+    for k in [2, 4, 6, 8] {
+        assert!(from_ngspice.harmonic(k).unwrap().magnitude < 1e-6);
+    }
+
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    let config = netlist.transient_config().expect(".tran in the deck");
+    let result =
+        sindr::solve_transient(&netlist.circuit, &config).unwrap_or_else(|e| panic!("{case}: {e}"));
+    // sindr reads 29.067 %: the clipped peaks differ by a fraction of a mV.
+    let from_sindr = four.on(&result, &Signal::v("out")).unwrap();
+    assert!(
+        (from_sindr.thd_percent - 29.0343).abs() < 0.05,
+        "{case}: THD of sindr's waveform {} %",
+        from_sindr.thd_percent
+    );
+    for (k, mag, _) in ngspice {
+        let h = from_sindr.harmonic(k).unwrap();
+        // 0.1 % of the fundamental, the transient goldens' full-scale bound.
+        assert!((h.magnitude - mag).abs() < 1e-3 * 0.814221, "{case}: {h:?}");
+    }
+}
+
 /// The base RC is checked to 0.1 % of full scale. The collector edge is
 /// looser: in the active region ic = IS·exp(vbe/Vt), so the base's error
 /// (0.4 mV here) comes out about vbe/Vt ≈ 27 times larger in ic, and the

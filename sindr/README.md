@@ -881,6 +881,29 @@ assert!(report.passed()); // every spec passed and every part is within its rati
 
 A measurement that can't be taken (an unknown node, a level never crossed, a phase on a transient) is `SpecStatus::Unmeasured` with a reason, never a pass; `Measurement::on` returns it as `SimError::Measurement`. Average and RMS are weighted by step width, so the transient's uneven steps don't skew them. With the `spice` feature, `.meas tran|ac|dc` cards land in `ParsedNetlist::measurements`, each with the analysis it measures.
 
+## Fourier analysis and FFT
+
+`sindr::fourier` takes the spectrum of a transient signal. `Fourier` is SPICE's `.four`: the harmonics of the last period at a fundamental, each with its magnitude and phase, and the THD, computed as ngspice computes them (a 200-point linear resample of the last period). `Fft` resamples a span onto a power of two of points, applies a window and returns one-sided bins scaled to peak amplitude, so a bin-centred sine reads its own amplitude.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+use sindr::fourier::{Fft, Fourier, Window};
+use sindr::measure::Signal;
+
+let result = solve_transient(&circuit, &TransientConfig::new(5e-3, 5e-6))?;
+let four = Fourier::new(1e3).on(&result, &Signal::v("out"))?;
+println!("THD {:.2} %, 3rd harmonic {:.3} V", four.thd_percent, four.harmonic(3).unwrap().magnitude);
+
+let spectrum = Fft::new().window(Window::Hann).span(1e-3, 5e-3).on(&result, &Signal::v("out"))?;
+for bin in spectrum.bins.iter().filter(|b| b.magnitude > 1e-3) {
+    println!("{:>8.0} Hz  {:.4} V", bin.frequency, bin.magnitude);
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The run should have settled by the span analysed: a start-up transient leaks into every bin. `Fourier::of` and `Fft::of` take a `(time, value)` trace you already have. A bin-centred tone stays within `Window::half_width` bins of its own (0 for rectangular, 1 for Hann and Hamming, 2 for Blackman, 4 for flat-top); see the module docs for the windows' coefficients.
+
 ## Importing a schematic netlist
 
 `sindr::import` is for editors: map your netlist onto it and simulate a schematic without writing a SPICE deck. A `Netlist` holds components (your id, a `ComponentKind`, a value as a number or text, named parameters, an optional model and `Part`) and nets (your id, an optional display name, and the `(component, terminal)` pins on it). A `Bench` adds what the schematic leaves out: the ground net, sources and loads attached to nets or terminals (a connector pin, a test point), nets to tie together (an analog ground to ground), and the analysis to run.
