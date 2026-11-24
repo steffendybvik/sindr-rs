@@ -508,8 +508,11 @@ pub enum Model {
 ///
 /// A component of any kind with this model is placed as an instance of the
 /// subcircuit under the component's id, so its internal nodes are
-/// `<id>.<node>` in a result. Its terminals are read like a black box's:
-/// any name, through [`ImportOptions::terminal_names`] when given.
+/// `<id>.<node>` in a result. Only the model's ground and its own
+/// `.global` nets join the circuit's: a node named like the circuit's
+/// ground net or another model's global stays the model's own, as
+/// `<id>.<node>_local`. Its terminals are read like a black box's: any
+/// name, through [`ImportOptions::terminal_names`] when given.
 ///
 /// ```
 /// use sindr::import::{
@@ -1882,6 +1885,8 @@ impl Netlist {
                 }
             }
         };
+        #[cfg(feature = "spice")]
+        let mut placed_models: Vec<subckt::Placed> = Vec::new();
         for component in &self.components {
             if let Some(part) = &component.part {
                 circuit.parts.insert(component.id.clone(), part.clone());
@@ -1897,8 +1902,7 @@ impl Netlist {
                             Slot::Index(_) => None,
                         })
                         .collect();
-                    let ground = circuit.ground_node.clone();
-                    let placed = subckt::place(component, model, &terminals, &ground, options)?;
+                    let mut placed = subckt::place(component, model, &terminals, options)?;
                     if !placed.unconnected.is_empty() {
                         if skip(&component.id, placed.unconnected.clone(), &mut warnings) {
                             for (n, pin) in pins_of(&component.id) {
@@ -1911,17 +1915,15 @@ impl Netlist {
                             terminal: placed.unconnected[0].clone(),
                         });
                     }
-                    for (name, block) in placed.blocks {
-                        circuit.blocks.insert(name, block);
-                    }
-                    circuit.instances.push(placed.instance);
-                    for global in placed.globals {
-                        if !circuit.globals.contains(&global) {
-                            circuit.globals.push(global);
+                    for global in &placed.globals {
+                        if !circuit.globals.contains(global) {
+                            circuit.globals.push(global.clone());
                         }
                     }
-                    warnings.extend(placed.warnings);
+                    warnings.extend(std::mem::take(&mut placed.warnings));
                     models.insert(component.id.clone(), ModelSource::Model);
+                    // Bound once every model's globals are known.
+                    placed_models.push(placed);
                     continue;
                 }
                 let terminals = pin_net
@@ -1999,6 +2001,13 @@ impl Netlist {
                 record(&mut warnings, &mut models, &component.id, &built);
                 circuit.components.extend(built.element);
             }
+        }
+
+        #[cfg(feature = "spice")]
+        for placed in placed_models {
+            let (blocks, instance) = placed.bind(&circuit.ground_node, &circuit.globals);
+            circuit.blocks.extend(blocks);
+            circuit.instances.push(instance);
         }
 
         for source in &bench.sources {

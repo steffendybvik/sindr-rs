@@ -5152,8 +5152,11 @@ pub enum Model {
 ///
 /// A component of any kind with this model is placed as an instance of the
 /// subcircuit under the component's id, so its internal nodes are
-/// `<id>.<node>` in a result. Its terminals are read like a black box's:
-/// any name, through [`ImportOptions::terminal_names`] when given.
+/// `<id>.<node>` in a result. Only the model's ground and its own
+/// `.global` nets join the circuit's: a node named like the circuit's
+/// ground net or another model's global stays the model's own, as
+/// `<id>.<node>_local`. Its terminals are read like a black box's: any
+/// name, through [`ImportOptions::terminal_names`] when given.
 ///
 /// ```
 /// use sindr::import::{

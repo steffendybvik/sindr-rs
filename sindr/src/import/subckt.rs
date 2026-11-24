@@ -1,7 +1,7 @@
 //! A SPICE subcircuit as a part's model: parse the model text, pick the
 //! `.subckt`, and bind the component's terminals to its ports.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{normalise, Component, ImportError, ImportOptions, ImportWarning, SubcktModel};
 use crate::design::{Block, Instance};
@@ -10,10 +10,11 @@ use crate::spice::{parse_str_with_options, ParseOptions};
 /// A component placed as an instance of its subcircuit model.
 pub(super) struct Placed {
     /// The model's blocks, renamed under the component's id so two models
-    /// with the same `.subckt` names don't collide.
-    pub blocks: BTreeMap<String, Block>,
+    /// with the same `.subckt` names don't collide. Their nets are still
+    /// the model's own: [`Placed::bind`] binds them into the circuit.
+    blocks: BTreeMap<String, Block>,
     /// The instance, under the component's id.
-    pub instance: Instance,
+    instance: Instance,
     /// The model's `.global` nets.
     pub globals: Vec<String>,
     /// Parse warnings and terminals the pin map leaves out.
@@ -21,16 +22,16 @@ pub(super) struct Placed {
     /// Mapped terminals on no net, by the pin map's names. When any are,
     /// nothing else is filled in.
     pub unconnected: Vec<String>,
+    /// The model's ground net, which [`Placed::bind`] makes the circuit's.
+    model_ground: String,
 }
 
 /// Places `component` as an instance of `model`. `terminals` is the node
-/// of each of the component's connected terminals, by terminal id;
-/// `ground` the circuit's ground node, which the model's ground becomes.
+/// of each of the component's connected terminals, by terminal id.
 pub(super) fn place(
     component: &Component,
     model: &SubcktModel,
     terminals: &BTreeMap<String, String>,
-    ground: &str,
     options: &ImportOptions,
 ) -> Result<Placed, ImportError> {
     let id = &component.id;
@@ -147,6 +148,7 @@ pub(super) fn place(
             globals,
             warnings,
             unconnected,
+            model_ground,
         });
     }
     for terminal in terminals.keys().filter(|t| !used.contains(t)) {
@@ -169,35 +171,11 @@ pub(super) fn place(
     }
 
     let rename = |name: &str| format!("{id}:{name}");
-    let to_ground = |node: &mut String| {
-        if *node == model_ground {
-            *node = ground.to_string();
-        }
-    };
     let blocks = blocks
         .into_iter()
         .map(|(name, mut block)| {
-            for element in &mut block.components {
-                element.nodes_mut().iter_mut().for_each(to_ground);
-                if let Some(control) = element.control_nodes_mut() {
-                    control.iter_mut().for_each(to_ground);
-                }
-                if let Some(expr) = element.expression_mut() {
-                    expr.rename(
-                        |net| {
-                            if net == model_ground {
-                                ground.to_string()
-                            } else {
-                                net.to_string()
-                            }
-                        },
-                        |source| source.to_string(),
-                    );
-                }
-            }
             for instance in &mut block.instances {
                 instance.block = rename(&instance.block);
-                instance.nodes.iter_mut().for_each(to_ground);
             }
             (rename(&name), block)
         })
@@ -208,7 +186,93 @@ pub(super) fn place(
         globals,
         warnings,
         unconnected,
+        model_ground,
     })
+}
+
+impl Placed {
+    /// The model's blocks and the instance, bound into a circuit whose
+    /// ground is `ground` and whose globals are `globals`: the model's
+    /// ground becomes `ground`, and any other net of the model named like
+    /// `ground` or a global the model doesn't declare itself is renamed, so
+    /// flattening keeps it the model's own rather than joining it to that
+    /// net. Ports bind by position, so renaming one changes nothing outside.
+    pub(super) fn bind(
+        mut self,
+        ground: &str,
+        globals: &[String],
+    ) -> (BTreeMap<String, Block>, Instance) {
+        let model_ground = self.model_ground.as_str();
+        let own = &self.globals;
+        let outer = |net: &str| net == ground || globals.iter().any(|g| g == net);
+        let collides =
+            |net: &str| net != model_ground && !own.iter().any(|g| g == net) && outer(net);
+
+        // Every net any of the model's blocks names: a new name is free in
+        // all of them.
+        let mut used = BTreeSet::new();
+        for block in self.blocks.values_mut() {
+            for_each_net(block, |net| {
+                used.insert(net.clone());
+            });
+        }
+        let mut renamed: BTreeMap<String, String> = BTreeMap::new();
+        for net in used
+            .iter()
+            .filter(|n| collides(n))
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let free = (1..)
+                .map(|k| {
+                    if k == 1 {
+                        format!("{net}_local")
+                    } else {
+                        format!("{net}_local{k}")
+                    }
+                })
+                .find(|c| !used.contains(c) && !outer(c) && c != model_ground)
+                .expect("an unbounded search finds a free name");
+            used.insert(free.clone());
+            renamed.insert(net, free);
+        }
+
+        for block in self.blocks.values_mut() {
+            for_each_net(block, |net| {
+                if net == model_ground {
+                    *net = ground.to_string();
+                } else if let Some(free) = renamed.get(net.as_str()) {
+                    *net = free.clone();
+                }
+            });
+        }
+        (self.blocks, self.instance)
+    }
+}
+
+/// Calls `f` on every net name in `block`: its ports, its components'
+/// nodes, control nodes and expression nodes, and its instances' nodes.
+fn for_each_net(block: &mut Block, mut f: impl FnMut(&mut String)) {
+    block.ports.iter_mut().for_each(&mut f);
+    for element in &mut block.components {
+        element.nodes_mut().iter_mut().for_each(&mut f);
+        if let Some(control) = element.control_nodes_mut() {
+            control.iter_mut().for_each(&mut f);
+        }
+        if let Some(expr) = element.expression_mut() {
+            expr.rename(
+                |net| {
+                    let mut net = net.to_string();
+                    f(&mut net);
+                    net
+                },
+                |source| source.to_string(),
+            );
+        }
+    }
+    for instance in &mut block.instances {
+        instance.nodes.iter_mut().for_each(&mut f);
+    }
 }
 
 /// Each `.subckt` line in `text`: its name and port count. Continuation
