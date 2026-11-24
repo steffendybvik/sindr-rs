@@ -8,7 +8,7 @@ use sindr_devices::regulator::{regulator_piece, RegulatorLinear, RegulatorParams
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
+use crate::node_map::{NodeMap, Terminals};
 
 use super::{AcStamp, Check, DcStamp, Device, Report};
 use crate::ratings::{RatingKind, RatingProbe};
@@ -74,16 +74,10 @@ impl Device for VoltageRegulator {
     /// the input.
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let branch = s.branch;
-        let piece = regulator_piece_at(
-            s.node_map,
-            &self.nodes,
-            self.voltage,
-            &self.model,
-            branch,
-            Some(s.dc_solution),
-        );
+        let pins = s.nodes();
+        let piece = piece(pins, self.voltage, &self.model, branch, Some(s.dc_solution));
         let c = |x: f64| Complex64::new(x, 0.0);
-        let [input, out, gnd] = s.nodes();
+        let [input, out, gnd] = pins;
         if let Some(o) = out {
             s.a[(o, branch)] += c(1.0);
             s.a[(branch, o)] += c(1.0);
@@ -99,8 +93,7 @@ impl Device for VoltageRegulator {
         // The quiescent current is fixed above dropout; below it, it ramps
         // with the input, a conductance from input to ground.
         if let Some(params) = &self.model {
-            let vin = regulator_state(s.node_map, &self.nodes, branch, Some(s.dc_solution))
-                .map_or(0.0, |(vin, _, _)| vin);
+            let vin = state(pins, branch, Some(s.dc_solution)).map_or(0.0, |(vin, _, _)| vin);
             let (_, g_q) = sindr_devices::regulator::regulator_quiescent(params, self.voltage, vin);
             for (r, col, sign) in [
                 (input, input, 1.0),
@@ -196,6 +189,12 @@ fn pins(node_map: &NodeMap, nodes: &[NodeId; 3]) -> [Option<usize>; 3] {
     nodes.each_ref().map(|n| node_map.index(n))
 }
 
+/// Regulator `k`'s `[input, output, gnd]` from the solve's terminals.
+fn regulator_pins(terminals: &Terminals, k: usize) -> [Option<usize>; 3] {
+    let pins = terminals.of(k);
+    std::array::from_fn(|i| pins.get(i).copied().flatten())
+}
+
 /// [`regulator_state`] with the pins resolved.
 fn state(
     [input, out, gnd]: [Option<usize>; 3],
@@ -210,21 +209,10 @@ fn state(
     Some((v(input) - vg, v(out) - vg, -x[branch]))
 }
 
-/// The linear piece of a regulator's characteristic at `solution`, or the
-/// regulating piece at no load without one (unbounded headroom on the side
-/// of the set voltage, so a negative regulator starts regulating too).
-pub(crate) fn regulator_piece_at(
-    node_map: &NodeMap,
-    nodes: &[NodeId; 3],
-    voltage: f64,
-    model: &Option<RegulatorParams>,
-    branch: usize,
-    solution: Option<&DVector<f64>>,
-) -> RegulatorLinear {
-    piece(pins(node_map, nodes), voltage, model, branch, solution)
-}
-
-/// [`regulator_piece_at`] with the pins resolved.
+/// The linear piece of a regulator's characteristic at `solution`, given
+/// its `[input, output, gnd]` as matrix indices, or the regulating piece
+/// at no load without one (unbounded headroom on the side of the set
+/// voltage, so a negative regulator starts regulating too).
 fn piece(
     pins: [Option<usize>; 3],
     voltage: f64,
@@ -251,22 +239,17 @@ fn piece(
 /// current spike on the next short step.
 pub(crate) fn regulator_pieces_settled(
     circuit: &Circuit,
-    node_map: &NodeMap,
+    terminals: &Terminals,
     num_nodes: usize,
     v_prev: &DVector<f64>,
     v_new: &DVector<f64>,
 ) -> bool {
     let mut branch = num_nodes;
-    for component in &circuit.components {
-        if let CircuitElement::VoltageRegulator(VoltageRegulator {
-            nodes,
-            voltage,
-            model,
-            ..
-        }) = component
+    for (k, component) in circuit.components.iter().enumerate() {
+        if let CircuitElement::VoltageRegulator(VoltageRegulator { voltage, model, .. }) = component
         {
-            let at =
-                |x: &DVector<f64>| regulator_pieces_at(node_map, nodes, *voltage, model, branch, x);
+            let pins = regulator_pins(terminals, k);
+            let at = |x: &DVector<f64>| regulator_pieces_at(pins, *voltage, model, branch, x);
             if at(v_prev) != at(v_new) {
                 return false;
             }
@@ -279,17 +262,16 @@ pub(crate) fn regulator_pieces_settled(
 /// The piece of its characteristic, and of its quiescent-current ramp, a
 /// regulator is on at `x`.
 fn regulator_pieces_at(
-    node_map: &NodeMap,
-    nodes: &[NodeId; 3],
+    pins: [Option<usize>; 3],
     voltage: f64,
     model: &Option<RegulatorParams>,
     branch: usize,
     x: &DVector<f64>,
 ) -> (RegulatorLinear, Option<(f64, f64)>) {
-    let piece = regulator_piece_at(node_map, nodes, voltage, model, branch, Some(x));
+    let piece = piece(pins, voltage, model, branch, Some(x));
     let ramp = model
         .as_ref()
-        .zip(regulator_state(node_map, nodes, branch, Some(x)))
+        .zip(state(pins, branch, Some(x)))
         .map(|(params, (vin, _, _))| {
             sindr_devices::regulator::regulator_quiescent(params, voltage, vin)
         });
@@ -312,7 +294,7 @@ fn regulator_pieces_at(
 /// next edge keeps it clear of both.
 pub(crate) fn limit_regulator_step(
     circuit: &Circuit,
-    node_map: &NodeMap,
+    terminals: &Terminals,
     num_nodes: usize,
     v_prev: &DVector<f64>,
     v_new: &mut DVector<f64>,
@@ -321,21 +303,15 @@ pub(crate) fn limit_regulator_step(
     // crosses an edge.
     let mut crossings: Vec<f64> = Vec::new();
     let mut branch = num_nodes;
-    for component in &circuit.components {
-        if let CircuitElement::VoltageRegulator(VoltageRegulator {
-            nodes,
-            voltage,
-            model,
-            ..
-        }) = component
+    for (k, component) in circuit.components.iter().enumerate() {
+        if let CircuitElement::VoltageRegulator(VoltageRegulator { voltage, model, .. }) = component
         {
-            let at =
-                |x: &DVector<f64>| regulator_pieces_at(node_map, nodes, *voltage, model, branch, x);
+            let pins = regulator_pins(terminals, k);
+            let at = |x: &DVector<f64>| regulator_pieces_at(pins, *voltage, model, branch, x);
             if at(v_prev) != at(v_new) {
                 let params = model.unwrap_or_default();
                 let edges = |x: &DVector<f64>| {
-                    let (vin, _, iout) =
-                        regulator_state(node_map, nodes, branch, Some(x)).unwrap_or_default();
+                    let (vin, _, iout) = state(pins, branch, Some(x)).unwrap_or_default();
                     let mut e =
                         sindr_devices::regulator::regulator_edges(&params, *voltage, vin, iout);
                     if model.is_none() {

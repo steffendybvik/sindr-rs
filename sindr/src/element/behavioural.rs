@@ -7,7 +7,7 @@ use crate::circuit::{BehaviouralOutput, Circuit, CircuitElement};
 use crate::error::SimError;
 use crate::expression::Expression;
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
+use crate::node_map::{NodeMap, Read, Sensed, Terminals};
 use crate::stamp::stamp_voltage_source_at;
 
 use super::{AcStamp, DcStamp, Device, Report, TranStamp};
@@ -71,10 +71,9 @@ impl Device for Behavioural {
         let v = r.across(&self.nodes[0], &self.nodes[1]);
         let i = match self.output {
             BehaviouralOutput::Current => behavioural_linearisation(
-                r.circuit,
-                r.node_map,
                 &self.id,
                 &self.expr,
+                &resolve(r.circuit, r.node_map, &self.expr),
                 r.solution,
                 r.time(),
             )
@@ -96,15 +95,9 @@ impl Device for Behavioural {
     /// and drops out of the small-signal system. The bias solve checked
     /// the circuit, so this can't fail here.
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
-        let (jacobian, _) = behavioural_linearisation(
-            s.circuit,
-            s.node_map,
-            &self.id,
-            &self.expr,
-            s.dc_solution,
-            0.0,
-        )
-        .unwrap_or_default();
+        let (jacobian, _) =
+            behavioural_linearisation(&self.id, &self.expr, s.sensed(), s.dc_solution, 0.0)
+                .unwrap_or_default();
         let [p, q] = s.nodes();
         match self.output {
             BehaviouralOutput::Current => {
@@ -146,15 +139,14 @@ impl Device for Behavioural {
                 &zero
             }
         };
-        let nodes = s.nodes();
+        let (nodes, sensed) = (s.nodes(), s.sensed());
         stamp_behavioural_at(
             s.system,
-            s.circuit,
-            s.node_map,
             &self.id,
             nodes,
             self.output,
             &self.expr,
+            sensed,
             x,
             0.0,
             s.branch,
@@ -163,19 +155,23 @@ impl Device for Behavioural {
 
     /// Its expression at the step's end, linearised at the iterate.
     fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
-        let nodes = s.nodes();
+        let (nodes, sensed) = (s.nodes(), s.sensed());
         stamp_behavioural_at(
             s.system,
-            s.circuit,
-            s.node_map,
             &self.id,
             nodes,
             self.output,
             &self.expr,
+            sensed,
             s.v_prev,
             s.t,
             s.branch,
         )
+    }
+
+    /// The expression's variables, in [`Expression::variables`] order.
+    fn sensed(&self) -> Vec<Read<'_>> {
+        reads(&self.expr)
     }
 
     /// The nodes the expression reads count as connections too.
@@ -255,23 +251,46 @@ impl Device for Behavioural {
 /// [`SimError::NotFinite`] for the first one that isn't.
 pub(crate) fn behavioural_finite_at(
     circuit: &Circuit,
-    node_map: &NodeMap,
+    terminals: &Terminals,
     x: &DVector<f64>,
     t: f64,
 ) -> Result<(), SimError> {
-    for component in &circuit.components {
+    for (k, component) in circuit.components.iter().enumerate() {
         if let CircuitElement::Behavioural(Behavioural { id, expr, .. }) = component {
-            behavioural_linearisation(circuit, node_map, id, expr, x, t)?;
+            behavioural_linearisation(id, expr, terminals.sensed(k), x, t)?;
         }
     }
     Ok(())
 }
 
+/// What `expr` reads, in [`Expression::variables`] order.
+fn reads(expr: &Expression) -> Vec<Read<'_>> {
+    use crate::expression::Variable;
+    expr.variables()
+        .iter()
+        .map(|variable| match variable {
+            Variable::Voltage { node, reference } => Read::Voltage(node, reference.as_deref()),
+            Variable::Current { source } => Read::Current(source),
+            Variable::Time => Read::Time,
+        })
+        .collect()
+}
+
+/// [`reads`] as matrix indices, for a caller outside the stamps, which
+/// get them from the solve's [`Terminals`](crate::node_map::Terminals).
+pub(crate) fn resolve(circuit: &Circuit, node_map: &NodeMap, expr: &Expression) -> Vec<Sensed> {
+    reads(expr)
+        .iter()
+        .map(|r| r.resolve(circuit, node_map))
+        .collect()
+}
+
 /// A behavioural source's expression linearised at `x` (the MNA unknowns)
 /// and time `t`: `f(x) ≈ c + Σ jacobian[k].1 · x[jacobian[k].0]`.
 ///
-/// `v(n, m)` reads `x[n] − x[m]`, `i(src)` the branch column of `src`,
-/// `time` is `t`.
+/// `sensed` is the expression's variables resolved, in
+/// [`Expression::variables`] order: `v(n, m)` reads `x[n] − x[m]`,
+/// `i(src)` the branch column of `src`, `time` is `t`.
 ///
 /// # Errors
 ///
@@ -279,45 +298,44 @@ pub(crate) fn behavioural_finite_at(
 /// element, or the expression isn't finite at `x`. An infinite slope at a
 /// finite value is taken as 0.
 pub(crate) fn behavioural_linearisation(
-    circuit: &Circuit,
-    node_map: &NodeMap,
     id: &str,
     expr: &Expression,
+    sensed: &[Sensed],
     x: &DVector<f64>,
     t: f64,
 ) -> Result<(Vec<(usize, f64)>, f64), SimError> {
     use crate::expression::Variable;
-    let num_nodes = node_map.num_nodes();
     let at = |k: usize| x.get(k).copied().unwrap_or(0.0);
-    let mut columns: Vec<Vec<(usize, f64)>> = Vec::with_capacity(expr.variables().len());
-    let mut values = Vec::with_capacity(expr.variables().len());
-    for variable in expr.variables() {
-        let (cols, value) = match variable {
-            Variable::Voltage { node, reference } => {
+    let mut columns: Vec<Vec<(usize, f64)>> = Vec::with_capacity(sensed.len());
+    let mut values = Vec::with_capacity(sensed.len());
+    for (variable, read) in expr.variables().iter().zip(sensed) {
+        let (cols, value) = match *read {
+            Sensed::Voltage([p, q]) => {
                 let mut cols = Vec::new();
                 let mut value = 0.0;
-                if let Some(k) = node_map.index(node) {
+                if let Some(k) = p {
                     cols.push((k, 1.0));
                     value += at(k);
                 }
-                if let Some(k) = reference.as_deref().and_then(|r| node_map.index(r)) {
+                if let Some(k) = q {
                     cols.push((k, -1.0));
                     value -= at(k);
                 }
                 (cols, value)
             }
-            Variable::Current { source } => {
-                let branch = circuit.vsource_branch_index(source).ok_or_else(|| {
-                    SimError::InvalidComponent(format!(
-                        "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
-                         element (voltage source, VCVS, CCVS, op-amp, regulator or \
-                         behavioural voltage source)"
-                    ))
-                })?;
-                let k = num_nodes + branch;
-                (vec![(k, 1.0)], at(k))
+            Sensed::Current(Some(k)) => (vec![(k, 1.0)], at(k)),
+            Sensed::Current(None) => {
+                let source = match variable {
+                    Variable::Current { source } => source.as_str(),
+                    _ => "",
+                };
+                return Err(SimError::InvalidComponent(format!(
+                    "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
+                     element (voltage source, VCVS, CCVS, op-amp, regulator or \
+                     behavioural voltage source)"
+                )));
             }
-            Variable::Time => (Vec::new(), t),
+            Sensed::Time => (Vec::new(), t),
         };
         columns.push(cols);
         values.push(value);
@@ -380,17 +398,16 @@ fn variable_name(variable: &crate::expression::Variable) -> String {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn stamp_behavioural_at(
     system: &mut MnaSystem,
-    circuit: &Circuit,
-    node_map: &NodeMap,
     id: &str,
     [p, q]: [Option<usize>; 2],
     output: BehaviouralOutput,
     expr: &Expression,
+    sensed: &[Sensed],
     x: &DVector<f64>,
     t: f64,
     branch: usize,
 ) -> Result<(), SimError> {
-    let (jacobian, c) = behavioural_linearisation(circuit, node_map, id, expr, x, t)?;
+    let (jacobian, c) = behavioural_linearisation(id, expr, sensed, x, t)?;
     match output {
         BehaviouralOutput::Current => {
             // Out of n+, into n-: f leaves p, so p's row gets +∂f/∂x.

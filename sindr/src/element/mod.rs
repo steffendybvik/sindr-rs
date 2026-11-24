@@ -12,6 +12,7 @@ use std::fmt::Display;
 use crate::circuit::CircuitElement;
 use crate::error::SimError;
 use crate::handle::NodeId;
+use crate::node_map::Read;
 use crate::ratings::{RatingKind, RatingProbe};
 
 #[cfg(feature = "spice")]
@@ -51,6 +52,15 @@ pub(crate) trait Device {
     /// nodes a behavioural expression reads).
     fn all_nodes(&self) -> Vec<&NodeId> {
         self.nodes().iter().collect()
+    }
+
+    /// What its stamps read from the solution without connecting to it,
+    /// resolved once per solve into [`Terminals::sensed`]: a controlled
+    /// source's control pair, a behavioural expression's variables.
+    ///
+    /// [`Terminals::sensed`]: crate::node_map::Terminals::sensed
+    fn sensed(&self) -> Vec<Read<'_>> {
+        Vec::new()
     }
 
     /// The pairs of nets its DC stamp joins with a conductance or a
@@ -271,6 +281,7 @@ mod inductor;
 pub(crate) mod jfet;
 pub(crate) mod layout;
 mod led;
+mod logic_gate;
 pub(crate) mod mosfet;
 mod op_amp;
 mod photodiode;
@@ -303,6 +314,7 @@ pub use comparator::Comparator;
 pub use crystal::Crystal;
 pub use current_source::CurrentSource;
 pub use dc_motor::{DcMotor, DcMotorParams};
+pub(crate) use digital_pin::R_OFF;
 pub use digital_pin::{DigitalPin, LogicLevel, PinMode, PinModel, Pull};
 pub use diode::Diode;
 pub use ferrite_bead::FerriteBead;
@@ -311,6 +323,7 @@ pub use igbt::Igbt;
 pub use inductor::Inductor;
 pub use jfet::Jfet;
 pub use led::Led;
+pub use logic_gate::{GateKind, LogicGate};
 pub use mosfet::Mosfet;
 pub use op_amp::OpAmp;
 pub use photodiode::Photodiode;
@@ -372,6 +385,7 @@ impl CircuitElement {
             CircuitElement::Behavioural(d) => d,
             CircuitElement::DigitalPin(d) => d,
             CircuitElement::DcMotor(d) => d,
+            CircuitElement::LogicGate(d) => d,
         }
     }
 
@@ -415,6 +429,7 @@ impl CircuitElement {
             CircuitElement::Behavioural(d) => d,
             CircuitElement::DigitalPin(d) => d,
             CircuitElement::DcMotor(d) => d,
+            CircuitElement::LogicGate(d) => d,
         }
     }
 }

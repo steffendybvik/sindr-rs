@@ -467,6 +467,13 @@ impl<'a> Deck<'a> {
                     self.diode(id, &part_name, &nodes, model)?;
                     continue;
                 }
+                CircuitElement::Behavioural(b) => {
+                    let mut b = b.clone();
+                    b.nodes = nodes;
+                    b.expr.rename(local, |s| s.to_string());
+                    crate::element::Device::write_spice(&b, self, &part_name)?;
+                    continue;
+                }
                 _ => return Err(unsupported(id, "an unexpected part")),
             };
             self.two_terminal(&part_name, &nodes, value)?;

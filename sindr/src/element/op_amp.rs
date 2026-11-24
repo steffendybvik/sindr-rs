@@ -71,7 +71,7 @@ impl Device for OpAmp {
     /// A modelled op-amp linearised at the bias point (see
     /// [`OpAmpStamp::stamp_ac`]); without a model, a VCVS of gain 10⁵.
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
-        if let Some(op) = OpAmpStamp::of_op_amp(self, &s.circuit.ground_node, s.branch) {
+        if let Some(op) = OpAmpStamp::of_op_amp(self, s.branch) {
             op.stamp_ac(s);
             return;
         }
@@ -100,15 +100,14 @@ impl Device for OpAmp {
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let nodes = s.nodes();
-        let ground = s.node_map.index(&s.circuit.ground_node);
-        match OpAmpStamp::of_op_amp(self, &s.circuit.ground_node, s.branch) {
+        match OpAmpStamp::of_op_amp(self, s.branch) {
             // Clamped to its rails.
-            Some(op) => op.stamp_dc_at(s.system, &Pins { nodes, ground }, s.v_prev),
+            Some(op) => op.stamp_dc_at(s.system, &nodes, s.v_prev),
             // An ideal high-gain VCVS (gain 1e5), its output from the
             // circuit's ground.
             None => {
                 let [plus, minus, out] = nodes;
-                stamp_vcvs_at(s.system, [out, ground], [plus, minus], 1e5, s.branch);
+                stamp_vcvs_at(s.system, [out, None], [plus, minus], 1e5, s.branch);
             }
         }
         Ok(())
@@ -117,13 +116,10 @@ impl Device for OpAmp {
     /// The macromodel's gain stage over the step, from its history; the
     /// near-ideal VCVS as at DC.
     fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
-        let Some(op) = OpAmpStamp::of_op_amp(self, &s.circuit.ground_node, s.branch) else {
+        let Some(op) = OpAmpStamp::of_op_amp(self, s.branch) else {
             return self.stamp_dc(&mut s.dc());
         };
-        let pins = Pins {
-            nodes: s.nodes(),
-            ground: s.node_map.index(&s.circuit.ground_node),
-        };
+        let pins: Pins = s.nodes();
         let history = s.history(&self.id, OP_AMP_STAGE);
         op.stamp_transient(s.system, &pins, s.integ, &history, s.v_prev);
         Ok(())

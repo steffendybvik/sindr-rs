@@ -724,7 +724,8 @@ mod tests {
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
             state_of_charge: HashMap::new(),
-            motors: HashMap::new(),            transient: None,
+            motors: HashMap::new(),
+            transient: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(!json.contains("\"transient\""));
@@ -745,7 +746,8 @@ mod tests {
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
             state_of_charge: HashMap::new(),
-            motors: HashMap::new(),            transient: Some(TransientData {
+            motors: HashMap::new(),
+            transient: Some(TransientData {
                 timesteps: vec![
                     TimestepSnapshot {
                         time: 0.0,
@@ -753,14 +755,16 @@ mod tests {
                         component_results: vec![],
                         junction_temperatures: HashMap::new(),
                         state_of_charge: HashMap::new(),
-                        motors: HashMap::new(),                    },
+                        motors: HashMap::new(),
+                    },
                     TimestepSnapshot {
                         time: 0.001,
                         node_voltages: HashMap::from([("n1".into(), 3.2)]),
                         component_results: vec![],
                         junction_temperatures: HashMap::new(),
                         state_of_charge: HashMap::new(),
-                        motors: HashMap::new(),                    },
+                        motors: HashMap::new(),
+                    },
                 ],
                 time_step: 0.001,
                 duration: 0.002,

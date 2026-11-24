@@ -49,6 +49,9 @@ pub(crate) enum RawCard {
     NodeValues(NodeValueKind, Vec<(String, ParamExpr)>, Span),
     /// `.meas` / `.measure` and the card's source line.
     Measure(RawMeasure, Span),
+    /// `.four <f0> <signal> …`: the fundamental, unevaluated, the signals
+    /// and the card's source line.
+    Four(ParamExpr, Vec<crate::measure::Signal>, Span),
     /// `.options`: `name=value` pairs and bare flags (`None`), and the
     /// card's source line.
     Options(Vec<(String, Option<ParamExpr>)>, Span),

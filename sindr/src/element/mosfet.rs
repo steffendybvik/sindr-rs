@@ -100,10 +100,9 @@ impl Device for Mosfet {
         let Some(pc) = &self.parasitic_caps else {
             return;
         };
-        for (_, c, p, q) in mosfet_parasitics(&self.nodes, pc) {
+        for (_, c, p, q) in mosfet_parasitics(&s.nodes(), pc) {
             let y = s.s * c;
-            let pq = [s.node_map.index(&p), s.node_map.index(&q)];
-            s.admittance(pq, y);
+            s.admittance([p, q], y);
         }
     }
 
