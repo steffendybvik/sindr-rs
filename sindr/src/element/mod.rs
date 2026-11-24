@@ -269,6 +269,7 @@ mod inductor;
 pub(crate) mod jfet;
 pub(crate) mod layout;
 mod led;
+mod logic_gate;
 pub(crate) mod mosfet;
 mod op_amp;
 mod photodiode;
@@ -299,6 +300,7 @@ pub use ccvs::Ccvs;
 pub use comparator::Comparator;
 pub use crystal::Crystal;
 pub use current_source::CurrentSource;
+pub(crate) use digital_pin::R_OFF;
 pub use digital_pin::{DigitalPin, LogicLevel, PinMode, PinModel, Pull};
 pub use diode::Diode;
 pub use ferrite_bead::FerriteBead;
@@ -307,6 +309,7 @@ pub use igbt::Igbt;
 pub use inductor::Inductor;
 pub use jfet::Jfet;
 pub use led::Led;
+pub use logic_gate::{GateKind, LogicGate};
 pub use mosfet::Mosfet;
 pub use op_amp::OpAmp;
 pub use photodiode::Photodiode;
@@ -367,6 +370,7 @@ impl CircuitElement {
             CircuitElement::FerriteBead(d) => d,
             CircuitElement::Behavioural(d) => d,
             CircuitElement::DigitalPin(d) => d,
+            CircuitElement::LogicGate(d) => d,
         }
     }
 
@@ -409,6 +413,7 @@ impl CircuitElement {
             CircuitElement::FerriteBead(d) => d,
             CircuitElement::Behavioural(d) => d,
             CircuitElement::DigitalPin(d) => d,
+            CircuitElement::LogicGate(d) => d,
         }
     }
 }

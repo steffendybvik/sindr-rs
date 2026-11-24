@@ -266,6 +266,7 @@ fn extract_timestep_results(
             | CircuitElement::Crystal(Crystal { .. })
             | CircuitElement::FerriteBead(FerriteBead { .. })
             | CircuitElement::DigitalPin(DigitalPin { .. })
+            | CircuitElement::LogicGate(_)
             | CircuitElement::ZenerDiode(ZenerDiode { .. }) => {}
             // Needs its state's history; `battery::finish_step` reports it.
             CircuitElement::Battery(Battery { .. }) => {}

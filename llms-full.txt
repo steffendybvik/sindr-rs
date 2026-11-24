@@ -423,6 +423,24 @@ The electrical side of a microcontroller or logic-IC pin, after the IBIS I/O buf
 - **Results:** `voltage_across` is `v(pad) − v(gnd)`, `current_through` the current into the pin (negative while it sources), `power` what the buffer dissipates. `DigitalPin::reads(volts, previous)` is what its input buffer reads, with hysteresis between `vil` and `vih`; a transient session reads it with `logic_level(id)`.
 - **Ratings:** `Ratings::current` on the pin's part limits its current. Pins with the same `port` are also checked as a port: `Ratings::current` on a part named for the port limits the larger of what its pins source and sink together.
 
+#### Logic gate
+
+```rust,ignore
+use sindr::element::{GateKind, LogicGate, PinModel};
+LogicGate::new("U1A", GateKind::Nand, [a, b], [y, vcc, gnd])
+    .with_model(PinModel::cmos(5.0))  // thresholds and output stage
+    .with_tpd(9e-9)                   // propagation delay (s)
+    .with_c_in(3.5e-12)               // each input to gnd (F)
+    .with_schmitt()                   // hysteresis, as a 74HC14 or 74HC132
+```
+
+A gate as a CMOS part behaves electrically, not digital simulation: `GateKind::Buffer`, `Not`, `And`, `Or`, `Nand`, `Nor`, `Xor` and `Xnor`, one input for the first two and two or more for the rest. `nodes` are `[inputs…, out, vdd, gnd]`.
+
+- **Inputs** switch steeply at the midpoint of the `PinModel`'s `vil` and `vih`, fully switched at each. Schmitt inputs turn high at `vih` and low at `vil`, through a state that settles in about 1 ns, which makes the circuit reactive.
+- **The output stage** is a push-pull digital pin's: `r_high` to `vdd`, `r_low` to `gnd`, the clamps and `c_comp`. It draws its current from the supply.
+- **`tpd`** delays the output: it slews to its new level and passes half way `tpd` after the inputs do, so three inverters in a ring oscillate at about 1/(6·`tpd`). `tpd`, `c_in`, `c_comp` and `schmitt` default to off, which keeps a gate's circuit DC-only.
+- **Results:** `voltage_across` is `v(out) − v(gnd)`, `current_through` the current into the output (negative while it sources), `power` what the output stage dissipates. `GateKind::eval` is the truth table.
+
 It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp diodes, `#c`, `#leak`), and `to_netlist` writes them, so ngspice can run the same pin.
 
 #### Diodes
@@ -1515,7 +1533,7 @@ Status: `0.3.0`, before 1.0. Anything below may change.
 ### What sindr is
 
 - DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain and stability margins, DC sweep, temperature sweep
-- Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead, digital I/O pin (IBIS parametric buffer)
+- Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead, digital I/O pin (IBIS parametric buffer), logic gates at the analog level (thresholds, a pin's output stage, propagation delay)
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
 - Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
 - Programmatic Rust API + serde JSON for circuits and results
@@ -1528,7 +1546,7 @@ These are non-goals for the current crate split. They may live in sibling crates
 
 | Area | Status |
 |------|--------|
-| Digital logic simulation (gates, flip-flops, clocked sequential, event-driven kernel) | Out of scope |
+| Digital logic simulation (flip-flops, clocked sequential, event-driven kernel; gates only as the analog `LogicGate`) | Out of scope |
 | HDL ingestion (Verilog, VHDL, SystemVerilog, Verilog-A, VHDL-AMS, SystemC-AMS) | Out of scope |
 | Microcontroller / instruction-set simulation | Out of scope |
 | PCB layout, routing, parasitics extraction | Out of scope |
@@ -1584,6 +1602,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
 - **No SiC / GaN device models.**
 - **Digital pins are IBIS's parametric buffer, DC plus `c_comp`.** A pin's output stage is a resistance to each rail and its clamps are Shockley diodes: no `.ibs` V-I or V-t tables, so a driver doesn't current-limit as a real one does into a short, and edges are only the RC of the output resistance and `c_comp`, with no ramp rate. There's no package R, L or C, no slew-rate control or drive-strength setting, no supply current from the chip's core, and the thresholds are fixed volts that don't follow a sagging supply. A session reads the input once per step.
+- **Logic gates are a smooth input stage, a slew-limited delay and a pin's output stage.** Inputs switch over a tenth of the `vil`–`vih` band, at fixed volts that don't follow a sagging supply. `tpd` is one number for both edges, independent of load and supply, and the output's edge is the delay's slew plus the RC of the output resistance and the load. There's no quiescent or shoot-through supply current, no output enable or tri-state, and no flip-flops or latches; a Schmitt input's hysteresis is a 1 ns internal state.
 - **Crystals and ferrite beads are linear networks.** A crystal is the Butterworth–Van Dyke model: no overtones, spurious modes, drive-level dependence or aging. A ferrite bead is R + L ∥ R (∥ C) with no DC-bias derating, so its impedance doesn't fall with current as a real bead's does.
 - **Magnetics: saturating cores, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), and so can a `Transformer`'s magnetising branch, which carries the shared core flux behind each winding's leakage. There's no hysteresis, remanence, core loss or temperature dependence, a transformer has two windings, and SPICE export refuses a saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
@@ -2350,6 +2369,12 @@ pub enum CircuitElement {
     /// pull resistor.
     #[cfg_attr(feature = "serde", serde(rename = "digital_pin"))]
     DigitalPin(DigitalPin),
+
+    /// Logic gate ([`LogicGate`]) at the analog
+    /// level: input thresholds, a pin's output stage and a propagation
+    /// delay.
+    #[cfg_attr(feature = "serde", serde(rename = "logic_gate"))]
+    LogicGate(LogicGate),
 }
 
 impl CircuitElement {
@@ -3776,6 +3801,150 @@ pub struct Led {
 }
 ```
 
+## `sindr/src/element/logic_gate.rs`
+
+A logic gate at the analog level: input thresholds, the output stage
+of an I/O pin, and a propagation delay. The analyses replace it with
+its parts.
+
+```rust
+/// The function a [`LogicGate`] computes.
+pub enum GateKind {
+    /// One input, passed through (a 74HC125 enabled, a 74HC7034).
+    Buffer,
+    /// One input, inverted (74HC04; 74HC14 with
+    /// [`schmitt`](LogicGate::schmitt)).
+    Not,
+    /// High when every input is high (74HC08).
+    And,
+    /// High when any input is high (74HC32).
+    Or,
+    /// Low when every input is high (74HC00; 74HC132 with
+    /// [`schmitt`](LogicGate::schmitt)).
+    Nand,
+    /// Low when any input is high (74HC02).
+    Nor,
+    /// High when an odd number of inputs are high (74HC86).
+    Xor,
+    /// High when an even number of inputs are high (74HC266).
+    Xnor,
+}
+
+impl GateKind {
+    /// Whether the gate takes exactly one input; the others take two or
+    /// more.
+    pub fn is_single_input(self) -> bool { … }
+
+    /// The gate's output for logic inputs, as a truth table gives it.
+    pub fn eval(self, inputs: &[bool]) -> bool { … }
+}
+
+/// A logic gate as a CMOS part behaves electrically: input thresholds,
+/// the output stage of an I/O pin, and a propagation delay. Not digital
+/// simulation: the output is a voltage the circuit loads, and the inputs
+/// read whatever voltage they're given.
+///
+/// `nodes: [inputs…, out, vdd, gnd]`: one input for a
+/// [`Buffer`](GateKind::Buffer) or [`Not`](GateKind::Not), two or more
+/// for the others, then the output, and the supply and ground its output
+/// stage returns to.
+///
+/// - **Inputs** read [`model.vil`](PinModel::vil) and
+///   [`model.vih`](PinModel::vih) from the ground terminal. A plain input
+///   switches steeply but smoothly at their midpoint, across a tenth of
+///   the band between them, so it reads fully low at `vil` and fully high
+///   at `vih` with margin, as a CMOS input does. A
+///   [`schmitt`](Self::schmitt) input has hysteresis instead: it turns
+///   high at `vih` and back low at `vil`, through an internal state that
+///   settles in about 1 ns, so a Schmitt gate makes its circuit reactive.
+///   Each input loads its net with [`c_in`](Self::c_in) to ground.
+/// - **The output stage** is the [`DigitalPin`](super::DigitalPin)'s, in
+///   push-pull: `model.r_high` to the supply driving high, `model.r_low`
+///   to ground driving low, the clamp diodes to both rails and
+///   `model.c_comp`. The output's level follows the inputs through a
+///   continuous blend, so Newton sees no step. The pin's pull resistor
+///   and leakage don't apply.
+/// - **The delay** [`tpd`](Self::tpd) sits between the inputs and the
+///   output stage: once the inputs switch, the output's level slews to its
+///   new value at a fixed rate and passes half way `tpd` later, however
+///   recently it last switched. A ring of three inverters oscillates near
+///   1 / (6 · `tpd`). At 0 the gate has no delay, and it makes its circuit
+///   reactive only through `c_in`, `c_comp` and Schmitt inputs.
+///
+/// Its result's `voltage_across` is `v(out) − v(gnd)`, and its
+/// `current_through` is the current into the output from the circuit:
+/// positive while it sinks, negative while it sources. `power` is what
+/// the output stage dissipates.
+///
+/// ```
+/// use sindr::element::{GateKind, LogicGate, PinModel};
+///
+/// // A 74HC00 NAND on 5 V with a 9 ns delay.
+/// let nand = LogicGate::new(
+///     "U1A",
+///     GateKind::Nand,
+///     ["a".into(), "b".into()],
+///     ["y".into(), "vcc".into(), "0".into()],
+/// )
+/// .with_model(PinModel::cmos(5.0))
+/// .with_tpd(9e-9);
+/// assert_eq!(nand.inputs().len(), 2);
+/// ```
+pub struct LogicGate {
+    /// Unique component identifier.
+    pub id: String,
+    /// What the gate computes.
+    pub kind: GateKind,
+    /// Terminals `[inputs…, out, vdd, gnd]`.
+    pub nodes: Vec<NodeId>,
+    /// Input thresholds and the output stage. Default
+    /// [`PinModel::cmos(3.3)`](PinModel::cmos).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub model: PinModel,
+    /// Inputs with hysteresis, turning high at `vih` and low at `vil`, as
+    /// a Schmitt-trigger part's do. Default off.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub schmitt: bool,
+    /// Propagation delay (s), zero or positive. Default 0.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub tpd: f64,
+    /// Capacitance from each input to ground (F), zero or positive.
+    /// Default 0.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub c_in: f64,
+}
+
+impl LogicGate {
+    /// A `kind` gate reading `inputs` and driving `out`, powered from
+    /// `[out, vdd, gnd]`, with the defaults: a 3.3 V CMOS model, no
+    /// hysteresis, no delay and no input capacitance.
+    pub fn new(
+        id: impl Into<String>,
+        kind: GateKind,
+        inputs: impl IntoIterator<Item = NodeId>,
+        [out, vdd, gnd]: [NodeId; 3],
+    ) -> Self { … }
+
+    /// With `model` for the thresholds and the output stage.
+    pub fn with_model(mut self, model: PinModel) -> Self { … }
+
+    /// With Schmitt-trigger inputs.
+    pub fn with_schmitt(mut self) -> Self { … }
+
+    /// With a propagation delay of `tpd` (s).
+    pub fn with_tpd(mut self, tpd: f64) -> Self { … }
+
+    /// With `c_in` (F) from each input to ground.
+    pub fn with_c_in(mut self, c_in: f64) -> Self { … }
+
+    /// The input terminals.
+    pub fn inputs(&self) -> &[NodeId] { … }
+
+    /// The output, supply and ground terminals.
+    pub fn outputs(&self) -> [&NodeId; 3] { … }
+}
+```
+
 ## `sindr/src/element/mod.rs`
 
 The circuit elements: one struct per [`CircuitElement`] variant.
@@ -3821,6 +3990,8 @@ pub use inductor::Inductor;
 pub use jfet::Jfet;
 
 pub use led::Led;
+
+pub use logic_gate::{GateKind, LogicGate};
 
 pub use mosfet::Mosfet;
 

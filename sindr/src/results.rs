@@ -742,7 +742,8 @@ pub(crate) fn extract_results(
             CircuitElement::SwitchSpdt(SwitchSpdt { .. })
             | CircuitElement::Crystal(Crystal { .. })
             | CircuitElement::FerriteBead(FerriteBead { .. })
-            | CircuitElement::DigitalPin(DigitalPin { .. }) => {}
+            | CircuitElement::DigitalPin(DigitalPin { .. })
+            | CircuitElement::LogicGate(_) => {}
             CircuitElement::Resistor(Resistor {
                 id,
                 nodes,
