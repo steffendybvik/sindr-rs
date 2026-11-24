@@ -173,6 +173,16 @@ pub enum SimError {
         reason: String,
     },
 
+    /// A [`Fourier`](crate::fourier::Fourier) analysis or
+    /// [`Fft`](crate::fourier::Fft) couldn't be taken: no transient, an
+    /// unknown signal, a run shorter than one period, or settings it can't
+    /// use.
+    #[error("spectrum: {reason}")]
+    Spectrum {
+        /// Why it couldn't be taken.
+        reason: String,
+    },
+
     /// A behavioural source's expression isn't finite (it overflowed, or
     /// left its domain) at the voltages and currents it read.
     ///

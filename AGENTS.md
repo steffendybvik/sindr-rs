@@ -38,6 +38,7 @@ sindr-rs/
 │   │   ├── node_map.rs         # node-name → matrix-index mapping
 │   │   ├── ratings.rs          # check_ratings: absolute-maximum ratings vs. a result
 │   │   ├── measure.rs          # measurements (.meas) and specs: check_specs, pass/fail and margin
+│   │   ├── fourier.rs          # .four harmonics and THD, windowed FFT of transient results
 │   │   ├── thermal.rs          # self-heating: DC balance iteration, transient thermal RC
 │   │   ├── validation.rs       # circuit pre-flight checks
 │   │   ├── error.rs            # SimError variants
