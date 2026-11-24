@@ -3718,6 +3718,76 @@ B1 out gnd V = min(V(in, gnd) - 1, 3.3)
         assert_eq!(imported.circuit.blocks.len(), 2);
     }
 
+    /// The op-amp model with its internal node `n1` named `to` instead.
+    fn opamp_with_internal(to: &str) -> SubcktModel {
+        let text = OPAMP.replace(" n1 ", &format!(" {to} "));
+        SubcktModel::new(text, "opx", ["+", "-", "OUT", "V+", "V-"])
+    }
+
+    /// A model's internal node named like the circuit's ground net stays
+    /// the model's own: the results are the model's with the node renamed.
+    #[test]
+    fn a_model_node_named_like_the_ground_net_is_not_ground() {
+        let on_ground_one = |model: SubcktModel| {
+            let mut n = inverting_amp(model);
+            for net in &mut n.nets {
+                if net.id == "gnd" {
+                    net.id = "1".into();
+                }
+            }
+            let bench = Bench::new("1")
+                .with_source(BenchSource::voltage("vin", "in", 0.5))
+                .with_source(BenchSource::voltage("vp", "vcc", 12.0))
+                .with_source(BenchSource::voltage("vn", "vee", -12.0));
+            op(&n, &bench).node_voltages["out"]
+        };
+        let named_one = on_ground_one(opamp_with_internal("1"));
+        let by_hand = on_ground_one(opamp_with_internal("n1"));
+        assert!(
+            (named_one - by_hand).abs() < 1e-9,
+            "{named_one} vs {by_hand}"
+        );
+        assert!((by_hand + 5.0).abs() < 1e-2, "{by_hand}");
+    }
+
+    /// A model's internal node named like another model's `.global` stays
+    /// the model's own.
+    #[test]
+    fn a_model_node_named_like_another_models_global_is_not_that_global() {
+        const BIAS: &str = "
+.subckt bias p
+.global vref
+Ra p vref 1k
+Rb vref 0 1k
+.ends
+";
+        let with_bias = |model: SubcktModel| {
+            let mut n = inverting_amp(model);
+            n.components.push(
+                Component::new("U2", ComponentKind::BlackBox)
+                    .with_model(Model::Subckt(SubcktModel::new(BIAS, "bias", ["1"]))),
+            );
+            for net in &mut n.nets {
+                if net.id == "vcc" {
+                    net.pins.push(Pin::new("U2", "1"));
+                }
+            }
+            let r = op(&n, &amp_bench());
+            (r.node_voltages["out"], r.node_voltages["vref"])
+        };
+        let named_vref = with_bias(opamp_with_internal("vref"));
+        let by_hand = with_bias(opamp_with_internal("n1"));
+        assert!(
+            (named_vref.0 - by_hand.0).abs() < 1e-9,
+            "{named_vref:?} vs {by_hand:?}"
+        );
+        assert!(
+            (named_vref.1 - by_hand.1).abs() < 1e-9,
+            "{named_vref:?} vs {by_hand:?}"
+        );
+        assert!((by_hand.1 - 6.0).abs() < 1e-6, "{by_hand:?}");
+    }
+
     #[cfg(feature = "serde")]
     #[test]
     fn a_subckt_model_reads_from_json() {
