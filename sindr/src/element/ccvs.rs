@@ -34,7 +34,7 @@ impl Device for Ccvs {
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
-        if let Some(control) = s.source_branch(&self.control_source) {
+        if let Some(control) = s.control_branch() {
             let nodes = s.nodes();
             stamp_ccvs_at(s.system, nodes, self.rm, s.branch, control);
         }
@@ -43,6 +43,10 @@ impl Device for Ccvs {
 
     fn branches(&self) -> usize {
         1
+    }
+
+    fn control_source(&self) -> Option<&str> {
+        Some(&self.control_source)
     }
 
     fn validate(&self) -> Result<(), SimError> {
