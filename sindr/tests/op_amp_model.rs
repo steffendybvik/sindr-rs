@@ -271,7 +271,9 @@ fn bad_model_parameters_name_the_field() {
     ];
     for (model, field) in cases {
         match solve_circuit(&non_inverting(source(0.1, None), 9e3, 1e3, model)) {
-            Err(SimError::InvalidComponent(msg)) => assert!(msg.contains(field), "{msg}"),
+            Err(SimError::InvalidComponent { reason, .. }) => {
+                assert!(reason.contains(field), "{reason}")
+            }
             other => panic!("{field}: expected InvalidComponent, got {other:?}"),
         }
     }

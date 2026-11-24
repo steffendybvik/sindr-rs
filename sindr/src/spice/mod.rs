@@ -420,7 +420,7 @@ impl ParsedNetlist {
     ///
     /// # Errors
     ///
-    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// The inner `Result` is [`SimError::InvalidConfig`](crate::SimError::InvalidConfig)
     /// unless exactly one source carries an `AC` spec and it's a `V` line:
     /// sindr's AC analysis drives a single voltage source.
     pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> {
@@ -464,7 +464,8 @@ impl ParsedNetlist {
         card: &str,
         sweep: crate::ac_analysis::AcConfig,
     ) -> Result<crate::ac_analysis::AcConfig, crate::SimError> {
-        let invalid = |msg: String| crate::SimError::InvalidComponent(format!("{card}: {msg}"));
+        let invalid =
+            |msg: String| crate::SimError::config(crate::ConfigKind::Ac, format!("{card}: {msg}"));
         match self.ac_stimuli.as_slice() {
             [] => Err(invalid("no V line carries an `AC` spec to drive".into())),
             [one] if one.current => Err(invalid(format!(

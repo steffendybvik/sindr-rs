@@ -724,7 +724,7 @@ fn a_behavioural_source_across_an_ideal_source_is_singular() {
     assert!(
         matches!(
             err,
-            SimError::SingularMatrix | SimError::InvalidComponent(_)
+            SimError::SingularMatrix | SimError::InvalidComponent { .. }
         ),
         "{err}"
     );
@@ -741,7 +741,7 @@ fn a_loop_of_behavioural_voltage_sources_is_an_error() {
     assert!(
         matches!(
             err,
-            SimError::SingularMatrix | SimError::InvalidComponent(_)
+            SimError::SingularMatrix | SimError::InvalidComponent { .. }
         ),
         "{err}"
     );

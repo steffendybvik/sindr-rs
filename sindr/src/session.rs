@@ -64,7 +64,7 @@ use crate::element::{
     CurrentSource, DigitalPin, LogicLevel, Photodiode, Photoresistor, PinMode, Potentiometer, Pull,
     Pushbutton, Resistor, Switch, VoltageSource,
 };
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::results::{TimestepSnapshot, TransientStats};
 use crate::solver::SolverOptions;
 use crate::transient::{
@@ -403,13 +403,15 @@ impl TransientSession {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] for an id that isn't a voltage or
+    /// [`SimError::UnknownComponent`] for an id the circuit doesn't have,
+    /// and [`SimError::InvalidConfig`] for one that isn't a voltage or
     /// current source, or a value that isn't finite.
     pub fn set_source(&mut self, id: &str, value: f64) -> Result<(), SimError> {
         if !value.is_finite() {
-            return Err(SimError::InvalidComponent(format!(
-                "`{id}`: a source value must be finite (got {value})"
-            )));
+            return Err(SimError::config(
+                ConfigKind::TransientSession,
+                format!("`{id}`: a source value must be finite (got {value})"),
+            ));
         }
         let k = self.element_index(id)?;
         let mut element = self.stepper.circuit.components[k].clone();
@@ -427,9 +429,10 @@ impl TransientSession {
                 *waveform = None;
             }
             _ => {
-                return Err(SimError::InvalidComponent(format!(
-                    "`{id}`: not a voltage or current source"
-                )))
+                return Err(SimError::config(
+                    ConfigKind::TransientSession,
+                    format!("`{id}`: not a voltage or current source"),
+                ))
             }
         }
         self.replace(k, element)
@@ -439,16 +442,18 @@ impl TransientSession {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] for an id the circuit doesn't have, a
-    /// part `param` doesn't apply to, or a temperature on a part whose
-    /// temperature self-heating sets; a value the part refuses fails as
+    /// [`SimError::UnknownComponent`] for an id the circuit doesn't have,
+    /// and [`SimError::InvalidConfig`] for a part `param` doesn't apply to,
+    /// or a temperature on a part whose temperature self-heating sets; a
+    /// value the part refuses fails as
     /// [`validate_circuit`](crate::validate_circuit) would fail it. A
     /// refused change changes nothing.
     pub fn set_param(&mut self, id: &str, param: Param) -> Result<(), SimError> {
         let wrong = || {
-            Err(SimError::InvalidComponent(format!(
-                "`{id}`: {param:?} doesn't apply to this component"
-            )))
+            Err(SimError::config(
+                ConfigKind::TransientSession,
+                format!("`{id}`: {param:?} doesn't apply to this component"),
+            ))
         };
         if let Param::Throw(position) = param {
             // An SPDT switch is solved as its two throws.
@@ -521,9 +526,10 @@ impl TransientSession {
                     .get(id)
                     .is_some_and(|p| p.thermal.is_some())
                 {
-                    return Err(SimError::InvalidComponent(format!(
-                        "`{id}`: self-heating sets this part's temperature"
-                    )));
+                    return Err(SimError::config(
+                        ConfigKind::TransientSession,
+                        format!("`{id}`: self-heating sets this part's temperature"),
+                    ));
                 }
                 match crate::thermal::temperature_mut(element) {
                     Some(t) => *t = v,
@@ -540,7 +546,7 @@ impl TransientSession {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] for a `t` before the time reached,
+    /// [`SimError::InvalidConfig`] for a `t` before the time reached,
     /// past `tstop` or not finite; otherwise as
     /// [`solve_transient`](crate::solve_transient) for the steps taken.
     pub fn advance_to(&mut self, t: f64) -> Result<(), SimError> {
@@ -574,9 +580,10 @@ impl TransientSession {
     /// # Errors
     ///
     /// As [`advance_to`](Self::advance_to), and
-    /// [`SimError::InvalidComponent`] for an event on a node the circuit
-    /// doesn't have, or with a level or tolerance that isn't finite (or
-    /// a tolerance that isn't positive).
+    /// [`SimError::UnknownNode`] for an event on a node the circuit
+    /// doesn't have, and [`SimError::InvalidConfig`] for one with a level
+    /// or tolerance that isn't finite (or a tolerance that isn't
+    /// positive).
     pub fn run_until(
         &mut self,
         t_max: f64,
@@ -596,7 +603,7 @@ impl TransientSession {
         self.index
             .get(id)
             .copied()
-            .ok_or_else(|| SimError::InvalidComponent(format!("`{id}`: no such component")))
+            .ok_or_else(|| SimError::UnknownComponent(id.to_string()))
     }
 
     /// Put `element` in place of element `k`, as a change at the time
@@ -612,17 +619,21 @@ impl TransientSession {
 
     fn check_target(&self, t: f64) -> Result<(), SimError> {
         if let Some(time) = self.failed {
-            return Err(SimError::InvalidComponent(format!(
-                "transient session: stopped by an error at t = {time:e} s"
-            )));
+            return Err(SimError::config(
+                ConfigKind::TransientSession,
+                format!("stopped by an error at t = {time:e} s"),
+            ));
         }
         let eps = self.stepper.eps();
         let tstop = self.stepper.config.tstop;
         if !t.is_finite() || t < self.time() - eps || t > tstop + eps {
-            return Err(SimError::InvalidComponent(format!(
-                "transient session: can't advance to {t} s from {} s; it ends at tstop = {tstop} s",
-                self.time()
-            )));
+            return Err(SimError::config(
+                ConfigKind::TransientSession,
+                format!(
+                    "can't advance to {t} s from {} s; it ends at tstop = {tstop} s",
+                    self.time()
+                ),
+            ));
         }
         Ok(())
     }
@@ -813,10 +824,10 @@ impl TransientSession {
         let mut tolerances = Vec::with_capacity(events.len());
         for e in events {
             let invalid = |what: String| {
-                Err(SimError::InvalidComponent(format!(
-                    "event on `{}`: {what}",
-                    e.node
-                )))
+                Err(SimError::config(
+                    ConfigKind::TransientSession,
+                    format!("event on `{}`: {what}", e.node),
+                ))
             };
             if !e.level.is_finite() {
                 return invalid(format!("level must be finite (got {})", e.level));
@@ -832,7 +843,7 @@ impl TransientSession {
             }
             match self.stepper.node_map.index(&e.node) {
                 Some(i) => rows.push(Some(i)),
-                None => return invalid("no such node".into()),
+                None => return Err(SimError::unknown_node(e.node.as_str())),
             }
         }
         Ok(Watch {

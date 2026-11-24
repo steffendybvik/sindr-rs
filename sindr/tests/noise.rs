@@ -144,10 +144,16 @@ fn current_input_refers_noise_in_amps() {
 fn bad_configs_name_the_problem() {
     let c = biased_diode(0.0);
     let err = |cfg: NoiseConfig| match solve_noise(&c, &cfg) {
-        Err(SimError::InvalidComponent(msg)) => msg,
-        other => panic!("expected InvalidComponent, got {other:?}"),
+        Err(SimError::InvalidConfig {
+            config: sindr::ConfigKind::Noise,
+            reason,
+        }) => reason,
+        other => panic!("expected InvalidConfig, got {other:?}"),
     };
-    assert!(err(config("nowhere", "V1", (1.0, 10.0), 2)).contains("nowhere"));
+    assert!(matches!(
+        solve_noise(&c, &config("nowhere", "V1", (1.0, 10.0), 2)),
+        Err(SimError::UnknownNode { node, component: None }) if node == "nowhere"
+    ));
     assert!(err(config("a", "R1", (1.0, 10.0), 2)).contains("R1"));
     let mut dc = config("a", "V1", (1.0, 10.0), 2);
     dc.f_start = 0.0;
@@ -155,17 +161,14 @@ fn bad_configs_name_the_problem() {
     assert!(err(dc).contains("f_start"));
 }
 
-/// A missing reference node is named as the reference, not the output.
+/// A missing reference node is the one named, not the output.
 #[test]
 fn a_missing_reference_is_named_as_the_reference() {
     let mut cfg = config("a", "V1", (1.0, 10.0), 2);
     cfg.reference = Some("nowhere".into());
     match solve_noise(&biased_diode(0.0), &cfg) {
-        Err(SimError::InvalidComponent(msg)) => {
-            assert!(msg.contains("reference node `nowhere`"), "{msg}");
-            assert!(!msg.contains("output"), "{msg}");
-        }
-        other => panic!("expected InvalidComponent, got {other:?}"),
+        Err(SimError::UnknownNode { node, .. }) => assert_eq!(node, "nowhere"),
+        other => panic!("expected UnknownNode, got {other:?}"),
     }
 }
 

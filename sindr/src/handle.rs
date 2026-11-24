@@ -243,16 +243,16 @@ impl CircuitBuilder {
     /// # Errors
     ///
     /// [`SimError::UnknownNode`] for an element that names a net no call to
-    /// [`node`](Self::node) declared, and [`SimError::InvalidComponent`] for
+    /// [`node`](Self::node) declared, and [`SimError::DuplicateId`] for
     /// two components with one id.
     pub fn build(self) -> Result<Circuit, SimError> {
         let mut ids = BTreeSet::new();
         for element in &self.components {
             if !ids.insert(element.id()) {
-                return Err(SimError::InvalidComponent(format!(
-                    "two components have the id '{}'",
-                    element.id()
-                )));
+                return Err(SimError::DuplicateId {
+                    id: element.id().to_string(),
+                    lowered: false,
+                });
             }
             if let Some(node) = element
                 .all_nodes()
@@ -350,7 +350,7 @@ mod tests {
             nodes: [out, b.ground()],
             resistance: 1e3,
         });
-        assert!(matches!(b.build(), Err(SimError::InvalidComponent(_))));
+        assert!(matches!(b.build(), Err(SimError::DuplicateId { .. })));
     }
 
     #[test]

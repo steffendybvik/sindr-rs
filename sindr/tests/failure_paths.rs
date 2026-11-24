@@ -82,10 +82,15 @@ fn every_analysis_fails(circuit: &Circuit, check: impl Fn(&str, SimError)) {
     }
 }
 
-fn expect_invalid_component(needle: &'static str) -> impl Fn(&str, SimError) {
+/// The component `id` refused, with a reason that starts with `field`.
+fn expect_invalid_component(id: &'static str, field: &'static str) -> impl Fn(&str, SimError) {
     move |analysis, err| match err {
-        SimError::InvalidComponent(msg) => {
-            assert!(msg.contains(needle), "{analysis}: {msg:?} lacks {needle:?}")
+        SimError::InvalidComponent { id: got, reason } => {
+            assert_eq!(got, id, "{analysis}");
+            assert!(
+                reason.starts_with(field),
+                "{analysis}: {reason:?} lacks {field:?}"
+            )
         }
         other => panic!("{analysis}: expected InvalidComponent, got {other:?}"),
     }
@@ -241,7 +246,10 @@ fn duplicate_ids() {
             r("R1", "a", "0", 2.0),
         ],
     );
-    every_analysis_fails(&circuit, expect_invalid_component("`R1`: more than one"));
+    every_analysis_fails(&circuit, |analysis, err| match err {
+        SimError::DuplicateId { id, lowered: false } => assert_eq!(id, "R1", "{analysis}"),
+        other => panic!("{analysis}: expected DuplicateId, got {other:?}"),
+    });
 }
 
 #[test]
@@ -249,7 +257,7 @@ fn unknown_source_id() {
     let circuit = Circuit::new("0", vec![v("V1", "a", "0", 1.0), r("R1", "a", "0", 1.0)]);
     assert!(matches!(
         dc_sweep(&circuit, &DcSweepAxis::new("V9", 0.0, 1.0, 3)),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::UnknownComponent(id)) if id == "V9"
     ));
 }
 
@@ -267,9 +275,12 @@ fn resistance_that_is_zero_negative_or_not_finite() {
     for resistance in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         let circuit = divider_with(r("R2", "b", "0", resistance));
         every_analysis_fails(&circuit, |analysis, err| match err {
-            SimError::InvalidResistance(id) => assert_eq!(id, "R2", "{analysis} at {resistance}"),
+            SimError::InvalidComponent { id, reason } => {
+                assert_eq!(id, "R2", "{analysis} at {resistance}");
+                assert!(reason.starts_with("resistance"), "{reason}");
+            }
             other => {
-                panic!("{analysis} at {resistance}: expected InvalidResistance, got {other:?}")
+                panic!("{analysis} at {resistance}: expected InvalidComponent, got {other:?}")
             }
         });
     }
@@ -280,7 +291,7 @@ fn source_values_that_are_not_finite() {
     for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let circuit = Circuit::new("0", vec![v("V1", "a", "0", value), r("R1", "a", "0", 1.0)]);
         assert!(
-            matches!(solve_circuit(&circuit), Err(SimError::InvalidComponent(ref m)) if m.contains("`V1`: voltage")),
+            matches!(solve_circuit(&circuit), Err(SimError::InvalidComponent { ref id, ref reason }) if id == "V1" && reason.starts_with("voltage")),
             "V1 = {value}"
         );
         let circuit = Circuit::new(
@@ -291,7 +302,7 @@ fn source_values_that_are_not_finite() {
                 i("I1", "0", "a", value),
             ],
         );
-        every_analysis_fails(&circuit, expect_invalid_component("`I1`: current"));
+        every_analysis_fails(&circuit, expect_invalid_component("I1", "current"));
     }
 }
 
@@ -299,7 +310,7 @@ fn source_values_that_are_not_finite() {
 fn capacitance_that_is_negative_or_not_finite() {
     for capacitance in [-1e-6, f64::NAN, f64::INFINITY] {
         let circuit = divider_with(c("C1", "b", "0", capacitance));
-        every_analysis_fails(&circuit, expect_invalid_component("`C1`: capacitance"));
+        every_analysis_fails(&circuit, expect_invalid_component("C1", "capacitance"));
     }
 }
 
@@ -323,7 +334,7 @@ fn zero_capacitance_is_an_open() {
 fn inductance_that_is_zero_negative_or_not_finite() {
     for inductance in [0.0, -1e-3, f64::NAN, f64::INFINITY] {
         let circuit = divider_with(l("L1", "b", "0", inductance));
-        every_analysis_fails(&circuit, expect_invalid_component("`L1`: inductance"));
+        every_analysis_fails(&circuit, expect_invalid_component("L1", "inductance"));
     }
 }
 
@@ -335,7 +346,7 @@ fn controlled_source_gain_that_is_not_finite() {
         control_nodes: ["a".into(), "0".into()],
         gm: f64::NAN,
     }));
-    every_analysis_fails(&circuit, expect_invalid_component("`G1`: gm"));
+    every_analysis_fails(&circuit, expect_invalid_component("G1", "gm"));
 }
 
 #[test]
@@ -356,7 +367,7 @@ fn transformer_inductance_that_is_zero() {
             r("R2", "s", "0", 100.0),
         ],
     );
-    every_analysis_fails(&circuit, expect_invalid_component("`T1`: l1"));
+    every_analysis_fails(&circuit, expect_invalid_component("T1", "l1"));
 }
 
 // -------------------------------------------------------------- bad decks
@@ -380,11 +391,14 @@ fn zener_without_a_breakdown_voltage_is_rejected() {
             ],
         );
         every_analysis_fails(&circuit, |analysis, err| match err {
-            SimError::InvalidComponent(msg) => assert_eq!(
-                msg,
-                format!("`DZ1`: vz {vz} V must be a positive, finite number"),
-                "{analysis}"
-            ),
+            SimError::InvalidComponent { id, reason } => {
+                assert_eq!(id, "DZ1", "{analysis}");
+                assert_eq!(
+                    reason,
+                    format!("vz {vz} V must be a positive, finite number"),
+                    "{analysis}"
+                );
+            }
             other => panic!("{analysis}: expected InvalidComponent, got {other:?}"),
         });
     }
@@ -409,10 +423,13 @@ fn op_amp_rails_must_not_cross() {
             ],
         );
         match validate_circuit(&circuit) {
-            Err(SimError::InvalidComponent(msg)) => assert_eq!(
-                msg,
-                format!("`U1`: v_pos {v_pos} V must be above v_neg {v_neg} V")
-            ),
+            Err(SimError::InvalidComponent { id, reason }) => {
+                assert_eq!(id, "U1");
+                assert_eq!(
+                    reason,
+                    format!("v_pos {v_pos} V must be above v_neg {v_neg} V")
+                );
+            }
             other => panic!("expected InvalidComponent, got {other:?}"),
         }
     }
@@ -421,7 +438,7 @@ fn op_amp_rails_must_not_cross() {
 #[cfg(feature = "spice")]
 mod decks {
     use sindr::spice::{parse_str, SpiceParseError};
-    use sindr::{solve_circuit, solve_transient, SimError};
+    use sindr::{solve_circuit, solve_transient, ConfigKind, SimError};
 
     /// Each deck must be refused by the parser with an error, not a panic.
     #[test]
@@ -482,7 +499,7 @@ mod decks {
         let parsed = parse_str(deck).expect("parses");
         assert!(matches!(
             solve_circuit(&parsed.circuit),
-            Err(SimError::InvalidComponent(m)) if m.contains("more than one")
+            Err(SimError::DuplicateId { id, .. }) if id == "r1"
         ));
     }
 
@@ -491,7 +508,7 @@ mod decks {
         let parsed = parse_str("* t\nV1 a 0 1\nR1 a 0 0\n.op\n.end\n").expect("parses");
         assert!(matches!(
             solve_circuit(&parsed.circuit),
-            Err(SimError::InvalidResistance(_))
+            Err(SimError::InvalidComponent { id, .. }) if id == "r1"
         ));
     }
 
@@ -512,10 +529,16 @@ mod decks {
                 .find_map(|a| a.transient_config())
                 .expect("has a .tran");
             match solve_transient(&parsed.circuit, &config) {
-                Err(SimError::InvalidComponent(m)) => {
-                    assert!(m.contains(needle), "{tran}: {m:?} lacks {needle:?}")
+                Err(SimError::InvalidConfig {
+                    config: ConfigKind::Transient,
+                    reason,
+                }) => {
+                    assert!(
+                        reason.contains(needle),
+                        "{tran}: {reason:?} lacks {needle:?}"
+                    )
                 }
-                other => panic!("{tran}: expected InvalidComponent, got {other:?}"),
+                other => panic!("{tran}: expected InvalidConfig, got {other:?}"),
             }
         }
     }

@@ -58,7 +58,7 @@
 use crate::element::{Capacitor, CurrentSource, Inductor, Resistor, VoltageSource};
 use crate::measure::{Measurable, Measurement, Spec, SpecStatus};
 use crate::ratings::{check_ratings, RatingKind, RatingStatus};
-use crate::{Circuit, CircuitElement, SimError, SimulationResult};
+use crate::{Circuit, CircuitElement, ConfigKind, SimError, SimulationResult};
 
 /// Which parameter of a component a [`Tolerance`] varies.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -529,8 +529,9 @@ impl RatingsSpread {
 ///
 /// # Errors
 ///
-/// [`SimError::InvalidComponent`] for a tolerance on a component that
-/// isn't there or doesn't have its parameter, a relative band outside
+/// [`SimError::UnknownComponent`] for a tolerance on a component that
+/// isn't there, and [`SimError::InvalidConfig`] for one on a component
+/// that doesn't have its parameter, a relative band outside
 /// `[0, 1)`, a Gaussian whose `sigmas` isn't above 0, or no runs. A run
 /// that fails isn't an error: see [`VariationRun::measurements`].
 pub fn monte_carlo<R, F>(
@@ -552,8 +553,9 @@ where
 /// Each run's deviation of each tolerance, as fractions of its nominal.
 fn monte_carlo_plan(config: &MonteCarloConfig) -> Result<Vec<Vec<f64>>, SimError> {
     if config.runs == 0 {
-        return Err(SimError::InvalidComponent(
-            "Monte Carlo needs at least one run".to_string(),
+        return Err(SimError::config(
+            ConfigKind::Variation,
+            "Monte Carlo needs at least one run",
         ));
     }
     Ok((0..config.runs)
@@ -604,10 +606,13 @@ fn corner_plan(tolerances: &[Tolerance], which: &Corners) -> Result<Vec<Vec<f64>
     let list: Vec<Vec<Corner>> = match which {
         Corners::All => {
             if n > MAX_CORNER_TOLERANCES {
-                return Err(SimError::InvalidComponent(format!(
-                    "every corner of {n} tolerances is 2^{n} runs; list the corners, or take at \
-                     most {MAX_CORNER_TOLERANCES}"
-                )));
+                return Err(SimError::config(
+                    ConfigKind::Variation,
+                    format!(
+                        "every corner of {n} tolerances is 2^{n} runs; list the corners, or \
+                         take at most {MAX_CORNER_TOLERANCES}"
+                    ),
+                ));
             }
             (0..1usize << n)
                 .map(|bits| {
@@ -625,10 +630,10 @@ fn corner_plan(tolerances: &[Tolerance], which: &Corners) -> Result<Vec<Vec<f64>
         }
         Corners::List(list) => {
             if let Some(bad) = list.iter().find(|c| c.len() != n) {
-                return Err(SimError::InvalidComponent(format!(
-                    "a corner names {} tolerances, not {n}",
-                    bad.len()
-                )));
+                return Err(SimError::config(
+                    ConfigKind::Variation,
+                    format!("a corner names {} tolerances, not {n}", bad.len()),
+                ));
             }
             list.clone()
         }
@@ -760,34 +765,35 @@ impl Base {
         let mut targets = Vec::with_capacity(tolerances.len());
         for t in tolerances {
             if !(t.relative.is_finite() && (0.0..1.0).contains(&t.relative)) {
-                return Err(SimError::InvalidComponent(format!(
-                    "`{}`: tolerance {} must be in [0, 1)",
-                    t.component, t.relative
-                )));
+                return Err(SimError::config(
+                    ConfigKind::Variation,
+                    format!(
+                        "`{}`: tolerance {} must be in [0, 1)",
+                        t.component, t.relative
+                    ),
+                ));
             }
             if let Distribution::Gaussian { sigmas } = t.distribution {
                 if !(sigmas.is_finite() && sigmas > 0.0) {
-                    return Err(SimError::InvalidComponent(format!(
-                        "`{}`: a Gaussian tolerance needs sigmas above 0, not {sigmas}",
-                        t.component
-                    )));
+                    return Err(SimError::config(
+                        ConfigKind::Variation,
+                        format!(
+                            "`{}`: a Gaussian tolerance needs sigmas above 0, not {sigmas}",
+                            t.component
+                        ),
+                    ));
                 }
             }
             let index = circuit
                 .components
                 .iter()
                 .position(|c| c.id() == t.component)
-                .ok_or_else(|| {
-                    SimError::InvalidComponent(format!(
-                        "tolerance on `{}`, which isn't in the circuit",
-                        t.component
-                    ))
-                })?;
+                .ok_or_else(|| SimError::UnknownComponent(t.component.to_string()))?;
             let nominal = t.parameter.get(&circuit.components[index]).ok_or_else(|| {
-                SimError::InvalidComponent(format!(
-                    "`{}` has no {:?} to vary",
-                    t.component, t.parameter
-                ))
+                SimError::config(
+                    ConfigKind::Variation,
+                    format!("`{}` has no {:?} to vary", t.component, t.parameter),
+                )
             })?;
             targets.push((index, t.parameter, nominal));
         }

@@ -18,7 +18,7 @@ use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::mna::MnaMatrix;
 use crate::node_map::{NodeMap, Terminals};
 
@@ -285,10 +285,13 @@ pub(crate) fn validate_stimulus(circuit: &Circuit, config: &AcConfig) -> Result<
         .iter()
         .any(|c| matches!(c, CircuitElement::VoltageSource(VoltageSource { id, .. }) if *id == config.source_id));
     if !drives_a_voltage_source {
-        return Err(SimError::InvalidComponent(format!(
-            "AC sweep: source_id '{}' is not a voltage source in the circuit",
-            config.source_id
-        )));
+        return Err(SimError::config(
+            ConfigKind::Ac,
+            format!(
+                "source_id '{}' is not a voltage source in the circuit",
+                config.source_id
+            ),
+        ));
     }
     Ok(())
 }
@@ -296,12 +299,12 @@ pub(crate) fn validate_stimulus(circuit: &Circuit, config: &AcConfig) -> Result<
 /// Reject sweep configs that would underflow, divide by zero, or feed
 /// `log10` a non-positive value.
 pub(crate) fn validate_config(config: &AcConfig) -> Result<(), SimError> {
-    let invalid = |msg: String| Err(SimError::InvalidComponent(format!("AC sweep: {msg}")));
+    let invalid = |msg: String| Err(SimError::config(ConfigKind::Ac, msg));
 
     if config.num_points == 0 {
         return invalid("num_points must be at least 1".into());
     }
-    crate::validation::check_sweep_points("AC sweep", "num_points", config.num_points)?;
+    crate::validation::check_sweep_points(ConfigKind::Ac, "num_points", config.num_points)?;
     for (name, value) in [
         ("f_start", config.f_start),
         ("f_stop", config.f_stop),
@@ -542,7 +545,7 @@ pub(crate) struct SmallSignalPencil {
 ///
 /// # Errors
 ///
-/// [`SimError::InvalidComponent`] if the system isn't affine in `s`, which
+/// [`SimError::InvalidConfig`] if the system isn't affine in `s`, which
 /// would mean an element's stamp has no pencil form.
 pub(crate) fn small_signal_pencil(
     circuit: &Circuit,
@@ -568,8 +571,9 @@ pub(crate) fn small_signal_pencil(
         (a0[k] - g).norm() <= tol && (a2[k] - Complex64::new(g, 2.0 * c)).norm() <= tol
     });
     if !affine {
-        return Err(SimError::InvalidComponent(
-            "pole-zero: the linearised circuit isn't of the form G + sC".into(),
+        return Err(SimError::config(
+            ConfigKind::PoleZero,
+            "the linearised circuit isn't of the form G + sC",
         ));
     }
     Ok(SmallSignalPencil {
@@ -660,7 +664,7 @@ fn build_small_signal(
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `config` is invalid: zero points,
+/// - [`SimError::InvalidConfig`] if `config` is invalid: zero points,
 ///   non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic
 ///   spacing, `f_start < 0` with linear spacing, or more than 10⁷ points;
 ///   or if `source_id` isn't the id of a voltage source in `circuit`

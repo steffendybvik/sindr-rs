@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use crate::ac_analysis::{AcConfig, AcResult};
 use crate::circuit::Circuit;
 use crate::dc_sweep::{DcSweepAxis, DcSweepResult, NestedDcSweepResult};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::noise::{NoiseConfig, NoiseResult};
 use crate::results::SimulationResult;
 use crate::sensitivity::{AcSensConfig, AcSensResult, SensConfig, SensResult};
@@ -118,13 +118,12 @@ impl SolverOptions {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] naming the first field that isn't:
+    /// [`SimError::InvalidConfig`] naming the first field that isn't:
     /// a tolerance that isn't finite and positive, no iterations, a gmin
     /// step that isn't finite and positive, a `min_source_step` outside
     /// `(0, 1)`, no transient steps, or a `nodeset` voltage that isn't finite.
     pub fn validate(&self) -> Result<(), SimError> {
-        let invalid =
-            |msg: String| Err(SimError::InvalidComponent(format!("solver options: {msg}")));
+        let invalid = |msg: String| Err(SimError::config(ConfigKind::SolverOptions, msg));
         for (name, value) in [
             ("reltol", self.reltol),
             ("vntol", self.vntol),

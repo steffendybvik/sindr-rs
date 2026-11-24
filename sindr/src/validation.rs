@@ -12,7 +12,7 @@ use crate::element::Behavioural;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 
 /// Most points one AC, DC or temperature sweep may have. Each point is a
 /// full solve, so this is far past anything useful; it exists so a huge
@@ -20,11 +20,12 @@ use crate::error::SimError;
 pub(crate) const MAX_SWEEP_POINTS: usize = 10_000_000;
 
 /// Rejects a sweep of more than [`MAX_SWEEP_POINTS`] points.
-pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(), SimError> {
+pub(crate) fn check_sweep_points(what: ConfigKind, name: &str, n: usize) -> Result<(), SimError> {
     if n > MAX_SWEEP_POINTS {
-        return Err(SimError::InvalidComponent(format!(
-            "{what}: {name} = {n} is more than the {MAX_SWEEP_POINTS} allowed"
-        )));
+        return Err(SimError::config(
+            what,
+            format!("{name} = {n} is more than the {MAX_SWEEP_POINTS} allowed"),
+        ));
     }
     Ok(())
 }
@@ -53,11 +54,10 @@ pub(crate) fn check_sweep_points(what: &str, name: &str, n: usize) -> Result<(),
 /// Returns [`SimError::FloatingNode`] naming the first node with fewer than
 /// 2 connections.
 ///
-/// Returns [`SimError::InvalidResistance`] for a resistor whose resistance
-/// is zero, negative or not finite.
-///
-/// Returns [`SimError::InvalidComponent`] for a repeated id, or naming the
-/// component, field and value for any other value out of range.
+/// Returns [`SimError::DuplicateId`] for a repeated id, and
+/// [`SimError::InvalidComponent`] naming the component, field and value
+/// for a value out of range, such as a resistance that is zero, negative or
+/// not finite.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     let flat = circuit.flattened()?;
     let circuit: &Circuit = &flat;
@@ -136,10 +136,10 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     let mut ids = HashSet::new();
     for comp in &circuit.components {
         if !ids.insert(comp.id()) {
-            return Err(SimError::InvalidComponent(format!(
-                "`{}`: more than one component has this id",
-                comp.id()
-            )));
+            return Err(SimError::DuplicateId {
+                id: comp.id().to_string(),
+                lowered: false,
+            });
         }
     }
 
@@ -158,11 +158,14 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
             for variable in expr.variables() {
                 if let crate::expression::Variable::Current { source } = variable {
                     if circuit.vsource_branch_index(source).is_none() {
-                        return Err(SimError::InvalidComponent(format!(
-                            "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
-                             element (voltage source, VCVS, CCVS, op-amp, regulator or \
-                             behavioural voltage source)"
-                        )));
+                        return Err(SimError::component(
+                            id,
+                            format!(
+                                "reads i({source}), but `{source}` isn't a voltage-defined \
+                                 element (voltage source, VCVS, CCVS, op-amp, regulator or \
+                                 behavioural voltage source)"
+                            ),
+                        ));
                     }
                 }
             }
@@ -281,7 +284,9 @@ mod tests {
         ];
         for (circuit, field) in bad {
             match validate_circuit(&circuit) {
-                Err(SimError::InvalidComponent(msg)) => assert!(msg.contains(field), "{msg}"),
+                Err(SimError::InvalidComponent { reason, .. }) => {
+                    assert!(reason.contains(field), "{reason}")
+                }
                 other => panic!("{field}: {other:?}"),
             }
         }
@@ -316,8 +321,8 @@ mod tests {
         };
         for t in [0.0, -10.0, f64::NAN, f64::INFINITY] {
             match validate_circuit(&diode(t)) {
-                Err(SimError::InvalidComponent(msg)) => {
-                    assert!(msg.contains("D1") && msg.contains("temperature"), "{msg}");
+                Err(SimError::InvalidComponent { id, reason }) => {
+                    assert!(id == "D1" && reason.contains("temperature"), "{reason}");
                 }
                 other => panic!("T = {t}: {other:?}"),
             }
@@ -335,8 +340,8 @@ mod tests {
             model: None,
         });
         match validate_circuit(&bjt) {
-            Err(SimError::InvalidComponent(msg)) => {
-                assert!(msg.contains("Q1") && msg.contains("bf"), "{msg}");
+            Err(SimError::InvalidComponent { id, reason }) => {
+                assert!(id == "Q1" && reason.contains("bf"), "{reason}");
             }
             other => panic!("{other:?}"),
         }

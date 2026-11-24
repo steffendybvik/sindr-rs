@@ -167,10 +167,13 @@ fn sources_report_their_waveform_value() {
 
 fn assert_rejected(circuit: &Circuit, config: TransientConfig, needle: &str) {
     match solve_transient(circuit, &config) {
-        Err(SimError::InvalidComponent(msg)) => {
-            assert!(msg.contains(needle), "{msg:?} lacks {needle:?}")
+        Err(SimError::InvalidConfig {
+            config: sindr::ConfigKind::Transient,
+            reason,
+        }) => {
+            assert!(reason.contains(needle), "{reason:?} lacks {needle:?}")
         }
-        other => panic!("{needle}: expected InvalidComponent, got {other:?}"),
+        other => panic!("{needle}: expected InvalidConfig, got {other:?}"),
     }
 }
 

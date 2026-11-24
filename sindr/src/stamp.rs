@@ -42,7 +42,7 @@ pub const SWITCH_R_OPEN: f64 = 1e9;
 ///
 /// # Errors
 ///
-/// [`SimError::InvalidResistance`] for a resistor with zero or negative
+/// [`SimError::InvalidComponent`] for a resistor with zero or negative
 /// resistance.
 pub fn stamp_circuit(
     circuit: &Circuit,
@@ -488,7 +488,7 @@ mod tests {
         assert_relative_eq!(system.b[0], 0.002, epsilon = 1e-15);
     }
 
-    /// Invalid resistance (zero) returns SimError::InvalidResistance.
+    /// Invalid resistance (zero) returns SimError::InvalidComponent.
     #[test]
     fn stamp_zero_resistance_returns_error() {
         let circuit = Circuit {
@@ -506,8 +506,11 @@ mod tests {
         let result = stamp_circuit(&circuit, &mut system, &node_map, None);
         assert!(result.is_err());
         match result.unwrap_err() {
-            SimError::InvalidResistance(id) => assert_eq!(id, "R1"),
-            other => panic!("expected InvalidResistance, got: {other}"),
+            SimError::InvalidComponent { id, reason } => {
+                assert_eq!(id, "R1");
+                assert!(reason.contains("resistance"), "{reason}");
+            }
+            other => panic!("expected InvalidComponent, got: {other}"),
         }
     }
 

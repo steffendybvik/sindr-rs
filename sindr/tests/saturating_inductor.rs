@@ -196,7 +196,9 @@ fn saturation_parameters_are_validated() {
             ],
         );
         match validate_circuit(&circuit) {
-            Err(SimError::InvalidComponent(m)) => assert!(m.contains(needle), "{m}"),
+            Err(SimError::InvalidComponent { reason, .. }) => {
+                assert!(reason.contains(needle), "{reason}")
+            }
             other => panic!("expected InvalidComponent for {needle}, got {other:?}"),
         }
     }

@@ -98,10 +98,10 @@ fn invalid_configs_are_rejected() {
     ];
     for (case, config) in cases {
         match solve_transient(&rc(), &config) {
-            Err(SimError::InvalidComponent(msg)) => {
-                assert!(msg.starts_with("transient:"), "{case}: {msg}")
+            Err(SimError::InvalidConfig { config, .. }) => {
+                assert_eq!(config, sindr::ConfigKind::Transient, "{case}")
             }
-            other => panic!("{case}: expected InvalidComponent, got {other:?}"),
+            other => panic!("{case}: expected InvalidConfig, got {other:?}"),
         }
     }
 }

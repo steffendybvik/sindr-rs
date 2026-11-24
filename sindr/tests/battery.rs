@@ -238,7 +238,9 @@ fn bad_parameters_are_refused() {
     for (params, soc, needle) in cases {
         let circuit = Circuit::new("0", vec![battery(params, soc), load(10.0)]);
         match validate_circuit(&circuit) {
-            Err(SimError::InvalidComponent(m)) => assert!(m.contains(needle), "{m}"),
+            Err(SimError::InvalidComponent { reason, .. }) => {
+                assert!(reason.contains(needle), "{reason}")
+            }
             other => panic!("expected InvalidComponent for {needle}, got {other:?}"),
         }
     }

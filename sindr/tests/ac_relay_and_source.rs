@@ -85,10 +85,11 @@ fn ac_rejects_a_source_id_that_is_not_a_voltage_source() {
         }));
     for id in ["V9", "I1", "R1"] {
         match solve_ac(&circuit, &ac(id)) {
-            Err(SimError::InvalidComponent(msg)) => {
-                assert!(msg.contains(&format!("'{id}'")), "{msg}")
+            Err(SimError::InvalidConfig { config, reason }) => {
+                assert_eq!(config, sindr::ConfigKind::Ac);
+                assert!(reason.contains(&format!("'{id}'")), "{reason}")
             }
-            other => panic!("{id}: expected InvalidComponent, got {other:?}"),
+            other => panic!("{id}: expected InvalidConfig, got {other:?}"),
         }
     }
 }

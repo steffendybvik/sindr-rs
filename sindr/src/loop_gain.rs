@@ -37,7 +37,7 @@ use crate::ac_analysis::{
     SmallSignalModel,
 };
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::node_map::NodeMap;
 
 /// Loop-gain analysis configuration. Build one with [`LoopGainConfig::new`].
@@ -169,7 +169,7 @@ pub struct LoopGainResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the sweep is invalid (as for
+/// - [`SimError::InvalidConfig`] if the sweep is invalid (as for
 ///   [`AcConfig`]), or the probe is not an independent voltage source with
 ///   neither terminal on ground. Checked before the DC solve
 /// - Any [`SimError`] from the DC operating-point solve
@@ -247,16 +247,22 @@ pub(crate) fn solve_loop_gain_with(
             _ => None,
         })
         .ok_or_else(|| {
-            SimError::InvalidComponent(format!(
-                "loop gain: probe `{}` is not an independent voltage source",
-                config.probe
-            ))
+            SimError::config(
+                ConfigKind::LoopGain,
+                format!(
+                    "probe `{}` is not an independent voltage source",
+                    config.probe
+                ),
+            )
         })?;
     if probe_nodes.iter().any(|n| *n == circuit.ground_node) {
-        return Err(SimError::InvalidComponent(format!(
-            "loop gain: probe `{}` has a terminal on ground; it must sit in series with the loop",
-            config.probe
-        )));
+        return Err(SimError::config(
+            ConfigKind::LoopGain,
+            format!(
+                "probe `{}` has a terminal on ground; it must sit in series with the loop",
+                config.probe
+            ),
+        ));
     }
 
     let (node_map, dc_solution, dc) = bias_point_with_result(circuit, opts)?;
@@ -347,10 +353,10 @@ impl Probe<'_> {
             omega,
         );
         let (Some(k), Some(p)) = (system.vsource_branch(self.id), self.driven) else {
-            return Err(SimError::InvalidComponent(format!(
-                "loop gain: probe `{}` is not an independent voltage source",
-                self.id
-            )));
+            return Err(SimError::config(
+                ConfigKind::LoopGain,
+                format!("probe `{}` is not an independent voltage source", self.id),
+            ));
         };
         let zero = nalgebra::DVector::from_element(system.size(), Complex64::new(0.0, 0.0));
         // Voltage injection: the probe at 1, everything else zero.

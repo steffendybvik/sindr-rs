@@ -199,7 +199,10 @@ fn monte_carlo_ratings_record_failed_runs() {
     let sampling = Sampling::MonteCarlo(MonteCarloConfig::new(tolerances(), 40).with_seed(4));
     let picky = |c: &Circuit| match &c.components[1] {
         CircuitElement::Resistor(Resistor { resistance, .. }) if *resistance > 10e3 => {
-            Err(SimError::InvalidComponent("too big".to_string()))
+            Err(SimError::InvalidComponent {
+                id: "R2".into(),
+                reason: "too big".into(),
+            })
         }
         _ => solve_op(c),
     };

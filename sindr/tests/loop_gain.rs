@@ -182,7 +182,10 @@ fn probe_must_be_a_floating_voltage_source() {
     let config = LoopGainConfig::new("RL", 1.0, 1e6, 11);
     assert!(matches!(
         solve_loop_gain(&circuit(parts.clone()), &config),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig {
+            config: sindr::ConfigKind::LoopGain,
+            ..
+        })
     ));
 
     let mut grounded = parts;
@@ -195,7 +198,10 @@ fn probe_must_be_a_floating_voltage_source() {
     let config = LoopGainConfig::new("Vg", 1.0, 1e6, 11);
     assert!(matches!(
         solve_loop_gain(&circuit(grounded), &config),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig {
+            config: sindr::ConfigKind::LoopGain,
+            ..
+        })
     ));
 }
 
@@ -226,7 +232,7 @@ fn probe_with_its_driven_side_on_ground_is_an_error() {
     let err =
         solve_loop_gain(&circuit(parts), &LoopGainConfig::new("Vprobe", 1.0, 1e3, 3)).unwrap_err();
     assert!(
-        matches!(&err, SimError::InvalidComponent(m) if m.contains("Vprobe")),
+        matches!(&err, SimError::InvalidConfig { config: sindr::ConfigKind::LoopGain, reason } if reason.contains("Vprobe")),
         "{err:?}"
     );
 }

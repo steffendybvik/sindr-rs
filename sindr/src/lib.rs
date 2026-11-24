@@ -367,7 +367,7 @@ pub use circuit::{
 };
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepAxis, DcSweepResult, NestedDcSweepResult};
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
-pub use error::{SimError, SolvePoint};
+pub use error::{ConfigKind, SimError, SolvePoint};
 pub use fourier::{Fft, Fourier, FourierResult, Harmonic, Spectrum, SpectrumBin, Window};
 pub use handle::{CircuitBuilder, ComponentId, NodeId};
 pub use loop_gain::{solve_loop_gain, LoopGainConfig, LoopGainPoint, LoopGainResult};
@@ -460,11 +460,10 @@ pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, C
     let mut seen = std::collections::HashSet::new();
     for element in &owned.components {
         if !seen.insert(element.id()) {
-            return Err(SimError::InvalidComponent(format!(
-                "`{}`: two components share this id once switches, crystals, beads \
-                 and digital pins are split into their parts",
-                element.id()
-            )));
+            return Err(SimError::DuplicateId {
+                id: element.id().to_string(),
+                lowered: true,
+            });
         }
     }
     let mut body_diodes = Vec::new();
@@ -493,10 +492,10 @@ pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, C
     }
     for diode in &body_diodes {
         if owned.components.iter().any(|c| c.id() == diode.id()) {
-            return Err(SimError::InvalidComponent(format!(
-                "`{}`: a component already has the id a body diode is solved under",
-                diode.id()
-            )));
+            return Err(SimError::DuplicateId {
+                id: diode.id().to_string(),
+                lowered: true,
+            });
         }
     }
     owned.components.extend(body_diodes);
@@ -509,9 +508,10 @@ pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, C
         }) = element
         {
             if !(vz.is_finite() && *vz > 0.0) {
-                return Err(SimError::InvalidComponent(format!(
-                    "`{id}`: vz {vz} V must be a positive, finite number"
-                )));
+                return Err(SimError::component(
+                    id.as_str(),
+                    format!("vz {vz} V must be a positive, finite number"),
+                ));
             }
             *element = CircuitElement::Diode(Diode {
                 id: id.clone(),
@@ -536,10 +536,16 @@ fn auto_transient_config(
     config
         .validate(opts.max_transient_steps)
         .map_err(|e| match e {
-            SimError::InvalidComponent(msg) => SimError::InvalidComponent(format!(
-                "{msg} (automatic span {} s and step {} s; set them with solve_transient)",
-                config.tstop, config.tstep
-            )),
+            SimError::InvalidConfig {
+                config: kind,
+                reason,
+            } => SimError::InvalidConfig {
+                config: kind,
+                reason: format!(
+                    "{reason} (automatic span {} s and step {} s; set them with solve_transient)",
+                    config.tstop, config.tstep
+                ),
+            },
             other => other,
         })?;
     Ok(config)
@@ -567,7 +573,7 @@ fn auto_transient_config(
 /// floating nodes, invalid component values, etc.) or if the solver itself
 /// fails to converge or produces a singular matrix. See [`SimError`] for the
 /// full list. A transient whose automatic span and step would take more than
-/// 10⁷ steps is [`SimError::InvalidComponent`]; run it with
+/// 10⁷ steps is [`SimError::InvalidConfig`]; run it with
 /// [`solve_transient`] and a coarser [`TransientConfig`].
 ///
 /// # Example

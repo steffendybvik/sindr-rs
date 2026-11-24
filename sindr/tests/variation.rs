@@ -193,7 +193,10 @@ fn failed_runs_are_recorded_not_fatal() {
         let r1 = c.components.iter().find(|e| e.id() == "r1").unwrap();
         match r1 {
             CircuitElement::Resistor(Resistor { resistance, .. }) if *resistance > 10e3 => {
-                Err(SimError::InvalidComponent("too big".to_string()))
+                Err(SimError::InvalidComponent {
+                    id: "R1".into(),
+                    reason: "too big".into(),
+                })
             }
             _ => solve_op(c),
         }
@@ -252,7 +255,7 @@ fn bad_configurations_are_errors() {
         .to_string()
     };
     let res = |id: &str, rel| Tolerance::new(id, Parameter::Resistance, rel);
-    assert!(mc(vec![res("r9", 0.1)], 10).contains("isn't in the circuit"));
+    assert!(mc(vec![res("r9", 0.1)], 10).contains("No component \"r9\""));
     assert!(
         mc(vec![Tolerance::new("v1", Parameter::Resistance, 0.1)], 10).contains("no Resistance")
     );

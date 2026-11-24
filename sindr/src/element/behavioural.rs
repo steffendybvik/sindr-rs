@@ -280,11 +280,14 @@ pub(crate) fn behavioural_linearisation(
             }
             Variable::Current { source } => {
                 let branch = circuit.vsource_branch_index(source).ok_or_else(|| {
-                    SimError::InvalidComponent(format!(
-                        "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
-                         element (voltage source, VCVS, CCVS, op-amp, regulator or \
-                         behavioural voltage source)"
-                    ))
+                    SimError::component(
+                        id,
+                        format!(
+                            "reads i({source}), but `{source}` isn't a voltage-defined \
+                             element (voltage source, VCVS, CCVS, op-amp, regulator or \
+                             behavioural voltage source)"
+                        ),
+                    )
                 })?;
                 let k = num_nodes + branch;
                 (vec![(k, 1.0)], at(k))

@@ -41,10 +41,11 @@ fn pulse(delay: f64, period: f64) -> Waveform {
 
 fn assert_invalid(result: Result<impl std::fmt::Debug, SimError>, needle: &str) {
     match result {
-        Err(SimError::InvalidComponent(msg)) => {
+        Err(e @ SimError::InvalidConfig { .. }) => {
+            let msg = e.to_string();
             assert!(msg.contains(needle), "message {msg:?} lacks {needle:?}")
         }
-        other => panic!("expected InvalidComponent, got {other:?}"),
+        other => panic!("expected InvalidConfig, got {other:?}"),
     }
 }
 

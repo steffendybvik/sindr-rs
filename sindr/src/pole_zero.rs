@@ -51,7 +51,7 @@ use crate::ac_analysis::{
     small_signal_pencil,
 };
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::node_map::NodeMap;
 
 /// The transfer function a pole-zero analysis is of: SPICE's `vol` or
@@ -202,8 +202,9 @@ impl PzResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if a node is not in the circuit, a
-///   pair names the same node twice, or (for zeros) the output does not
+/// - [`SimError::UnknownNode`] if a node is not in the circuit
+/// - [`SimError::InvalidConfig`] if a pair names the same node twice, or
+///   (for zeros) the output does not
 ///   respond to the input at all, such as a transimpedance whose input is
 ///   shorted by a voltage source. Node names are checked before the DC
 ///   solve
@@ -317,11 +318,14 @@ pub(crate) fn solve_pz_with(
         let gb = border(&g, Some(&b), Some(&out));
         let cb = border(&c, None, None);
         pencil_roots(&gb, &cb).map_err(|e| match e {
-            PencilError::Singular => SimError::InvalidComponent(format!(
-                "pole-zero: V({}, {}) does not respond to the input at ({}, {}), so the \
-                 transfer function has no zeros",
-                config.output, config.output_reference, config.input, config.input_reference
-            )),
+            PencilError::Singular => SimError::config(
+                ConfigKind::PoleZero,
+                format!(
+                    "V({}, {}) does not respond to the input at ({}, {}), so the \
+                     transfer function has no zeros",
+                    config.output, config.output_reference, config.input, config.input_reference
+                ),
+            ),
             PencilError::NoConvergence => qz_failure(),
         })?
     };
@@ -357,9 +361,7 @@ impl Ports {
     fn of(circuit: &Circuit, config: &PzConfig) -> Result<Self, SimError> {
         let node_map = NodeMap::from_circuit(circuit);
         let index = |name: &str| match node_map.index(name) {
-            None if name != circuit.ground_node => Err(SimError::InvalidComponent(format!(
-                "pole-zero: node `{name}` is not in the circuit"
-            ))),
+            None if name != circuit.ground_node => Err(SimError::unknown_node(name)),
             index => Ok(index),
         };
         for (p, q, what) in [
@@ -367,9 +369,10 @@ impl Ports {
             (&config.output, &config.output_reference, "output"),
         ] {
             if p == q {
-                return Err(SimError::InvalidComponent(format!(
-                    "pole-zero: the {what} pair names `{p}` twice"
-                )));
+                return Err(SimError::config(
+                    ConfigKind::PoleZero,
+                    format!("the {what} pair names `{p}` twice"),
+                ));
             }
         }
         Ok(Self {

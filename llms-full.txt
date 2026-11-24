@@ -845,7 +845,7 @@ let phase = result.phase_curve("n_out"); // (Hz, degrees)
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidComponent`.
+`num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidConfig`.
 
 ### Transfer function
 
@@ -1268,8 +1268,11 @@ pub enum SimError {
     FloatingNode(String),
     SingularMatrix,
     InvalidSolution,
-    InvalidComponent(String),
-    InvalidResistance(String),
+    InvalidComponent { id: String, reason: String },
+    InvalidConfig { config: ConfigKind, reason: String },
+    DuplicateId { id: String, lowered: bool },
+    UnknownNode { node: String, component: Option<String> },
+    UnknownComponent(String),
     ConvergenceFailed {
         iterations: usize,
         max_step_volts: f64,
@@ -1278,9 +1281,15 @@ pub enum SimError {
         at: SolvePoint,
     },
     ThermalRunaway { part: String, temperature: f64 },
+    TimestepTooSmall { time: f64, step: f64 },
+    Cancelled { time: f64 },
     Measurement { name: String, reason: String },
+    Spectrum { reason: String },
+    NotFinite { component: String, expression: String, inputs: String },
 }
 ```
+
+A definition the solver refuses carries its cause as fields, so match on the variant, not the message. `InvalidComponent` is a component's value out of range (a zero resistance, a `bf` that isn't positive), with the component's `id` and a `reason` naming the field. `InvalidConfig` is an analysis setting it can't use, and `config` says which settings: `ConfigKind::Ac`, `Transient`, `DcSweep`, `SolverOptions` and so on. `DuplicateId` is two components with one id, `UnknownNode` a net nothing in the circuit has, and `UnknownComponent` an id nothing has, such as a sweep's source or a tolerance's component.
 
 `ConvergenceFailed` means Newton-Raphson did not converge — usually caused by a nonlinear circuit with no DC path to ground, or component values far outside typical operating ranges. The `max_step_volts` field gives the largest per-node Newton step (V) on the final iteration, useful for distinguishing slow convergence from genuine divergence. `node` is the node that took it, `components` the parts on that node, and `at` where the analysis failed (`SolvePoint::OperatingPoint`, `DcSweep`, `Temperature` or `Transient { time }`), so the message points at the part to fix. (Note: this is a step magnitude `max_i |V_new[i] − V_prev[i]|`, not a KCL residual `|F(x)|`.)
 
@@ -1830,7 +1839,7 @@ impl AcResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `config` is invalid: zero points,
+/// - [`SimError::InvalidConfig`] if `config` is invalid: zero points,
 ///   non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic
 ///   spacing, `f_start < 0` with linear spacing, or more than 10⁷ points;
 ///   or if `source_id` isn't the id of a voltage source in `circuit`
@@ -2744,7 +2753,7 @@ impl DcSweepAxis {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] for a value that isn't finite, a step
+    /// [`SimError::InvalidConfig`] for a value that isn't finite, a step
     /// that is zero (with `start != stop`) or points away from `stop`, or
     /// more than 10⁷ points.
     pub fn from_step(
@@ -2779,9 +2788,10 @@ impl DcSweepAxis {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_points < 2` (1 is allowed when
+/// - [`SimError::UnknownComponent`] if no component has `source_id`
+/// - [`SimError::InvalidConfig`] if `num_points < 2` (1 is allowed when
 ///   `start == stop`) or above 10⁷, `start` or `stop` is not finite, or
-///   `source_id` doesn't match any voltage or current source in the circuit
+///   `source_id` isn't a voltage or current source
 /// - Any [`SimError`] returned by [`solve_circuit`](crate::solve_circuit)
 ///   at one of the sweep points (propagated immediately)
 ///
@@ -2851,7 +2861,8 @@ pub struct NestedDcSweepCurve {
 ///
 /// # Errors
 ///
-/// [`SimError::InvalidComponent`] for an axis with fewer than 2 points (1 is
+/// [`SimError::UnknownComponent`] for a source id no component has;
+/// [`SimError::InvalidConfig`] for an axis with fewer than 2 points (1 is
 /// allowed when its `start` and `stop` are equal), values that aren't
 /// finite, a source that isn't a voltage or current source in the circuit,
 /// both axes on the same source, or more than 10⁷ points in all; and any
@@ -4393,9 +4404,13 @@ Error type returned by the solver.
 ///   [`InvalidSolution`](Self::InvalidSolution),
 ///   [`ConvergenceFailed`](Self::ConvergenceFailed)) — the matrix has no
 ///   unique solution or Newton–Raphson failed to converge.
-/// - **Configuration errors** ([`InvalidComponent`](Self::InvalidComponent),
-///   [`InvalidResistance`](Self::InvalidResistance)) — a component value or
-///   analysis setting that the solver explicitly rejects.
+/// - **Definition errors** ([`InvalidComponent`](Self::InvalidComponent),
+///   [`InvalidConfig`](Self::InvalidConfig),
+///   [`DuplicateId`](Self::DuplicateId), [`UnknownNode`](Self::UnknownNode),
+///   [`UnknownComponent`](Self::UnknownComponent)) — a component value,
+///   analysis setting or name that the solver explicitly rejects. Each
+///   carries its cause as fields, so a caller can match on it rather than
+///   on the message.
 pub enum SimError {
     /// The design hierarchy can't be flattened: an unknown block, a
     /// port-count mismatch, a recursive block or a repeated id.
@@ -4440,14 +4455,42 @@ pub enum SimError {
     )]
     InvalidSolution,
 
-    /// A component definition or analysis setting is malformed: a device
-    /// `temperature` or BJT `bf` that isn't positive and finite, an id that
-    /// names no suitable source or component, a non-finite or out-of-range
+    /// A component's definition is malformed: a value out of range (a
+    /// device `temperature` or BJT `bf` that isn't positive and finite, a
+    /// resistance that is zero, negative or not finite), a control source
+    /// of the wrong kind, a part self-heating can't model. `reason` names
+    /// the field and its value.
+    #[error("Invalid component `{id}`: {reason}")]
+    InvalidComponent {
+        /// The component's id.
+        id: String,
+        /// What is wrong with it, naming the field and its value.
+        reason: String,
+    },
+
+    /// An analysis setting can't be used: a non-finite or out-of-range
     /// sweep or transient setting, a transient of more than 10⁷ steps or a
-    /// sweep of more than 10⁷ points, a bad initial condition. Carries a
-    /// human-readable description naming the offending id or field.
-    #[error("Invalid component: {0}")]
-    InvalidComponent(String),
+    /// sweep of more than 10⁷ points, an input or probe that isn't the
+    /// kind of source the analysis drives, a bad initial condition.
+    #[error("{config}: {reason}")]
+    InvalidConfig {
+        /// Which settings it is.
+        config: ConfigKind,
+        /// What is wrong with them, naming the field and its value.
+        reason: String,
+    },
+
+    /// Two components have one id, as declared or once the solver splits
+    /// switches, crystals, beads, digital pins and MOSFET body diodes into
+    /// their parts.
+    #[error("`{id}`: {}", duplicate_message(*.lowered))]
+    DuplicateId {
+        /// The id they share.
+        id: String,
+        /// The clash only appears once parts are split into the elements
+        /// they are solved as.
+        lowered: bool,
+    },
 
     /// A net no component names: a typo in a [`CircuitBuilder`] element, or
     /// a name [`Circuit::node_id`] can't find.
@@ -4468,12 +4511,6 @@ pub enum SimError {
     /// [`Circuit::component_id`]: crate::Circuit::component_id
     #[error("No component \"{0}\" in the circuit.")]
     UnknownComponent(String),
-
-    /// A resistor's resistance is zero, negative or not finite.
-    #[error(
-        "Resistor \"{0}\" has a zero, negative or non-finite resistance, which is not physically meaningful."
-    )]
-    InvalidResistance(String),
 
     /// Newton–Raphson exhausted its iteration budget without converging,
     /// in DC after the gmin- and source-stepping fallbacks failed too, or in
@@ -4616,6 +4653,36 @@ pub enum SolvePoint {
         /// The time the failing step was solving for (s).
         time: f64,
     },
+}
+
+/// Which settings a [`SimError::InvalidConfig`] is about.
+pub enum ConfigKind {
+    /// [`SolverOptions`](crate::SolverOptions).
+    SolverOptions,
+    /// A transient: [`TransientConfig`](crate::TransientConfig), its
+    /// initial conditions, or the span [`solve_circuit`](crate::solve_circuit)
+    /// picks for one.
+    Transient,
+    /// A [`TransientSession`](crate::TransientSession) call.
+    TransientSession,
+    /// A DC sweep axis or nested sweep.
+    DcSweep,
+    /// A temperature sweep.
+    TemperatureSweep,
+    /// An AC sweep ([`AcConfig`](crate::ac_analysis::AcConfig)), including
+    /// one a SPICE deck's `.ac`, `.noise` or `.sens ac` card asks for.
+    Ac,
+    /// A noise analysis.
+    Noise,
+    /// A `.tf` small-signal transfer function, or the output a DC or AC
+    /// sensitivity reads, which names its ports the same way.
+    TransferFunction,
+    /// A pole-zero analysis.
+    PoleZero,
+    /// A loop-gain probe.
+    LoopGain,
+    /// Monte Carlo or corner runs: their tolerances and run count.
+    Variation,
 }
 ```
 
@@ -5138,7 +5205,7 @@ impl CircuitBuilder {
     /// # Errors
     ///
     /// [`SimError::UnknownNode`] for an element that names a net no call to
-    /// [`node`](Self::node) declared, and [`SimError::InvalidComponent`] for
+    /// [`node`](Self::node) declared, and [`SimError::DuplicateId`] for
     /// two components with one id.
     pub fn build(self) -> Result<Circuit, SimError> { … }
 }
@@ -7092,7 +7159,7 @@ pub struct LoopGainResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the sweep is invalid (as for
+/// - [`SimError::InvalidConfig`] if the sweep is invalid (as for
 ///   [`AcConfig`]), or the probe is not an independent voltage source with
 ///   neither terminal on ground. Checked before the DC solve
 /// - Any [`SimError`] from the DC operating-point solve
@@ -7707,9 +7774,11 @@ pub struct NoiseResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the input isn't an independent
-///   voltage or current source, the output or reference node isn't in the
-///   circuit, or the frequencies are invalid (`f_start` must be above 0)
+/// - [`SimError::UnknownNode`] if the output or reference node isn't in
+///   the circuit
+/// - [`SimError::InvalidConfig`] if the input isn't an independent voltage
+///   or current source, or the frequencies are invalid (`f_start` must be
+///   above 0)
 /// - Any [`SimError`] from the DC operating point
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -7892,8 +7961,9 @@ impl PzResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if a node is not in the circuit, a
-///   pair names the same node twice, or (for zeros) the output does not
+/// - [`SimError::UnknownNode`] if a node is not in the circuit
+/// - [`SimError::InvalidConfig`] if a pair names the same node twice, or
+///   (for zeros) the output does not
 ///   respond to the input at all, such as a transimpedance whose input is
 ///   shorted by a voltage source. Node names are checked before the DC
 ///   solve
@@ -8707,10 +8777,10 @@ impl AcSensResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `config.ac` is invalid (as for
-///   [`solve_ac`](crate::ac_analysis::solve_ac)), if the output node is not
-///   in the circuit, or a current output does not name an independent
-///   voltage source
+/// - [`SimError::UnknownNode`] if the output node is not in the circuit
+/// - [`SimError::InvalidConfig`] if `config.ac` is invalid (as for
+///   [`solve_ac`](crate::ac_analysis::solve_ac)), or a current output does
+///   not name an independent voltage source
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the small-signal system is singular at
 ///   any frequency
@@ -8949,8 +9019,9 @@ impl SensResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the output node is not in the circuit,
-///   or a current output does not name an independent voltage source
+/// - [`SimError::UnknownNode`] if the output node is not in the circuit
+/// - [`SimError::InvalidConfig`] if a current output does not name an
+///   independent voltage source
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -9215,7 +9286,8 @@ impl TransientSession {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] for an id that isn't a voltage or
+    /// [`SimError::UnknownComponent`] for an id the circuit doesn't have,
+    /// and [`SimError::InvalidConfig`] for one that isn't a voltage or
     /// current source, or a value that isn't finite.
     pub fn set_source(&mut self, id: &str, value: f64) -> Result<(), SimError> { … }
 
@@ -9223,9 +9295,10 @@ impl TransientSession {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] for an id the circuit doesn't have, a
-    /// part `param` doesn't apply to, or a temperature on a part whose
-    /// temperature self-heating sets; a value the part refuses fails as
+    /// [`SimError::UnknownComponent`] for an id the circuit doesn't have,
+    /// and [`SimError::InvalidConfig`] for a part `param` doesn't apply to,
+    /// or a temperature on a part whose temperature self-heating sets; a
+    /// value the part refuses fails as
     /// [`validate_circuit`](crate::validate_circuit) would fail it. A
     /// refused change changes nothing.
     pub fn set_param(&mut self, id: &str, param: Param) -> Result<(), SimError> { … }
@@ -9234,7 +9307,7 @@ impl TransientSession {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] for a `t` before the time reached,
+    /// [`SimError::InvalidConfig`] for a `t` before the time reached,
     /// past `tstop` or not finite; otherwise as
     /// [`solve_transient`](crate::solve_transient) for the steps taken.
     pub fn advance_to(&mut self, t: f64) -> Result<(), SimError> { … }
@@ -9264,9 +9337,10 @@ impl TransientSession {
     /// # Errors
     ///
     /// As [`advance_to`](Self::advance_to), and
-    /// [`SimError::InvalidComponent`] for an event on a node the circuit
-    /// doesn't have, or with a level or tolerance that isn't finite (or
-    /// a tolerance that isn't positive).
+    /// [`SimError::UnknownNode`] for an event on a node the circuit
+    /// doesn't have, and [`SimError::InvalidConfig`] for one with a level
+    /// or tolerance that isn't finite (or a tolerance that isn't
+    /// positive).
     pub fn run_until(
         &mut self,
         t_max: f64,
@@ -9359,7 +9433,7 @@ impl SolverOptions {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] naming the first field that isn't:
+    /// [`SimError::InvalidConfig`] naming the first field that isn't:
     /// a tolerance that isn't finite and positive, no iterations, a gmin
     /// step that isn't finite and positive, a `min_source_step` outside
     /// `(0, 1)`, no transient steps, or a `nodeset` voltage that isn't finite.
@@ -9711,7 +9785,7 @@ impl AnalysisRequest {
     ///
     /// # Errors
     ///
-    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// The inner `Result` is [`SimError::InvalidConfig`](crate::SimError::InvalidConfig)
     /// for an axis of more than 10⁷ points.
     pub fn dc_axes(
         &self,
@@ -10792,7 +10866,7 @@ impl ParsedNetlist {
     ///
     /// # Errors
     ///
-    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// The inner `Result` is [`SimError::InvalidConfig`](crate::SimError::InvalidConfig)
     /// unless exactly one source carries an `AC` spec and it's a `V` line:
     /// sindr's AC analysis drives a single voltage source.
     pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> { … }
@@ -11124,7 +11198,7 @@ impl TempSweepConfig {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_points < 2` or above 10⁷, or either endpoint
+/// - [`SimError::InvalidConfig`] if `num_points < 2` or above 10⁷, or either endpoint
 ///   is not finite or not above 0 K
 /// - Any [`SimError`] from solving at one of the temperatures (propagated
 ///   immediately)
@@ -11274,11 +11348,11 @@ pub struct TfResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the input is not an independent
-///   voltage or current source, the output node is not in the circuit, or
-///   a current output does not name an independent voltage source. These
-///   are checked before the DC solve, so a misspelt name isn't hidden by a
-///   DC failure
+/// - [`SimError::UnknownNode`] if the output node is not in the circuit,
+///   and [`SimError::InvalidConfig`] if the input is not an independent
+///   voltage or current source, or a current output does not name an
+///   independent voltage source. These are checked before the DC solve, so
+///   a misspelt name isn't hidden by a DC failure
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -11361,11 +11435,10 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 /// Returns [`SimError::FloatingNode`] naming the first node with fewer than
 /// 2 connections.
 ///
-/// Returns [`SimError::InvalidResistance`] for a resistor whose resistance
-/// is zero, negative or not finite.
-///
-/// Returns [`SimError::InvalidComponent`] for a repeated id, or naming the
-/// component, field and value for any other value out of range.
+/// Returns [`SimError::DuplicateId`] for a repeated id, and
+/// [`SimError::InvalidComponent`] naming the component, field and value
+/// for a value out of range, such as a resistance that is zero, negative or
+/// not finite.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> { … }
 ```
 
@@ -11677,8 +11750,9 @@ impl RatingsSpread {
 ///
 /// # Errors
 ///
-/// [`SimError::InvalidComponent`] for a tolerance on a component that
-/// isn't there or doesn't have its parameter, a relative band outside
+/// [`SimError::UnknownComponent`] for a tolerance on a component that
+/// isn't there, and [`SimError::InvalidConfig`] for one on a component
+/// that doesn't have its parameter, a relative band outside
 /// `[0, 1)`, a Gaussian whose `sigmas` isn't above 0, or no runs. A run
 /// that fails isn't an error: see [`VariationRun::measurements`].
 pub fn monte_carlo<R, F>(

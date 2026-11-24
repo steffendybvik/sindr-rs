@@ -442,7 +442,13 @@ fn bad_output_is_an_error() {
         },
     ] {
         let err = solve_sensitivity(&c, &SensConfig::new(output));
-        assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                Err(SimError::UnknownNode { .. } | SimError::InvalidConfig { .. })
+            ),
+            "{err:?}"
+        );
     }
 }
 
