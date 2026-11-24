@@ -431,6 +431,18 @@ fn names_spice_cannot_hold_are_rejected() {
         to_netlist(&clash, "t"),
         Err(ExportError::BadName { .. })
     ));
+
+    // A lenient parse keeps both `E1` lines: a VCVS and a POLY behavioural.
+    // Written out, the VCVS took the behavioural's `Be1` name.
+    let deck =
+        "t\nVa a 0 1\nVb b 0 1\nR1 e 0 1k\nE1 e 0 a 0 2\nE1 e 0 POLY(2) a 0 b 0 0 1 1\n.end\n";
+    let parsed = sindr::spice::parse_str_with_options(
+        deck,
+        sindr::spice::ParseOptions::default().with_strict(false),
+    )
+    .unwrap();
+    let out = to_netlist(&parsed.circuit, "t");
+    assert!(matches!(out, Err(ExportError::BadName { .. })), "{out:?}");
 }
 
 #[test]
