@@ -289,7 +289,8 @@ mod si;
 mod source_map;
 
 pub use analysis::{
-    AcStimulus, AcSweep, AnalysisRequest, DcSweepSpec, MeasureAnalysis, MeasureRequest,
+    AcStimulus, AcSweep, AnalysisRequest, DcSweepSpec, FourierRequest, MeasureAnalysis,
+    MeasureRequest,
 };
 pub use error::{ParseWarning, SpiceParseError};
 pub use export::{to_netlist, ExportError};
@@ -338,6 +339,9 @@ pub struct ParsedNetlist {
     /// `.meas` / `.measure` cards, in source order. Only top-level cards are
     /// read.
     pub measurements: Vec<MeasureRequest>,
+    /// `.four` cards, one request per signal, in source order: run each
+    /// on the deck's `.tran` result. Only top-level cards are read.
+    pub fourier: Vec<FourierRequest>,
     /// The `AC` specs on the deck's `V` and `I` lines, in source order,
     /// those inside `.subckt` bodies included under their flattened ids.
     /// [`Self::ac_config`] drives `.ac` from them.

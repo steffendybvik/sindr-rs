@@ -985,7 +985,7 @@ for bin in spectrum.bins.iter().filter(|b| b.magnitude > 1e-3) {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The run should have settled by the span analysed: a start-up transient leaks into every bin. `Fourier::of` and `Fft::of` take a `(time, value)` trace you already have. A bin-centred tone stays within `Window::half_width` bins of its own (0 for rectangular, 1 for Hann and Hamming, 2 for Blackman, 4 for flat-top); see the module docs for the windows' coefficients.
+A deck's `.four 1k v(out) i(r1)` card parses into `ParsedNetlist::fourier`, one `FourierRequest` per signal: run each as `req.fourier.on(&result, &req.signal)`. The run should have settled by the span analysed: a start-up transient leaks into every bin. `Fourier::of` and `Fft::of` take a `(time, value)` trace you already have. A bin-centred tone stays within `Window::half_width` bins of its own (0 for rectangular, 1 for Hann and Hamming, 2 for Blackman, 4 for flat-top); see the module docs for the windows' coefficients.
 
 ## Importing a schematic netlist
 

@@ -1680,11 +1680,16 @@ fn four_diode_clipper() {
     }
 
     let netlist = parse_file(case_path(case, "cir")).unwrap();
+    // The deck's `.four 1k v(out)` is the analysis built by hand above.
+    let [card] = netlist.fourier.as_slice() else {
+        panic!("{case}: one `.four` signal, got {:?}", netlist.fourier);
+    };
+    assert_eq!((&card.fourier, &card.signal), (&four, &Signal::v("out")));
     let config = netlist.transient_config().expect(".tran in the deck");
     let result =
         sindr::solve_transient(&netlist.circuit, &config).unwrap_or_else(|e| panic!("{case}: {e}"));
     // sindr reads 29.067 %: the clipped peaks differ by a fraction of a mV.
-    let from_sindr = four.on(&result, &Signal::v("out")).unwrap();
+    let from_sindr = card.fourier.on(&result, &card.signal).unwrap();
     assert!(
         (from_sindr.thd_percent - 29.0343).abs() < 0.05,
         "{case}: THD of sindr's waveform {} %",
