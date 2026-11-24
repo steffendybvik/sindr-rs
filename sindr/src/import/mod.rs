@@ -1348,6 +1348,23 @@ pub enum ImportError {
         /// The terminal.
         terminal: String,
     },
+    /// Two supplies [`Bench::with_supplies_from_net_names`] assumed land on
+    /// one node, through the bench's ties, at different voltages.
+    #[error(
+        "supplies \"{first}\" ({first_volts} V) and \"{second}\" ({second_volts} V) are on one node, \"{node}\""
+    )]
+    ConflictingSupplies {
+        /// The node, by its name in the circuit (a net id).
+        node: String,
+        /// The first supply's id.
+        first: String,
+        /// Its voltage.
+        first_volts: f64,
+        /// The second supply's id.
+        second: String,
+        /// Its voltage.
+        second_volts: f64,
+    },
 }
 
 /// What to do with a component of a kind sindr doesn't know
@@ -1810,8 +1827,14 @@ impl Netlist {
                 None => Ok(node(ground_net)),
             }
         };
+        let sources = bench_sources(bench, |source| {
+            Ok([
+                node(resolver.net(&source.plus, &source.id)?),
+                side(&source.minus, &source.id)?,
+            ])
+        })?;
         let mut supply = BTreeMap::from([(circuit.ground_node.clone(), 0.0)]);
-        for source in &bench.sources {
+        for source in &sources {
             if let SourceKind::Voltage { volts, .. } = source.kind {
                 let plus = node(resolver.net(&source.plus, &source.id)?);
                 if side(&source.minus, &source.id)? == circuit.ground_node {
@@ -2010,7 +2033,7 @@ impl Netlist {
             circuit.instances.push(instance);
         }
 
-        for source in &bench.sources {
+        for source in &sources {
             let nodes = [
                 node(resolver.net(&source.plus, &source.id)?),
                 side(&source.minus, &source.id)?,
@@ -2045,6 +2068,70 @@ impl Netlist {
             skipped,
         })
     }
+}
+
+/// The bench's sources that go into the circuit: all but the
+/// [`assumed`](BenchSource::assumed) supplies whose node the other voltage
+/// sources (or an assumed one before) already fix against ground. Two
+/// assumed supplies on one node at different voltages are an error.
+fn bench_sources(
+    bench: &Bench,
+    nodes_of: impl Fn(&BenchSource) -> Result<[String; 2], ImportError>,
+) -> Result<Vec<&BenchSource>, ImportError> {
+    // Union-find over the nodes the voltage sources join: a source across
+    // two nodes already joined would close a loop of ideal sources.
+    let mut parent: BTreeMap<String, String> = BTreeMap::new();
+    fn root(parent: &BTreeMap<String, String>, mut n: String) -> String {
+        while let Some(p) = parent.get(&n) {
+            if *p == n {
+                break;
+            }
+            n = p.clone();
+        }
+        n
+    }
+    fn join(parent: &mut BTreeMap<String, String>, [a, b]: [String; 2]) {
+        let (ra, rb) = (root(parent, a), root(parent, b));
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    }
+    for source in &bench.sources {
+        if !source.assumed && matches!(source.kind, SourceKind::Voltage { .. }) {
+            join(&mut parent, nodes_of(source)?);
+        }
+    }
+    let mut assumed_on: BTreeMap<String, (&str, f64)> = BTreeMap::new();
+    let mut kept = Vec::with_capacity(bench.sources.len());
+    for source in &bench.sources {
+        let SourceKind::Voltage { volts, .. } = source.kind else {
+            kept.push(source);
+            continue;
+        };
+        if !source.assumed {
+            kept.push(source);
+            continue;
+        }
+        let [plus, minus] = nodes_of(source)?;
+        if root(&parent, plus.clone()) == root(&parent, minus.clone()) {
+            if let Some(&(first, first_volts)) = assumed_on.get(&plus) {
+                if (first_volts - volts).abs() > 1e-9 * first_volts.abs().max(volts.abs()) {
+                    return Err(ImportError::ConflictingSupplies {
+                        node: plus,
+                        first: first.to_string(),
+                        first_volts,
+                        second: source.id.clone(),
+                        second_volts: volts,
+                    });
+                }
+            }
+            continue;
+        }
+        assumed_on.insert(plus.clone(), (source.id.as_str(), volts));
+        join(&mut parent, [plus, minus]);
+        kept.push(source);
+    }
+    Ok(kept)
 }
 
 fn find<'a>(parent: &BTreeMap<&'a str, &'a str>, mut id: &'a str) -> &'a str {

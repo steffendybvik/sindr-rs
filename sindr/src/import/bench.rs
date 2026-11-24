@@ -95,6 +95,15 @@ pub struct BenchSource {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub minus: Option<Attach>,
+    /// A supply [`Bench::with_supplies_from_net_names`] assumed from a net's
+    /// name. The circuit leaves it out where the bench's other voltage
+    /// sources already fix its net (after ties), and keeps one per group of
+    /// tied nets.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
+    pub assumed: bool,
 }
 
 impl BenchSource {
@@ -108,6 +117,7 @@ impl BenchSource {
             },
             plus: plus.into(),
             minus: None,
+            assumed: false,
         }
     }
 
@@ -122,6 +132,7 @@ impl BenchSource {
             },
             plus: plus.into(),
             minus: None,
+            assumed: false,
         }
     }
 
@@ -471,6 +482,12 @@ impl Bench {
     /// which supplies this assumes and which supply-like names it left for
     /// the caller to set.
     ///
+    /// The supplies are [`assumed`](BenchSource::assumed): one the bench
+    /// already drives with a voltage source of its own, or ties to ground,
+    /// gets none, and nets tied together get one between them, whichever
+    /// order the sources and ties are added in. Tied nets whose names
+    /// state different voltages are an [`ImportError::ConflictingSupplies`].
+    ///
     /// Ground names (`GND`, `AGND`, `GND_ISO`, `0V`) get nothing either, `0V`
     /// included though it states a voltage. A ground net other than the
     /// bench's own stays a separate node: join it with
@@ -479,11 +496,14 @@ impl Bench {
     /// without a word.
     pub fn with_supplies_from_net_names(mut self, netlist: &Netlist) -> Self {
         for supply in supply_names(netlist).assumed {
-            self.sources.push(BenchSource::voltage(
-                format!("supply:{}", supply.net),
-                Attach::Net(supply.net),
-                supply.volts,
-            ));
+            self.sources.push(BenchSource {
+                assumed: true,
+                ..BenchSource::voltage(
+                    format!("supply:{}", supply.net),
+                    Attach::Net(supply.net),
+                    supply.volts,
+                )
+            });
         }
         self
     }
