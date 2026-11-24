@@ -367,7 +367,7 @@ pub use circuit::{
     FerriteBeadParams, OpAmpModel, SpdtPosition,
 };
 pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepAxis, DcSweepResult, NestedDcSweepResult};
-pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
+pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal, Variant, VariantRef};
 pub use error::{SimError, SolvePoint};
 pub use fourier::{Fft, Fourier, FourierResult, Harmonic, Spectrum, SpectrumBin, Window};
 pub use handle::{CircuitBuilder, ComponentId, NodeId};

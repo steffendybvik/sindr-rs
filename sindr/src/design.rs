@@ -37,6 +37,40 @@
 //! assert_eq!(flat.components[2].nodes(), ["mid", "0"]);
 //! ```
 //!
+//! ## Variants
+//!
+//! A block can hold several implementations of the same ports: an ideal
+//! regulator and the real circuit, say. Its own body is one, named by
+//! [`Block::base_variant`]; [`Block::variants`] holds the others. An
+//! instance picks one with [`Instance::variant`], and otherwise gets
+//! [`Block::default_variant`]. Flattening expands the picked body under the
+//! same instance path, so `x1.out` reads back the same whatever was picked.
+//!
+//! ```
+//! use sindr::{Block, Circuit, CircuitElement, Instance, Variant};
+//! use sindr::element::{Resistor, VoltageSource};
+//!
+//! let r = |id: &str, a: &str, b: &str, ohms: f64| {
+//!     CircuitElement::Resistor(Resistor { id: id.into(), nodes: [a.into(), b.into()], resistance: ohms })
+//! };
+//! let mut load = Block {
+//!     ports: vec!["a".into()],
+//!     components: vec![r("R1", "a", "0", 1e3)],
+//!     base_variant: Some("ideal".into()),
+//!     ..Block::default()
+//! };
+//! load.variants.insert("detailed".into(), Variant {
+//!     ports: vec!["a".into()],
+//!     components: vec![r("Rs", "a", "mid", 10.0), r("R1", "mid", "0", 990.0)],
+//!     ..Variant::default()
+//! });
+//!
+//! let mut circuit = Circuit::new("0", vec![]);
+//! circuit.blocks.insert("load".into(), load);
+//! circuit.instances.push(Instance::new("X1", "load", ["in"]).with_variant("detailed"));
+//! assert_eq!(circuit.flatten().unwrap().components[0].id(), "X1.Rs");
+//! ```
+//!
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -72,6 +106,107 @@ pub struct Block {
         serde(default, skip_serializing_if = "BTreeMap::is_empty")
     )]
     pub parts: BTreeMap<String, Part>,
+    /// Name of the block's own body among its variants. `None` calls it
+    /// [`BASE_VARIANT`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub base_variant: Option<String>,
+    /// Other implementations of the same ports, by name: an ideal model, a
+    /// behavioural one, the real circuit.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub variants: BTreeMap<String, Variant>,
+    /// The variant an instance gets when it names none. `None` is the
+    /// block's own body.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub default_variant: Option<String>,
+}
+
+/// What [`Block::base_variant`] is when it isn't set.
+pub const BASE_VARIANT: &str = "base";
+
+impl Block {
+    /// The name of the block's own body among its variants.
+    pub fn base_variant_name(&self) -> &str {
+        self.base_variant.as_deref().unwrap_or(BASE_VARIANT)
+    }
+
+    /// The ports and body of variant `name`, the block's own body included,
+    /// or `None` when it has no variant by that name.
+    pub fn variant(&self, name: &str) -> Option<VariantRef<'_>> {
+        if name == self.base_variant_name() {
+            return Some(VariantRef {
+                ports: &self.ports,
+                components: &self.components,
+                instances: &self.instances,
+                parts: &self.parts,
+            });
+        }
+        self.variants.get(name).map(|v| VariantRef {
+            ports: &v.ports,
+            components: &v.components,
+            instances: &v.instances,
+            parts: &v.parts,
+        })
+    }
+
+    /// The name of the variant `instance` picks: its own choice, else the
+    /// block's default, else the block's own body. Not checked to exist.
+    pub fn picked_variant<'a>(&'a self, instance: &'a Instance) -> &'a str {
+        instance
+            .variant
+            .as_deref()
+            .or(self.default_variant.as_deref())
+            .unwrap_or_else(|| self.base_variant_name())
+    }
+}
+
+/// Another implementation of a [`Block`]'s ports, in [`Block::variants`].
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Variant {
+    /// Port nets: the block's [`ports`](Block::ports), same names in the same
+    /// order. Anything else is [`DesignError::VariantPorts`].
+    pub ports: Vec<String>,
+    /// Components, named in the block's scope.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub components: Vec<CircuitElement>,
+    /// Instances of other blocks placed inside this variant.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub instances: Vec<Instance>,
+    /// Part data for the variant's components and instances, keyed by id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub parts: BTreeMap<String, Part>,
+}
+
+/// One variant of a block, borrowed: [`Block::variant`].
+#[derive(Debug, Clone, Copy)]
+pub struct VariantRef<'a> {
+    /// Port nets.
+    pub ports: &'a [String],
+    /// Components.
+    pub components: &'a [CircuitElement],
+    /// Instances of other blocks.
+    pub instances: &'a [Instance],
+    /// Part data, keyed by id.
+    pub parts: &'a BTreeMap<String, Part>,
 }
 
 /// One placement of a [`Block`]: what an `X` line is in SPICE.
@@ -86,6 +221,13 @@ pub struct Instance {
     pub block: String,
     /// The caller's nets, bound to [`Block::ports`] by position.
     pub nodes: Vec<String>,
+    /// Which of the block's variants to place. `None` is the block's
+    /// [`default_variant`](Block::default_variant).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub variant: Option<String>,
 }
 
 impl Instance {
@@ -99,7 +241,15 @@ impl Instance {
             id: id.into(),
             block: block.into(),
             nodes: nodes.into_iter().map(Into::into).collect(),
+            variant: None,
         }
+    }
+
+    /// This instance, placing the block's variant `name`.
+    #[must_use]
+    pub fn with_variant(mut self, name: impl Into<String>) -> Self {
+        self.variant = Some(name.into());
+        self
     }
 }
 
@@ -327,6 +477,31 @@ pub enum DesignError {
         /// `"the top level"` or `"block `name`"`.
         scope: String,
     },
+    /// An instance, or its block's default, names a variant the block
+    /// doesn't have.
+    #[error("instance `{instance}` places variant `{variant}` of block `{block}`, which has no such variant")]
+    UnknownVariant {
+        /// Full path of the instance.
+        instance: String,
+        /// The block it places.
+        block: String,
+        /// The missing variant.
+        variant: String,
+    },
+    /// A variant's ports differ from its block's, in name or order.
+    #[error(
+        "variant `{variant}` of block `{block}` has ports {got:?}, but the block has {expected:?}"
+    )]
+    VariantPorts {
+        /// The block.
+        block: String,
+        /// The variant whose ports differ.
+        variant: String,
+        /// The block's ports.
+        expected: Vec<String>,
+        /// The variant's ports.
+        got: Vec<String>,
+    },
 }
 
 impl Circuit {
@@ -339,8 +514,9 @@ impl Circuit {
     ///
     /// # Errors
     ///
-    /// [`DesignError`] for an unknown block, a port-count mismatch, a
-    /// recursive block, or a repeated id in one scope.
+    /// [`DesignError`] for an unknown block or variant, a port-count
+    /// mismatch, a variant whose ports differ from its block's, a recursive
+    /// block, or a repeated id in one scope.
     pub fn flatten(&self) -> Result<Circuit, DesignError> {
         Ok(self.flattened()?.into_owned())
     }
@@ -415,8 +591,21 @@ impl<'a> Expander<'a> {
                 block: instance.block.clone(),
             });
         }
-        check_unique(&block.components, &block.instances, || {
-            format!("block `{}`", instance.block)
+        check_variants(&instance.block, block)?;
+        let picked = block.picked_variant(instance);
+        let body = block
+            .variant(picked)
+            .ok_or_else(|| DesignError::UnknownVariant {
+                instance: path.clone(),
+                block: instance.block.clone(),
+                variant: picked.to_string(),
+            })?;
+        check_unique(body.components, body.instances, || {
+            if block.variants.is_empty() {
+                format!("block `{}`", instance.block)
+            } else {
+                format!("variant `{picked}` of block `{}`", instance.block)
+            }
         })?;
 
         let ports: HashMap<&str, String> = block
@@ -426,7 +615,7 @@ impl<'a> Expander<'a> {
             .map(|(port, net)| (port.as_str(), self.net(net, parent, parent_ports)))
             .collect();
 
-        for component in &block.components {
+        for component in body.components {
             let mut el = component.clone();
             let id = el.id_mut();
             *id = join(&path, id);
@@ -455,12 +644,12 @@ impl<'a> Expander<'a> {
             }
             self.out.components.push(el);
         }
-        for (id, part) in &block.parts {
+        for (id, part) in body.parts {
             self.out.parts.insert(join(&path, id), part.clone());
         }
 
         self.stack.push(&instance.block);
-        for child in &block.instances {
+        for child in body.instances {
             self.expand(child, &path, &ports)?;
         }
         self.stack.pop();
@@ -485,6 +674,28 @@ fn join(path: &str, name: &str) -> String {
     } else {
         format!("{path}{PATH_SEPARATOR}{name}")
     }
+}
+
+/// Every variant has the block's ports, and no variant reuses the name of
+/// the block's own body.
+fn check_variants(name: &str, block: &Block) -> Result<(), DesignError> {
+    for (variant, body) in &block.variants {
+        if *variant == block.base_variant_name() {
+            return Err(DesignError::DuplicateId {
+                id: variant.clone(),
+                scope: format!("the variants of block `{name}`"),
+            });
+        }
+        if body.ports != block.ports {
+            return Err(DesignError::VariantPorts {
+                block: name.to_string(),
+                variant: variant.clone(),
+                expected: block.ports.clone(),
+                got: body.ports.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn check_unique(
