@@ -1133,7 +1133,7 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Bench loads** are resistors, capacitors and inductors, plus `LoadKind::CurrentSink` (a constant current drawn from `a` into `b`, such as an IC's supply current; for one that changes with time, use a current `BenchSource` with a waveform) and `LoadKind::TimedSwitch`, which is closed through `on_resistance` until `at` and then open at `off_resistance`, or open then closed with `starts_closed: false`. `LoadKind::released_at(1e-6, 25.0)` is an open-drain output holding a bus line low and letting go at 1 µs, for its rise time through the pull-ups and bus capacitance. The operating point, DC sweeps and AC see it at t = 0; a transient lands a step on `at`, which still sees the old state, as a waveform's jump does.
-- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only. Decorated names (`3V3_A`, `12V_IN`) get none, since they're often rails derived through a filter or a switch. `import::supply_names` reports what that assumes, which supply-like names (`VCC`, `VBAT`, `3V3_A`) were left for you to set, and which nets are named like grounds.
+- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only. Decorated names (`3V3_A`, `12V_IN`) get none, since they're often rails derived through a filter or a switch. A net the bench already drives, or ties to one it drives, gets no second supply, and tied nets get one between them. `import::supply_names` reports what that assumes, which supply-like names (`VCC`, `VBAT`, `3V3_A`) were left for you to set, and which nets are named like grounds.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
 
 #### What sindr reads from part data
@@ -4840,6 +4840,15 @@ pub struct BenchSource {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub minus: Option<Attach>,
+    /// A supply [`Bench::with_supplies_from_net_names`] assumed from a net's
+    /// name. The circuit leaves it out where the bench's other voltage
+    /// sources already fix its net (after ties), and keeps one per group of
+    /// tied nets.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
+    pub assumed: bool,
 }
 
 impl BenchSource {
@@ -5009,6 +5018,12 @@ impl Bench {
     /// called: a power port's name is only a hint. [`supply_names`] says
     /// which supplies this assumes and which supply-like names it left for
     /// the caller to set.
+    ///
+    /// The supplies are [`assumed`](BenchSource::assumed): one the bench
+    /// already drives with a voltage source of its own, or ties to ground,
+    /// gets none, and nets tied together get one between them, whichever
+    /// order the sources and ties are added in. Tied nets whose names
+    /// state different voltages are an [`ImportError::ConflictingSupplies`].
     ///
     /// Ground names (`GND`, `AGND`, `GND_ISO`, `0V`) get nothing either, `0V`
     /// included though it states a voltage. A ground net other than the
@@ -5924,6 +5939,23 @@ pub enum ImportError {
         component: String,
         /// The terminal.
         terminal: String,
+    },
+    /// Two supplies [`Bench::with_supplies_from_net_names`] assumed land on
+    /// one node, through the bench's ties, at different voltages.
+    #[error(
+        "supplies \"{first}\" ({first_volts} V) and \"{second}\" ({second_volts} V) are on one node, \"{node}\""
+    )]
+    ConflictingSupplies {
+        /// The node, by its name in the circuit (a net id).
+        node: String,
+        /// The first supply's id.
+        first: String,
+        /// Its voltage.
+        first_volts: f64,
+        /// The second supply's id.
+        second: String,
+        /// Its voltage.
+        second_volts: f64,
     },
 }
 

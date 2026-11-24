@@ -3293,6 +3293,144 @@ fn a_net_named_0v_is_a_ground_not_a_supply() {
     assert!((r.current("r1").unwrap().abs() - 5e-3).abs() < 1e-12);
 }
 
+/// r1 from `n5` (named `5V`) to `gnd`.
+fn named_5v() -> Netlist {
+    Netlist {
+        components: vec![Component::new("r1", ComponentKind::Resistor).with_value("1k")],
+        nets: vec![
+            Net::new("n5", [("r1", "1")]).with_name("5V"),
+            Net::new("gnd", [("r1", "2")]),
+        ],
+    }
+}
+
+fn source_ids(imported: &ImportedCircuit) -> Vec<&str> {
+    imported
+        .circuit
+        .components
+        .iter()
+        .filter(|e| matches!(e, CircuitElement::VoltageSource(_)))
+        .map(CircuitElement::id)
+        .collect()
+}
+
+#[test]
+fn a_named_supply_gives_way_to_the_benchs_own_source() {
+    // Before, a net the bench already drove got a second ideal source
+    // across it, and the operating point was singular.
+    let netlist = named_5v();
+    let own = BenchSource::voltage("vs", "n5", 4.0);
+    let before = Bench::new("gnd")
+        .with_source(own.clone())
+        .with_supplies_from_net_names(&netlist);
+    let after = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_source(own);
+    for bench in [before, after] {
+        assert_eq!(source_ids(&netlist.to_circuit(&bench).unwrap()), ["vs"]);
+        let r = op(&netlist, &bench);
+        assert!((r.node_voltages["n5"] - 4.0).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn a_named_supply_gives_way_through_a_tie_or_a_chain_of_sources() {
+    let mut netlist = named_5v();
+    netlist
+        .components
+        .push(Component::new("r2", ComponentKind::Resistor).with_value("1k"));
+    netlist.nets.push(Net::new("x", [("r2", "1")]));
+    netlist.nets[1].pins.push(Pin::new("r2", "2"));
+
+    // A tie to a net the bench drives, added after the supplies.
+    let tied = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_source(BenchSource::voltage("vs", "x", 3.0))
+        .with_tie("n5", "x");
+    assert_eq!(source_ids(&netlist.to_circuit(&tied).unwrap()), ["vs"]);
+    assert!((op(&netlist, &tied).node_voltages["n5"] - 3.0).abs() < 1e-12);
+
+    // A source from `x` to the named net, with `x` itself driven: the named
+    // net's voltage is already fixed.
+    let chained = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_source(BenchSource::voltage("vx", "x", 1.0))
+        .with_source(BenchSource::voltage("vd", "n5", 2.0).with_minus("x"));
+    assert_eq!(
+        source_ids(&netlist.to_circuit(&chained).unwrap()),
+        ["vx", "vd"]
+    );
+    assert!((op(&netlist, &chained).node_voltages["n5"] - 3.0).abs() < 1e-12);
+
+    // A tie to ground.
+    let grounded = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_tie("n5", "gnd");
+    assert!(source_ids(&netlist.to_circuit(&grounded).unwrap()).is_empty());
+}
+
+#[test]
+fn tied_nets_named_for_one_supply_get_one_source() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("r1", ComponentKind::Resistor).with_value("1k"),
+            Component::new("r2", ComponentKind::Resistor).with_value("1k"),
+        ],
+        nets: vec![
+            Net::new("a", [("r1", "1")]).with_name("3V3"),
+            Net::new("b", [("r2", "1")]).with_name("+3.3V"),
+            Net::new("gnd", [("r1", "2"), ("r2", "2")]),
+        ],
+    };
+    let bench = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_tie("a", "b");
+    assert_eq!(
+        source_ids(&netlist.to_circuit(&bench).unwrap()),
+        ["supply:a"]
+    );
+    let r = op(&netlist, &bench);
+    assert!((r.current("r2").unwrap().abs() - 3.3e-3).abs() < 1e-12);
+
+    // Untied, each keeps its own.
+    let apart = Bench::new("gnd").with_supplies_from_net_names(&netlist);
+    assert_eq!(
+        source_ids(&netlist.to_circuit(&apart).unwrap()),
+        ["supply:a", "supply:b"]
+    );
+}
+
+#[test]
+fn tied_nets_named_for_two_voltages_are_refused() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("r1", ComponentKind::Resistor).with_value("1k"),
+            Component::new("r2", ComponentKind::Resistor).with_value("1k"),
+        ],
+        nets: vec![
+            Net::new("a", [("r1", "1")]).with_name("3V3"),
+            Net::new("b", [("r2", "1")]).with_name("5V"),
+            Net::new("gnd", [("r1", "2"), ("r2", "2")]),
+        ],
+    };
+    let bench = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_tie("b", "a");
+    assert_eq!(
+        err(&netlist, &bench),
+        ImportError::ConflictingSupplies {
+            node: "a".into(),
+            first: "supply:a".into(),
+            first_volts: 3.3,
+            second: "supply:b".into(),
+            second_volts: 5.0,
+        }
+    );
+    // The bench's own source on the group settles it.
+    let driven = bench.with_source(BenchSource::voltage("vs", "a", 5.0));
+    assert_eq!(source_ids(&netlist.to_circuit(&driven).unwrap()), ["vs"]);
+}
+
 /// The divider, with r3 wired at one end only and u1 excluded from
 /// simulation (a black box across `out` and `gnd`).
 fn half_wired() -> Netlist {
