@@ -1542,8 +1542,8 @@ pub struct HighImpedanceNet {
 }
 
 /// Ties every node an unsimulated pin leaves floating (fewer than two
-/// element terminals, or no path to ground but through such pins) to ground
-/// through [`HIGH_IMPEDANCE_OHMS`].
+/// element or subcircuit terminals, or no path to ground but through such
+/// pins) to ground through [`HIGH_IMPEDANCE_OHMS`].
 fn tie_high_impedance_nets(
     circuit: &mut Circuit,
     unsimulated: BTreeMap<String, Vec<Pin>>,
@@ -1553,8 +1553,14 @@ fn tie_high_impedance_nets(
     let floating: Vec<(String, Vec<Pin>)> = {
         let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
         let mut adjacent: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-        for element in &circuit.components {
-            let nodes = element.all_nodes();
+        // A subcircuit instance's ports are element terminals too: the
+        // vendor model behind them drives its nets.
+        let terminals = circuit
+            .components
+            .iter()
+            .map(CircuitElement::all_nodes)
+            .chain(circuit.instances.iter().map(|i| i.nodes.iter().collect()));
+        for nodes in terminals {
             for n in &nodes {
                 *degree.entry(n.as_str()).or_default() += 1;
                 for m in &nodes {
