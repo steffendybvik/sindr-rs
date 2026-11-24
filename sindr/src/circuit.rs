@@ -15,10 +15,10 @@ use std::collections::BTreeMap;
 
 use crate::design::{Block, Instance, Part};
 use crate::element::{
-    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, Diode,
-    FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor,
-    Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt, Thermistor,
-    Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource,
+    DigitalPin, Diode, FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode,
+    Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt,
+    Thermistor, Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
 };
 use crate::expression::Expression;
 
@@ -588,6 +588,12 @@ pub enum CircuitElement {
     /// and time.
     #[cfg_attr(feature = "serde", serde(rename = "behavioural"))]
     Behavioural(Behavioural),
+
+    /// Digital I/O pin ([`PinModel`](crate::element::PinModel)), after the
+    /// IBIS I/O buffer: input, push-pull or open-drain, with clamps and a
+    /// pull resistor.
+    #[cfg_attr(feature = "serde", serde(rename = "digital_pin"))]
+    DigitalPin(DigitalPin),
 }
 
 impl CircuitElement {
@@ -1429,6 +1435,15 @@ mod tests {
                 nodes: n("FB"),
                 params: FerriteBeadParams::from_datasheet(600.0, 0.1),
             }),
+            CircuitElement::DigitalPin(DigitalPin {
+                id: "PIN".into(),
+                nodes: n("PIN"),
+                mode: crate::element::PinMode::PushPull,
+                level: true,
+                pull: crate::element::Pull::Up,
+                port: Some("PORTB".into()),
+                model: crate::element::PinModel::default(),
+            }),
         ]
     }
 
@@ -1438,7 +1453,7 @@ mod tests {
     #[test]
     fn mutable_accessors_reach_the_fields_the_readers_read() {
         let elements = every_element();
-        assert_eq!(elements.len(), 34, "one of every CircuitElement");
+        assert_eq!(elements.len(), 35, "one of every CircuitElement");
         for mut element in elements {
             let id = element.id().to_string();
             let nodes = element.nodes().to_vec();

@@ -1,6 +1,6 @@
 //! Write a [`Circuit`] as a SPICE deck: [`to_netlist`].
 
-use crate::element::{Capacitor, Inductor, Resistor, Switch, VoltageSource};
+use crate::element::{Capacitor, CurrentSource, Diode, Inductor, Resistor, Switch, VoltageSource};
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 
@@ -424,6 +424,14 @@ impl<'a> Deck<'a> {
                 }
                 CircuitElement::Switch(Switch { closed, .. }) => {
                     num(id, "resistance", switch_resistance(*closed))?
+                }
+                CircuitElement::CurrentSource(CurrentSource { current, .. }) => {
+                    format!("DC {}", num(id, "current", *current)?)
+                }
+                CircuitElement::Diode(Diode { model, .. }) => {
+                    let model = model.unwrap_or_default();
+                    self.diode(id, &part_name, &nodes, model)?;
+                    continue;
                 }
                 _ => return Err(unsupported(id, "an unexpected part")),
             };

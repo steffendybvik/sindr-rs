@@ -162,6 +162,44 @@
         "r_dc": 0.1
       },
       "type": "ferrite_bead"
+    },
+    {
+      "id": "D13",
+      "level": false,
+      "mode": "open_drain",
+      "model": {
+        "c_comp": 3e-12,
+        "clamp": {
+          "af": 1.0,
+          "bv": null,
+          "cjo": 0.0,
+          "eg": 1.11,
+          "fc": 0.5,
+          "ibv": 0.001,
+          "is": 1e-14,
+          "kf": 0.0,
+          "m": 0.5,
+          "n": 1.0,
+          "rs": 10.0,
+          "tt": 0.0,
+          "vj": 1.0,
+          "xti": 3.0
+        },
+        "leakage": 1e-9,
+        "r_high": 50.0,
+        "r_low": 50.0,
+        "r_pull": 40000.0,
+        "vih": 3.5,
+        "vil": 1.5
+      },
+      "nodes": [
+        "b",
+        "b",
+        "0"
+      ],
+      "port": "PORTB",
+      "pull": "up",
+      "type": "digital_pin"
     }
   ],
   "ground_node": "0"

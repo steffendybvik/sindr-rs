@@ -2288,6 +2288,78 @@ fn ac_exported_ferrite_bead() {
     );
 }
 
+/// Three digital pins on a 3.3 V supply, each pulled by `v1` from 1.5 V
+/// below ground to 1.7 V above the supply through a resistor: a push-pull
+/// output driving high (its `r_high` against the source, then its power
+/// clamp), an input with its pull-up (both clamps), and an open-drain
+/// output pulling low. The deck is the IBIS output stage and clamps the
+/// pins export as, so this is the pin's model built from primitives
+/// against ngspice's.
+#[test]
+fn dc_exported_digital_pin() {
+    use sindr::element::{DigitalPin, PinMode, PinModel, Pull};
+    let pin = |id: &str, pad: &str, mode, level, pull| {
+        CircuitElement::DigitalPin(DigitalPin {
+            id: id.into(),
+            nodes: [pad.into(), "vdd".into(), "0".into()],
+            mode,
+            level,
+            pull,
+            port: None,
+            model: PinModel::default(),
+        })
+    };
+    let circuit = circuit(vec![
+        vsource("vdd", "vdd", "0", 3.3),
+        vsource("v1", "ext", "0", 0.0),
+        pin("p1", "a", PinMode::PushPull, true, Pull::None),
+        resistor("r1", "ext", "a", 100.0),
+        pin("p2", "b", PinMode::Input, false, Pull::Up),
+        resistor("r2", "ext", "b", 1e3),
+        pin("p3", "c", PinMode::OpenDrain, false, Pull::None),
+        resistor("r3", "ext", "c", 330.0),
+    ]);
+    let circuit = exported("dc_exported_digital_pin", &circuit);
+    let golden = Golden::load("dc_exported_digital_pin");
+    let sweep = dc_sweep(circuit, &DcSweepAxis::new("v1", -1.5, 5.0, 66)).unwrap();
+    let scale = golden.scale();
+    let node = |n: &str| -> Vec<f64> {
+        sweep
+            .points
+            .iter()
+            .map(|p| p.result.node_voltages[n])
+            .collect()
+    };
+    let current = |id: &str| -> Vec<f64> {
+        sweep
+            .points
+            .iter()
+            .map(|p| source_current(&p.result, id))
+            .collect()
+    };
+    let mut check = Check::new("dc_exported_digital_pin");
+    check.series("v-sweep", &scale, &sweep_values(&sweep), &scale, OP_V);
+    for n in ["a", "b", "c"] {
+        check.series(
+            &format!("v({n})"),
+            &scale,
+            &node(n),
+            &golden.column(&format!("v({n})")),
+            OP_V,
+        );
+    }
+    for id in ["v1", "vdd"] {
+        check.series(
+            &format!("i({id})"),
+            &scale,
+            &current(id),
+            &golden.column(&format!("i({id})")),
+            OP_I,
+        );
+    }
+    check.finish();
+}
+
 /// The golden vector for a sensitivity entry. Elements, gains and the
 /// stimulus as ngspice's `.sens` names them: an element's own value is its
 /// name, a controlled source's gain `<id>_gain`, a stimulus `<id>_acmag`.

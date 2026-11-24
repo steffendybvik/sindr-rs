@@ -61,8 +61,8 @@ use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement, SpdtPosition};
 use crate::element::{
-    CurrentSource, Photodiode, Photoresistor, Potentiometer, Pushbutton, Resistor, Switch,
-    VoltageSource,
+    CurrentSource, DigitalPin, LogicLevel, Photodiode, Photoresistor, PinMode, Potentiometer, Pull,
+    Pushbutton, Resistor, Switch, VoltageSource,
 };
 use crate::error::SimError;
 use crate::results::{TimestepSnapshot, TransientStats};
@@ -96,6 +96,25 @@ pub struct TransientSession {
     keep: bool,
     /// Set by an error the session can't step past.
     failed: Option<f64>,
+    /// The circuit's digital pins, as last set.
+    pins: Vec<Pin>,
+    /// What each pin's input reads at the time reached.
+    readings: Vec<LogicLevel>,
+}
+
+/// A digital pin the session drives and reads.
+struct Pin {
+    pin: DigitalPin,
+    /// The pad's and the ground terminal's solution rows; `None` for
+    /// ground.
+    rows: [Option<usize>; 2],
+}
+
+impl Pin {
+    fn volts(&self, stepper: &Stepper) -> f64 {
+        let v = |row: Option<usize>| row.map_or(0.0, |i| stepper.state.solution[i]);
+        v(self.rows[0]) - v(self.rows[1])
+    }
 }
 
 /// A value inside the circuit that a session can change between steps:
@@ -119,6 +138,12 @@ pub enum Param {
     /// The temperature (K) of a thermistor, or of a junction device
     /// without self-heating.
     Temperature(f64),
+    /// A digital pin's output stage: firmware's pin mode.
+    PinMode(PinMode),
+    /// The level a digital pin's output drives, `true` for high.
+    Level(bool),
+    /// A digital pin's weak pull resistor.
+    Pull(Pull),
 }
 
 /// Which way a signal must cross an [`Event`]'s level.
@@ -195,6 +220,7 @@ struct Saved {
     state: StepState,
     steps: usize,
     last: Option<TimestepSnapshot>,
+    readings: Vec<LogicLevel>,
 }
 
 /// A step an event crossed in: the run before it, and the watched values
@@ -274,14 +300,33 @@ impl TransientSession {
             .enumerate()
             .map(|(k, c)| (c.id().to_string(), k))
             .collect();
+        let stepper = Stepper::new(flat, config, opts)?;
+        let row = |node: &str| stepper.node_map.index(node);
+        let pins: Vec<Pin> = composites
+            .iter()
+            .flat_map(|c| &c.components)
+            .filter_map(|c| match c {
+                CircuitElement::DigitalPin(pin) => Some(Pin {
+                    rows: [row(&pin.nodes[0]), row(&pin.nodes[2])],
+                    pin: pin.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+        let readings = pins
+            .iter()
+            .map(|p| p.pin.reads(p.volts(&stepper), None))
+            .collect();
         Ok(Self {
-            stepper: Stepper::new(flat, config, opts)?,
+            stepper,
             index,
             composites,
             steps: Vec::new(),
             last: None,
             keep: true,
             failed: None,
+            pins,
+            readings,
         })
     }
 
@@ -315,6 +360,21 @@ impl TransientSession {
             .iter()
             .find(|c| c.id == id)
             .map(|c| c.current_through)
+    }
+
+    /// What digital pin `id`'s input buffer reads at the time reached,
+    /// against its `vil` and `vih`, or `None` for an id that isn't a
+    /// digital pin. An output reads its own pad, as a microcontroller's
+    /// input register does.
+    ///
+    /// The reading has the thresholds' hysteresis: between them it holds
+    /// what the last step read. It's taken after every step, so a pad that
+    /// crosses a threshold and comes back within one step isn't seen; to
+    /// catch an edge, [`run_until`](Self::run_until) an
+    /// [`Event`] at the threshold.
+    pub fn logic_level(&self, id: &str) -> Option<LogicLevel> {
+        let k = self.pins.iter().position(|p| p.pin.id == id)?;
+        Some(self.readings[k])
     }
 
     /// The latest step taken, kept or not; `None` before the first.
@@ -413,6 +473,22 @@ impl TransientSession {
                 }
                 self.replace(k, element)?;
             }
+            return Ok(());
+        }
+
+        if let Some(p) = self.pins.iter().position(|p| p.pin.id == id) {
+            let mut pin = self.pins[p].pin.clone();
+            match param {
+                Param::PinMode(mode) => pin.mode = mode,
+                Param::Level(level) => pin.level = level,
+                Param::Pull(pull) => pin.pull = pull,
+                _ => return wrong(),
+            }
+            for part in crate::composite::pin(&pin)? {
+                let k = self.element_index(part.id())?;
+                self.replace(k, part)?;
+            }
+            self.pins[p].pin = pin;
             return Ok(());
         }
 
@@ -607,6 +683,9 @@ impl TransientSession {
         {
             folder.fold(&mut snapshot);
         }
+        for (reading, p) in self.readings.iter_mut().zip(&self.pins) {
+            *reading = p.pin.reads(p.volts(&self.stepper), Some(*reading));
+        }
         if self.keep && self.stepper.recording() {
             self.steps.push(snapshot);
             self.last = None;
@@ -625,6 +704,7 @@ impl TransientSession {
             } else {
                 None
             },
+            readings: self.readings.clone(),
         }
     }
 
@@ -632,6 +712,7 @@ impl TransientSession {
         self.stepper.rewind(saved.state);
         self.steps.truncate(saved.steps);
         self.last = saved.last;
+        self.readings = saved.readings;
     }
 
     /// Step to `until` while watching, with `values` the watched nodes at
@@ -693,6 +774,7 @@ impl TransientSession {
                 state: a.state.clone(),
                 steps: a.steps,
                 last: None,
+                readings: a.readings.clone(),
             });
             let mut values = va.clone();
             let mut bracket = None;

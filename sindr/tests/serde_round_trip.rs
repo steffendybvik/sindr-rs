@@ -16,8 +16,8 @@
 #![cfg(feature = "serde")]
 
 use sindr::element::{
-    Battery, Capacitor, Crystal, Diode, FerriteBead, Inductor, Resistor, SwitchSpdt, Varactor,
-    VoltageSource,
+    Battery, Capacitor, Crystal, DigitalPin, Diode, FerriteBead, Inductor, PinMode, PinModel, Pull,
+    Resistor, SwitchSpdt, Varactor, VoltageSource,
 };
 use std::path::PathBuf;
 
@@ -131,6 +131,19 @@ fn remaining_elements() -> Circuit {
                     l: 1e-6,
                     r_ac: 600.0,
                     c: Some(1e-12),
+                },
+            }),
+            CircuitElement::DigitalPin(DigitalPin {
+                id: "D13".into(),
+                nodes: ["b".into(), "b".into(), "0".into()],
+                mode: PinMode::OpenDrain,
+                level: false,
+                pull: Pull::Up,
+                port: Some("PORTB".into()),
+                model: PinModel {
+                    c_comp: 3e-12,
+                    leakage: 1e-9,
+                    ..PinModel::cmos(5.0)
                 },
             }),
         ],

@@ -457,8 +457,8 @@ pub(crate) fn solver_circuit(circuit: &Circuit) -> Result<std::borrow::Cow<'_, C
     for element in &owned.components {
         if !seen.insert(element.id()) {
             return Err(SimError::InvalidComponent(format!(
-                "`{}`: two components share this id once switches, crystals and beads \
-                 are split into their parts",
+                "`{}`: two components share this id once switches, crystals, beads \
+                 and digital pins are split into their parts",
                 element.id()
             )));
         }

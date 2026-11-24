@@ -69,8 +69,11 @@ test checks that the committed `.cir` still matches, so the golden is
 ngspice's answer for the very deck sindr exports. They pin the signs of E, G,
 F, H and I sources and the transformer's dot convention. Each test also
 reads the committed deck back with sindr's own parser and checks that
-against the same golden, so the E, G, F, H and K lines round-trip. After changing the
-exporter or one of these circuits:
+against the same golden, so the E, G, F, H and K lines round-trip. The
+composites (`op_exported_spdt`, `ac_exported_crystal`,
+`ac_exported_ferrite_bead`, `dc_exported_digital_pin`) are checked the same
+way, through the parts they export as. After changing the exporter or one of
+these circuits:
 
 ```bash
 SINDR_WRITE_DECKS=1 cargo test -p sindr --all-features --test golden exported
@@ -146,7 +149,7 @@ where it holds up:
 | Analysis | Cases |
 |---|---|
 | Operating point | `op_resistive`, `op_diode`, `op_diode_series`, `op_bjt_ce`, `op_bjt_pnp`, `op_bjt_card`, `op_exported_controlled` (E, G, F, H, I, potentiometer, switch), `op_exported_spdt`, `op_mosfet_cs`, `op_mosfet_follower`, `op_pmos_highside`, `op_jfet`, `op_led`, `op_schottky`, `op_photodiode`, `op_subckt_param` (`.param`, nested `.subckt`, `.include`) |
-| DC sweep | `dc_diode_iv`, `dc_diode_1n4148`, `dc_diode_breakdown` (BV, IBV), `dc_zener` (a `ZenerDiode` through its knee), `dc_mosfet_body_diode` (an NMOS's body diode, freewheeling) |
+| DC sweep | `dc_diode_iv`, `dc_diode_1n4148`, `dc_diode_breakdown` (BV, IBV), `dc_zener` (a `ZenerDiode` through its knee), `dc_mosfet_body_diode` (an NMOS's body diode, freewheeling), `dc_exported_digital_pin` (push-pull, input with pull-up and open-drain pins pulled past both rails: the IBIS output stage and clamps they export as) |
 | Diode charge | `cv_1n4148`, `cv_1n5819`: sindr's AC admittance at each bias of an ngspice sweep, against ngspice's `gd` and `cd` behind the card's RS |
 | AC | `ac_rc_lowpass`, `ac_partial_decade` (`.ac dec` over 1.7 decades: ngspice's 17-point grid), `ac_rlc_bandpass`, `ac_bjt_ce`, `ac_bjt_caps` (Cbe, Cbc), `ac_diode` (1N4148 with its charge), `ac_mosfet_cs` (Cgs, Cgd), `ac_jfet`, `ac_jfet_caps` (CGS, CGD as graded junctions, from the `NJF` card), `ac_exported_transformer`, `ac_exported_crystal` (through both resonances), `ac_exported_ferrite_bead` (past its self-resonance) |
 | Transient | `tran_rc_step`, `tran_rl_step`, `tran_op_start` (operating-point start), `tran_ic_op` and `tran_ic_uic` (`.ic` without and with `UIC`), `tran_tstart`, `tran_halfwave` (sine into a diode and filter cap), `tran_bjt_switch` (pulse through an RC into an NPN; collector to 3 %, see below), `tran_rlc_ring`, `tran_flasher` (a two-transistor LED flasher from rest: its period and the on LED's current, since each edge is a jump a fraction of a millisecond either way), `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
