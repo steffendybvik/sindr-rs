@@ -1164,6 +1164,7 @@ fn assemble(
                 id: r.path.last().cloned().unwrap_or_default(),
                 block: class.to_string(),
                 nodes: r.local_nodes.clone(),
+                variant: None,
             })
             .collect()
     };

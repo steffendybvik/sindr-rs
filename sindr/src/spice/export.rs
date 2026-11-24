@@ -1,14 +1,14 @@
 //! Write a [`Circuit`] as a SPICE deck: [`to_netlist`].
 
 use crate::element::{Capacitor, CurrentSource, Diode, Inductor, Resistor, Switch, VoltageSource};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::f64::consts::PI;
 
 use sindr_devices::diode::{DiodeParams, T_NOM};
 use thiserror::Error;
 
 use crate::circuit::{BjtModel, DiodeModel};
-use crate::design::{DesignError, Instance};
+use crate::design::{Block, DesignError, Instance};
 use crate::handle::NodeId;
 use crate::stamp::{SWITCH_R_CLOSED, SWITCH_R_OPEN};
 use crate::{BjtKind, Circuit, CircuitElement, Waveform};
@@ -135,7 +135,7 @@ pub enum ExportError {
 ///
 pub fn to_netlist(circuit: &Circuit, title: &str) -> Result<String, ExportError> {
     circuit.flattened()?;
-    let mut deck = Deck::new(&circuit.ground_node);
+    let mut deck = Deck::new(&circuit.ground_node, &circuit.blocks);
     let mut lines = Vec::new();
     for global in &circuit.globals {
         check_token("node", global)?;
@@ -143,19 +143,27 @@ pub fn to_netlist(circuit: &Circuit, title: &str) -> Result<String, ExportError>
     }
     lines.extend(deck.scope(&circuit.components, &circuit.instances)?);
 
-    let mut block_names = HashMap::<String, &str>::new();
-    for (name, block) in &circuit.blocks {
-        check_token("block", name)?;
-        if let Some(other) = block_names.insert(name.to_ascii_lowercase(), name) {
+    let mut block_names = HashMap::<String, String>::new();
+    let bodies = circuit.blocks.iter().flat_map(|(block_name, block)| {
+        std::iter::once(block.base_variant_name())
+            .chain(block.variants.keys().map(String::as_str))
+            .filter_map(move |variant| {
+                let body = block.variant(variant)?;
+                Some((subckt_name(block_name, block, variant), body))
+            })
+    });
+    for (name, body) in bodies {
+        check_token("block", &name)?;
+        if let Some(other) = block_names.insert(name.to_ascii_lowercase(), name.clone()) {
             return Err(ExportError::BadName {
                 what: "block",
-                name: name.clone(),
+                name,
                 reason: format!("SPICE folds case, so it is the same block as `{other}`"),
             });
         }
-        let body = deck.scope(&block.components, &block.instances)?;
+        let lines_of_body = deck.scope(body.components, body.instances)?;
         let mut header = format!(".subckt {name}");
-        for port in &block.ports {
+        for port in body.ports {
             if *port == circuit.ground_node {
                 return Err(ExportError::BadName {
                     what: "node",
@@ -167,7 +175,7 @@ pub fn to_netlist(circuit: &Circuit, title: &str) -> Result<String, ExportError>
             header.push_str(&deck.node(port)?);
         }
         lines.push(header);
-        lines.extend(body);
+        lines.extend(lines_of_body);
         lines.push(format!(".ends {name}"));
     }
 
@@ -182,8 +190,19 @@ pub fn to_netlist(circuit: &Circuit, title: &str) -> Result<String, ExportError>
     Ok(out)
 }
 
+/// The `.subckt` name a variant of a block is written under: the block's
+/// name for its own body, `<block>_<variant>` for the others.
+fn subckt_name(block_name: &str, block: &Block, variant: &str) -> String {
+    if variant == block.base_variant_name() {
+        block_name.to_string()
+    } else {
+        format!("{block_name}_{variant}")
+    }
+}
+
 pub(crate) struct Deck<'a> {
     ground: &'a str,
+    blocks: &'a BTreeMap<String, Block>,
     /// Each element id's SPICE name.
     names: HashMap<&'a str, String>,
     /// Ids of the voltage sources, which F and H may sense.
@@ -199,9 +218,10 @@ pub(crate) struct Deck<'a> {
 }
 
 impl<'a> Deck<'a> {
-    fn new(ground: &'a str) -> Self {
+    fn new(ground: &'a str, blocks: &'a BTreeMap<String, Block>) -> Self {
         Self {
             ground,
+            blocks,
             names: HashMap::new(),
             voltage_sources: HashSet::new(),
             nodes: HashMap::new(),
@@ -287,7 +307,14 @@ impl<'a> Deck<'a> {
                 line.push_str(&self.node(node)?);
             }
             line.push(' ');
-            line.push_str(&instance.block);
+            match self.blocks.get(&instance.block) {
+                Some(block) => line.push_str(&subckt_name(
+                    &instance.block,
+                    block,
+                    block.picked_variant(instance),
+                )),
+                None => line.push_str(&instance.block),
+            }
             self.line(line);
         }
         Ok(std::mem::take(&mut self.lines))

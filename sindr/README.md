@@ -462,6 +462,8 @@ assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
 
 `Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
 
+**Variants.** A block can hold more than one implementation of the same ports, such as an ideal supply and the real regulator circuit. The block's own body is one variant, named by `Block::base_variant` (`"base"` when unset). `Block::variants` holds the others as `Variant { ports, components, instances, parts }`. An instance picks one with `Instance::with_variant("detailed")`, or gets `Block::default_variant`. The picked body is flattened under the same instance path, so `X1.out` reads back whichever one runs. A variant whose ports differ from the block's, in name or order, is `DesignError::VariantPorts` naming the block. An unknown variant is `DesignError::UnknownVariant`. SPICE export writes the block's own body as `.subckt name` and each variant as `.subckt name_<variant>`, and each `X` line names the one its instance picked.
+
 ## Reading results
 
 `solve_circuit` returns `Result<SimulationResult, SimError>`. Read it by name:
