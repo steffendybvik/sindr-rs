@@ -1,6 +1,7 @@
 //! A momentary pushbutton, pressed or released.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::{stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
 use super::{AcStamp, DcStamp, Device};
@@ -17,7 +18,7 @@ pub struct Pushbutton {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// When true the button conducts (pressed); when false it is open.
     pub closed: bool,
 }

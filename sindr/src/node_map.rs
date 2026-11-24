@@ -59,7 +59,7 @@ impl NodeMap {
         let mut unique: BTreeSet<String> = BTreeSet::new();
         for component in &circuit.components {
             for node in component.all_nodes() {
-                unique.insert(node.clone());
+                unique.insert(node.to_string());
             }
         }
         // Remove ground

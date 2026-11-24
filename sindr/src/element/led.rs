@@ -2,6 +2,7 @@
 
 use crate::device_params;
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::stamp_diode_companion_at;
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
@@ -20,7 +21,7 @@ pub struct Led {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Emission colour, any case: `"red"`, `"orange"`, `"amber"`,
     /// `"yellow"`, `"green"`, `"blue"` or `"white"`
     /// ([`led::COLORS`](sindr_devices::led::COLORS)); sets the forward

@@ -4,6 +4,7 @@
 
 use crate::circuit::OpAmpModel;
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::op_amp::{OpAmpStamp, Pins, OP_AMP_STAGE};
 use crate::stamp::stamp_vcvs_at;
 
@@ -28,7 +29,7 @@ pub struct OpAmp {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[in_plus, in_minus, out]`.
-    pub nodes: [String; 3], // [in_plus, in_minus, out]
+    pub nodes: [NodeId; 3], // [in_plus, in_minus, out]
     /// Positive supply rail (V): the output's upper limit with a
     /// `model`. Default 15.
     #[cfg_attr(feature = "serde", serde(default = "super::default_v_pos"))]
@@ -74,7 +75,7 @@ impl Device for OpAmp {
 
     /// The output to the circuit's ground; the inputs only sense (a
     /// modelled op-amp's bias current is a current source).
-    fn dc_paths<'a>(&'a self, ground: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, ground: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         vec![[&self.nodes[2], ground]]
     }
 

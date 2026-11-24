@@ -173,8 +173,10 @@
 //!
 //! - **Ground node** must exist on at least one component. Its voltage is
 //!   defined as 0 V — every other voltage is reported relative to it.
-//! - **Node names** are arbitrary strings (`"0"`, `"gnd"`, `"vcc"`, …).
-//!   Components share a node simply by referencing the same string.
+//! - **Nodes** are [`NodeId`] handles around arbitrary names (`"0"`,
+//!   `"gnd"`, `"vcc"`, …): `"vcc".into()` makes one. Components share a
+//!   node when their handles name the same net. [`CircuitBuilder`] hands
+//!   out checked handles; see [`handle`].
 //! - **SI units** throughout: V, A, Ω, F, H, s, K.
 //! - **Sign conventions** are documented per [`CircuitElement`] variant.
 //!
@@ -321,6 +323,7 @@ mod device_params;
 pub mod element;
 pub mod error;
 pub mod fourier;
+pub mod handle;
 pub mod import;
 mod integration;
 pub mod loop_gain;
@@ -366,6 +369,7 @@ pub use dc_sweep::{dc_sweep, dc_sweep_nested, DcSweepAxis, DcSweepResult, Nested
 pub use design::{Block, DesignError, Instance, Part, Ratings, Thermal};
 pub use error::{SimError, SolvePoint};
 pub use fourier::{Fft, Fourier, FourierResult, Harmonic, Spectrum, SpectrumBin, Window};
+pub use handle::{CircuitBuilder, ComponentId, NodeId};
 pub use loop_gain::{solve_loop_gain, LoopGainConfig, LoopGainPoint, LoopGainResult};
 pub use measure::{check_specs, Measure, Measurement, Spec, SpecReport};
 pub use noise::{solve_noise, NoiseConfig, NoiseResult};

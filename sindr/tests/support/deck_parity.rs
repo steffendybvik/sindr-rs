@@ -116,13 +116,13 @@ impl Deck {
             .unwrap_or_else(|| panic!("{case}: no `.model {name}`"))
     }
 
-    fn nodes(case: &str, id: &str, deck: &[String], rust: &[&String]) {
+    fn nodes(case: &str, id: &str, deck: &[String], rust: &[&sindr::NodeId]) {
         let rust: Vec<String> = rust.iter().map(|n| n.to_ascii_lowercase()).collect();
         assert_eq!(deck, &rust[..], "{case}: `{id}` nodes");
     }
 
     /// The `D` card a two-terminal junction uses, checked for IS and N.
-    fn diode(&mut self, case: &str, id: &str, nodes: &[String; 2], is: f64, n: f64) {
+    fn diode(&mut self, case: &str, id: &str, nodes: &[sindr::NodeId; 2], is: f64, n: f64) {
         let words = self.take(case, id);
         Self::nodes(case, id, &words[..2], &[&nodes[0], &nodes[1]]);
         let (kind, params) = self.model(case, &words[2]).clone();

@@ -42,6 +42,25 @@ fn main() -> Result<(), sindr::SimError> {
 }
 ```
 
+The same circuit with typed handles: `CircuitBuilder` declares each net once and `build` refuses an element wired to a net it never declared, so a typo fails instead of leaving a floating node.
+
+```rust
+use sindr::{solve_circuit, CircuitBuilder};
+use sindr::element::{Led, Resistor, VoltageSource};
+
+fn main() -> Result<(), sindr::SimError> {
+    let mut b = CircuitBuilder::with_ground("gnd");
+    let (gnd, vcc, a) = (b.ground(), b.node("vcc"), b.node("a"));
+    b.add(VoltageSource::dc("V1", [vcc.clone(), gnd.clone()], 5.0));
+    b.add(Resistor { id: "R1".into(), nodes: [vcc, a.clone()], resistance: 220.0 });
+    let d1 = b.add(Led { id: "D1".into(), nodes: [a, gnd], color: "red".into(), temperature: 300.15 });
+    let result = solve_circuit(&b.build()?)?;
+    let led = result.component(&d1).expect("D1 is in the circuit");
+    println!("{:.1} mA, {:.1} mW", led.current_through * 1e3, led.power * 1e3);
+    Ok(())
+}
+```
+
 More in [`sindr/examples/`](./sindr/examples): RC transient, BJT amplifier, Bode plot, DC sweep, a SPICE deck.
 
 ## Crates

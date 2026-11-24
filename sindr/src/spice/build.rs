@@ -32,6 +32,7 @@ use crate::element::{
     Behavioural, Bjt, Capacitor, Cccs, Ccvs, CurrentSource, Diode, Inductor, Jfet, Mosfet,
     Resistor, Transformer, Vccs, Vcvs, VoltageSource,
 };
+use crate::handle::{ComponentId, NodeId};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::circuit::{
@@ -426,9 +427,9 @@ fn build_element(
                 });
             }
             let nodes = [
-                /* base */ raw.nodes[1].clone(),
-                /* collector */ raw.nodes[0].clone(),
-                /* emitter */ raw.nodes[2].clone(),
+                /* base */ NodeId::from(&raw.nodes[1]),
+                /* collector */ NodeId::from(&raw.nodes[0]),
+                /* emitter */ NodeId::from(&raw.nodes[2]),
             ];
             let params = model_params(m, BJT_KEYS, JUNCTION_NEUTRAL, &scope, strict, warnings)?;
             let mut bf = 100.0;
@@ -534,7 +535,11 @@ fn build_element(
                 raw.nodes.clone().try_into().map_err(|_| {
                     card_error(format!("`{}` needs four nodes: n+ n- nc+ nc-", raw.id))
                 })?;
-            let (id, nodes, control_nodes) = (raw.id.clone(), [p, n], [cp, cn]);
+            let (id, nodes, control_nodes) = (
+                raw.id.clone(),
+                [p, n].map(NodeId::from),
+                [cp, cn].map(NodeId::from),
+            );
             Ok(if raw.prefix == 'e' {
                 CircuitElement::Vcvs(Vcvs {
                     id,
@@ -555,7 +560,7 @@ fn build_element(
         RawElementBody::CurrentControlled { source, value } => {
             let v = eval_or_lift(value, &scope)?;
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
-            let (id, control_source) = (raw.id.clone(), source.clone());
+            let (id, control_source) = (raw.id.clone(), ComponentId::from(source));
             Ok(if raw.prefix == 'h' {
                 CircuitElement::Ccvs(Ccvs {
                     id,
@@ -991,7 +996,7 @@ fn build_mosfet(
     });
     Ok(CircuitElement::Mosfet(Mosfet {
         id: raw.id.clone(),
-        nodes: [g, d, s],
+        nodes: [g, d, s].map(NodeId::from),
         kind: if pmos {
             MosfetKind::Pmos
         } else {
@@ -1051,7 +1056,7 @@ fn build_jfet(
     };
     Ok(CircuitElement::Jfet(Jfet {
         id: raw.id.clone(),
-        nodes: [g, d, s],
+        nodes: [g, d, s].map(NodeId::from),
         kind: if pjf {
             JfetKind::PChannel
         } else {
@@ -1603,7 +1608,7 @@ fn lookup_model<'a>(
         })
 }
 
-fn two_nodes(nodes: &[String], id: &str) -> Result<[String; 2], SpiceParseError> {
+fn two_nodes(nodes: &[String], id: &str) -> Result<[NodeId; 2], SpiceParseError> {
     if nodes.len() != 2 {
         return Err(SpiceParseError::ArityMismatch {
             card: id.to_string(),
@@ -1613,7 +1618,7 @@ fn two_nodes(nodes: &[String], id: &str) -> Result<[String; 2], SpiceParseError>
             bad_span: (0, 0).into(),
         });
     }
-    Ok([nodes[0].clone(), nodes[1].clone()])
+    Ok([NodeId::from(&nodes[0]), NodeId::from(&nodes[1])])
 }
 
 fn span_of(raw: &crate::spice::ast::RawElement) -> miette::SourceSpan {

@@ -874,17 +874,17 @@ fn extract_bjt_results_from_snapshot(
         {
             let vb = snapshot
                 .node_voltages
-                .get(&nodes[0])
+                .get(nodes[0].as_str())
                 .copied()
                 .unwrap_or(0.0);
             let vc = snapshot
                 .node_voltages
-                .get(&nodes[1])
+                .get(nodes[1].as_str())
                 .copied()
                 .unwrap_or(0.0);
             let ve = snapshot
                 .node_voltages
-                .get(&nodes[2])
+                .get(nodes[2].as_str())
                 .copied()
                 .unwrap_or(0.0);
 
@@ -941,17 +941,17 @@ fn extract_mosfet_results_from_snapshot(
         {
             let vg = snapshot
                 .node_voltages
-                .get(&nodes[0])
+                .get(nodes[0].as_str())
                 .copied()
                 .unwrap_or(0.0);
             let vd = snapshot
                 .node_voltages
-                .get(&nodes[1])
+                .get(nodes[1].as_str())
                 .copied()
                 .unwrap_or(0.0);
             let vs = snapshot
                 .node_voltages
-                .get(&nodes[2])
+                .get(nodes[2].as_str())
                 .copied()
                 .unwrap_or(0.0);
 
@@ -2069,9 +2069,9 @@ fn initial_histories(
     config: &TransientConfig,
     start: &Start,
 ) -> (Vec<History>, Vec<History>, FastMap<History>) {
-    let ic = |node: &String| start.voltages.get(node).copied().unwrap_or(0.0);
-    let across = |a: &String, b: &String| History::at(ic(a) - ic(b));
-    let current = |id: &String| History::at(start.currents.get(id).copied().unwrap_or(0.0));
+    let ic = |node: &str| start.voltages.get(node).copied().unwrap_or(0.0);
+    let across = |a: &str, b: &str| History::at(ic(a) - ic(b));
+    let current = |id: &str| History::at(start.currents.get(id).copied().unwrap_or(0.0));
     let mut caps: Vec<History> = Vec::new();
     let mut inds: Vec<History> = Vec::new();
     // Parasitic cap histories, keyed by "component_id-junction" ("Q1-be").
@@ -2257,13 +2257,13 @@ fn operating_point_start(
         }
         dc.components.push(CircuitElement::Resistor(Resistor {
             id: format!("#ic-r:{node}"),
-            nodes: [node.clone(), circuit.ground_node.clone()],
+            nodes: [node.clone().into(), circuit.ground_node.clone().into()],
             resistance: 1.0 / IC_CONDUCTANCE,
         }));
         dc.components
             .push(CircuitElement::CurrentSource(CurrentSource {
                 id: format!("#ic-i:{node}"),
-                nodes: [circuit.ground_node.clone(), node.clone()],
+                nodes: [circuit.ground_node.clone().into(), node.clone().into()],
                 current: v * IC_CONDUCTANCE,
                 waveform: None,
             }));
@@ -2299,7 +2299,7 @@ fn operating_point_start(
                 let amps = match config.initial_currents.get(id) {
                     Some(&amps) => amps,
                     None => {
-                        let v = |n: &String| op.node_voltages.get(n).copied().unwrap_or(0.0);
+                        let v = |n: &str| op.node_voltages.get(n).copied().unwrap_or(0.0);
                         (v(&nodes[0]) - v(&nodes[1])) / coil_resistance
                     }
                 };
@@ -2737,7 +2737,7 @@ fn update_parasitic_histories(
     integ: &Integrator,
     parasitic: &mut FastMap<History>,
 ) {
-    let v = |n: &String| node_map.index(n).map_or(0.0, |i| solution[i]);
+    let v = |n: &str| node_map.index(n).map_or(0.0, |i| solution[i]);
     let num_nodes = node_map.num_nodes();
     for component in &circuit.components {
         if let Some(op) = crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, 0) {

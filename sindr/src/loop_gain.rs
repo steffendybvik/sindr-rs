@@ -28,6 +28,7 @@
 //! and the closed-loop response goes as `1/(1 + T)`.
 
 use crate::element::VoltageSource;
+use crate::handle::ComponentId;
 use num_complex::Complex64;
 
 use crate::ac_analysis::{
@@ -48,7 +49,7 @@ pub struct LoopGainConfig {
     /// Id of the probe: an independent voltage source in series with the
     /// loop, `nodes[1]` on the driving side and `nodes[0]` on the driven
     /// side. Its DC value biases the circuit as usual; 0 V leaves it out.
-    pub probe: String,
+    pub probe: ComponentId,
     /// Start frequency (Hz).
     pub f_start: f64,
     /// Stop frequency (Hz).
@@ -69,7 +70,12 @@ impl LoopGainConfig {
     /// let config = LoopGainConfig::new("Vprobe", 1.0, 100e6, 801);
     /// assert_eq!(config.probe, "Vprobe");
     /// ```
-    pub fn new(probe: impl Into<String>, f_start: f64, f_stop: f64, num_points: usize) -> Self {
+    pub fn new(
+        probe: impl Into<ComponentId>,
+        f_start: f64,
+        f_stop: f64,
+        num_points: usize,
+    ) -> Self {
         Self {
             probe: probe.into(),
             f_start,
@@ -246,7 +252,7 @@ pub(crate) fn solve_loop_gain_with(
                 config.probe
             ))
         })?;
-    if probe_nodes.contains(&circuit.ground_node) {
+    if probe_nodes.iter().any(|n| *n == circuit.ground_node) {
         return Err(SimError::InvalidComponent(format!(
             "loop gain: probe `{}` has a terminal on ground; it must sit in series with the loop",
             config.probe

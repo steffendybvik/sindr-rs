@@ -1,6 +1,7 @@
 //! An independent current source, DC plus an optional waveform.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::stamp_current_source_at;
 use crate::waveform::Waveform;
 
@@ -19,7 +20,7 @@ pub struct CurrentSource {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[from, to]`; current flows from `nodes[0]` to `nodes[1]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// DC current (A); also the offset added to any `waveform`.
     pub current: f64,
     /// Optional time-varying waveform added on top of `current`.
@@ -37,7 +38,7 @@ impl Device for CurrentSource {
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
 
     /// None: a current source fixes no voltage.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         Vec::new()
     }
 

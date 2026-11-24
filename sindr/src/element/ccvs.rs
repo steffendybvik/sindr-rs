@@ -1,6 +1,7 @@
 //! A current-controlled voltage source, SPICE's `H`.
 
 use crate::error::SimError;
+use crate::handle::{ComponentId, NodeId};
 use crate::mna::MnaSystem;
 
 use super::{AcStamp, Check, DcStamp, Device};
@@ -18,9 +19,9 @@ pub struct Ccvs {
     /// Unique component identifier.
     pub id: String,
     /// Output terminals `[out+, out-]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Id of the voltage source whose current is sensed.
-    pub control_source: String,
+    pub control_source: ComponentId,
     /// Transresistance rm (Ω): `V_out = rm * I_control`.
     pub rm: f64,
 }

@@ -1,5 +1,6 @@
 //! A relay: a coil whose voltage opens or closes a contact pair.
 
+use crate::handle::NodeId;
 use nalgebra::DVector;
 
 use crate::error::SimError;
@@ -22,7 +23,7 @@ pub struct Relay {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[coil+, coil-, contact1, contact2]`.
-    pub nodes: [String; 4],
+    pub nodes: [NodeId; 4],
     /// Coil resistance (Ω). Default 500.
     #[cfg_attr(feature = "serde", serde(default = "default_relay_coil_resistance"))]
     pub coil_resistance: f64,
@@ -53,7 +54,7 @@ impl Device for Relay {
 
     /// The coil's ends and the contact's; nothing joins the coil to the
     /// contact.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         let [coil_a, coil_b, contact_a, contact_b] = &self.nodes;
         vec![[coil_a, coil_b], [contact_a, contact_b]]
     }
@@ -133,7 +134,7 @@ pub(crate) fn series_resistance(g: f64, i_hist: f64, r: f64) -> (f64, f64) {
 /// magnitude, open otherwise and when there is no `v` yet.
 pub(crate) fn relay_contact_resistance(
     node_map: &NodeMap,
-    nodes: &[String; 4],
+    nodes: &[NodeId; 4],
     pickup_voltage: f64,
     v: Option<&DVector<f64>>,
 ) -> f64 {

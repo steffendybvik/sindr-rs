@@ -3,6 +3,7 @@
 
 use crate::circuit::DiodeModel;
 use crate::error::SimError;
+use crate::handle::NodeId;
 
 use super::{stamped_as_parts, AcStamp, Check, DcStamp, Device, TranStamp};
 use crate::ratings::RatingKind;
@@ -151,7 +152,7 @@ pub struct DigitalPin {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[pin, vdd, gnd]`.
-    pub nodes: [String; 3],
+    pub nodes: [NodeId; 3],
     /// The output stage. Default [`PinMode::Input`].
     #[cfg_attr(feature = "serde", serde(default))]
     pub mode: PinMode,

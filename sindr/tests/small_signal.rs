@@ -390,7 +390,7 @@ fn igbt_ac_matches_dc() {
 #[test]
 fn resistive_parts_ac_matches_dc() {
     let two = |id: &str, device: CircuitElement| (id.to_string(), two_terminal(device));
-    let nodes = || ["n2".to_string(), "0".to_string()];
+    let nodes = || -> [sindr::NodeId; 2] { ["n2".into(), "0".into()] };
     let cases = vec![
         two(
             "closed switch",

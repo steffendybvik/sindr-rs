@@ -173,13 +173,18 @@ mod tests {
         Transformer, Varactor, Vcvs, VoltageRegulator, VoltageSource,
     };
     use crate::expression::Expression;
+    use crate::handle::NodeId;
 
-    fn two(id: &str) -> [String; 2] {
-        [format!("{id}.a"), "0".into()]
+    fn two(id: &str) -> [NodeId; 2] {
+        [format!("{id}.a").into(), "0".into()]
     }
 
-    fn three(id: &str) -> [String; 3] {
-        [format!("{id}.a"), format!("{id}.b"), "0".into()]
+    fn three(id: &str) -> [NodeId; 3] {
+        [
+            format!("{id}.a").into(),
+            format!("{id}.b").into(),
+            "0".into(),
+        ]
     }
 
     /// Every kind of element that adds branch rows or history slots, with
@@ -212,7 +217,12 @@ mod tests {
         let relay = |id: &str, inductance| {
             CircuitElement::Relay(Relay {
                 id: id.into(),
-                nodes: [format!("{id}.a"), "0".into(), format!("{id}.c"), "0".into()],
+                nodes: [
+                    format!("{id}.a").into(),
+                    "0".into(),
+                    format!("{id}.c").into(),
+                    "0".into(),
+                ],
                 coil_resistance: 500.0,
                 pickup_voltage: 3.0,
                 inductance,

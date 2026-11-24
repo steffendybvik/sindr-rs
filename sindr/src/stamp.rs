@@ -20,6 +20,7 @@ use sindr_devices::diode::{self, DiodeParams};
 use crate::circuit::Circuit;
 use crate::element::{layout::Layout, DcStamp};
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::mna::MnaSystem;
 use crate::node_map::{NodeMap, Terminals};
 
@@ -81,7 +82,7 @@ pub(crate) fn stamp_circuit_with(
 pub fn stamp_resistor(
     system: &mut MnaSystem,
     node_map: &NodeMap,
-    nodes: &[String; 2],
+    nodes: &[NodeId; 2],
     resistance: f64,
 ) {
     stamp_resistor_at(
@@ -123,7 +124,7 @@ pub(crate) fn stamp_resistor_at(
 pub fn stamp_voltage_source(
     system: &mut MnaSystem,
     node_map: &NodeMap,
-    nodes: &[String; 2],
+    nodes: &[NodeId; 2],
     voltage: f64,
     branch: usize,
 ) {
@@ -173,7 +174,7 @@ pub(crate) fn stamp_voltage_source_at(
 pub fn stamp_current_source(
     system: &mut MnaSystem,
     node_map: &NodeMap,
-    nodes: &[String; 2],
+    nodes: &[NodeId; 2],
     current: f64,
 ) {
     stamp_current_source_at(
@@ -226,7 +227,7 @@ pub(crate) fn stamp_companion_at(
 pub(crate) fn stamp_diode_companion(
     system: &mut MnaSystem,
     node_map: &NodeMap,
-    nodes: &[String; 2],
+    nodes: &[NodeId; 2],
     v_prev: &DVector<f64>,
     params: &DiodeParams,
 ) {
@@ -561,7 +562,7 @@ mod tests {
 
         // Stamp only the BJT
         let params = BjtParams::new(100.0);
-        let nodes: [String; 3] = ["n1".into(), "n2".into(), "0".into()];
+        let nodes: [NodeId; 3] = ["n1".into(), "n2".into(), "0".into()];
         stamp_bjt_companion(
             &mut system,
             &node_map,
@@ -670,7 +671,7 @@ mod tests {
         v_prev[ci] = 0.0;
 
         let params = BjtParams::new(100.0);
-        let nodes: [String; 3] = ["n_b".into(), "n_c".into(), "0".into()];
+        let nodes: [NodeId; 3] = ["n_b".into(), "n_c".into(), "0".into()];
         stamp_bjt_companion(
             &mut system,
             &node_map,
@@ -783,7 +784,7 @@ mod tests {
         v_prev[ei] = 0.0;
 
         let params = BjtParams::new(100.0);
-        let nodes: [String; 3] = ["n_b".into(), "n_c".into(), "n_e".into()];
+        let nodes: [NodeId; 3] = ["n_b".into(), "n_c".into(), "n_e".into()];
         stamp_bjt_companion(
             &mut system,
             &node_map,
@@ -872,7 +873,7 @@ mod tests {
         v_prev[ei] = 0.0;
 
         let params = BjtParams::new(100.0);
-        let nodes: [String; 3] = ["n_b".into(), "n_c".into(), "n_e".into()];
+        let nodes: [NodeId; 3] = ["n_b".into(), "n_c".into(), "n_e".into()];
         stamp_bjt_companion(
             &mut system,
             &node_map,
@@ -1151,7 +1152,7 @@ mod tests {
     /// exponential clamp at 40·V_T.
     #[test]
     fn bjt_stamp_is_newton_consistent() {
-        let nodes = ["b".to_string(), "c".to_string(), "e".to_string()];
+        let nodes: [NodeId; 3] = ["b".into(), "c".into(), "e".into()];
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![CircuitElement::Bjt(Bjt {
@@ -1246,7 +1247,7 @@ mod tests {
     /// current: its value at the operating point and its partial derivatives.
     #[test]
     fn jfet_stamp_is_newton_consistent() {
-        let nodes = ["g".to_string(), "d".to_string(), "s".to_string()];
+        let nodes: [NodeId; 3] = ["g".into(), "d".into(), "s".into()];
         let circuit = Circuit {
             ground_node: "0".into(),
             components: vec![CircuitElement::Jfet(Jfet {
@@ -1326,7 +1327,7 @@ mod tests {
     fn mosfet_stamp_is_newton_consistent() {
         use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 
-        let nodes: [String; 3] = ["g".into(), "d".into(), "s".into()];
+        let nodes: [NodeId; 3] = ["g".into(), "d".into(), "s".into()];
         let params = MosfetParams {
             vto: 0.7,
             ..MosfetParams::default_nmos()
@@ -1414,7 +1415,7 @@ mod tests {
     fn igbt_stamp_is_newton_consistent() {
         use sindr_devices::igbt::IgbtParams;
 
-        let nodes: [String; 3] = ["g".into(), "c".into(), "e".into()];
+        let nodes: [NodeId; 3] = ["g".into(), "c".into(), "e".into()];
         let params = IgbtParams::default();
         let circuit = Circuit {
             ground_node: "0".into(),
@@ -1484,8 +1485,8 @@ mod tests {
             })
         };
         let resistors = vec![r("RA", "a"), r("RB", "b"), r("RC", "c")];
-        let two = || -> [String; 2] { ["a".into(), "b".into()] };
-        let three = || -> [String; 3] { ["a".into(), "b".into(), "c".into()] };
+        let two = || -> [NodeId; 2] { ["a".into(), "b".into()] };
+        let three = || -> [NodeId; 3] { ["a".into(), "b".into(), "c".into()] };
         let nonlinear = vec![
             CircuitElement::Diode(Diode {
                 id: "D1".into(),
@@ -1589,7 +1590,7 @@ mod tests {
     /// stamp, and a zener stamps the diode companion with its breakdown.
     #[test]
     fn direct_stamps_of_lowered_elements() {
-        let nodes = || -> [String; 2] { ["a".into(), "0".into()] };
+        let nodes = || -> [NodeId; 2] { ["a".into(), "0".into()] };
         let crystal = CircuitElement::Crystal(Crystal {
             id: "Y1".into(),
             nodes: nodes(),

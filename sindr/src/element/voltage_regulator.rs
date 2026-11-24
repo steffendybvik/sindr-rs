@@ -1,6 +1,7 @@
 //! A linear voltage regulator with dropout, quiescent current and a
 //! current limit.
 
+use crate::handle::NodeId;
 use nalgebra::DVector;
 use sindr_devices::regulator::{regulator_piece, RegulatorLinear, RegulatorParams};
 
@@ -36,7 +37,7 @@ pub struct VoltageRegulator {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[input, output, gnd]`.
-    pub nodes: [String; 3], // [input, output, gnd]
+    pub nodes: [NodeId; 3], // [input, output, gnd]
     /// Regulated output voltage (V) from the ground pin. E.g. 5.0 for a
     /// 7805, or −5.0 for a 7905, whose input sits below ground and whose
     /// output current flows in at the output pin.
@@ -170,7 +171,7 @@ impl Device for VoltageRegulator {
 /// (both from its ground pin), or `None` without one.
 pub(crate) fn regulator_state(
     node_map: &NodeMap,
-    nodes: &[String; 3],
+    nodes: &[NodeId; 3],
     branch: usize,
     solution: Option<&DVector<f64>>,
 ) -> Option<(f64, f64, f64)> {
@@ -178,7 +179,7 @@ pub(crate) fn regulator_state(
 }
 
 /// `[input, output, gnd]` as matrix indices (`None` is ground).
-fn pins(node_map: &NodeMap, nodes: &[String; 3]) -> [Option<usize>; 3] {
+fn pins(node_map: &NodeMap, nodes: &[NodeId; 3]) -> [Option<usize>; 3] {
     nodes.each_ref().map(|n| node_map.index(n))
 }
 
@@ -201,7 +202,7 @@ fn state(
 /// of the set voltage, so a negative regulator starts regulating too).
 pub(crate) fn regulator_piece_at(
     node_map: &NodeMap,
-    nodes: &[String; 3],
+    nodes: &[NodeId; 3],
     voltage: f64,
     model: &Option<RegulatorParams>,
     branch: usize,
@@ -266,7 +267,7 @@ pub(crate) fn regulator_pieces_settled(
 /// regulator is on at `x`.
 fn regulator_pieces_at(
     node_map: &NodeMap,
-    nodes: &[String; 3],
+    nodes: &[NodeId; 3],
     voltage: f64,
     model: &Option<RegulatorParams>,
     branch: usize,

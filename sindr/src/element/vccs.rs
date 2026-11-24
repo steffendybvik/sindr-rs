@@ -1,6 +1,7 @@
 //! A voltage-controlled current source, SPICE's `G`.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::mna::MnaSystem;
 
 use super::{AcStamp, Check, DcStamp, Device};
@@ -24,9 +25,9 @@ pub struct Vccs {
     /// Unique component identifier.
     pub id: String,
     /// Output terminals `[out_from, out_to]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Sensing terminals `[ctrl+, ctrl-]`.
-    pub control_nodes: [String; 2],
+    pub control_nodes: [NodeId; 2],
     /// Transconductance gm (A/V): `I_out = gm * V_control`.
     pub gm: f64,
 }
@@ -48,7 +49,7 @@ impl Device for Vccs {
 
     /// None: its output is a current, and it only senses its control
     /// pair.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         Vec::new()
     }
 
@@ -60,7 +61,7 @@ impl Device for Vccs {
         Ok(())
     }
 
-    fn all_nodes(&self) -> Vec<&String> {
+    fn all_nodes(&self) -> Vec<&NodeId> {
         let [a, b] = &self.nodes;
         let [c, d] = &self.control_nodes;
         vec![a, b, c, d]

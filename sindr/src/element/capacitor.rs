@@ -1,6 +1,7 @@
 //! A linear capacitor.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 
 use crate::stamp::stamp_companion_at;
 
@@ -19,7 +20,7 @@ pub struct Capacitor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Capacitance (F).
     pub capacitance: f64,
 }
@@ -46,7 +47,7 @@ impl Device for Capacitor {
     }
 
     /// None: open at DC.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         Vec::new()
     }
 

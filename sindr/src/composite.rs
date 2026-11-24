@@ -12,6 +12,7 @@ use crate::element::{
     Capacitor, Crystal, CurrentSource, DigitalPin, Diode, FerriteBead, Inductor, Resistor, Switch,
     SwitchSpdt,
 };
+use crate::handle::NodeId;
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement, CrystalParams, FerriteBeadParams, SpdtPosition};
@@ -80,7 +81,7 @@ pub(crate) fn lower(element: &CircuitElement) -> Result<Option<Vec<CircuitElemen
 
 fn crystal(
     id: &str,
-    nodes: &[String; 2],
+    nodes: &[NodeId; 2],
     p: &CrystalParams,
 ) -> Result<Vec<CircuitElement>, SimError> {
     positive(id, "frequency (Hz)", p.frequency)?;
@@ -94,7 +95,7 @@ fn crystal(
     }
     let lm = positive(id, "motional inductance (H)", p.lm())?;
     let [a, b] = nodes.clone();
-    let (m1, m2) = (part(id, "m1"), part(id, "m2"));
+    let (m1, m2): (NodeId, NodeId) = (part(id, "m1").into(), part(id, "m2").into());
     let mut parts = vec![
         CircuitElement::Resistor(Resistor {
             id: part(id, "rm"),
@@ -125,14 +126,14 @@ fn crystal(
 
 fn bead(
     id: &str,
-    nodes: &[String; 2],
+    nodes: &[NodeId; 2],
     p: &FerriteBeadParams,
 ) -> Result<Vec<CircuitElement>, SimError> {
     let r_dc = positive(id, "r_dc (Ω)", p.r_dc)?;
     let l = positive(id, "l (H)", p.l)?;
     let r_ac = positive(id, "r_ac (Ω)", p.r_ac)?;
     let [a, b] = nodes.clone();
-    let mid = part(id, "m");
+    let mid: NodeId = part(id, "m").into();
     let mut parts = vec![
         CircuitElement::Resistor(Resistor {
             id: part(id, "rdc"),
@@ -176,7 +177,7 @@ pub(crate) fn pin(p: &DigitalPin) -> Result<Vec<CircuitElement>, SimError> {
     } = p;
     let [pad, vdd, gnd] = nodes.clone();
     let (r_up, r_down) = p.stage();
-    let diode = |suffix: &str, nodes: [String; 2]| {
+    let diode = |suffix: &str, nodes: [NodeId; 2]| {
         CircuitElement::Diode(Diode {
             id: part(id, suffix),
             nodes,

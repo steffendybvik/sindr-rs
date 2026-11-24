@@ -3,6 +3,7 @@
 
 use crate::circuit::FerriteBeadParams;
 use crate::error::SimError;
+use crate::handle::NodeId;
 
 use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
 use crate::ratings::RatingKind;
@@ -20,7 +21,7 @@ pub struct FerriteBead {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// The equivalent circuit.
     pub params: FerriteBeadParams,
 }

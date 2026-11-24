@@ -472,7 +472,7 @@ impl ParsedNetlist {
                 one.source
             ))),
             [one] => Ok(crate::ac_analysis::AcConfig {
-                source_id: one.source.clone(),
+                source_id: one.source.clone().into(),
                 ac_magnitude: one.magnitude,
                 ac_phase_deg: one.phase_deg,
                 ..sweep

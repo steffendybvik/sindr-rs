@@ -337,14 +337,14 @@ fn sparse_asymmetric_system_matches_finite_differences() {
         CircuitElement::Vcvs(Vcvs {
             id: "E1".into(),
             nodes: ["e".into(), "0".into()],
-            control_nodes: [name(90), name(30)],
+            control_nodes: [name(90).into(), name(30).into()],
             gain: 2.5,
         }),
         resistor("RE", "e", "out", 2e3),
         CircuitElement::Vccs(Vccs {
             id: "G1".into(),
             nodes: ["out".into(), "0".into()],
-            control_nodes: [name(120), "0".into()],
+            control_nodes: [name(120).into(), "0".into()],
             gm: 1e-4,
         }),
         resistor("RL", "out", "0", 3e3),

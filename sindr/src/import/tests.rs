@@ -607,8 +607,8 @@ fn built(component: Component, terminals: &[&str]) -> CircuitElement {
 }
 
 /// `["n0", "n1", …]`, the nodes [`build`] puts the terminals on.
-fn ns<const N: usize>() -> [String; N] {
-    std::array::from_fn(|i| format!("n{i}"))
+fn ns<const N: usize>() -> [NodeId; N] {
+    std::array::from_fn(|i| format!("n{i}").into())
 }
 
 #[test]

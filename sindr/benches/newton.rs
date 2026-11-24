@@ -11,7 +11,7 @@ use sindr::{solve_circuit, BjtKind, Circuit, CircuitElement};
 fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
     CircuitElement::Resistor(Resistor {
         id,
-        nodes: [a, b],
+        nodes: [a.into(), b.into()],
         resistance,
     })
 }
@@ -39,7 +39,7 @@ fn diode_chain(n: usize) -> Circuit {
         components.push(r(format!("RP{i}"), "n0".into(), format!("n{i}"), 10e3));
         components.push(CircuitElement::Diode(Diode {
             id: format!("D{i}"),
-            nodes: [format!("n{i}"), "0".into()],
+            nodes: [format!("n{i}").into(), "0".into()],
             temperature: 300.15,
             model: None,
         }));
@@ -62,7 +62,11 @@ fn bjt_row(n: usize) -> Circuit {
         components.push(r(format!("RE{i}"), format!("e{i}"), "0".into(), 100.0));
         components.push(CircuitElement::Bjt(Bjt {
             id: format!("Q{i}"),
-            nodes: [format!("b{i}"), format!("c{i}"), format!("e{i}")],
+            nodes: [
+                format!("b{i}").into(),
+                format!("c{i}").into(),
+                format!("e{i}").into(),
+            ],
             kind: BjtKind::Npn,
             bf: 100.0,
             temperature: 300.15,

@@ -3,6 +3,7 @@
 
 use crate::circuit::CrystalParams;
 use crate::error::SimError;
+use crate::handle::NodeId;
 
 use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
 use crate::ratings::RatingKind;
@@ -21,7 +22,7 @@ pub struct Crystal {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// The equivalent circuit.
     pub params: CrystalParams,
 }
@@ -38,7 +39,7 @@ impl Device for Crystal {
 
     /// None: its motional arm and its shunt capacitance are both open at
     /// DC.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         Vec::new()
     }
 

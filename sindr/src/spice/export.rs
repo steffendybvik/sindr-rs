@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::circuit::{BjtModel, DiodeModel};
 use crate::design::{DesignError, Instance};
+use crate::handle::NodeId;
 use crate::stamp::{SWITCH_R_CLOSED, SWITCH_R_OPEN};
 use crate::{BjtKind, Circuit, CircuitElement, Waveform};
 
@@ -321,7 +322,7 @@ impl<'a> Deck<'a> {
 
     pub(crate) fn nodes<const N: usize>(
         &mut self,
-        nodes: &[String; N],
+        nodes: &[NodeId; N],
     ) -> Result<String, ExportError> {
         let mut out = Vec::with_capacity(N);
         for node in nodes {
@@ -355,7 +356,7 @@ impl<'a> Deck<'a> {
     pub(crate) fn two_terminal(
         &mut self,
         name: &str,
-        nodes: &[String; 2],
+        nodes: &[NodeId; 2],
         value: String,
     ) -> Result<(), ExportError> {
         let nodes = self.nodes(nodes)?;
@@ -380,7 +381,7 @@ impl<'a> Deck<'a> {
         &mut self,
         id: &str,
         name: &str,
-        nodes: &[String; 2],
+        nodes: &[NodeId; 2],
         value: f64,
         waveform: Option<&Waveform>,
     ) -> Result<(), ExportError> {
@@ -411,7 +412,7 @@ impl<'a> Deck<'a> {
             let letter = part.device().spice_letter();
             let base = name.strip_prefix(['R', 'r']).unwrap_or(name);
             let part_name = self.extra_name(id, format!("{letter}{base}_{suffix}"))?;
-            let nodes = [local(&part.nodes()[0]), local(&part.nodes()[1])];
+            let nodes = [local(&part.nodes()[0]), local(&part.nodes()[1])].map(NodeId::from);
             let value = match part {
                 CircuitElement::Resistor(Resistor { resistance, .. }) => {
                     num(id, "resistance", *resistance)?
@@ -444,7 +445,7 @@ impl<'a> Deck<'a> {
         &mut self,
         id: &str,
         name: &str,
-        nodes: &[String; 2],
+        nodes: &[NodeId; 2],
         model: DiodeModel,
     ) -> Result<(), ExportError> {
         let model_name = match self.diode_models.iter().find(|(m, _)| *m == model) {
@@ -540,8 +541,8 @@ impl<'a> Deck<'a> {
     pub(crate) fn controlled(
         &mut self,
         name: &str,
-        nodes: &[String; 2],
-        control_nodes: &[String; 2],
+        nodes: &[NodeId; 2],
+        control_nodes: &[NodeId; 2],
         value: String,
     ) -> Result<(), ExportError> {
         let out = self.nodes(nodes)?;
@@ -554,7 +555,7 @@ impl<'a> Deck<'a> {
         &mut self,
         name: &str,
         id: &str,
-        nodes: &[String; 2],
+        nodes: &[NodeId; 2],
         control_source: &str,
         value: String,
     ) -> Result<(), ExportError> {

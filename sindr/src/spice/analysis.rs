@@ -410,9 +410,9 @@ impl AnalysisRequest {
         };
         let (f_stop, num_points, spacing) = sweep_grid(false, *sweep, *points, *fstart, *fstop);
         Some(crate::NoiseConfig {
-            output: node.clone(),
-            reference: reference.clone(),
-            input_source: input.clone(),
+            output: node.into(),
+            reference: reference.clone().map(Into::into),
+            input_source: input.into(),
             f_start: *fstart,
             f_stop,
             num_points,

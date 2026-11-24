@@ -1,6 +1,7 @@
 //! A varactor: a diode used for its voltage-dependent junction capacitance.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 
 use super::{AcStamp, DcStamp, Device, TranStamp};
@@ -20,7 +21,7 @@ pub struct Varactor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Model parameters (zero-bias capacitance, grading, etc.).
     #[cfg_attr(feature = "serde", serde(default))]
     pub params: sindr_devices::varactor::VaractorParams,

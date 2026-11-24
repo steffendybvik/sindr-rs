@@ -1,5 +1,6 @@
 //! A light-dependent resistor.
 
+use crate::handle::NodeId;
 use sindr_devices::photoresistor::{ldr_resistance as rs_ldr_resistance, PhotoresistorParams};
 
 use crate::error::SimError;
@@ -21,7 +22,7 @@ pub struct Photoresistor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Incident light level, 0.0 (dark, ~1 MΩ) to 1.0 (bright, ~1 kΩ).
     pub light_level: f64,
 }

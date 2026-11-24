@@ -49,6 +49,25 @@ fn main() -> Result<(), sindr::SimError> {
 }
 ```
 
+The same circuit with typed handles: `CircuitBuilder` declares each net once and `build` refuses an element wired to a net it never declared, so a typo fails instead of leaving a floating node.
+
+```rust
+use sindr::{solve_circuit, CircuitBuilder};
+use sindr::element::{Led, Resistor, VoltageSource};
+
+fn main() -> Result<(), sindr::SimError> {
+    let mut b = CircuitBuilder::with_ground("gnd");
+    let (gnd, vcc, a) = (b.ground(), b.node("vcc"), b.node("a"));
+    b.add(VoltageSource::dc("V1", [vcc.clone(), gnd.clone()], 5.0));
+    b.add(Resistor { id: "R1".into(), nodes: [vcc, a.clone()], resistance: 220.0 });
+    let d1 = b.add(Led { id: "D1".into(), nodes: [a, gnd], color: "red".into(), temperature: 300.15 });
+    let result = solve_circuit(&b.build()?)?;
+    let led = result.component(&d1).expect("D1 is in the circuit");
+    println!("{:.1} mA, {:.1} mW", led.current_through * 1e3, led.power * 1e3);
+    Ok(())
+}
+```
+
 More in [`sindr/examples/`](./sindr/examples): RC transient, BJT amplifier, Bode plot, DC sweep, a SPICE deck.
 
 ### Crates
@@ -267,15 +286,35 @@ println!("R1 current = {:.3} mA", result.current("R1").unwrap() * 1e3); // 3.333
 
 ### Building circuits
 
-Every component has an `id` (arbitrary string) and `nodes` (node names as strings). One node must match `ground_node` — it is held at 0 V.
+Every component has an `id` (arbitrary string) and `nodes`, an array of `NodeId` handles. A `NodeId` is a net's name underneath: `"out".into()` makes one, and two elements share a net when their handles name the same net. One node must match `ground_node` — it is held at 0 V.
+
+`CircuitBuilder` hands the handles out and checks them: declare each net once with `node`, and `build` fails with `SimError::UnknownNode` on an element that names a net nobody declared, so a typo is an error rather than a new floating net. Analysis configs take handles too (`NodeId` for an output net, `ComponentId` for a source), and result accessors take either a handle or a name.
+
+```rust
+use sindr::element::{Resistor, VoltageSource};
+use sindr::{solve_circuit, CircuitBuilder};
+
+let mut b = CircuitBuilder::new(); // ground is "0"
+let gnd = b.ground();
+let n1 = b.node("n1");
+let n2 = b.node("n2");
+b.add(VoltageSource::dc("V1", [n1.clone(), gnd.clone()], 10.0));
+b.add(Resistor { id: "R1".into(), nodes: [n1, n2.clone()], resistance: 1_000.0 });
+b.add(Resistor { id: "R2".into(), nodes: [n2.clone(), gnd], resistance: 2_000.0 });
+let circuit = b.build()?;
+
+let result = solve_circuit(&circuit)?;
+assert!((result.voltage(&n2).unwrap() - 6.667).abs() < 1e-3);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
 #### Passive components
 
 ```rust,ignore
 use sindr::element::{Capacitor, Inductor, Resistor};
-CircuitElement::Resistor(Resistor { id, nodes: [String; 2], resistance: f64 })
-CircuitElement::Capacitor(Capacitor { id, nodes: [String; 2], capacitance: f64 })
-CircuitElement::Inductor(Inductor { id, nodes: [String; 2], inductance: f64, saturation: Option<InductorSaturation> })
+CircuitElement::Resistor(Resistor { id, nodes: [NodeId; 2], resistance: f64 })
+CircuitElement::Capacitor(Capacitor { id, nodes: [NodeId; 2], capacitance: f64 })
+CircuitElement::Inductor(Inductor { id, nodes: [NodeId; 2], inductance: f64, saturation: Option<InductorSaturation> })
 ```
 
 Capacitors and inductors trigger transient analysis automatically. In pure DC (no reactive elements, no waveforms), they are treated as open circuits.
@@ -300,8 +339,8 @@ let l1 = CircuitElement::Inductor(Inductor {
 
 ```rust,ignore
 use sindr::element::{CurrentSource, VoltageSource};
-CircuitElement::VoltageSource(VoltageSource { id, nodes: [String; 2], voltage: f64, waveform: Option<Waveform> })
-CircuitElement::CurrentSource(CurrentSource { id, nodes: [String; 2], current: f64, waveform: Option<Waveform> })
+CircuitElement::VoltageSource(VoltageSource { id, nodes: [NodeId; 2], voltage: f64, waveform: Option<Waveform> })
+CircuitElement::CurrentSource(CurrentSource { id, nodes: [NodeId; 2], current: f64, waveform: Option<Waveform> })
 ```
 
 `nodes[0]` is the positive terminal for voltage sources. A current source's current flows through it from `nodes[0]` to `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`, as SPICE's `I` does.
@@ -312,7 +351,7 @@ A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers tr
 
 ```rust,ignore
 use sindr::element::Battery;
-CircuitElement::Battery(Battery { id, nodes: [String; 2], params: BatteryParams, state_of_charge: f64 })
+CircuitElement::Battery(Battery { id, nodes: [NodeId; 2], params: BatteryParams, state_of_charge: f64 })
 ```
 
 `nodes` are `[positive, negative]`. The cell is an equivalent circuit: open-circuit voltage by state of charge (`params.ocv`, interpolated), behind a series resistance `r_series` and an optional RC pair (`params.rc`) for the slow sag after a load step and the recovery after it. Its terminal voltage is `OCV(SoC) − R0·i − v1`.
@@ -341,15 +380,15 @@ let cell = CircuitElement::Battery(Battery {
 
 ```rust,ignore
 use sindr::element::{Pushbutton, Switch};
-CircuitElement::Switch(Switch { id, nodes: [String; 2], closed: bool })
-CircuitElement::Pushbutton(Pushbutton { id, nodes: [String; 2], closed: bool })
+CircuitElement::Switch(Switch { id, nodes: [NodeId; 2], closed: bool })
+CircuitElement::Pushbutton(Pushbutton { id, nodes: [NodeId; 2], closed: bool })
 ```
 
 Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 
 ```rust,ignore
 use sindr::element::SwitchSpdt;
-CircuitElement::SwitchSpdt(SwitchSpdt { id, nodes: [String; 3], position: SpdtPosition })  // [common, a, b]
+CircuitElement::SwitchSpdt(SwitchSpdt { id, nodes: [NodeId; 3], position: SpdtPosition })  // [common, a, b]
 ```
 
 A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default) or to `b`, each path a `Switch`. Its result is the path in use: common minus the selected throw, and the current from common into it.
@@ -358,8 +397,8 @@ A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default
 
 ```rust,ignore
 use sindr::element::{Crystal, FerriteBead};
-CircuitElement::Crystal(Crystal { id, nodes: [String; 2], params: CrystalParams })
-CircuitElement::FerriteBead(FerriteBead { id, nodes: [String; 2], params: FerriteBeadParams })
+CircuitElement::Crystal(Crystal { id, nodes: [NodeId; 2], params: CrystalParams })
+CircuitElement::FerriteBead(FerriteBead { id, nodes: [NodeId; 2], params: FerriteBeadParams })
 ```
 
 - **Crystal:** the Butterworth–Van Dyke model, `Rm`–`Lm`–`Cm` in series beside `C0`, with `Lm` set by the series-resonant `frequency`. `CrystalParams::from_datasheet(frequency, esr, c0)` takes `Cm = C0/250`, typical of AT-cut crystals; set `cm` when you know it. Open at DC. Its result's `power` is what `Rm` dissipates, the drive level, which `Ratings::power` limits. The load capacitance a datasheet names is the two capacitors on your board, not part of the crystal.
@@ -390,11 +429,11 @@ It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp dio
 
 ```rust,ignore
 use sindr::element::{Diode, Led, Photodiode, SchottkyDiode, ZenerDiode};
-CircuitElement::Diode(Diode { id, nodes: [String; 2], model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
-CircuitElement::Led(Led { id, nodes: [String; 2], color: String }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
-CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [String; 2], vz: f64 })   // breakdown voltage at 5 mA
-CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [String; 2] })            // Vf ≈ 0.3 V
-CircuitElement::Photodiode(Photodiode { id, nodes: [String; 2], irradiance: f64 }) // irradiance in W
+CircuitElement::Diode(Diode { id, nodes: [NodeId; 2], model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
+CircuitElement::Led(Led { id, nodes: [NodeId; 2], color: String }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
+CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [NodeId; 2], vz: f64 })   // breakdown voltage at 5 mA
+CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [NodeId; 2] })            // Vf ≈ 0.3 V
+CircuitElement::Photodiode(Photodiode { id, nodes: [NodeId; 2], irradiance: f64 }) // irradiance in W
 ```
 
 All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
@@ -405,7 +444,7 @@ All diodes use Newton-Raphson automatically when present. `Diode`'s optional `mo
 use sindr::element::Varactor;
 CircuitElement::Varactor(Varactor {
     id: String,
-    nodes: [String; 2],  // [anode, cathode]
+    nodes: [NodeId; 2],  // [anode, cathode]
     params: VaractorParams, // { cj0, phi, m }
 })
 ```
@@ -419,7 +458,7 @@ use sindr::element::{Bjt, Igbt, Jfet, Mosfet};
 // BJT — nodes: [base, collector, emitter]
 CircuitElement::Bjt(Bjt {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     kind: BjtKind,                          // BjtKind::Npn or BjtKind::Pnp
     bf: f64,                                // forward beta, default 100
     temperature: f64,                       // junction temp (K), default 300.15 K
@@ -430,7 +469,7 @@ CircuitElement::Bjt(Bjt {
 // MOSFET — nodes: [gate, drain, source]; body tied to source
 CircuitElement::Mosfet(Mosfet {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     kind: MosfetKind,                          // MosfetKind::Nmos or MosfetKind::Pmos
     params: MosfetParams,                      // KP, VTO, LAMBDA, GAMMA, PHI; VTO SPICE-signed (negative for PMOS)
     parasitic_caps: Option<MosfetParasiticCaps>, // { cgs, cgd } in Farads; None = disabled
@@ -440,14 +479,14 @@ CircuitElement::Mosfet(Mosfet {
 // IGBT — nodes: [gate, collector, emitter]
 CircuitElement::Igbt(Igbt {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     params: IgbtParams, // { vth, k, vce_sat }
 })
 
 // JFET — nodes: [gate, drain, source]
 CircuitElement::Jfet(Jfet {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     kind: JfetKind, // JfetKind::NChannel or JfetKind::PChannel
     idss: f64,      // drain saturation current at Vgs = 0 (A)
     vp: f64,        // pinch-off voltage (V), negative for N-channel
@@ -509,7 +548,7 @@ println!("Vbe = {:.3} V, Vce = {:.3} V, Ic = {:.3} mA, region = {}",
 use sindr::element::Transformer;
 CircuitElement::Transformer(Transformer {
     id: String,
-    nodes: [String; 4],  // [p1, q1, p2, q2] — primary (p1,q1), secondary (p2,q2)
+    nodes: [NodeId; 4],  // [p1, q1, p2, q2] — primary (p1,q1), secondary (p2,q2)
     l1: f64,             // primary inductance (H)
     l2: f64,             // secondary inductance (H)
     k: f64,              // coupling coefficient [0, 0.999]; default 0.999 (near-ideal)
@@ -529,10 +568,10 @@ CircuitElement::Vcvs(Vcvs { id, nodes: [out+, out-], control_nodes: [ctrl+, ctrl
 CircuitElement::Vccs(Vccs { id, nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-], gm: f64 })
 
 // Current-controlled voltage source: V_out = rm × I_ctrl
-CircuitElement::Ccvs(Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 })
+CircuitElement::Ccvs(Ccvs { id, nodes: [out+, out-], control_source: ComponentId, rm: f64 })
 
 // Current-controlled current source: I_out = alpha × I_ctrl
-CircuitElement::Cccs(Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 })
+CircuitElement::Cccs(Cccs { id, nodes: [out_from, out_to], control_source: ComponentId, alpha: f64 })
 
 // Behavioural source (SPICE's B): a voltage or current set by an expression
 CircuitElement::Behavioural(Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression })
@@ -549,8 +588,8 @@ The current sources follow SPICE's `G` and `F` and sindr's own `CurrentSource`: 
 ```rust,ignore
 use sindr::element::{Comparator, OpAmp};
 // nodes: [in_plus, in_minus, out]
-CircuitElement::OpAmp(OpAmp { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> }) // rails, default ±15 V
-CircuitElement::Comparator(Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 }) // output high / low, default ±15 V
+CircuitElement::OpAmp(OpAmp { id, nodes: [NodeId; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> }) // rails, default ±15 V
+CircuitElement::Comparator(Comparator { id, nodes: [NodeId; 3], v_pos: f64, v_neg: f64 }) // output high / low, default ±15 V
 ```
 
 With `model: None` the op-amp is a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. A comparator has the same gain and no frequency response, but its output is clamped to `v_neg`/`v_pos`, so overdrive beyond `v_pos / 1e5` (50 µV for a 5 V rail) pins it to a rail in DC, transient and AC (where its gain at a rail is zero). It has no hysteresis or open-collector output; `v_pos` must be above `v_neg`. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
@@ -574,17 +613,17 @@ The pole and slew limit act in transient and AC runs. An op-amp doesn't count as
 
 ```rust,ignore
 use sindr::element::{Fuse, Photoresistor, Potentiometer, Relay, Thermistor, VoltageRegulator};
-CircuitElement::Photoresistor(Photoresistor { id, nodes: [String; 2], light_level: f64 }) // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
-CircuitElement::Thermistor(Thermistor { id, nodes: [String; 2], temperature: f64 }) // Kelvin, default 298.15 K (25 °C)
+CircuitElement::Photoresistor(Photoresistor { id, nodes: [NodeId; 2], light_level: f64 }) // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
+CircuitElement::Thermistor(Thermistor { id, nodes: [NodeId; 2], temperature: f64 }) // Kelvin, default 298.15 K (25 °C)
 CircuitElement::Potentiometer(Potentiometer { id, nodes: [top, wiper, bottom], resistance: f64, position: f64 }) // position 0.0–1.0
 CircuitElement::Relay(Relay {
     id,
-    nodes: [String; 4],     // [coil+, coil-, contact1, contact2]
+    nodes: [NodeId; 4],     // [coil+, coil-, contact1, contact2]
     coil_resistance: f64,
     pickup_voltage: f64,
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
 })
-CircuitElement::Fuse(Fuse { id, nodes: [String; 2], rating: f64, blown: bool }) // 1 mΩ intact, 1 GΩ blown; rating is display-only
+CircuitElement::Fuse(Fuse { id, nodes: [NodeId; 2], rating: f64, blown: bool }) // 1 mΩ intact, 1 GΩ blown; rating is display-only
 CircuitElement::VoltageRegulator(VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> })
 ```
 
@@ -1642,7 +1681,7 @@ pub struct AcConfig {
     /// Frequency spacing.
     pub spacing: FrequencySpacing,
     /// ID of the AC source (voltage source with AC stimulus).
-    pub source_id: String,
+    pub source_id: ComponentId,
     /// AC amplitude of the source: volts, linear (not dB). Results scale
     /// with it; 1 V makes node voltages read as gain.
     pub ac_magnitude: f64,
@@ -1670,7 +1709,12 @@ impl AcConfig {
     ///     .with_phase_deg(90.0);
     /// assert_eq!(config.num_points, 101);
     /// ```
-    pub fn new(source_id: impl Into<String>, f_start: f64, f_stop: f64, num_points: usize) -> Self { … }
+    pub fn new(
+        source_id: impl Into<ComponentId>,
+        f_start: f64,
+        f_stop: f64,
+        num_points: usize,
+    ) -> Self { … }
 
     /// Space the frequencies by `spacing` instead of logarithmically.
     pub fn with_spacing(mut self, spacing: FrequencySpacing) -> Self { … }
@@ -1697,22 +1741,22 @@ pub struct AcPoint {
 impl AcPoint {
     /// The complex voltage at `node` (V), or `None` when there's no such
     /// node. Ground reads 0.
-    pub fn voltage(&self, node: &str) -> Option<Complex64> { … }
+    pub fn voltage(&self, node: impl AsRef<str>) -> Option<Complex64> { … }
 
     /// The magnitude of the voltage at `node`, `|V(node)|` (V).
-    pub fn magnitude(&self, node: &str) -> Option<f64> { … }
+    pub fn magnitude(&self, node: impl AsRef<str>) -> Option<f64> { … }
 
     /// Gain in dB for a node: `20·log10(|V(node)| / source_magnitude)`, a
     /// voltage ratio. `source_magnitude` is in volts, normally
     /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
     /// circuit.
-    pub fn gain_db(&self, node: &str, source_magnitude: f64) -> Option<f64> { … }
+    pub fn gain_db(&self, node: impl AsRef<str>, source_magnitude: f64) -> Option<f64> { … }
 
     /// Phase of a node's voltage in degrees, in (−180°, 180°]: relative to
     /// the source when [`AcConfig::ac_phase_deg`] is 0, absolute otherwise,
     /// as ngspice reports it. `None` when the node isn't in the
     /// circuit.
-    pub fn phase_deg(&self, node: &str) -> Option<f64> { … }
+    pub fn phase_deg(&self, node: impl AsRef<str>) -> Option<f64> { … }
 }
 
 /// Complete AC analysis result.
@@ -1749,19 +1793,19 @@ impl AcResult {
     /// # Ok::<(), sindr::SimError>(())
     /// ```
     ///
-    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, Complex64)> { … }
+    pub fn node_voltage_curve(&self, node: impl AsRef<str>) -> Vec<(f64, Complex64)> { … }
 
     /// A node's voltage magnitude as `(frequency in Hz, |V| in V)` pairs,
     /// one per point; [`AcResult::gain_curve`] has it in dB.
-    pub fn magnitude_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
+    pub fn magnitude_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> { … }
 
     /// The gain curve for a node as `(frequency in Hz, gain in dB)` pairs,
     /// one per point, using [`AcConfig::ac_magnitude`].
-    pub fn gain_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
+    pub fn gain_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> { … }
 
     /// The phase curve for a node as `(frequency in Hz, phase in degrees)`
     /// pairs, one per point; see [`AcPoint::phase_deg`].
-    pub fn phase_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
+    pub fn phase_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> { … }
 }
 
 /// Performs AC small-signal frequency-domain analysis.
@@ -1845,9 +1889,13 @@ Circuit input format.
 
 [`Circuit`] is the root struct sindr's analyses take: a list of
 [`CircuitElement`]s plus the name of the ground node, and optionally a
-design hierarchy (see [`crate::design`]). Components share a node by
-referencing the same node-name string; there are no separate "wire" or
-"net" objects.
+design hierarchy (see [`crate::design`]). Element terminals are
+[`NodeId`] handles, and components share a node when their handles name
+the same net; there are no separate "wire" or "net" objects. A handle is
+its name underneath (`"out".into()` makes one, and it serialises as the
+string), and [`CircuitBuilder`](crate::CircuitBuilder) hands them out
+checked, so a misspelt net is an error at build time rather than a new
+floating node.
 
 [`CircuitElement`] is the open-ended enum of supported component types
 (resistors, sources, semiconductors, magnetics, …). Each variant wraps a
@@ -2306,10 +2354,10 @@ pub enum CircuitElement {
 
 impl CircuitElement {
     /// Returns a reference to the node array for this component.
-    pub fn nodes(&self) -> &[String] { … }
+    pub fn nodes(&self) -> &[NodeId] { … }
 
     /// Returns all node names referenced by this component, including control nodes.
-    pub fn all_nodes(&self) -> Vec<&String> { … }
+    pub fn all_nodes(&self) -> Vec<&NodeId> { … }
 
     /// Returns the component identifier.
     pub fn id(&self) -> &str { … }
@@ -2321,16 +2369,16 @@ impl CircuitElement {
     pub fn branch_slots(&self) -> usize { … }
 
     /// Mutable [`nodes`](Self::nodes), for renaming nets.
-    pub fn nodes_mut(&mut self) -> &mut [String] { … }
+    pub fn nodes_mut(&mut self) -> &mut [NodeId] { … }
 
     /// Mutable [`id`](Self::id), for renaming.
     pub fn id_mut(&mut self) -> &mut String { … }
 
     /// The control-net pair of a VCVS or VCCS.
-    pub fn control_nodes_mut(&mut self) -> Option<&mut [String; 2]> { … }
+    pub fn control_nodes_mut(&mut self) -> Option<&mut [NodeId; 2]> { … }
 
     /// The controlling source id of a CCVS or CCCS.
-    pub fn control_source_mut(&mut self) -> Option<&mut String> { … }
+    pub fn control_source_mut(&mut self) -> Option<&mut ComponentId> { … }
 }
 
 /// A circuit: components, nets, and optionally a design hierarchy.
@@ -2637,7 +2685,7 @@ pub struct DcSweepPoint {
 /// [`DcSweepResult::component_current_curve`] to extract a plottable curve.
 pub struct DcSweepResult {
     /// Component id of the source that was swept.
-    pub source_id: String,
+    pub source_id: ComponentId,
     /// Operating points, in sweep order from `start` to `stop`.
     pub points: Vec<DcSweepPoint>,
 }
@@ -2645,7 +2693,7 @@ pub struct DcSweepResult {
 impl DcSweepResult {
     /// `(sweep value in V, node voltage in V)` pairs for a node, one per
     /// point.
-    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
+    pub fn node_voltage_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> { … }
 
     /// `(sweep value in V, current in A)` pairs for a component, one per
     /// point. The current is its [`ComponentResult::current_through`]: from
@@ -2653,7 +2701,7 @@ impl DcSweepResult {
     /// drain current for a transistor).
     ///
     /// [`ComponentResult::current_through`]: crate::ComponentResult::current_through
-    pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> { … }
+    pub fn component_current_curve(&self, component_id: impl AsRef<str>) -> Vec<(f64, f64)> { … }
 }
 
 /// One axis of a DC sweep: a source and the values it takes, `num_points`
@@ -2670,7 +2718,7 @@ impl DcSweepResult {
 pub struct DcSweepAxis {
     /// Id of the [`VoltageSource`](CircuitElement::VoltageSource) or
     /// [`CurrentSource`](CircuitElement::CurrentSource) to sweep.
-    pub source_id: String,
+    pub source_id: ComponentId,
     /// First value (V or A).
     pub start: f64,
     /// Last value (V or A).
@@ -2681,7 +2729,12 @@ pub struct DcSweepAxis {
 
 impl DcSweepAxis {
     /// `num_points` values of `source_id` from `start` to `stop`.
-    pub fn new(source_id: impl Into<String>, start: f64, stop: f64, num_points: usize) -> Self { … }
+    pub fn new(
+        source_id: impl Into<ComponentId>,
+        start: f64,
+        stop: f64,
+        num_points: usize,
+    ) -> Self { … }
 
     /// SPICE's `.dc` form: from `start` in steps of `step` for as long as
     /// it doesn't pass `stop`. When `step` doesn't divide the span, the last
@@ -2772,7 +2825,7 @@ pub fn dc_sweep(circuit: &Circuit, axis: &DcSweepAxis) -> Result<DcSweepResult, 
 /// value of the outer one.
 pub struct NestedDcSweepResult {
     /// Component id of the outer (slower) source.
-    pub outer_source_id: String,
+    pub outer_source_id: ComponentId,
     /// One curve per outer value, in sweep order.
     pub curves: Vec<NestedDcSweepCurve>,
 }
@@ -3170,7 +3223,7 @@ pub struct Battery {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[positive, negative]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// The cell's equivalent circuit.
     pub params: sindr_devices::battery::BatteryParams,
     /// State of charge at the start, 0 (empty) to 1 (full).
@@ -3216,7 +3269,7 @@ pub struct Behavioural {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[n+, n-]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Whether the expression is a voltage or a current.
     pub output: BehaviouralOutput,
     /// The value, in volts or amperes.
@@ -3235,7 +3288,7 @@ pub struct Bjt {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[base, collector, emitter]`.
-    pub nodes: [String; 3], // [base, collector, emitter]
+    pub nodes: [NodeId; 3], // [base, collector, emitter]
     /// Polarity (NPN or PNP).
     pub kind: BjtKind,
     /// Forward current gain β (unitless), positive and finite. Default 100.
@@ -3275,7 +3328,7 @@ pub struct Capacitor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Capacitance (F).
     pub capacitance: f64,
 }
@@ -3299,9 +3352,9 @@ pub struct Cccs {
     /// Unique component identifier.
     pub id: String,
     /// Output terminals `[out_from, out_to]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Id of the voltage source whose current is sensed.
-    pub control_source: String,
+    pub control_source: ComponentId,
     /// Current gain α (A/A): `I_out = alpha * I_control`.
     pub alpha: f64,
 }
@@ -3318,9 +3371,9 @@ pub struct Ccvs {
     /// Unique component identifier.
     pub id: String,
     /// Output terminals `[out+, out-]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Id of the voltage source whose current is sensed.
-    pub control_source: String,
+    pub control_source: ComponentId,
     /// Transresistance rm (Ω): `V_out = rm * I_control`.
     pub rm: f64,
 }
@@ -3341,7 +3394,7 @@ pub struct Comparator {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[in_plus, in_minus, out]`.
-    pub nodes: [String; 3], // [in_plus, in_minus, out]
+    pub nodes: [NodeId; 3], // [in_plus, in_minus, out]
     /// Output high level (V): the output's upper limit. Default 15.
     #[cfg_attr(feature = "serde", serde(default = "super::default_v_pos"))]
     pub v_pos: f64,
@@ -3366,7 +3419,7 @@ pub struct Crystal {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// The equivalent circuit.
     pub params: CrystalParams,
 }
@@ -3384,7 +3437,7 @@ pub struct CurrentSource {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[from, to]`; current flows from `nodes[0]` to `nodes[1]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// DC current (A); also the offset added to any `waveform`.
     pub current: f64,
     /// Optional time-varying waveform added on top of `current`.
@@ -3505,7 +3558,7 @@ pub struct DigitalPin {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[pin, vdd, gnd]`.
-    pub nodes: [String; 3],
+    pub nodes: [NodeId; 3],
     /// The output stage. Default [`PinMode::Input`].
     #[cfg_attr(feature = "serde", serde(default))]
     pub mode: PinMode,
@@ -3549,7 +3602,7 @@ pub struct Diode {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Junction temperature (K), positive and finite. Default 300.15 K.
     /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
     #[cfg_attr(
@@ -3580,7 +3633,7 @@ pub struct FerriteBead {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// The equivalent circuit.
     pub params: FerriteBeadParams,
 }
@@ -3604,7 +3657,7 @@ pub struct Fuse {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Current rating (A), for display only: the fuse never blows by itself.
     #[cfg_attr(feature = "serde", serde(default = "default_fuse_rating"))]
     pub rating: f64,
@@ -3626,7 +3679,7 @@ pub struct Igbt {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[gate, collector, emitter]`.
-    pub nodes: [String; 3],
+    pub nodes: [NodeId; 3],
     /// Model parameters (threshold voltage, transconductance, etc.).
     #[cfg_attr(feature = "serde", serde(default))]
     pub params: sindr_devices::igbt::IgbtParams,
@@ -3649,7 +3702,7 @@ pub struct Inductor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`; `current_through` flows `nodes[0] → nodes[1]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Inductance (H): the small-signal value, at zero current.
     pub inductance: f64,
     /// Core saturation: the inductance falls towards `l_sat` as the
@@ -3673,7 +3726,7 @@ pub struct Jfet {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[gate, drain, source]`.
-    pub nodes: [String; 3], // [gate, drain, source]
+    pub nodes: [NodeId; 3], // [gate, drain, source]
     /// Channel type (N-channel or P-channel).
     pub kind: JfetKind,
     /// Drain saturation current at Vgs=0 (A). Typical: 1–20 mA.
@@ -3707,7 +3760,7 @@ pub struct Led {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Emission colour, any case: `"red"`, `"orange"`, `"amber"`,
     /// `"yellow"`, `"green"`, `"blue"` or `"white"`
     /// ([`led::COLORS`](sindr_devices::led::COLORS)); sets the forward
@@ -3819,7 +3872,7 @@ pub struct Mosfet {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[gate, drain, source]`.
-    pub nodes: [String; 3], // [gate, drain, source]
+    pub nodes: [NodeId; 3], // [gate, drain, source]
     /// Channel type (NMOS or PMOS).
     pub kind: MosfetKind,
     /// Model parameters (threshold voltage, transconductance, etc.).
@@ -3866,7 +3919,7 @@ pub struct OpAmp {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[in_plus, in_minus, out]`.
-    pub nodes: [String; 3], // [in_plus, in_minus, out]
+    pub nodes: [NodeId; 3], // [in_plus, in_minus, out]
     /// Positive supply rail (V): the output's upper limit with a
     /// `model`. Default 15.
     #[cfg_attr(feature = "serde", serde(default = "super::default_v_pos"))]
@@ -3895,7 +3948,7 @@ pub struct Photodiode {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Incident irradiance in W (optical power, not W/m²).
     /// 0.0 = dark, 0.1 = ~50mA photocurrent with default responsivity.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -3921,7 +3974,7 @@ pub struct Photoresistor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Incident light level, 0.0 (dark, ~1 MΩ) to 1.0 (bright, ~1 kΩ).
     pub light_level: f64,
 }
@@ -3939,7 +3992,7 @@ pub struct Potentiometer {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[top, wiper, bottom]`.
-    pub nodes: [String; 3],
+    pub nodes: [NodeId; 3],
     /// End-to-end resistance (Ω).
     pub resistance: f64,
     /// Wiper position, 0.0 (at top) to 1.0 (at bottom).
@@ -3958,7 +4011,7 @@ pub struct Pushbutton {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// When true the button conducts (pressed); when false it is open.
     pub closed: bool,
 }
@@ -3977,7 +4030,7 @@ pub struct Relay {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[coil+, coil-, contact1, contact2]`.
-    pub nodes: [String; 4],
+    pub nodes: [NodeId; 4],
     /// Coil resistance (Ω). Default 500.
     #[cfg_attr(feature = "serde", serde(default = "default_relay_coil_resistance"))]
     pub coil_resistance: f64,
@@ -4000,7 +4053,7 @@ pub struct Resistor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Resistance (Ω).
     pub resistance: f64,
 }
@@ -4017,7 +4070,7 @@ pub struct SchottkyDiode {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Junction temperature (K), positive and finite. Default 300.15 K.
     /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
     #[cfg_attr(
@@ -4039,7 +4092,7 @@ pub struct Switch {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// When true the switch conducts (closed); when false it is open.
     pub closed: bool,
 }
@@ -4062,7 +4115,7 @@ pub struct SwitchSpdt {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[common, a, b]`.
-    pub nodes: [String; 3],
+    pub nodes: [NodeId; 3],
     /// Which throw the common terminal is switched to.
     #[cfg_attr(feature = "serde", serde(default))]
     pub position: SpdtPosition,
@@ -4080,7 +4133,7 @@ pub struct Thermistor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[n1, n2]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Temperature in Kelvin, positive and finite. Default: 298.15 K (25°C).
     #[cfg_attr(feature = "serde", serde(default = "default_temperature"))]
     pub temperature: f64,
@@ -4126,7 +4179,7 @@ pub struct Transformer {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[p1, q1, p2, q2]`: primary `[p1, q1]`, secondary `[p2, q2]`.
-    pub nodes: [String; 4], // [p1, q1, p2, q2]
+    pub nodes: [NodeId; 4], // [p1, q1, p2, q2]
     /// Primary winding inductance (H).
     pub l1: f64, // Primary inductance (H)
     /// Secondary winding inductance (H).
@@ -4158,7 +4211,7 @@ pub struct Varactor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Model parameters (zero-bias capacitance, grading, etc.).
     #[cfg_attr(feature = "serde", serde(default))]
     pub params: sindr_devices::varactor::VaractorParams,
@@ -4182,9 +4235,9 @@ pub struct Vccs {
     /// Unique component identifier.
     pub id: String,
     /// Output terminals `[out_from, out_to]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Sensing terminals `[ctrl+, ctrl-]`.
-    pub control_nodes: [String; 2],
+    pub control_nodes: [NodeId; 2],
     /// Transconductance gm (A/V): `I_out = gm * V_control`.
     pub gm: f64,
 }
@@ -4201,9 +4254,9 @@ pub struct Vcvs {
     /// Unique component identifier.
     pub id: String,
     /// Output terminals `[out+, out-]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Sensing terminals `[ctrl+, ctrl-]`.
-    pub control_nodes: [String; 2],
+    pub control_nodes: [NodeId; 2],
     /// Voltage gain μ (V/V): `V_out = gain * V_control`.
     pub gain: f64, // mu
 }
@@ -4232,7 +4285,7 @@ pub struct VoltageRegulator {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[input, output, gnd]`.
-    pub nodes: [String; 3], // [input, output, gnd]
+    pub nodes: [NodeId; 3], // [input, output, gnd]
     /// Regulated output voltage (V) from the ground pin. E.g. 5.0 for a
     /// 7805, or −5.0 for a 7905, whose input sits below ground and whose
     /// output current flows in at the output pin.
@@ -4258,7 +4311,7 @@ pub struct VoltageSource {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[positive, negative]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// DC voltage (V); also the offset added to any `waveform`.
     pub voltage: f64,
     /// Optional time-varying waveform added on top of `voltage`.
@@ -4267,6 +4320,19 @@ pub struct VoltageSource {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub waveform: Option<Waveform>,
+}
+
+impl VoltageSource {
+    /// A DC source of `voltage` (V) with no waveform, `nodes[0]` positive.
+    ///
+    /// ```
+    /// use sindr::element::VoltageSource;
+    ///
+    /// let v1 = VoltageSource::dc("V1", ["in", "0"], 5.0);
+    /// assert_eq!(v1.nodes[0], "in");
+    /// assert!(v1.waveform.is_none());
+    /// ```
+    pub fn dc<N: Into<NodeId>>(id: impl Into<String>, nodes: [N; 2], voltage: f64) -> Self { … }
 }
 ```
 
@@ -4289,7 +4355,7 @@ pub struct ZenerDiode {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Reverse breakdown (Zener) voltage (V).
     pub vz: f64,
     /// Junction temperature (K), positive and finite. Default 300.15 K.
@@ -4382,6 +4448,26 @@ pub enum SimError {
     /// human-readable description naming the offending id or field.
     #[error("Invalid component: {0}")]
     InvalidComponent(String),
+
+    /// A net no component names: a typo in a [`CircuitBuilder`] element, or
+    /// a name [`Circuit::node_id`] can't find.
+    ///
+    /// [`CircuitBuilder`]: crate::CircuitBuilder
+    /// [`Circuit::node_id`]: crate::Circuit::node_id
+    #[error("{}", unknown_node_message(node, component.as_deref()))]
+    UnknownNode {
+        /// The net's name.
+        node: String,
+        /// The component that names it, when one does.
+        component: Option<String>,
+    },
+
+    /// A component id nothing in the circuit has, as
+    /// [`Circuit::component_id`] looks it up.
+    ///
+    /// [`Circuit::component_id`]: crate::Circuit::component_id
+    #[error("No component \"{0}\" in the circuit.")]
+    UnknownComponent(String),
 
     /// A resistor's resistance is zero, negative or not finite.
     #[error(
@@ -4644,15 +4730,15 @@ pub enum Variable {
     /// `v(node)` or `v(node, reference)`: in volts.
     Voltage {
         /// The node.
-        node: String,
+        node: NodeId,
         /// The node it is measured against; ground when `None`.
-        reference: Option<String>,
+        reference: Option<NodeId>,
     },
     /// `i(source)`: the branch current of a voltage-defined element, in
     /// amperes, flowing into its first node.
     Current {
         /// The element's id.
-        source: String,
+        source: ComponentId,
     },
     /// `time`, in seconds.
     Time,
@@ -4971,6 +5057,109 @@ pub struct SpectrumBin {
     pub magnitude: f64,
     /// Phase (degrees) against a sine starting at the span's start.
     pub phase: f64,
+}
+```
+
+## `sindr/src/handle.rs`
+
+Typed handles for nets and components, and the builder that hands them
+out.
+
+A [`NodeId`] names a net and a [`ComponentId`] names a component. Element
+terminals and analysis configs take them, so a net can't be passed where
+a component is meant, or the other way round. Each is its name underneath:
+it serialises as a plain string, so circuit and config JSON keep the shape
+they had with names.
+
+[`CircuitBuilder`] is the checked way to make them. Declare each net once
+with [`node`](CircuitBuilder::node), wire elements to the handles it gives
+back, and [`build`](CircuitBuilder::build) refuses an element that names a
+net nobody declared, so a typo is an error rather than a new, floating
+net:
+
+```
+use sindr::element::{Resistor, VoltageSource};
+use sindr::{solve_circuit, CircuitBuilder};
+
+let mut b = CircuitBuilder::new();
+let gnd = b.ground();
+let vin = b.node("in");
+let out = b.node("out");
+b.add(VoltageSource::dc("V1", [vin.clone(), gnd.clone()], 10.0));
+b.add(Resistor { id: "R1".into(), nodes: [vin, out.clone()], resistance: 1e3 });
+b.add(Resistor { id: "R2".into(), nodes: [out.clone(), gnd], resistance: 1e3 });
+let circuit = b.build().unwrap();
+
+let result = solve_circuit(&circuit).unwrap();
+assert!((result.voltage(&out).unwrap() - 5.0).abs() < 1e-9);
+```
+
+The string API stays alongside, for data: a handle converts from a name
+(`"out".into()`), and [`Circuit::node_id`](crate::Circuit::node_id) and
+[`Circuit::component_id`](crate::Circuit::component_id) look one up and
+fail with [`SimError::UnknownNode`] or [`SimError::UnknownComponent`] when
+the circuit has no such name. SPICE and schematic import build from names.
+
+```rust
+            /// The name it stands for.
+            pub fn as_str(&self) -> &str { … }
+
+            /// The name, owned.
+            pub fn into_string(self) -> String { … }
+
+/// Builds a flat [`Circuit`] from typed handles, checking at
+/// [`build`](Self::build) that every net an element names was declared and
+/// that no two components share an id. See the [module docs](self).
+pub struct CircuitBuilder {
+    ground: NodeId,
+    nodes: BTreeSet<NodeId>,
+    components: Vec<CircuitElement>,
+}
+
+impl CircuitBuilder {
+    /// A builder whose ground net is `"0"`, as in SPICE.
+    pub fn new() -> Self { … }
+
+    /// A builder whose ground net has another name, such as `"gnd"`.
+    pub fn with_ground(name: impl Into<String>) -> Self { … }
+
+    /// The ground net.
+    pub fn ground(&self) -> NodeId { … }
+
+    /// Declares the net `name` and returns its handle. Declaring a name
+    /// twice gives the same net.
+    pub fn node(&mut self, name: impl Into<String>) -> NodeId { … }
+
+    /// Adds an element and returns its id's handle.
+    pub fn add(&mut self, element: impl Into<CircuitElement>) -> ComponentId { … }
+
+    /// The circuit.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::UnknownNode`] for an element that names a net no call to
+    /// [`node`](Self::node) declared, and [`SimError::InvalidComponent`] for
+    /// two components with one id.
+    pub fn build(self) -> Result<Circuit, SimError> { … }
+}
+
+impl Circuit {
+    /// The handle of a net this circuit names at the top level (see
+    /// [`nets`](Self::nets)).
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::UnknownNode`] when no component, instance or ground
+    /// names it.
+    pub fn node_id(&self, name: &str) -> Result<NodeId, SimError> { … }
+
+    /// The handle of a top-level component or instance.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::UnknownComponent`] when nothing at the top level has the
+    /// id.
+    pub fn component_id(&self, id: &str) -> Result<ComponentId, SimError> { … }
 }
 ```
 
@@ -6606,8 +6795,10 @@ The full list of what sindr doesn't do is in
 
 - **Ground node** must exist on at least one component. Its voltage is
   defined as 0 V — every other voltage is reported relative to it.
-- **Node names** are arbitrary strings (`"0"`, `"gnd"`, `"vcc"`, …).
-  Components share a node simply by referencing the same string.
+- **Nodes** are [`NodeId`] handles around arbitrary names (`"0"`,
+  `"gnd"`, `"vcc"`, …): `"vcc".into()` makes one. Components share a
+  node when their handles name the same net. [`CircuitBuilder`] hands
+  out checked handles; see [`handle`].
 - **SI units** throughout: V, A, Ω, F, H, s, K.
 - **Sign conventions** are documented per [`CircuitElement`] variant.
 
@@ -6746,6 +6937,8 @@ pub mod error;
 
 pub mod fourier;
 
+pub mod handle;
+
 pub mod import;
 
 pub mod loop_gain;
@@ -6810,7 +7003,7 @@ pub struct LoopGainConfig {
     /// Id of the probe: an independent voltage source in series with the
     /// loop, `nodes[1]` on the driving side and `nodes[0]` on the driven
     /// side. Its DC value biases the circuit as usual; 0 V leaves it out.
-    pub probe: String,
+    pub probe: ComponentId,
     /// Start frequency (Hz).
     pub f_start: f64,
     /// Stop frequency (Hz).
@@ -6831,7 +7024,12 @@ impl LoopGainConfig {
     /// let config = LoopGainConfig::new("Vprobe", 1.0, 100e6, 801);
     /// assert_eq!(config.probe, "Vprobe");
     /// ```
-    pub fn new(probe: impl Into<String>, f_start: f64, f_stop: f64, num_points: usize) -> Self { … }
+    pub fn new(
+        probe: impl Into<ComponentId>,
+        f_start: f64,
+        f_stop: f64,
+        num_points: usize,
+    ) -> Self { … }
 
     /// Sets the frequency spacing.
     pub fn with_spacing(mut self, spacing: FrequencySpacing) -> Self { … }
@@ -7394,11 +7592,11 @@ ngspice does.
 /// Build one with [`NoiseConfig::new`] and its `with_*` setters.
 pub struct NoiseConfig {
     /// The output node.
-    pub output: String,
+    pub output: NodeId,
     /// The node the output is measured against; ground when `None`.
-    pub reference: Option<String>,
+    pub reference: Option<NodeId>,
     /// The independent voltage or current source noise is referred back to.
-    pub input_source: String,
+    pub input_source: ComponentId,
     /// Start frequency (Hz), above 0: flicker noise is infinite at DC.
     pub f_start: f64,
     /// Stop frequency (Hz).
@@ -7426,15 +7624,15 @@ impl NoiseConfig {
     /// assert_eq!(config.reference.as_deref(), Some("ref"));
     /// ```
     pub fn new(
-        output: impl Into<String>,
-        input_source: impl Into<String>,
+        output: impl Into<NodeId>,
+        input_source: impl Into<ComponentId>,
         f_start: f64,
         f_stop: f64,
         num_points: usize,
     ) -> Self { … }
 
     /// Measure the output against node `reference` instead of ground.
-    pub fn with_reference(mut self, reference: impl Into<String>) -> Self { … }
+    pub fn with_reference(mut self, reference: impl Into<NodeId>) -> Self { … }
 
     /// Space the frequencies by `spacing` instead of logarithmically.
     pub fn with_spacing(mut self, spacing: FrequencySpacing) -> Self { … }
@@ -7610,13 +7808,13 @@ pub enum PzFind {
 /// [`PzConfig::transimpedance`].
 pub struct PzConfig {
     /// Positive input node.
-    pub input: String,
+    pub input: NodeId,
     /// Negative input node (the ground node for a single-ended input).
-    pub input_reference: String,
+    pub input_reference: NodeId,
     /// Positive output node.
-    pub output: String,
+    pub output: NodeId,
     /// Negative output node (the ground node for a single-ended output).
-    pub output_reference: String,
+    pub output_reference: NodeId,
     /// Voltage gain or transimpedance.
     pub transfer: PzTransfer,
     /// Poles, zeros or both. Default both.
@@ -7637,20 +7835,20 @@ impl PzConfig {
     /// assert_eq!(config.transfer, PzTransfer::VoltageGain);
     /// ```
     pub fn voltage_gain(
-        input: impl Into<String>,
-        input_reference: impl Into<String>,
-        output: impl Into<String>,
-        output_reference: impl Into<String>,
+        input: impl Into<NodeId>,
+        input_reference: impl Into<NodeId>,
+        output: impl Into<NodeId>,
+        output_reference: impl Into<NodeId>,
     ) -> Self { … }
 
     /// The transimpedance `V(output, output_reference) / I`, with `I` a
     /// current driven into `input` and out of `input_reference`, as SPICE's
     /// `.pz … cur pz`.
     pub fn transimpedance(
-        input: impl Into<String>,
-        input_reference: impl Into<String>,
-        output: impl Into<String>,
-        output_reference: impl Into<String>,
+        input: impl Into<NodeId>,
+        input_reference: impl Into<NodeId>,
+        output: impl Into<NodeId>,
+        output_reference: impl Into<NodeId>,
     ) -> Self { … }
 
     /// Finds `find`: poles, zeros or both.
@@ -8210,7 +8408,7 @@ impl SimulationResult {
     /// # Ok::<(), sindr::SimError>(())
     /// ```
     ///
-    pub fn voltage(&self, node: &str) -> Option<f64> { … }
+    pub fn voltage(&self, node: impl AsRef<str>) -> Option<f64> { … }
 
     /// The current through component `id` (A): its
     /// [`ComponentResult::current_through`], from `nodes[0]` to `nodes[1]`
@@ -8220,34 +8418,34 @@ impl SimulationResult {
     /// when there's no such component.
     ///
     /// This is what a measurement's `Signal::i` reads.
-    pub fn current(&self, id: &str) -> Option<f64> { … }
+    pub fn current(&self, id: impl AsRef<str>) -> Option<f64> { … }
 
     /// The MNA branch current of component `id` (A), with the sign
     /// convention of [`SimulationResult::branch_currents`]: a source
     /// delivering power reads negative. `None` when `id` has no branch
     /// current (resistors, diodes and other parts without a current
     /// unknown) or isn't in the circuit.
-    pub fn branch_current(&self, id: &str) -> Option<f64> { … }
+    pub fn branch_current(&self, id: impl AsRef<str>) -> Option<f64> { … }
 
     /// The voltage, current and power of component `id`, or `None` when
     /// there's no such component.
-    pub fn component(&self, id: &str) -> Option<&ComponentResult> { … }
+    pub fn component(&self, id: impl AsRef<str>) -> Option<&ComponentResult> { … }
 
     /// The operating point of BJT `id`, or `None` when there's no BJT by
     /// that id.
-    pub fn bjt(&self, id: &str) -> Option<&BjtResult> { … }
+    pub fn bjt(&self, id: impl AsRef<str>) -> Option<&BjtResult> { … }
 
     /// The operating point of MOSFET `id`, or `None` when there's no
     /// MOSFET by that id.
-    pub fn mosfet(&self, id: &str) -> Option<&MosfetResult> { … }
+    pub fn mosfet(&self, id: impl AsRef<str>) -> Option<&MosfetResult> { … }
 
     /// The inputs and output of op-amp or comparator `id`, or `None` when
     /// there's no op-amp or comparator by that id.
-    pub fn op_amp(&self, id: &str) -> Option<&OpAmpResult> { … }
+    pub fn op_amp(&self, id: impl AsRef<str>) -> Option<&OpAmpResult> { … }
 
     /// The coil voltage and contact state of relay `id`, or `None` when
     /// there's no relay by that id.
-    pub fn relay(&self, id: &str) -> Option<&RelayResult> { … }
+    pub fn relay(&self, id: impl AsRef<str>) -> Option<&RelayResult> { … }
 
     /// The results inside a block instance, addressed by its instance path:
     /// `"X1"`, or `"X1.X2"` for an instance nested in another. Chain
@@ -8315,44 +8513,44 @@ impl<'a> InstanceResult<'a> {
 
     /// The voltage at local net `node` (V); see
     /// [`SimulationResult::voltage`].
-    pub fn voltage(&self, node: &str) -> Option<f64> { … }
+    pub fn voltage(&self, node: impl AsRef<str>) -> Option<f64> { … }
 
     /// The current through component `id` (A); see
     /// [`SimulationResult::current`].
-    pub fn current(&self, id: &str) -> Option<f64> { … }
+    pub fn current(&self, id: impl AsRef<str>) -> Option<f64> { … }
 
     /// The branch current of component `id` (A); see
     /// [`SimulationResult::branch_current`].
-    pub fn branch_current(&self, id: &str) -> Option<f64> { … }
+    pub fn branch_current(&self, id: impl AsRef<str>) -> Option<f64> { … }
 
     /// The voltage, current and power of component `id`.
-    pub fn component(&self, id: &str) -> Option<&'a ComponentResult> { … }
+    pub fn component(&self, id: impl AsRef<str>) -> Option<&'a ComponentResult> { … }
 
     /// The operating point of BJT `id`.
-    pub fn bjt(&self, id: &str) -> Option<&'a BjtResult> { … }
+    pub fn bjt(&self, id: impl AsRef<str>) -> Option<&'a BjtResult> { … }
 
     /// The operating point of MOSFET `id`.
-    pub fn mosfet(&self, id: &str) -> Option<&'a MosfetResult> { … }
+    pub fn mosfet(&self, id: impl AsRef<str>) -> Option<&'a MosfetResult> { … }
 
     /// The inputs and output of op-amp or comparator `id`.
-    pub fn op_amp(&self, id: &str) -> Option<&'a OpAmpResult> { … }
+    pub fn op_amp(&self, id: impl AsRef<str>) -> Option<&'a OpAmpResult> { … }
 
     /// The coil voltage and contact state of relay `id`.
-    pub fn relay(&self, id: &str) -> Option<&'a RelayResult> { … }
+    pub fn relay(&self, id: impl AsRef<str>) -> Option<&'a RelayResult> { … }
 }
 
 impl TimestepSnapshot {
     /// The voltage at `node` at this instant (V), or `None` when there's
     /// no such node. Ground reads `0.0`.
-    pub fn voltage(&self, node: &str) -> Option<f64> { … }
+    pub fn voltage(&self, node: impl AsRef<str>) -> Option<f64> { … }
 
     /// The current through component `id` at this instant (A), its
     /// [`ComponentResult::current_through`], or `None` when there's no
     /// such component.
-    pub fn current(&self, id: &str) -> Option<f64> { … }
+    pub fn current(&self, id: impl AsRef<str>) -> Option<f64> { … }
 
     /// The voltage, current and power of component `id` at this instant.
-    pub fn component(&self, id: &str) -> Option<&ComponentResult> { … }
+    pub fn component(&self, id: impl AsRef<str>) -> Option<&ComponentResult> { … }
 }
 
 impl TransientData {
@@ -8379,21 +8577,21 @@ impl TransientData {
     /// # Ok::<(), sindr::SimError>(())
     /// ```
     ///
-    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
+    pub fn node_voltage_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> { … }
 
     /// A component's current as `(time in s, current in A)` pairs, one per
     /// step; see [`TimestepSnapshot::current`]. Empty when there's no such
     /// component.
-    pub fn component_current_curve(&self, id: &str) -> Vec<(f64, f64)> { … }
+    pub fn component_current_curve(&self, id: impl AsRef<str>) -> Vec<(f64, f64)> { … }
 
     /// The voltage at `node` at time `t` (V), linearly interpolated between
     /// the steps either side. `None` when there's no such node or `t` is
     /// outside the run.
-    pub fn voltage_at(&self, node: &str, t: f64) -> Option<f64> { … }
+    pub fn voltage_at(&self, node: impl AsRef<str>, t: f64) -> Option<f64> { … }
 
     /// The current through component `id` at time `t` (A), linearly
     /// interpolated as [`TransientData::voltage_at`] is.
-    pub fn current_at(&self, id: &str, t: f64) -> Option<f64> { … }
+    pub fn current_at(&self, id: impl AsRef<str>, t: f64) -> Option<f64> { … }
 }
 ```
 
@@ -8431,7 +8629,7 @@ impl AcSensConfig {
 /// frequency.
 pub struct AcSensEntry {
     /// Id of the component.
-    pub component_id: String,
+    pub component_id: ComponentId,
     /// Which of its parameters.
     pub parameter: SensParameter,
     /// The parameter's value, in its own unit.
@@ -8461,10 +8659,14 @@ pub struct AcSensPoint {
 impl AcSensPoint {
     /// The entry for the component `id`: its first, for a device with
     /// several parameters (see [`get_parameter`](Self::get_parameter)).
-    pub fn get(&self, id: &str) -> Option<&AcSensEntry> { … }
+    pub fn get(&self, id: impl AsRef<str>) -> Option<&AcSensEntry> { … }
 
     /// The entry for `parameter` of the component `id`.
-    pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&AcSensEntry> { … }
+    pub fn get_parameter(
+        &self,
+        id: impl AsRef<str>,
+        parameter: SensParameter,
+    ) -> Option<&AcSensEntry> { … }
 }
 
 /// Result of an AC sensitivity analysis.
@@ -8478,7 +8680,7 @@ pub struct AcSensResult {
 impl AcSensResult {
     /// `(frequency, sensitivity)` of `parameter` of the component `id` at
     /// every frequency where it has an entry.
-    pub fn curve(&self, id: &str, parameter: SensParameter) -> Vec<(f64, Complex64)> { … }
+    pub fn curve(&self, id: impl AsRef<str>, parameter: SensParameter) -> Vec<(f64, Complex64)> { … }
 }
 
 /// Runs an AC sensitivity analysis, as SPICE's `.sens output ac ...`.
@@ -8661,7 +8863,7 @@ pub enum SensParameter {
 /// The sensitivity of the output to one component parameter.
 pub struct SensEntry {
     /// Id of the component.
-    pub component_id: String,
+    pub component_id: ComponentId,
     /// Which of its parameters.
     pub parameter: SensParameter,
     /// The parameter's value, in its own unit.
@@ -8686,7 +8888,7 @@ pub struct SensResult {
 impl SensResult {
     /// The entry for the component `id`: its first, for a device with
     /// several parameters (see [`get_parameter`](Self::get_parameter)).
-    pub fn get(&self, id: &str) -> Option<&SensEntry> { … }
+    pub fn get(&self, id: impl AsRef<str>) -> Option<&SensEntry> { … }
 
     /// The entry for `parameter` of the component `id`.
     ///
@@ -8724,7 +8926,11 @@ impl SensResult {
     /// # Ok::<(), sindr::SimError>(())
     /// ```
     ///
-    pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&SensEntry> { … }
+    pub fn get_parameter(
+        &self,
+        id: impl AsRef<str>,
+        parameter: SensParameter,
+    ) -> Option<&SensEntry> { … }
 }
 
 /// Runs a DC sensitivity analysis, as SPICE's `.sens`.
@@ -10864,7 +11070,7 @@ pub struct TempSweepResult {
 impl TempSweepResult {
     /// `(temperature in K, node voltage in V)` pairs for a node, one per
     /// point. Empty when there's no such node.
-    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> { … }
+    pub fn node_voltage_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> { … }
 
     /// `(temperature in K, current in A)` pairs for a component, one per
     /// point: its [`ComponentResult::current_through`], as
@@ -10872,7 +11078,7 @@ impl TempSweepResult {
     ///
     /// [`ComponentResult::current_through`]: crate::ComponentResult::current_through
     /// [`DcSweepResult::component_current_curve`]: crate::DcSweepResult::component_current_curve
-    pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> { … }
+    pub fn component_current_curve(&self, component_id: impl AsRef<str>) -> Vec<(f64, f64)> { … }
 }
 
 /// A temperature sweep: `num_points` temperatures from `start` to `stop`
@@ -10975,15 +11181,15 @@ pub enum TfOutput {
     /// or against ground when `reference` is `None`.
     Voltage {
         /// Output node.
-        node: String,
+        node: NodeId,
         /// Reference node; ground when `None`.
-        reference: Option<String>,
+        reference: Option<NodeId>,
     },
     /// `I(source)`: the current through an independent voltage source,
     /// from its `nodes[0]` through the source to its `nodes[1]`.
     Current {
         /// Id of the voltage source the current runs through.
-        source_id: String,
+        source_id: ComponentId,
     },
 }
 
@@ -10998,14 +11204,14 @@ impl TfOutput {
     ///     TfOutput::Voltage { node: "out".into(), reference: None },
     /// );
     /// ```
-    pub fn voltage(node: impl Into<String>) -> Self { … }
+    pub fn voltage(node: impl Into<NodeId>) -> Self { … }
 
     /// `V(node,reference)`: the voltage of `node` against `reference`.
-    pub fn voltage_between(node: impl Into<String>, reference: impl Into<String>) -> Self { … }
+    pub fn voltage_between(node: impl Into<NodeId>, reference: impl Into<NodeId>) -> Self { … }
 
     /// `I(source_id)`: the current through the independent voltage source
     /// `source_id`.
-    pub fn current(source_id: impl Into<String>) -> Self { … }
+    pub fn current(source_id: impl Into<ComponentId>) -> Self { … }
 }
 
 /// Transfer-function analysis configuration. Build one with
@@ -11014,7 +11220,7 @@ pub struct TfConfig {
     /// The output the gain is measured at.
     pub output: TfOutput,
     /// Id of the input: an independent voltage or current source.
-    pub input_source: String,
+    pub input_source: ComponentId,
 }
 
 impl TfConfig {
@@ -11028,7 +11234,7 @@ impl TfConfig {
     /// let config = TfConfig::new(TfOutput::voltage("out"), "V1");
     /// assert_eq!(config.input_source, "V1");
     /// ```
-    pub fn new(output: TfOutput, input_source: impl Into<String>) -> Self { … }
+    pub fn new(output: TfOutput, input_source: impl Into<ComponentId>) -> Self { … }
 }
 
 /// Result of a transfer-function analysis.

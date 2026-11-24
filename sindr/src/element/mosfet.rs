@@ -1,5 +1,6 @@
 //! A MOSFET, its body tied to its source, with an optional body diode.
 
+use crate::handle::NodeId;
 use nalgebra::DVector;
 use sindr_devices::mosfet::{MosfetKind, MosfetParams};
 
@@ -24,7 +25,7 @@ pub struct Mosfet {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[gate, drain, source]`.
-    pub nodes: [String; 3], // [gate, drain, source]
+    pub nodes: [NodeId; 3], // [gate, drain, source]
     /// Channel type (NMOS or PMOS).
     pub kind: MosfetKind,
     /// Model parameters (threshold voltage, transconductance, etc.).
@@ -115,7 +116,7 @@ impl Device for Mosfet {
     }
 
     /// Drain to source; the gate draws no current.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         let [_, d, s] = &self.nodes;
         vec![[d, s]]
     }
@@ -259,7 +260,7 @@ pub(crate) fn mosfet_parasitics<T: Clone>(
 pub(crate) fn stamp_mosfet_companion(
     system: &mut MnaSystem,
     node_map: &crate::node_map::NodeMap,
-    nodes: &[String; 3],
+    nodes: &[NodeId; 3],
     v_prev: &DVector<f64>,
     params: &MosfetParams,
     kind: MosfetKind,

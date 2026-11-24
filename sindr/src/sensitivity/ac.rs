@@ -1,6 +1,7 @@
 //! AC sensitivity, as SPICE's `.sens output ac ...`.
 
 use crate::element::{Capacitor, Cccs, Ccvs, Inductor, Resistor, Vccs, Vcvs, VoltageSource};
+use crate::handle::{ComponentId, NodeId};
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -52,7 +53,7 @@ impl AcSensConfig {
 #[non_exhaustive]
 pub struct AcSensEntry {
     /// Id of the component.
-    pub component_id: String,
+    pub component_id: ComponentId,
     /// Which of its parameters.
     pub parameter: SensParameter,
     /// The parameter's value, in its own unit.
@@ -86,12 +87,18 @@ pub struct AcSensPoint {
 impl AcSensPoint {
     /// The entry for the component `id`: its first, for a device with
     /// several parameters (see [`get_parameter`](Self::get_parameter)).
-    pub fn get(&self, id: &str) -> Option<&AcSensEntry> {
+    pub fn get(&self, id: impl AsRef<str>) -> Option<&AcSensEntry> {
+        let id = id.as_ref();
         self.entries.iter().find(|e| e.component_id == id)
     }
 
     /// The entry for `parameter` of the component `id`.
-    pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&AcSensEntry> {
+    pub fn get_parameter(
+        &self,
+        id: impl AsRef<str>,
+        parameter: SensParameter,
+    ) -> Option<&AcSensEntry> {
+        let id = id.as_ref();
         self.entries
             .iter()
             .find(|e| e.component_id == id && e.parameter == parameter)
@@ -113,7 +120,8 @@ pub struct AcSensResult {
 impl AcSensResult {
     /// `(frequency, sensitivity)` of `parameter` of the component `id` at
     /// every frequency where it has an entry.
-    pub fn curve(&self, id: &str, parameter: SensParameter) -> Vec<(f64, Complex64)> {
+    pub fn curve(&self, id: impl AsRef<str>, parameter: SensParameter) -> Vec<(f64, Complex64)> {
+        let id = id.as_ref();
         self.points
             .iter()
             .filter_map(|p| {
@@ -241,8 +249,8 @@ pub(crate) fn solve_ac_sensitivity_with(
         let lambda = system.solve_transpose(&c)?;
 
         let at = |v: &DVector<Complex64>, n: Option<usize>| n.map_or(zero, |i| v[i]);
-        let node = |name: &String| node_map.index(name);
-        let across = |v: &DVector<Complex64>, nodes: &[String; 2]| {
+        let node = |name: &str| node_map.index(name);
+        let across = |v: &DVector<Complex64>, nodes: &[NodeId; 2]| {
             at(v, node(&nodes[0])) - at(v, node(&nodes[1]))
         };
         let branch = |id: &str| small_signal.vsource_branch_index(id).map(|k| num_nodes + k);
@@ -250,7 +258,7 @@ pub(crate) fn solve_ac_sensitivity_with(
         let mut entries = Vec::new();
         let mut push = |id: &str, parameter, value: f64, sensitivity: Complex64| {
             entries.push(AcSensEntry {
-                component_id: id.to_string(),
+                component_id: id.into(),
                 parameter,
                 value,
                 sensitivity,
@@ -269,7 +277,7 @@ pub(crate) fn solve_ac_sensitivity_with(
                 push(component.id(), d.parameter, d.value, -s);
             }
             // The admittance derivative ∂Y/∂p of a two-terminal element.
-            let two_terminal = |nodes: &[String; 2], dy: Complex64| {
+            let two_terminal = |nodes: &[NodeId; 2], dy: Complex64| {
                 -across(&lambda, nodes) * dy * across(&x, nodes)
             };
             let (id, parameter, value, sensitivity) = match component {
@@ -501,7 +509,7 @@ mod tests {
                 reference: None,
             } = &config.output
             {
-                let want = ac_point.node_voltages[node];
+                let want = ac_point.node_voltages[node.as_str()];
                 assert!(
                     (point.output - want).norm() <= 1e-12 * want.norm().max(1e-12),
                     "{name}"

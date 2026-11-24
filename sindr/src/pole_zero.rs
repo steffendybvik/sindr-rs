@@ -42,6 +42,7 @@
 //! Poles and zeros that cancel are both reported, as SPICE does.
 
 use crate::element::VoltageSource;
+use crate::handle::NodeId;
 use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 
@@ -94,13 +95,13 @@ pub enum PzFind {
 #[non_exhaustive]
 pub struct PzConfig {
     /// Positive input node.
-    pub input: String,
+    pub input: NodeId,
     /// Negative input node (the ground node for a single-ended input).
-    pub input_reference: String,
+    pub input_reference: NodeId,
     /// Positive output node.
-    pub output: String,
+    pub output: NodeId,
     /// Negative output node (the ground node for a single-ended output).
-    pub output_reference: String,
+    pub output_reference: NodeId,
     /// Voltage gain or transimpedance.
     pub transfer: PzTransfer,
     /// Poles, zeros or both. Default both.
@@ -121,10 +122,10 @@ impl PzConfig {
     /// assert_eq!(config.transfer, PzTransfer::VoltageGain);
     /// ```
     pub fn voltage_gain(
-        input: impl Into<String>,
-        input_reference: impl Into<String>,
-        output: impl Into<String>,
-        output_reference: impl Into<String>,
+        input: impl Into<NodeId>,
+        input_reference: impl Into<NodeId>,
+        output: impl Into<NodeId>,
+        output_reference: impl Into<NodeId>,
     ) -> Self {
         Self {
             input: input.into(),
@@ -140,10 +141,10 @@ impl PzConfig {
     /// current driven into `input` and out of `input_reference`, as SPICE's
     /// `.pz … cur pz`.
     pub fn transimpedance(
-        input: impl Into<String>,
-        input_reference: impl Into<String>,
-        output: impl Into<String>,
-        output_reference: impl Into<String>,
+        input: impl Into<NodeId>,
+        input_reference: impl Into<NodeId>,
+        output: impl Into<NodeId>,
+        output_reference: impl Into<NodeId>,
     ) -> Self {
         Self {
             transfer: PzTransfer::Transimpedance,
@@ -340,7 +341,7 @@ fn qz_failure() -> SimError {
 
 /// Whether the two terminals `nodes` are the pair `(p, q)`, either way
 /// round.
-fn same_pair(nodes: &[String; 2], p: &str, q: &str) -> bool {
+fn same_pair(nodes: &[NodeId; 2], p: &str, q: &str) -> bool {
     (nodes[0] == p && nodes[1] == q) || (nodes[0] == q && nodes[1] == p)
 }
 

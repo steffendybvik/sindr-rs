@@ -431,15 +431,15 @@ impl<'a> Expander<'a> {
             let id = el.id_mut();
             *id = join(&path, id);
             for net in el.nodes_mut() {
-                *net = self.net(net, &path, &ports);
+                *net = self.net(net, &path, &ports).into();
             }
             if let Some(control) = el.control_nodes_mut() {
                 for net in control.iter_mut() {
-                    *net = self.net(net, &path, &ports);
+                    *net = self.net(net, &path, &ports).into();
                 }
             }
             if let Some(source) = el.control_source_mut() {
-                *source = join(&path, source);
+                *source = join(&path, source).into();
             }
             if let CircuitElement::DigitalPin(DigitalPin {
                 port: Some(port), ..
@@ -550,7 +550,10 @@ mod tests {
     fn summary(c: &Circuit) -> Vec<(String, Vec<String>)> {
         c.components
             .iter()
-            .map(|e| (e.id().to_string(), e.nodes().to_vec()))
+            .map(|e| {
+                let nodes = e.nodes().iter().map(|n| n.to_string()).collect();
+                (e.id().to_string(), nodes)
+            })
             .collect()
     }
 

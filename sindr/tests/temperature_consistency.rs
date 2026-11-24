@@ -42,7 +42,7 @@ fn resistor() -> CircuitElement {
 /// Every diode-like device at `t`, each as `D1` between `n2` and ground.
 /// The zener is reversed so it conducts in breakdown.
 fn devices(t: f64) -> Vec<CircuitElement> {
-    let fwd = || ["n2".to_string(), "0".to_string()];
+    let fwd = || -> [sindr::NodeId; 2] { ["n2".into(), "0".into()] };
     vec![
         CircuitElement::Diode(Diode {
             id: "D1".into(),

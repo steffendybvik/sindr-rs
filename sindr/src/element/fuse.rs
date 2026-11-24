@@ -1,6 +1,7 @@
 //! A fuse: a small resistance, or open once blown.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::{stamp_resistor_at, SWITCH_R_OPEN};
 
 use super::{AcStamp, Check, DcStamp, Device};
@@ -24,7 +25,7 @@ pub struct Fuse {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Current rating (A), for display only: the fuse never blows by itself.
     #[cfg_attr(feature = "serde", serde(default = "default_fuse_rating"))]
     pub rating: f64,

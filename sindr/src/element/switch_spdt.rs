@@ -3,6 +3,7 @@
 
 use crate::circuit::SpdtPosition;
 use crate::error::SimError;
+use crate::handle::NodeId;
 
 use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
 
@@ -23,7 +24,7 @@ pub struct SwitchSpdt {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[common, a, b]`.
-    pub nodes: [String; 3],
+    pub nodes: [NodeId; 3],
     /// Which throw the common terminal is switched to.
     #[cfg_attr(feature = "serde", serde(default))]
     pub position: SpdtPosition,

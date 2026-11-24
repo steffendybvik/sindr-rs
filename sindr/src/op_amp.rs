@@ -21,6 +21,7 @@
 //! so its output follows the clamped gain stage instantly.
 
 use crate::element::{Comparator, OpAmp};
+use crate::handle::NodeId;
 use nalgebra::DVector;
 
 use crate::circuit::{CircuitElement, OpAmpModel};
@@ -54,7 +55,7 @@ pub(crate) const COMPARATOR: OpAmpModel = OpAmpModel {
 pub(crate) struct OpAmpStamp<'a> {
     pub model: &'a OpAmpModel,
     /// `[in_plus, in_minus, out]`.
-    pub nodes: &'a [String; 3],
+    pub nodes: &'a [NodeId; 3],
     pub ground: &'a str,
     pub v_pos: f64,
     pub v_neg: f64,
