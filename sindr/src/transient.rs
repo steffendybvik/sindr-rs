@@ -1897,6 +1897,15 @@ pub(crate) fn run_transient(
                 floor_steps = 0;
             }
         }
+        // Above the floor a step can still settle so short that the run takes
+        // millions of them; the step budget bounds the whole run, not just
+        // the grid it starts with.
+        if stats.accepted_steps as u64 >= opts.max_transient_steps && t_next < tstop - eps {
+            return Err(SimError::TimestepTooSmall {
+                time: t_next,
+                step: dt,
+            });
+        }
         caps = new_caps;
         inds = new_inds;
         time = t_next;

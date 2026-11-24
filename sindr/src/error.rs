@@ -141,7 +141,10 @@ pub enum SimError {
     /// for thousands of steps in a row, the solution still changing too
     /// fast to follow. A node driven with no DC path to ground (a current
     /// source into a capacitor or an open end) ramps without limit like
-    /// this. SPICE's "timestep too small".
+    /// this. SPICE's "timestep too small". A run whose step settles a
+    /// little higher stops this way too once it has taken
+    /// [`max_transient_steps`](crate::SolverOptions::max_transient_steps)
+    /// steps short of `tstop`.
     #[error(
         "time step too small at t = {time:.3e} s: the step stayed near {step:.1e} s and \
          the solution still changes too fast to follow. Check for a node driven with no \

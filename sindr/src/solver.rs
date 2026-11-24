@@ -79,7 +79,9 @@ pub struct SolverOptions {
     /// Transient truncation-error factor (SPICE `TRTOL`, default `7`).
     pub trtol: f64,
     /// Most timesteps a transient may take, counting the `tstep` grid and
-    /// every waveform breakpoint (default `10_000_000`).
+    /// every waveform breakpoint (default `10_000_000`). A config whose grid
+    /// alone needs more is rejected up front; a run that takes more stops
+    /// with [`SimError::TimestepTooSmall`].
     pub max_transient_steps: u64,
     /// Starting guess for the DC operating point in volts, keyed by node
     /// name (SPICE `.nodeset`). Unknown node names are skipped. Only
