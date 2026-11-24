@@ -4,7 +4,7 @@ use crate::device_params;
 use crate::error::SimError;
 use crate::handle::NodeId;
 
-use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, Report};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
@@ -36,6 +36,16 @@ pub struct Photodiode {
 
 impl Device for Photodiode {
     device_identity!();
+
+    /// Its dark current less the photocurrent.
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let dark = crate::device_params::photodiode_dark(self.temperature);
+        let i_dark = sindr_devices::diode::diode_current(v, &dark);
+        let responsivity = crate::device_params::photodiode(self.temperature).responsivity;
+        let i_photo = responsivity * self.irradiance.max(0.0);
+        r.port(&self.id, v, i_dark - i_photo);
+    }
 
     /// The photocurrent is a constant source, with no AC part.
     fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {

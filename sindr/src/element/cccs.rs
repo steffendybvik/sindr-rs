@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::handle::{ComponentId, NodeId};
 use crate::mna::MnaSystem;
 
-use super::{AcStamp, Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device, Report};
 use num_complex::Complex64;
 
 #[cfg(feature = "spice")]
@@ -35,6 +35,13 @@ pub struct Cccs {
 
 impl Device for Cccs {
     device_identity!();
+
+    /// With its control source missing, it reads no current.
+    fn report(&self, r: &mut Report<'_>) {
+        let i = self.alpha * r.control_current().unwrap_or(0.0);
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, i);
+    }
 
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let Some(control) = s.source_branch(&self.control_source) else {

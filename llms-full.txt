@@ -4043,6 +4043,11 @@ pub struct Relay {
 }
 ```
 
+## `sindr/src/element/report.rs`
+
+What an element reports at a solution: its results after a DC solve or
+a transient step.
+
 ## `sindr/src/element/resistor.rs`
 
 A linear resistor.
@@ -8146,7 +8151,7 @@ appear in the circuit.
 /// transformer its primary, and a voltage regulator its pass element
 /// (`Vin − Vout`, the output current, and its dissipation).
 pub struct ComponentResult {
-    /// Component id (matches the id on the source [`CircuitElement`]).
+    /// Component id (matches the id on the source [`CircuitElement`](crate::CircuitElement)).
     pub id: String,
     /// Voltage from `nodes[0]` to `nodes[1]` (V).
     pub voltage_across: f64,

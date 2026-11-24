@@ -4,18 +4,14 @@
 //! while reactive components contribute companion-model stamps.
 
 use crate::element::{
-    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource,
-    DigitalPin, Diode, FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode,
-    Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt,
-    Thermistor, Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+    Battery, Behavioural, Bjt, Capacitor, Comparator, CurrentSource, Diode, Inductor, Jfet, Mosfet,
+    OpAmp, Relay, Resistor, Switch, Transformer, Varactor, VoltageSource,
 };
 use std::collections::HashMap;
 
 use nalgebra::DVector;
 
-use sindr_devices::bjt::{self, BjtKind};
 use sindr_devices::inductor;
-use sindr_devices::mosfet::MosfetKind;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
@@ -24,9 +20,8 @@ use crate::element::diode::DIODE_CHARGE;
 use crate::element::jfet::{jfet_gate_charge, jfet_junctions};
 use crate::element::layout::Layout;
 use crate::element::mosfet::mosfet_parasitics;
-use crate::element::relay::series_resistance;
 use crate::element::transformer::transformer_flux;
-use crate::element::{parasitic_history, TranStamp};
+use crate::element::{parasitic_history, Reported, Step, TranStamp};
 use crate::error::{SimError, SolvePoint};
 pub use crate::integration::IntegrationMethod;
 use crate::integration::{History, Integrator};
@@ -35,8 +30,7 @@ use crate::newton_raphson;
 use crate::node_map::{FastMap, NodeMap, Terminals};
 use crate::op_amp::OP_AMP_STAGE;
 use crate::results::{
-    BjtResult, ComponentResult, MosfetResult, SimulationResult, TimestepSnapshot, TransientData,
-    TransientStats,
+    ComponentResult, SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
 use crate::solver::SolverOptions;
 use crate::stamp::{SWITCH_R_CLOSED, SWITCH_R_OPEN};
@@ -218,22 +212,16 @@ fn stamp_circuit_transient(
     Ok(())
 }
 
-/// Helper: get node voltage from solution vector (ground = 0.0).
-fn node_voltage(node: &str, node_map: &NodeMap, solution: &DVector<f64>) -> f64 {
-    match node_map.index(node) {
-        Some(idx) => solution[idx],
-        None => 0.0,
-    }
-}
-
 /// Extract per-timestep results from solution vector, and the reactive
-/// histories after this step (`caps_prev`/`inds_prev` are those before it).
-/// Sources report their value at `source_time`, the time the step was
-/// solved with.
+/// histories after this step (`caps_prev`/`inds_prev` are those before it,
+/// in `layout`'s slots), each element's from its
+/// [`Device::report`](crate::element::Device::report). Sources report
+/// their value at `source_time`, the time the step was solved with.
 #[allow(clippy::too_many_arguments)]
 fn extract_timestep_results(
     circuit: &Circuit,
     node_map: &NodeMap,
+    layout: &Layout,
     solution: &DVector<f64>,
     num_nodes: usize,
     time: f64,
@@ -251,732 +239,17 @@ fn extract_timestep_results(
     }
     node_voltages.insert(circuit.ground_node.clone(), 0.0);
 
-    let mut component_results = Vec::new();
-    let mut vsource_index: usize = 0;
-    let mut cap_index: usize = 0;
-    let mut ind_index: usize = 0;
-
-    let mut new_caps = Vec::new();
-    let mut new_inds = Vec::new();
-
-    for component in &circuit.components {
-        match component {
-            // Split into their parts, or lowered to a diode, by
-            // `solver_circuit` first.
-            CircuitElement::SwitchSpdt(SwitchSpdt { .. })
-            | CircuitElement::Crystal(Crystal { .. })
-            | CircuitElement::FerriteBead(FerriteBead { .. })
-            | CircuitElement::DigitalPin(DigitalPin { .. })
-            | CircuitElement::ZenerDiode(ZenerDiode { .. }) => {}
-            // Needs its state's history; `battery::finish_step` reports it.
-            CircuitElement::Battery(Battery { .. }) => {}
-            CircuitElement::Resistor(Resistor {
-                id,
-                nodes,
-                resistance,
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v = vp - vq;
-                let i = v / resistance;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v,
-                    current_through: i,
-                    power: v * i,
-                });
-            }
-            CircuitElement::VoltageSource(VoltageSource {
-                id,
-                voltage,
-                waveform,
-                ..
-            }) => {
-                let v = voltage + waveform.as_ref().map_or(0.0, |w| w.evaluate(source_time));
-                let i = solution[num_nodes + vsource_index];
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v,
-                    current_through: i,
-                    power: v * i,
-                });
-                vsource_index += 1;
-            }
-            CircuitElement::CurrentSource(CurrentSource {
-                id,
-                nodes,
-                current,
-                waveform,
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v = vp - vq;
-                let i = current + waveform.as_ref().map_or(0.0, |w| w.evaluate(source_time));
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v,
-                    current_through: i,
-                    power: v * i,
-                });
-            }
-            CircuitElement::Switch(Switch { id, nodes, closed }) => {
-                let resistance = if *closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v = vp - vq;
-                let i = v / resistance;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v,
-                    current_through: i,
-                    power: v * i,
-                });
-            }
-            CircuitElement::Capacitor(Capacitor {
-                id,
-                nodes,
-                capacitance,
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_now = vp - vq;
-                let history = caps_prev[cap_index];
-                let (g, i_hist) = integ.capacitor(*capacitance, &history);
-                let i = g * v_now + i_hist;
-                new_caps.push(history.push(v_now, i));
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_now,
-                    current_through: i,
-                    power: v_now * i,
-                });
-                cap_index += 1;
-            }
-            CircuitElement::Inductor(Inductor {
-                id,
-                nodes,
-                inductance,
-                saturation,
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                let history = inds_prev[ind_index];
-                let i_now = match saturation {
-                    None => {
-                        let (g, i_hist) = integ.inductor(*inductance, &history);
-                        let i_now = g * v_across + i_hist;
-                        new_inds.push(history.push(i_now, v_across));
-                        i_now
-                    }
-                    Some(sat) => {
-                        let lambda = integ.flux(v_across, &history);
-                        new_inds.push(history.push(lambda, v_across));
-                        inductor::current_from_flux(lambda, *inductance, sat)
-                    }
-                };
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_now,
-                    power: v_across * i_now,
-                });
-                ind_index += 1;
-            }
-            CircuitElement::Diode(Diode {
-                model,
-                id,
-                nodes,
-                temperature,
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                let params = device_params::diode(model.as_ref(), *temperature);
-                let i_through = sindr_devices::diode::diode_current(v_across, &params);
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power: v_across * i_through,
-                });
-            }
-            CircuitElement::Led(Led {
-                id,
-                nodes,
-                color,
-                temperature,
-                ..
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                let params = device_params::led(color, *temperature);
-                let i_through = sindr_devices::diode::diode_current(v_across, &params);
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power: v_across * i_through,
-                });
-            }
-            CircuitElement::Bjt(Bjt {
-                model,
-                id,
-                nodes,
-                kind,
-                bf,
-                temperature,
-                ..
-            }) => {
-                let vb = node_voltage(&nodes[0], node_map, solution);
-                let vc = node_voltage(&nodes[1], node_map, solution);
-                let ve = node_voltage(&nodes[2], node_map, solution);
-                let sign = match kind {
-                    BjtKind::Npn => 1.0,
-                    BjtKind::Pnp => -1.0,
-                };
-                let vbe_eff = sign * (vb - ve);
-                let vbc_eff = sign * (vb - vc);
-                let params = device_params::bjt(*bf, model.as_ref(), *temperature);
-                let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
-                let ic = sign * comp.ic;
-                let vce = vc - ve;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: vce,
-                    current_through: ic,
-                    power: (ic * vce).abs(),
-                });
-            }
-            CircuitElement::Mosfet(Mosfet {
-                id,
-                nodes,
-                kind,
-                params,
-                ..
-            }) => {
-                let vg = node_voltage(&nodes[0], node_map, solution);
-                let vd = node_voltage(&nodes[1], node_map, solution);
-                let vs = node_voltage(&nodes[2], node_map, solution);
-                let comp = crate::device_params::mosfet_op(*kind, params, vg, vd, vs);
-                let id_current = match kind {
-                    MosfetKind::Nmos => comp.id,
-                    MosfetKind::Pmos => -comp.id,
-                };
-                let vds_phys = vd - vs;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: vds_phys,
-                    current_through: id_current,
-                    power: (id_current * vds_phys).abs(),
-                });
-            }
-            CircuitElement::Behavioural(Behavioural {
-                id,
-                nodes,
-                output,
-                expr,
-            }) => {
-                component_results.push(crate::results::behavioural_result(
-                    circuit,
-                    node_map,
-                    solution,
-                    source_time,
-                    id,
-                    nodes,
-                    *output,
-                    expr,
-                    num_nodes + vsource_index,
-                ));
-                vsource_index += component.branch_slots();
-            }
-            CircuitElement::Vcvs(Vcvs { id, nodes, .. })
-            | CircuitElement::Ccvs(Ccvs { id, nodes, .. }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                let i_through = solution[num_nodes + vsource_index];
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power: v_across * i_through,
-                });
-                vsource_index += 1;
-            }
-            CircuitElement::Vccs(Vccs {
-                id,
-                nodes,
-                control_nodes,
-                gm,
-            }) => {
-                let v_ctrl_p = node_voltage(&control_nodes[0], node_map, solution);
-                let v_ctrl_n = node_voltage(&control_nodes[1], node_map, solution);
-                let i_out = gm * (v_ctrl_p - v_ctrl_n);
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_out,
-                    power: v_across * i_out,
-                });
-            }
-            CircuitElement::Cccs(Cccs {
-                id,
-                nodes,
-                control_source,
-                alpha,
-            }) => {
-                let ctrl_branch = circuit.vsource_branch_index(control_source);
-                let i_ctrl = ctrl_branch.map_or(0.0, |b| solution[num_nodes + b]);
-                let i_out = alpha * i_ctrl;
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_out,
-                    power: v_across * i_out,
-                });
-            }
-            CircuitElement::Pushbutton(Pushbutton { id, nodes, closed }) => {
-                let resistance = if *closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v = vp - vq;
-                let i = v / resistance;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v,
-                    current_through: i,
-                    power: v * i,
-                });
-            }
-            CircuitElement::Photoresistor(Photoresistor {
-                id,
-                nodes,
-                light_level,
-            }) => {
-                let resistance = crate::element::photoresistor::ldr_resistance(*light_level);
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v = vp - vq;
-                let i = v / resistance;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v,
-                    current_through: i,
-                    power: v * i,
-                });
-            }
-            CircuitElement::Potentiometer(Potentiometer { id, nodes, .. }) => {
-                let v_top = node_voltage(&nodes[0], node_map, solution);
-                let v_bot = node_voltage(&nodes[2], node_map, solution);
-                let v_across = v_top - v_bot;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: 0.0,
-                    power: 0.0,
-                });
-            }
-            CircuitElement::Relay(Relay {
-                id,
-                nodes,
-                coil_resistance,
-                pickup_voltage,
-                inductance,
-                ..
-            }) => {
-                let vc_pos = node_voltage(&nodes[0], node_map, solution);
-                let vc_neg = node_voltage(&nodes[1], node_map, solution);
-                let coil_voltage = vc_pos - vc_neg;
-                // With inductance, the coil current is the inductor's, and
-                // the inductor sees the coil voltage less the resistive drop.
-                let coil_current = if *inductance > 0.0 {
-                    let history = inds_prev[ind_index];
-                    let (g, i_hist) = integ.inductor(*inductance, &history);
-                    let (g_s, i_s) = series_resistance(g, i_hist, *coil_resistance);
-                    let current = g_s * coil_voltage + i_s;
-                    let v_inductor = coil_voltage - coil_resistance * current;
-                    new_inds.push(history.push(current, v_inductor));
-                    ind_index += 1;
-                    current
-                } else {
-                    coil_voltage / coil_resistance
-                };
-                let contact_closed = coil_voltage.abs() >= *pickup_voltage;
-                let contact_r = if contact_closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
-                let vc1 = node_voltage(&nodes[2], node_map, solution);
-                let vc2 = node_voltage(&nodes[3], node_map, solution);
-                let contact_v = vc1 - vc2;
-                let contact_i = contact_v / contact_r;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: coil_voltage,
-                    current_through: coil_current,
-                    power: coil_voltage * coil_current,
-                });
-                // contact result as separate push for accounting
-                let _ = contact_i;
-            }
-            CircuitElement::OpAmp(OpAmp { id, nodes, .. })
-            | CircuitElement::Comparator(Comparator { id, nodes, .. }) => {
-                let v_out = node_voltage(&nodes[2], node_map, solution);
-                let i_through = solution[num_nodes + vsource_index];
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_out,
-                    current_through: i_through,
-                    power: v_out * i_through,
-                });
-                vsource_index += component.branch_slots();
-            }
-            CircuitElement::SchottkyDiode(SchottkyDiode {
-                id,
-                nodes,
-                temperature,
-                ..
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                let i_through = sindr_devices::diode::diode_current(
-                    v_across,
-                    &device_params::schottky(*temperature),
-                );
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power: v_across * i_through,
-                });
-            }
-            CircuitElement::Thermistor(Thermistor {
-                id,
-                nodes,
-                temperature,
-            }) => {
-                let r = crate::device_params::thermistor_resistance(*temperature);
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                let i_through = v_across / r;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power: v_across * i_through,
-                });
-            }
-            CircuitElement::Photodiode(Photodiode {
-                id,
-                nodes,
-                irradiance,
-                temperature,
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                let photo_params = device_params::photodiode(*temperature);
-                let i_dark = sindr_devices::diode::diode_current(
-                    v_across,
-                    &device_params::photodiode_dark(*temperature),
-                );
-                let i_photo = photo_params.responsivity * irradiance.max(0.0);
-                let i_through = i_dark - i_photo;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power: v_across * i_through,
-                });
-            }
-            CircuitElement::Varactor(Varactor {
-                id, nodes, params, ..
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_now = vp - vq;
-                // Update varactor voltage state for next timestep (uses positional cap_index)
-                // The companion the step was solved with (see the stamp).
-                let history = caps_prev[cap_index];
-                let cj = sindr_devices::varactor::junction_capacitance(history.x1, params);
-                let (g, i_hist) = integ.capacitor(cj, &history);
-                let i_through = g * v_now + i_hist;
-                new_caps.push(history.push(v_now, i_through));
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_now,
-                    current_through: i_through,
-                    power: v_now * i_through,
-                });
-                cap_index += 1;
-            }
-            CircuitElement::Igbt(Igbt {
-                id, nodes, params, ..
-            }) => {
-                let vg = node_voltage(&nodes[0], node_map, solution);
-                let vc = node_voltage(&nodes[1], node_map, solution);
-                let ve = node_voltage(&nodes[2], node_map, solution);
-                let vge = vg - ve;
-                let vce = vc - ve;
-                let comp = sindr_devices::igbt::igbt_companion(vge, vce, params);
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: vce,
-                    current_through: comp.ids,
-                    power: (comp.ids * vce).abs(),
-                });
-            }
-            CircuitElement::Transformer(Transformer {
-                id,
-                nodes,
-                saturation,
-                ..
-            }) => {
-                // Primary winding voltages and currents
-                let v_p1 = node_voltage(&nodes[0], node_map, solution);
-                let v_q1 = node_voltage(&nodes[1], node_map, solution);
-                let v_p2 = node_voltage(&nodes[2], node_map, solution);
-                let v_q2 = node_voltage(&nodes[3], node_map, solution);
-                let v_primary = v_p1 - v_q1;
-                let v_secondary = v_p2 - v_q2;
-                // Branch currents extracted from solution (branch current unknowns at num_nodes + vsource_index)
-                let i1_now = solution[num_nodes + vsource_index];
-                let i2_now = solution[num_nodes + vsource_index + 1];
-                vsource_index += 2;
-                // Winding rate is the branch-convention voltage (see
-                // Integrator::coupled).
-                // A saturating core's histories hold fluxes.
-                let (x1, x2) = match saturation {
-                    None => (i1_now, i2_now),
-                    Some(_) => (
-                        integ.flux(v_primary, &inds_prev[ind_index]),
-                        integ.flux(v_secondary, &inds_prev[ind_index + 1]),
-                    ),
-                };
-                new_inds.push(inds_prev[ind_index].push(x1, v_primary));
-                new_inds.push(inds_prev[ind_index + 1].push(x2, v_secondary));
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_primary,
-                    current_through: i1_now,
-                    power: (v_primary * i1_now + v_secondary * i2_now).abs(),
-                });
-                ind_index += 2;
-            }
-            CircuitElement::Fuse(Fuse {
-                id, nodes, blown, ..
-            }) => {
-                let vp = node_voltage(&nodes[0], node_map, solution);
-                let vq = node_voltage(&nodes[1], node_map, solution);
-                let v_across = vp - vq;
-                let resistance = if *blown { 1e9_f64 } else { 0.001_f64 };
-                let i_through = v_across / resistance;
-                let power = v_across * i_through;
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: v_across,
-                    current_through: i_through,
-                    power,
-                });
-            }
-            CircuitElement::Jfet(Jfet {
-                id,
-                nodes,
-                kind,
-                idss,
-                vp,
-                ..
-            }) => {
-                let vg = node_voltage(&nodes[0], node_map, solution);
-                let vd = node_voltage(&nodes[1], node_map, solution);
-                let vs = node_voltage(&nodes[2], node_map, solution);
-                let vds_phys = vd - vs;
-                let id_current =
-                    crate::results::jfet_drain_current(vg - vs, vds_phys, *kind, *idss, *vp);
-                let power = (id_current * vds_phys).abs();
-                component_results.push(ComponentResult {
-                    id: id.clone(),
-                    voltage_across: vds_phys,
-                    current_through: id_current,
-                    power,
-                });
-            }
-            CircuitElement::VoltageRegulator(VoltageRegulator {
-                id,
-                nodes,
-                voltage,
-                model,
-            }) => {
-                component_results.push(crate::results::regulator_result(
-                    id,
-                    nodes,
-                    *voltage,
-                    model,
-                    node_map,
-                    solution,
-                    num_nodes + vsource_index,
-                ));
-                vsource_index += 1;
-            }
-        }
-    }
-
+    let step = Step::new(source_time, integ, caps_prev, inds_prev);
+    let reported = Reported::collect(circuit, node_map, layout, solution, Some(step));
     let snapshot = TimestepSnapshot {
         time,
         node_voltages,
-        component_results,
+        component_results: reported.components,
         junction_temperatures: HashMap::new(),
         state_of_charge: HashMap::new(),
     };
 
-    (snapshot, new_caps, new_inds)
-}
-
-/// Extract BJT results from a converged timestep snapshot.
-///
-/// Uses node voltages from the snapshot to compute Ebers-Moll terminal currents
-/// and detect operating region, mirroring the DC extraction in results.rs.
-fn extract_bjt_results_from_snapshot(
-    circuit: &Circuit,
-    snapshot: &TimestepSnapshot,
-) -> Vec<BjtResult> {
-    let mut bjt_results = Vec::new();
-
-    for component in &circuit.components {
-        if let CircuitElement::Bjt(Bjt {
-            model,
-            id,
-            nodes,
-            kind,
-            bf,
-            temperature,
-            ..
-        }) = component
-        {
-            let vb = snapshot
-                .node_voltages
-                .get(nodes[0].as_str())
-                .copied()
-                .unwrap_or(0.0);
-            let vc = snapshot
-                .node_voltages
-                .get(nodes[1].as_str())
-                .copied()
-                .unwrap_or(0.0);
-            let ve = snapshot
-                .node_voltages
-                .get(nodes[2].as_str())
-                .copied()
-                .unwrap_or(0.0);
-
-            let sign = match kind {
-                BjtKind::Npn => 1.0,
-                BjtKind::Pnp => -1.0,
-            };
-            let vbe_eff = sign * (vb - ve);
-            let vbc_eff = sign * (vb - vc);
-
-            let params = device_params::bjt(*bf, model.as_ref(), *temperature);
-            let comp = bjt::bjt_companion(vbe_eff, vbc_eff, &params);
-            let region = bjt::detect_region(vbe_eff, vbc_eff);
-
-            let ic = sign * comp.ic;
-            let ib = sign * comp.ib;
-            let ie = -(ic + ib);
-
-            let vbe = vb - ve;
-            let vce = vc - ve;
-            let power = (ic * vce).abs();
-
-            bjt_results.push(BjtResult {
-                id: id.clone(),
-                vbe,
-                vce,
-                ib,
-                ic,
-                ie,
-                power,
-                region,
-            });
-        }
-    }
-
-    bjt_results
-}
-
-/// Extract MOSFET results from a converged timestep snapshot.
-fn extract_mosfet_results_from_snapshot(
-    circuit: &Circuit,
-    snapshot: &TimestepSnapshot,
-) -> Vec<MosfetResult> {
-    let mut mosfet_results = Vec::new();
-
-    for component in &circuit.components {
-        if let CircuitElement::Mosfet(Mosfet {
-            id,
-            nodes,
-            kind,
-            params,
-            ..
-        }) = component
-        {
-            let vg = snapshot
-                .node_voltages
-                .get(nodes[0].as_str())
-                .copied()
-                .unwrap_or(0.0);
-            let vd = snapshot
-                .node_voltages
-                .get(nodes[1].as_str())
-                .copied()
-                .unwrap_or(0.0);
-            let vs = snapshot
-                .node_voltages
-                .get(nodes[2].as_str())
-                .copied()
-                .unwrap_or(0.0);
-
-            let comp = crate::device_params::mosfet_op(*kind, params, vg, vd, vs);
-            let id_current = match kind {
-                MosfetKind::Nmos => comp.id,
-                MosfetKind::Pmos => -comp.id,
-            };
-
-            let vgs_phys = vg - vs;
-            let vds_phys = vd - vs;
-            let power = (id_current * vds_phys).abs();
-
-            mosfet_results.push(MosfetResult {
-                id: id.clone(),
-                vgs: vgs_phys,
-                vds: vds_phys,
-                id_current,
-                power,
-                region: comp.region,
-            });
-        }
-    }
-
-    mosfet_results
+    (snapshot, reported.caps, reported.inds)
 }
 
 /// Transient analysis settings: how long to simulate and how finely.
@@ -1956,6 +1229,7 @@ impl Stepper {
         let (mut snapshot, new_caps, new_inds) = extract_timestep_results(
             stepped,
             &self.node_map,
+            &self.placement.layout,
             &next,
             self.num_nodes,
             t_next,
@@ -2034,20 +1308,30 @@ impl Stepper {
             }
         }
 
+        // The BJT, MOSFET, op-amp and relay results, as a DC solve at the
+        // last step's node voltages reports them.
         let last = self.work.as_ref().unwrap_or(&self.circuit);
-        let bjt_results = extract_bjt_results_from_snapshot(last, final_snapshot);
-        let mosfet_results = extract_mosfet_results_from_snapshot(last, final_snapshot);
-        let (op_amp_results, relay_results) =
-            crate::results::op_amp_and_relay_results(last, &final_snapshot.node_voltages);
+        let layout = &self.placement.layout;
+        let mut voltages = DVector::zeros(self.num_nodes + layout.branches());
+        for i in 0..self.num_nodes {
+            if let Some(name) = self.node_map.node_name(i) {
+                voltages[i] = final_snapshot
+                    .node_voltages
+                    .get(name)
+                    .copied()
+                    .unwrap_or(0.0);
+            }
+        }
+        let at_last = Reported::collect(last, &self.node_map, layout, &voltages, None);
 
         Ok(SimulationResult {
             node_voltages: final_snapshot.node_voltages.clone(),
             branch_currents,
             component_results: final_snapshot.component_results.clone(),
-            bjt_results,
-            mosfet_results,
-            op_amp_results,
-            relay_results,
+            bjt_results: at_last.bjts,
+            mosfet_results: at_last.mosfets,
+            op_amp_results: at_last.op_amps,
+            relay_results: at_last.relays,
             convergence_aid: None,
             junction_temperatures: final_snapshot.junction_temperatures.clone(),
             state_of_charge: final_snapshot.state_of_charge.clone(),

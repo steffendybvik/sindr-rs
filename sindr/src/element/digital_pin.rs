@@ -5,7 +5,7 @@ use crate::circuit::DiodeModel;
 use crate::error::SimError;
 use crate::handle::NodeId;
 
-use super::{stamped_as_parts, AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{stamped_as_parts, AcStamp, Check, DcStamp, Device, Report, TranStamp};
 use crate::ratings::RatingKind;
 #[cfg(feature = "spice")]
 use crate::spice::export::{Deck, ExportError};
@@ -228,6 +228,9 @@ impl DigitalPin {
 
 impl Device for DigitalPin {
     device_identity!();
+
+    /// Lowered to its parts before any solve, and they report.
+    fn report(&self, _: &mut Report<'_>) {}
 
     /// Nothing: AC analysis stamps its parts.
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}

@@ -9,9 +9,10 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::stamp::stamp_companion_at;
 
-use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, Report, TranStamp};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
+use crate::results::MosfetResult;
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{num, unsupported, Deck, ExportError};
@@ -54,6 +55,30 @@ pub struct Mosfet {
 
 impl Device for Mosfet {
     device_identity!();
+
+    /// Its drain: `Vds`, `Id` and the dissipation, and after a DC solve
+    /// `Vgs` and the operating region.
+    fn report(&self, r: &mut Report<'_>) {
+        let vg = r.v(&self.nodes[0]);
+        let vd = r.v(&self.nodes[1]);
+        let vs = r.v(&self.nodes[2]);
+        let comp = crate::device_params::mosfet_op(self.kind, &self.params, vg, vd, vs);
+        let id_current = match self.kind {
+            MosfetKind::Nmos => comp.id,
+            MosfetKind::Pmos => -comp.id,
+        };
+        let vds = vd - vs;
+        let power = (id_current * vds).abs();
+        r.component(&self.id, vds, id_current, power);
+        r.mosfet(|| MosfetResult {
+            id: self.id.clone(),
+            vgs: vg - vs,
+            vds,
+            id_current,
+            power,
+            region: comp.region,
+        });
+    }
 
     /// gm and gds at the bias point. The body is tied to the source, so
     /// there is no gmb term.

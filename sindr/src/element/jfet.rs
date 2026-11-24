@@ -9,7 +9,7 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::stamp::stamp_companion_at;
 
-use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, Report, TranStamp};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
@@ -45,6 +45,16 @@ pub struct Jfet {
 
 impl Device for Jfet {
     device_identity!();
+
+    /// Its drain: `Vds`, `Id` and the dissipation.
+    fn report(&self, r: &mut Report<'_>) {
+        let vg = r.v(&self.nodes[0]);
+        let vd = r.v(&self.nodes[1]);
+        let vs = r.v(&self.nodes[2]);
+        let vds = vd - vs;
+        let i = jfet_drain_current(vg - vs, vds, self.kind, self.idss, self.vp);
+        r.component(&self.id, vds, i, (i * vds).abs());
+    }
 
     /// gm and gds at the bias point, the same in the physical frame for
     /// both channel types (see `stamp_jfet_companion`).
@@ -257,6 +267,26 @@ pub(crate) fn jfet_gate_charge(
 }
 
 /// [`stamp_jfet_companion_at`] by node name.
+/// A JFET's drain current (A, into the drain) at physical `vgs` and `vds`.
+///
+/// `jfet_companion` mirrors a P-channel into the N-channel frame itself and
+/// returns the same gm and gds with the Norton term negated (see
+/// `stamp_jfet_companion`), so the voltages go in unmirrored.
+pub(crate) fn jfet_drain_current(
+    vgs: f64,
+    vds: f64,
+    kind: sindr_devices::jfet::JfetKind,
+    idss: f64,
+    vp: f64,
+) -> f64 {
+    let c = sindr_devices::jfet::jfet_companion(vgs, vds, kind, idss, vp);
+    let i_eq = match kind {
+        sindr_devices::jfet::JfetKind::NChannel => c.i_eq,
+        sindr_devices::jfet::JfetKind::PChannel => -c.i_eq,
+    };
+    c.gm * vgs + c.gds * vds + i_eq
+}
+
 #[cfg(test)]
 pub(crate) fn stamp_jfet_companion(
     system: &mut MnaSystem,

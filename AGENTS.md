@@ -104,10 +104,11 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 3. Implement its DC stamp as `Device::stamp_dc` in its file (linearised at `v_prev` if nonlinear), with `stamp.rs`'s shared helpers.
 4. Implement `Device::stamp_transient` too unless its transient model is exactly its DC stamp (no stored energy, nothing that changes with time): the provided one calls `stamp_dc`. Capacitor and inductor histories come from `TranStamp::capacitor` / `inductor` (counted by `capacitor_histories` / `inductor_histories`); other state it carries across timesteps (charge, current) is kept by id in the transient's history map, set up and advanced in `sindr/src/transient.rs`.
 5. Implement `Device::stamp_ac`, its small-signal model at `AcStamp::s` (admittances, branch rows). A nonlinear device also implements `Device::linearise`, its conductances at the DC bias, taken once per bias point and stamped after every element's `stamp_ac`. A stamp that isn't affine in `s` (an inductor's `1/(sL)`) takes `Device::pencil_rows` extra unknowns from `AcStamp::aux` when `AcStamp::pencil` is set, for pole-zero analysis. A device that makes noise pushes its generators in `Device::noise` (`NoiseSources::thermal`, `shot`, `flicker`, `channel`).
-6. Extend `SimulationResult` (`sindr/src/results.rs`) only if the element produces results that don't fit `ComponentResult`.
-7. Add a unit test that exercises a known analytical answer.
-8. Document it in `sindr/README.md` under the appropriate section.
-9. If it changes solver routing (forces transient / nonlinear), update the routing table in `sindr/README.md`.
+6. Implement `Device::report`, what it reports at a solution: its port through `Report::port` (or `component` for a power other than V·I), and the branch current others read it by (`branch_current_of`). The same method runs after a DC solve and after every transient step (`Report::step` is `Some`), where a reactive device also moves its histories on with `set_capacitor` / `set_inductor`. Extend `SimulationResult` (`sindr/src/results.rs`) only if the element produces results that don't fit `ComponentResult`, and report them through a `Report` method kept after a DC solve, as `Report::bjt` is.
+7. Implement `Device::write_spice` (behind the `spice` feature), or have it return `unsupported(..)` for an element SPICE3 has no primitive for. A device with ratings it should always be checked against lists them in `Device::needed_ratings`.
+8. Add a unit test that exercises a known analytical answer.
+9. Document it in `sindr/README.md` under the appropriate section.
+10. If it changes solver routing (forces transient / nonlinear), update the routing table in `sindr/README.md`.
 
 ## Adding a new device model in `sindr-devices`
 

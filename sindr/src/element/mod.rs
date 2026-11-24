@@ -22,6 +22,7 @@ use crate::noise::NoiseSources;
 pub(crate) use ac_stamp::{AcBias, AcStamp, Conductance};
 use dc_stamp::stamped_as_parts;
 pub(crate) use dc_stamp::DcStamp;
+pub(crate) use report::{Report, Reported, Step};
 pub(crate) use tran_stamp::{parasitic_history, TranStamp};
 
 /// What sindr knows about a circuit element: its identity and terminals,
@@ -170,6 +171,16 @@ pub(crate) trait Device {
     /// controlled sources).
     fn noise(&self, _: &mut NoiseSources<'_>) {}
 
+    /// Reports the element's results at `r.solution`: its port's voltage,
+    /// current and power, any richer result it has, and the branch current
+    /// others read it by. After a transient step it also moves its
+    /// capacitor and inductor histories on to the step's end.
+    ///
+    /// Required, so a new device has to decide what it reports. An
+    /// element the analyses lower to its parts reports nothing here: its
+    /// parts do, and `composite::fold` puts them back together.
+    fn report(&self, r: &mut Report<'_>);
+
     /// The ratings [`check_ratings`](crate::check_ratings) checks on it
     /// even when its part sets none, so a missing one shows as unverified.
     fn needed_ratings(&self) -> &'static [RatingKind] {
@@ -266,6 +277,7 @@ pub(crate) mod photoresistor;
 mod potentiometer;
 mod pushbutton;
 pub(crate) mod relay;
+mod report;
 mod resistor;
 mod schottky_diode;
 mod switch;

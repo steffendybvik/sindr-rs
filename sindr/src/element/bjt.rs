@@ -10,9 +10,10 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::stamp::stamp_companion_at;
 
-use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, Report, TranStamp};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
+use crate::results::BjtResult;
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{nominal, unsupported, Deck, ExportError};
@@ -56,6 +57,40 @@ pub struct Bjt {
 
 impl Device for Bjt {
     device_identity!();
+
+    /// Its collector: `Vce`, `Ic` and the collector dissipation, and after
+    /// a DC solve every terminal's values and the operating region.
+    fn report(&self, r: &mut Report<'_>) {
+        let vb = r.v(&self.nodes[0]);
+        let vc = r.v(&self.nodes[1]);
+        let ve = r.v(&self.nodes[2]);
+        let sign = match self.kind {
+            BjtKind::Npn => 1.0,
+            BjtKind::Pnp => -1.0,
+        };
+        let vbe_eff = sign * (vb - ve);
+        let vbc_eff = sign * (vb - vc);
+        let params = crate::device_params::bjt(self.bf, self.model.as_ref(), self.temperature);
+        let comp = sindr_devices::bjt::bjt_companion(vbe_eff, vbc_eff, &params);
+        // Physical terminal currents (sign-adjusted for PNP).
+        let ic = sign * comp.ic;
+        let vce = vc - ve;
+        let power = (ic * vce).abs();
+        r.component(&self.id, vce, ic, power);
+        r.bjt(|| {
+            let ib = sign * comp.ib;
+            BjtResult {
+                id: self.id.clone(),
+                vbe: vb - ve,
+                vce,
+                ib,
+                ic,
+                ie: -(ic + ib),
+                power,
+                region: sindr_devices::bjt::detect_region(vbe_eff, vbc_eff),
+            }
+        });
+    }
 
     /// The full terminal Jacobian `∂(Ib, Ic, Ie)/∂(Vb, Vc, Ve)`, with the
     /// same parameters as the DC solve: gπ, gm, gμ and g_o in every

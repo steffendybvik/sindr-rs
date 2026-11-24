@@ -5,7 +5,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::stamp_diode_companion_at;
 
-use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, Report, TranStamp};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
@@ -43,6 +43,12 @@ pub struct ZenerDiode {
 
 impl Device for ZenerDiode {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let params = crate::device_params::zener_diode(self.vz, self.temperature);
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, sindr_devices::diode::diode_current(v, &params));
+    }
 
     /// The same parameters as the DC stamp, including the IS scaling.
     fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {

@@ -6,7 +6,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 
-use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
 use num_complex::Complex64;
 
 #[cfg(feature = "spice")]
@@ -38,6 +38,19 @@ pub struct Battery {
 
 impl Device for Battery {
     device_identity!();
+
+    /// After a DC solve, its terminal values and state of charge. A
+    /// transient reports both from its state, in
+    /// `battery_state::finish_step`.
+    fn report(&self, r: &mut Report<'_>) {
+        if r.step().is_some() {
+            return;
+        }
+        let (g, i_hist) = crate::battery_state::dc_norton(&self.params, self.state_of_charge);
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, g * v + i_hist);
+        r.state_of_charge(&self.id, self.state_of_charge);
+    }
 
     /// Its open-circuit voltage is a DC source, zero in AC; what is left
     /// is `Z = R0 + R1‖C1`. In the pencil form that is a branch current

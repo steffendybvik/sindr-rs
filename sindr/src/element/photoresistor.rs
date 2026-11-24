@@ -6,7 +6,7 @@ use sindr_devices::photoresistor::{ldr_resistance as rs_ldr_resistance, Photores
 use crate::error::SimError;
 use crate::stamp::stamp_resistor_at;
 
-use super::{AcStamp, Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device, Report};
 use crate::noise::NoiseSources;
 use crate::ratings::RatingKind;
 
@@ -29,6 +29,11 @@ pub struct Photoresistor {
 
 impl Device for Photoresistor {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, v / ldr_resistance(self.light_level));
+    }
 
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let r = ldr_resistance(self.light_level);

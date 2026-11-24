@@ -4,7 +4,8 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::op_amp::{OpAmpStamp, Pins, OP_AMP_STAGE};
 
-use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
+use crate::results::OpAmpResult;
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{unsupported, Deck, ExportError};
@@ -34,6 +35,24 @@ pub struct Comparator {
 
 impl Device for Comparator {
     device_identity!();
+
+    /// Its output: `Vout` and the output current, and after a DC solve
+    /// its input pins.
+    fn report(&self, r: &mut Report<'_>) {
+        let v_in_plus = r.v(&self.nodes[0]);
+        let v_in_minus = r.v(&self.nodes[1]);
+        let v_out = r.v(&self.nodes[2]);
+        let i = r.branch_current(0);
+        r.branch_current_of(&self.id, i);
+        r.port(&self.id, v_out, i);
+        r.op_amp(|| OpAmpResult {
+            id: self.id.clone(),
+            v_in_plus,
+            v_in_minus,
+            v_differential: v_in_plus - v_in_minus,
+            v_out,
+        });
+    }
 
     /// Linearised at the bias point, as a modelled op-amp (see
     /// [`OpAmpStamp::stamp_ac`]).
