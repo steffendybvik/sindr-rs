@@ -671,12 +671,11 @@ pub(crate) fn behavioural_result(
         node_voltage(&nodes[0], node_map, solution) - node_voltage(&nodes[1], node_map, solution);
     let current = match output {
         crate::BehaviouralOutput::Current => {
-            crate::element::behavioural::behavioural_linearisation(
-                circuit, node_map, id, expr, solution, t,
-            )
-            .map_or(f64::NAN, |(jacobian, c)| {
-                c + jacobian.iter().map(|(k, j)| j * solution[*k]).sum::<f64>()
-            })
+            let sensed = crate::element::behavioural::resolve(circuit, node_map, expr);
+            crate::element::behavioural::behavioural_linearisation(id, expr, &sensed, solution, t)
+                .map_or(f64::NAN, |(jacobian, c)| {
+                    c + jacobian.iter().map(|(k, j)| j * solution[*k]).sum::<f64>()
+                })
         }
         _ => solution[branch],
     };

@@ -393,7 +393,7 @@ fn nr_inner(
         let mut v_limited = apply_voltage_limiting(&v_new, &v_prev, &diode_info);
         let igbt_limited = apply_igbt_limiting(&mut v_limited, &v_prev, &igbt_info);
         let regulator_limited =
-            limit_regulator_step(circuit, node_map, num_nodes, &v_prev, &mut v_limited);
+            limit_regulator_step(circuit, &terminals, num_nodes, &v_prev, &mut v_limited);
 
         if debug_nr && _iteration < 30 {
             eprintln!(
@@ -408,9 +408,9 @@ fn nr_inner(
         if !igbt_limited
             && !regulator_limited
             && converged(&v_prev, &v_limited, num_nodes, &diode_info, opts)
-            && regulator_pieces_settled(circuit, node_map, num_nodes, &v_prev, &v_limited)
+            && regulator_pieces_settled(circuit, &terminals, num_nodes, &v_prev, &v_limited)
         {
-            behavioural_finite_at(circuit, node_map, &v_limited, 0.0)?;
+            behavioural_finite_at(circuit, &terminals, &v_limited, 0.0)?;
             let result = results::extract_results(circuit, node_map, &v_limited, num_nodes);
             return Ok((result, v_limited));
         }
