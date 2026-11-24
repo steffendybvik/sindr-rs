@@ -182,3 +182,48 @@ fn a_node_that_ramps_without_limit_stops_with_timestep_too_small() {
         started.elapsed()
     );
 }
+
+/// 137 MHz into RC with τ = 1 ns, written out only every 1 µs. Following
+/// the sine takes steps four decades below `tstep` for the whole run, every
+/// one accepted: a fast circuit with a coarse `tstep`, not a stuck one.
+#[test]
+fn a_fast_circuit_with_a_coarse_tstep_runs_to_the_end() {
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            CircuitElement::VoltageSource(VoltageSource {
+                id: "V1".into(),
+                nodes: ["in".into(), "0".into()],
+                voltage: 0.0,
+                waveform: Some(Waveform::Sine {
+                    amplitude: 1.0,
+                    frequency: 137e6,
+                    offset: 0.0,
+                    phase: 0.0,
+                }),
+            }),
+            CircuitElement::Resistor(Resistor {
+                id: "R1".into(),
+                nodes: ["in".into(), "out".into()],
+                resistance: 1e3,
+            }),
+            CircuitElement::Capacitor(Capacitor {
+                id: "C1".into(),
+                nodes: ["out".into(), "0".into()],
+                capacitance: 1e-12,
+            }),
+        ],
+        ..Default::default()
+    };
+    let tran = solve_transient(&circuit, &TransientConfig::new(3e-6, 1e-6))
+        .expect("runs")
+        .transient
+        .unwrap();
+    let last = tran.timesteps.last().expect("steps");
+    assert!((last.time - 3e-6).abs() < 1e-12, "{}", last.time);
+    assert!(
+        tran.stats.accepted_steps > 10_000,
+        "{}",
+        tran.stats.accepted_steps
+    );
+}
