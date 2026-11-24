@@ -69,6 +69,12 @@ impl Device for OpAmp {
         }
     }
 
+    /// The output to the circuit's ground; the inputs only sense (a
+    /// modelled op-amp's bias current is a current source).
+    fn dc_paths<'a>(&'a self, ground: &'a String) -> Vec<[&'a String; 2]> {
+        vec![[&self.nodes[2], ground]]
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let nodes = s.nodes();
         let ground = s.node_map.index(&s.circuit.ground_node);

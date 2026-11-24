@@ -90,6 +90,12 @@ impl Device for Jfet {
         super::mosfet::fet_rating(kind, m)
     }
 
+    /// Drain to source; the model draws no gate current.
+    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+        let [_, d, s] = &self.nodes;
+        vec![[d, s]]
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(vp_prev) = s.v_prev {
             let nodes = s.nodes();

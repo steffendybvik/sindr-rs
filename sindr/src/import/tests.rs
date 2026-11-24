@@ -3471,6 +3471,62 @@ fn skip_ties_open_ends_a_schematic_leaves() {
     assert!(out.circuit.skipped.is_empty());
 }
 
+#[test]
+fn skip_ties_a_group_whose_only_way_to_ground_is_a_capacitor() {
+    // A second divider, half drawn: r3 and r4 from `top` down to `bot`,
+    // which reaches ground only through the decoupling cap c1. Open at
+    // DC, the cap leaves `mid` and `bot` floating in the operating point.
+    let mut n = divider("1k", "1k");
+    for id in ["r3", "r4"] {
+        n.components
+            .push(Component::new(id, ComponentKind::Resistor).with_value("1k"));
+    }
+    n.components
+        .push(Component::new("c1", ComponentKind::Capacitor).with_value("100n"));
+    n.nets.push(Net::new("top", [("r3", "1")]));
+    n.nets.push(Net::new("mid", [("r3", "2"), ("r4", "1")]));
+    n.nets.push(Net::new("bot", [("r4", "2"), ("c1", "1")]));
+    n.nets[2].pins.push(Pin::new("c1", "2"));
+
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &gnd_bench(), &options).expect("simulates");
+    let Simulation::OperatingPoint(r) = &out.result else {
+        panic!()
+    };
+    assert!((r.node_voltages["out"] - 0.5).abs() < 1e-9);
+    let tied: Vec<&str> = out
+        .circuit
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    assert_eq!(tied, ["bot", "mid", "top"]);
+}
+
+#[test]
+fn skip_ties_a_gate_driven_only_through_a_capacitor() {
+    // m1's gate is AC-coupled from `out` through c1: the gate draws no
+    // current, so `g` has no DC path to ground and is tied.
+    let mut n = divider("1k", "1k");
+    n.components
+        .push(Component::new("c1", ComponentKind::Capacitor).with_value("100n"));
+    n.components.push(Component::new("m1", ComponentKind::Nmos));
+    n.nets[1].pins.push(Pin::new("c1", "1"));
+    n.nets.push(Net::new("g", [("c1", "2"), ("m1", "gate")]));
+    n.nets[0].pins.push(Pin::new("m1", "drain"));
+    n.nets[2].pins.push(Pin::new("m1", "source"));
+
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &gnd_bench(), &options).expect("simulates");
+    let tied: Vec<&str> = out
+        .circuit
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    assert_eq!(tied, ["g"]);
+}
+
 #[cfg(feature = "spice")]
 mod subckt_models {
     use super::*;

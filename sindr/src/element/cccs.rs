@@ -42,6 +42,11 @@ impl Device for Cccs {
         s.add(to, Some(control), -gain);
     }
 
+    /// None: its output is a current.
+    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+        Vec::new()
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(control) = s.control_branch() {
             let nodes = s.nodes();

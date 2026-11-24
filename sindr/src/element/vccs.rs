@@ -43,6 +43,12 @@ impl Device for Vccs {
         s.add(to, cq, g);
     }
 
+    /// None: its output is a current, and it only senses its control
+    /// pair.
+    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+        Vec::new()
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let [cp, cq] = &self.control_nodes;
         let control = [s.node_map.index(cp), s.node_map.index(cq)];

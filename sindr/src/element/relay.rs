@@ -48,6 +48,13 @@ impl Device for Relay {
         s.conductance([contact_a, contact_b], 1.0 / r);
     }
 
+    /// The coil's ends and the contact's; nothing joins the coil to the
+    /// contact.
+    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+        let [coil_a, coil_b, contact_a, contact_b] = &self.nodes;
+        vec![[coil_a, coil_b], [contact_a, contact_b]]
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         // The coil is a resistive load; its inductance is the transient's.
         let [coil_a, coil_b, contact_a, contact_b] = s.nodes();

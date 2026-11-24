@@ -79,6 +79,12 @@ impl Device for Transformer {
         }
     }
 
+    /// Each winding's two ends; nothing joins one winding to the other.
+    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+        let [p1, q1, p2, q2] = &self.nodes;
+        vec![[p1, q1], [p2, q2]]
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         // Both windings shorted, each a 0 V source on one of its two branch
         // rows, as `dc_equivalent` has them.
