@@ -7,6 +7,7 @@ use crate::stamp::{stamp_companion_at, stamp_diode_companion_at};
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
 use crate::noise::NoiseSources;
+use crate::ratings::{RatingKind, RatingProbe};
 use num_complex::Complex64;
 
 /// Diode (Shockley model, silicon unless `model` says otherwise).
@@ -105,6 +106,15 @@ impl Device for Diode {
         if let Some(m) = self.model.filter(|m| m.kf > 0.0) {
             n.flicker(&self.id, "", [a, b], i, m.kf, m.af);
         }
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        use RatingKind::*;
+        &[ReverseVoltage, ForwardCurrent, Power]
+    }
+
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        m.junction_rating(kind)
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {

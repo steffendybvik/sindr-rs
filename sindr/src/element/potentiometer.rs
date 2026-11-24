@@ -5,6 +5,7 @@ use crate::stamp::stamp_resistor_at;
 
 use super::{AcStamp, Check, DcStamp, Device};
 use crate::noise::NoiseSources;
+use crate::ratings::RatingKind;
 
 /// Potentiometer: 3-terminal voltage divider.
 /// nodes: [top, wiper, bottom]
@@ -40,6 +41,10 @@ impl Device for Potentiometer {
         let [p, w, q] = &self.nodes;
         n.thermal_27c(&self.id, "top", [p, w], self.resistance * pos);
         n.thermal_27c(&self.id, "bottom", [w, q], self.resistance * (1.0 - pos));
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::Power]
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {

@@ -11,6 +11,7 @@ use crate::stamp::stamp_companion_at;
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
 use crate::noise::NoiseSources;
+use crate::ratings::{RatingKind, RatingProbe};
 
 /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
 /// DC, transient and AC.
@@ -100,6 +101,22 @@ impl Device for Bjt {
         n.shot(&self.id, "ib", [b, e], ib);
         if let Some(m) = self.model.filter(|m| m.kf > 0.0) {
             n.flicker(&self.id, "ib", [b, e], ib, m.kf, m.af);
+        }
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        use RatingKind::*;
+        &[Vce, Vcb, Veb, Ic, Power]
+    }
+
+    /// Terminal voltages from `[base, collector, emitter]`.
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        match kind {
+            RatingKind::Vce => m.between(1, 2),
+            RatingKind::Vcb => m.between(1, 0),
+            RatingKind::Veb => m.between(2, 0),
+            RatingKind::Ic => Some(m.port()?.current_through.abs()),
+            _ => m.port_rating(kind),
         }
     }
 

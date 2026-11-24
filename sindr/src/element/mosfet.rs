@@ -10,6 +10,7 @@ use crate::stamp::stamp_companion_at;
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
 use crate::noise::NoiseSources;
+use crate::ratings::{RatingKind, RatingProbe};
 
 /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
 /// to the source).
@@ -98,6 +99,16 @@ impl Device for Mosfet {
                 self.params.af,
             );
         }
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        use RatingKind::*;
+        &[Vds, Vgs, Id, Power]
+    }
+
+    /// Terminal voltages from `[gate, drain, source]`.
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        super::mosfet::fet_rating(kind, m)
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
@@ -257,4 +268,14 @@ pub(crate) fn fet_conductances(
         (d, s, -gds),
         (s, d, -gds),
     ]
+}
+
+/// A FET's ratings, from `[gate, drain, source]`: a MOSFET's and a JFET's.
+pub(crate) fn fet_rating(kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+    match kind {
+        RatingKind::Vds => m.between(1, 2),
+        RatingKind::Vgs => m.between(0, 2),
+        RatingKind::Id => Some(m.port()?.current_through.abs()),
+        _ => m.port_rating(kind),
+    }
 }

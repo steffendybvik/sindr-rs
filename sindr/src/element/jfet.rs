@@ -10,6 +10,7 @@ use crate::stamp::stamp_companion_at;
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
 use crate::noise::NoiseSources;
+use crate::ratings::{RatingKind, RatingProbe};
 
 /// N-channel or P-channel JFET (Shockley square-law model).
 /// nodes: [gate, drain, source]
@@ -77,6 +78,16 @@ impl Device for Jfet {
         let comp =
             sindr_devices::jfet::jfet_companion(vg - vs, vd - vs, self.kind, self.idss, self.vp);
         n.channel(&self.id, [d, s], comp.gm);
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        use RatingKind::*;
+        &[Vds, Vgs, Id, Power]
+    }
+
+    /// Terminal voltages from `[gate, drain, source]`.
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        super::mosfet::fet_rating(kind, m)
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {

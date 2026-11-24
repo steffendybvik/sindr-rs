@@ -6,6 +6,7 @@ use crate::stamp::stamp_diode_companion_at;
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
 use crate::noise::NoiseSources;
+use crate::ratings::{RatingKind, RatingProbe};
 
 /// Schottky diode: lower forward voltage (~0.3V) than silicon diode.
 /// nodes: [anode, cathode]
@@ -42,6 +43,15 @@ impl Device for SchottkyDiode {
         let [a, b] = &self.nodes;
         let i = n.current(&self.id);
         n.shot(&self.id, "", [a, b], i);
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        use RatingKind::*;
+        &[ReverseVoltage, ForwardCurrent, Power]
+    }
+
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        m.junction_rating(kind)
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {

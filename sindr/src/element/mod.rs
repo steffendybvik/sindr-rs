@@ -11,6 +11,7 @@ use std::fmt::Display;
 
 use crate::circuit::CircuitElement;
 use crate::error::SimError;
+use crate::ratings::{RatingKind, RatingProbe};
 
 use crate::noise::NoiseSources;
 
@@ -147,6 +148,21 @@ pub(crate) trait Device {
     /// onto `n`. None for a noiseless element (sources, reactances,
     /// controlled sources).
     fn noise(&self, _: &mut NoiseSources<'_>) {}
+
+    /// The ratings [`check_ratings`](crate::check_ratings) checks on it
+    /// even when its part sets none, so a missing one shows as unverified.
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[]
+    }
+
+    /// The value of a rating of `kind` on it at one instant, from `m`:
+    /// `None` when it can't be measured on this element. Junction
+    /// temperature and power are measured the same way on every element,
+    /// before this; the provided method rates the port's voltage and
+    /// current.
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        m.port_rating(kind)
+    }
 
     /// Rejects a value the models can't use, naming the component, the
     /// field and the value. Left alone, a 0 K junction divides by zero and
