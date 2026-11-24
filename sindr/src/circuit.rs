@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use crate::design::{Block, Instance, Part};
 use crate::element::{
-    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource,
+    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, DcMotor,
     DigitalPin, Diode, FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode,
     Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt,
     Thermistor, Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
@@ -599,6 +599,12 @@ pub enum CircuitElement {
     /// pull resistor.
     #[cfg_attr(feature = "serde", serde(rename = "digital_pin"))]
     DigitalPin(DigitalPin),
+
+    /// Brushed DC motor ([`DcMotorParams`](crate::element::DcMotorParams)):
+    /// armature R, L and back-EMF, driving a shaft with inertia, friction
+    /// and a load torque.
+    #[cfg_attr(feature = "serde", serde(rename = "dc_motor"))]
+    DcMotor(DcMotor),
 }
 
 /// `From<Element> for CircuitElement` for each element type named, so a
@@ -652,6 +658,7 @@ element_from!(
     FerriteBead,
     Behavioural,
     DigitalPin,
+    DcMotor,
 );
 
 impl CircuitElement {
@@ -1513,6 +1520,11 @@ mod tests {
                 port: Some("PORTB".into()),
                 model: crate::element::PinModel::default(),
             }),
+            CircuitElement::DcMotor(DcMotor {
+                id: "M".into(),
+                nodes: n("M"),
+                params: crate::element::DcMotorParams::new(2.0, 0.02),
+            }),
         ]
     }
 
@@ -1522,7 +1534,7 @@ mod tests {
     #[test]
     fn mutable_accessors_reach_the_fields_the_readers_read() {
         let elements = every_element();
-        assert_eq!(elements.len(), 35, "one of every CircuitElement");
+        assert_eq!(elements.len(), 36, "one of every CircuitElement");
         for mut element in elements {
             let id = element.id().to_string();
             let nodes = element.nodes().to_vec();

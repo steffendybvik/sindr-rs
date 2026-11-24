@@ -212,6 +212,22 @@ The electrical side of a microcontroller or logic-IC pin, after the IBIS I/O buf
 
 It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp diodes, `#c`, `#leak`), and `to_netlist` writes them, so ngspice can run the same pin.
 
+### DC motor
+
+```rust,ignore
+use sindr::element::{DcMotor, DcMotorParams};
+CircuitElement::DcMotor(DcMotor { id, nodes: [a, b], params: DcMotorParams })
+```
+
+A brushed DC motor: `V = R·i + L·di/dt + ke·ω` across its terminals, and `J·dω/dt = kt·i − B·ω − T_load` on its shaft, in SI units (ω in rad/s). Current into `a` turns it forwards.
+
+- **`DcMotorParams`:** `resistance`, `inductance`, `ke`, `kt`, `inertia`, `friction` and `load_torque`. `DcMotorParams::new(r, k)` takes `ke = kt = k`, and `with_inductance`, `with_inertia`, `with_friction` and `with_load` add the rest. `DcMotorParams::from_datasheet(volts, no_load_rpm, no_load_current, stall_torque, stall_current)` fits `R`, `ke`, `kt` and `B` so the motor runs at exactly the no-load speed and current, and stalls at exactly the stall torque and current; set `inductance` and `inertia` when you know them. `steady_state(volts)` is the closed-form speed and current.
+- **Results:** its `ComponentResult` is the electrical side: `current_through` the armature current, `power` the `V·I` it draws. `SimulationResult::motors` and each step's `motors` hold the shaft, by id: `speed` (rad/s, `rpm()`), `torque` (`kt·i`) and `mechanical_power` (`torque · speed`). A transient from rest shows the start-up surge; a load above `kt·V/R` stalls it.
+- **In a session:** `Param::LoadTorque` changes the load from the time reached on.
+- **Ratings:** `Ratings::voltage`, `current` and `power`.
+
+It's solved as its parts: the armature `#r`, `#l`, a 0 V `#sense` and the back-EMF `#emf`, and the shaft as an analogue circuit whose node `#w`, over terminal `b`, is the speed: `#kt` (a CCCS), `#j` (a capacitor of `J` farads), `#b` (a conductance of `B` siemens) and `#load` (a current source). `to_netlist` writes those, so ngspice can run the same motor. AC sees the armature plus the shaft reflected through it, `R + sL + ke·kt/(sJ + B)`.
+
 ### Diodes
 
 ```rust,ignore
@@ -601,7 +617,7 @@ let hit = sim.run_until(10.0, &[Event::crosses("int0", 2.5, Edge::Rising)])?;
 ```
 
 - **A change is a breakpoint.** The step that reached the time saw the old value, the next sees the new, and the integration restarts there with a short backward-Euler step, as at a waveform's corner. Writing a value a source already has changes nothing.
-- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, the temperature of a thermistor or a junction device that isn't self-heated, and a digital pin's mode, level and pull (`Param::PinMode`, `Level`, `Pull`).
+- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, the temperature of a thermistor or a junction device that isn't self-heated, a digital pin's mode, level and pull (`Param::PinMode`, `Level`, `Pull`), and a DC motor's load torque (`Param::LoadTorque`).
 - **Pins read back:** `logic_level(id)` is what a digital pin's input reads at the time reached, `LogicLevel::High` or `Low` against its `vil` and `vih` with hysteresis. It's taken after each step, so to catch an edge, `run_until` an event at the threshold.
 - **Events** are a node crossing a level (`Edge::Rising`, `Falling`, `Either`). The session steps back and re-steps until the crossing is inside the event's tolerance (`Event::within`, default 10⁻⁴ of `tstep`), and stops just after it with the node past the level. Steps tried and undone along the way aren't kept.
 - **State survives between calls:** the flat circuit, node map, matrix layout and histories are set up once. Each step still assembles and factors its matrix.

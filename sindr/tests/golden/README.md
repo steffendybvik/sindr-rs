@@ -71,7 +71,7 @@ F, H and I sources and the transformer's dot convention. Each test also
 reads the committed deck back with sindr's own parser and checks that
 against the same golden, so the E, G, F, H and K lines round-trip. The
 composites (`op_exported_spdt`, `ac_exported_crystal`,
-`ac_exported_ferrite_bead`, `dc_exported_digital_pin`) are checked the same
+`ac_exported_ferrite_bead`, `dc_exported_digital_pin`, `tran_exported_dc_motor`) are checked the same
 way, through the parts they export as. After changing the exporter or one of
 these circuits:
 
@@ -152,7 +152,7 @@ where it holds up:
 | DC sweep | `dc_diode_iv`, `dc_diode_1n4148`, `dc_diode_breakdown` (BV, IBV), `dc_zener` (a `ZenerDiode` through its knee), `dc_mosfet_body_diode` (an NMOS's body diode, freewheeling), `dc_exported_digital_pin` (push-pull, input with pull-up and open-drain pins pulled past both rails: the IBIS output stage and clamps they export as) |
 | Diode charge | `cv_1n4148`, `cv_1n5819`: sindr's AC admittance at each bias of an ngspice sweep, against ngspice's `gd` and `cd` behind the card's RS |
 | AC | `ac_rc_lowpass`, `ac_partial_decade` (`.ac dec` over 1.7 decades: ngspice's 17-point grid), `ac_rlc_bandpass`, `ac_bjt_ce`, `ac_bjt_caps` (Cbe, Cbc), `ac_diode` (1N4148 with its charge), `ac_mosfet_cs` (Cgs, Cgd), `ac_jfet`, `ac_jfet_caps` (CGS, CGD as graded junctions, from the `NJF` card), `ac_exported_transformer`, `ac_exported_crystal` (through both resonances), `ac_exported_ferrite_bead` (past its self-resonance) |
-| Transient | `tran_rc_step`, `tran_rl_step`, `tran_op_start` (operating-point start), `tran_ic_op` and `tran_ic_uic` (`.ic` without and with `UIC`), `tran_tstart`, `tran_halfwave` (sine into a diode and filter cap), `tran_bjt_switch` (pulse through an RC into an NPN; collector to 3 %, see below), `tran_rlc_ring`, `tran_flasher` (a two-transistor LED flasher from rest: its period and the on LED's current, since each edge is a jump a fraction of a millisecond either way), `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
+| Transient | `tran_rc_step`, `tran_rl_step`, `tran_exported_dc_motor` (a DC motor started from rest against a load: speed and supply current, through the R–L–E armature and F–C–R–I shaft it exports as), `tran_op_start` (operating-point start), `tran_ic_op` and `tran_ic_uic` (`.ic` without and with `UIC`), `tran_tstart`, `tran_halfwave` (sine into a diode and filter cap), `tran_bjt_switch` (pulse through an RC into an NPN; collector to 3 %, see below), `tran_rlc_ring`, `tran_flasher` (a two-transistor LED flasher from rest: its period and the on LED's current, since each edge is a jump a fraction of a millisecond either way), `tran_diode_recovery` (1N4148 reverse recovery, 2 % of full scale: the recovery edge is steep, and sindr's adaptive step lands it a fraction of a nanosecond off ngspice's) |
 | Fourier | `four_diode_clipper` (2 V sine through 1 kΩ into antiparallel diodes: odd harmonics to the 9th and a THD of 29 %) |
 | Noise | `noise_rc_lowpass`, `noise_rc_total`, `noise_bjt_ce`, `noise_partial_decade` (`.noise dec` over 1.7 decades, which stops short of fstop) |
 | Pole-zero | `pz_rlc_vol` (`.pz … vol pz`: a complex pole pair and a complex zero pair), `pz_ladder_cur` (`.pz … cur pz`: three poles and a zero at DC). ngspice writes nine significant digits, so roots are held to 1e-8 relative, and to 1e-8 of the largest root absolute (sindr's zero at DC comes out at round-off) |

@@ -127,6 +127,31 @@ pub struct RelayResult {
     pub contact_closed: bool,
 }
 
+/// A DC motor's shaft, from its [`DcMotor`](crate::element::DcMotor)
+/// element. Its electrical side is its [`ComponentResult`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct MotorResult {
+    /// Shaft speed ω (rad/s), positive turning forwards.
+    pub speed: f64,
+    /// Electromagnetic torque `kt·i` (N·m), before friction, inertia and
+    /// load take their share.
+    pub torque: f64,
+    /// Power converted from electrical to mechanical, `torque · speed` (W):
+    /// the electrical power in, less the armature's `i²R` (and, in a
+    /// transient, the energy its inductance stores).
+    pub mechanical_power: f64,
+}
+
+impl MotorResult {
+    /// Shaft speed in revolutions per minute.
+    pub fn rpm(&self) -> f64 {
+        self.speed * 60.0 / std::f64::consts::TAU
+    }
+}
+
 /// One timestep of a transient simulation: time, node voltages, per-component
 /// state at that instant.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -156,6 +181,12 @@ pub struct TimestepSnapshot {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub state_of_charge: HashMap<String, f64>,
+    /// Each DC motor's shaft at this instant, by component id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub motors: HashMap<String, MotorResult>,
 }
 
 /// Time-series data from a transient simulation.
@@ -292,6 +323,13 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub state_of_charge: HashMap<String, f64>,
+    /// Each DC motor's shaft, by component id: its steady state at DC, the
+    /// last step's after a transient.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub motors: HashMap<String, MotorResult>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -662,6 +700,7 @@ pub(crate) fn extract_results(
         convergence_aid: None,
         junction_temperatures: HashMap::new(),
         state_of_charge: reported.state_of_charge,
+        motors: HashMap::new(),
         transient: None,
     }
 }
@@ -685,7 +724,7 @@ mod tests {
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
             state_of_charge: HashMap::new(),
-            transient: None,
+            motors: HashMap::new(),            transient: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(!json.contains("\"transient\""));
@@ -706,7 +745,7 @@ mod tests {
             convergence_aid: None,
             junction_temperatures: HashMap::new(),
             state_of_charge: HashMap::new(),
-            transient: Some(TransientData {
+            motors: HashMap::new(),            transient: Some(TransientData {
                 timesteps: vec![
                     TimestepSnapshot {
                         time: 0.0,
@@ -714,14 +753,14 @@ mod tests {
                         component_results: vec![],
                         junction_temperatures: HashMap::new(),
                         state_of_charge: HashMap::new(),
-                    },
+                        motors: HashMap::new(),                    },
                     TimestepSnapshot {
                         time: 0.001,
                         node_voltages: HashMap::from([("n1".into(), 3.2)]),
                         component_results: vec![],
                         junction_temperatures: HashMap::new(),
                         state_of_charge: HashMap::new(),
-                    },
+                        motors: HashMap::new(),                    },
                 ],
                 time_step: 0.001,
                 duration: 0.002,

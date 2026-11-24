@@ -21,7 +21,7 @@ sindr-rs/
 │   │   ├── mna.rs              # MNA matrix assembly
 │   │   ├── stamp.rs            # stamp dispatch and the stamps several elements share
 │   │   ├── op_amp.rs           # op-amp / comparator macromodel stamps
-│   │   ├── composite.rs        # SPDT switch, crystal, ferrite bead, digital pin as networks of simpler elements
+│   │   ├── composite.rs        # SPDT switch, crystal, ferrite bead, digital pin, DC motor as networks of simpler elements
 │   │   ├── battery_state.rs    # battery Norton equivalent and state of charge
 │   │   ├── device_params.rs    # effective device parameters from element fields
 │   │   ├── newton_raphson.rs   # nonlinear DC solver

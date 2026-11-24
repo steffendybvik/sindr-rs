@@ -1,7 +1,8 @@
 //! Elements solved as a network of simpler ones: the SPDT switch (two
 //! switches), the crystal (C0 beside Rm–Lm–Cm), the ferrite bead (Rdc
 //! into L ∥ Rac ∥ C) and the digital pin (its output stage, clamps, die
-//! capacitance and leakage).
+//! capacitance and leakage) and the DC motor (armature R–L–back-EMF, and
+//! its shaft as an analogue network).
 //!
 //! [`lower`] turns each into its parts before any analysis, with internal
 //! ids and nodes `<id>#…`. [`fold`] puts a result back together: one
@@ -9,14 +10,14 @@
 //! parts and internal nodes gone.
 
 use crate::element::{
-    Capacitor, Crystal, CurrentSource, DigitalPin, Diode, FerriteBead, Inductor, Resistor, Switch,
-    SwitchSpdt,
+    Capacitor, Cccs, Crystal, CurrentSource, DcMotor, DcMotorParams, DigitalPin, Diode,
+    FerriteBead, Inductor, Resistor, Switch, SwitchSpdt, Vcvs, VoltageSource,
 };
 use crate::handle::NodeId;
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement, CrystalParams, FerriteBeadParams, SpdtPosition};
-use crate::results::{ComponentResult, SimulationResult, TimestepSnapshot};
+use crate::results::{ComponentResult, MotorResult, SimulationResult, TimestepSnapshot};
 use crate::SimError;
 
 /// Whether `element` is solved as a network of others.
@@ -27,6 +28,7 @@ pub(crate) fn is_composite(element: &CircuitElement) -> bool {
             | CircuitElement::Crystal(Crystal { .. })
             | CircuitElement::FerriteBead(FerriteBead { .. })
             | CircuitElement::DigitalPin(DigitalPin { .. })
+            | CircuitElement::DcMotor(DcMotor { .. })
     )
 }
 
@@ -74,6 +76,7 @@ pub(crate) fn lower(element: &CircuitElement) -> Result<Option<Vec<CircuitElemen
         CircuitElement::Crystal(Crystal { id, nodes, params }) => crystal(id, nodes, params)?,
         CircuitElement::FerriteBead(FerriteBead { id, nodes, params }) => bead(id, nodes, params)?,
         CircuitElement::DigitalPin(p) => pin(p)?,
+        CircuitElement::DcMotor(m) => motor(m)?,
         _ => return Ok(None),
     };
     Ok(Some(parts))
@@ -217,6 +220,90 @@ pub(crate) fn pin(p: &DigitalPin) -> Result<Vec<CircuitElement>, SimError> {
     Ok(parts)
 }
 
+/// A DC motor's parts, with its shaft speed `ω` as the voltage of node
+/// `#w` over terminal `b`:
+///
+/// - the armature: `#r` (R) from `a`, `#l` (L, when not zero), the
+///   zero-volt `#sense` whose current is the armature current, and the
+///   back-EMF `#emf`, `ke·ω`, into `b`;
+/// - the shaft, between `#w` and `b`: the torque `kt·i` (`#kt`, driven by
+///   `#sense`), the inertia as a capacitance `#j`, the friction as a
+///   conductance `#b` (each left out when zero), and the load torque as a
+///   current `#load` out of `#w`, there even at zero for a session to set.
+pub(crate) fn motor(m: &DcMotor) -> Result<Vec<CircuitElement>, SimError> {
+    use crate::element::Device;
+    m.validate()?;
+    let DcMotor { id, nodes, params } = m;
+    let DcMotorParams {
+        resistance,
+        inductance,
+        ke,
+        kt,
+        inertia,
+        friction,
+        load_torque,
+        ..
+    } = *params;
+    let [a, b] = nodes.clone();
+    let node = |suffix: &str| -> NodeId { part(id, suffix).into() };
+    let (m1, m3, w) = (node("m1"), node("m3"), node("w"));
+    let m2 = if inductance > 0.0 {
+        node("m2")
+    } else {
+        m1.clone()
+    };
+    let mut parts = vec![CircuitElement::Resistor(Resistor {
+        id: part(id, "r"),
+        nodes: [a, m1.clone()],
+        resistance,
+    })];
+    if inductance > 0.0 {
+        parts.push(CircuitElement::Inductor(Inductor {
+            id: part(id, "l"),
+            nodes: [m1, m2.clone()],
+            inductance,
+            saturation: None,
+        }));
+    }
+    parts.extend([
+        CircuitElement::VoltageSource(VoltageSource::dc(part(id, "sense"), [m2, m3.clone()], 0.0)),
+        CircuitElement::Vcvs(Vcvs {
+            id: part(id, "emf"),
+            nodes: [m3, b.clone()],
+            control_nodes: [w.clone(), b.clone()],
+            gain: ke,
+        }),
+        CircuitElement::Cccs(Cccs {
+            id: part(id, "kt"),
+            nodes: [b.clone(), w.clone()],
+            control_source: part(id, "sense").into(),
+            alpha: kt,
+        }),
+    ]);
+    if inertia > 0.0 {
+        parts.push(CircuitElement::Capacitor(Capacitor {
+            id: part(id, "j"),
+            nodes: [w.clone(), b.clone()],
+            capacitance: inertia,
+        }));
+    }
+    if friction > 0.0 {
+        parts.push(CircuitElement::Resistor(Resistor {
+            id: part(id, "b"),
+            nodes: [w.clone(), b.clone()],
+            resistance: 1.0 / friction,
+        }));
+    }
+    // Always there, so a session can change it.
+    parts.push(CircuitElement::CurrentSource(CurrentSource {
+        id: part(id, "load"),
+        nodes: [w, b],
+        current: load_torque,
+        waveform: None,
+    }));
+    Ok(parts)
+}
+
 /// How to rebuild one composite's result from its parts'.
 struct Recipe<'a> {
     id: &'a str,
@@ -227,6 +314,11 @@ struct Recipe<'a> {
     current: Vec<(String, f64)>,
     /// Parts whose `power` adds up to the element's.
     power: Vec<String>,
+    /// The element's `power` is `voltage_across · current_through`, what it
+    /// takes from the circuit, instead of the parts' sum.
+    electrical: bool,
+    /// For a motor: its torque constant and speed node, to report its shaft.
+    motor: Option<(f64, String)>,
 }
 
 fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
@@ -248,6 +340,8 @@ fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
                     across: [&nodes[0], throw],
                     current: vec![(part(id, suffix), 1.0)],
                     power: vec![part(id, "a"), part(id, "b")],
+                    electrical: false,
+                    motor: None,
                 })
             }
             CircuitElement::Crystal(Crystal { id, nodes, .. }) => Some(Recipe {
@@ -255,12 +349,16 @@ fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
                 across: [&nodes[0], &nodes[1]],
                 current: vec![(part(id, "rm"), 1.0), (part(id, "c0"), 1.0)],
                 power: vec![part(id, "rm")],
+                electrical: false,
+                motor: None,
             }),
             CircuitElement::FerriteBead(FerriteBead { id, nodes, .. }) => Some(Recipe {
                 id,
                 across: [&nodes[0], &nodes[1]],
                 current: vec![(part(id, "rdc"), 1.0)],
                 power: vec![part(id, "rdc"), part(id, "rac")],
+                electrical: false,
+                motor: None,
             }),
             // Into the pin: what leaves the pad through each part.
             CircuitElement::DigitalPin(DigitalPin { id, nodes, .. }) => {
@@ -277,8 +375,18 @@ fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
                     across: [&nodes[0], &nodes[2]],
                     current: parts.iter().map(|(s, k)| (part(id, s), *k)).collect(),
                     power: parts.iter().map(|(s, _)| part(id, s)).collect(),
+                    electrical: false,
+                    motor: None,
                 })
             }
+            CircuitElement::DcMotor(DcMotor { id, nodes, params }) => Some(Recipe {
+                id,
+                across: [&nodes[0], &nodes[1]],
+                current: vec![(part(id, "r"), 1.0)],
+                power: vec![],
+                electrical: true,
+                motor: Some((params.kt, part(id, "w"))),
+            }),
             _ => None,
         })
         .collect()
@@ -301,15 +409,25 @@ pub(crate) fn fold(circuit: &Circuit, result: &mut SimulationResult) {
         &recipes,
         &result.node_voltages,
         &mut result.component_results,
+        &mut result.motors,
     );
     strip(&recipes, &mut result.node_voltages);
     strip(&recipes, &mut result.branch_currents);
     if let Some(tran) = &mut result.transient {
         for step in &mut tran.timesteps {
-            fold_one(&recipes, &step.node_voltages, &mut step.component_results);
-            strip(&recipes, &mut step.node_voltages);
+            fold_step(&recipes, step);
         }
     }
+}
+
+fn fold_step(recipes: &[Recipe<'_>], step: &mut TimestepSnapshot) {
+    fold_one(
+        recipes,
+        &step.node_voltages,
+        &mut step.component_results,
+        &mut step.motors,
+    );
+    strip(recipes, &mut step.node_voltages);
 }
 
 /// The composites of a flattened circuit, to fold its transient steps one
@@ -326,8 +444,7 @@ impl<'a> StepFolder<'a> {
 
     /// `step` as [`fold`] leaves it in the result.
     pub(crate) fn fold(&self, step: &mut TimestepSnapshot) {
-        fold_one(&self.0, &step.node_voltages, &mut step.component_results);
-        strip(&self.0, &mut step.node_voltages);
+        fold_step(&self.0, step);
     }
 }
 
@@ -353,6 +470,7 @@ fn fold_one(
     recipes: &[Recipe<'_>],
     voltages: &HashMap<String, f64>,
     results: &mut Vec<ComponentResult>,
+    motors: &mut HashMap<String, MotorResult>,
 ) {
     let by_id: HashMap<&str, &ComponentResult> =
         results.iter().map(|r| (r.id.as_str(), r)).collect();
@@ -371,13 +489,35 @@ fn fold_one(
     let v = |node: &str| voltages.get(node).copied().unwrap_or(0.0);
     let folded: Vec<ComponentResult> = recipes
         .iter()
-        .map(|r| ComponentResult {
-            id: r.id.to_string(),
-            voltage_across: v(r.across[0]) - v(r.across[1]),
-            current_through: current(&r.current),
-            power: sum(&r.power),
+        .map(|r| {
+            let voltage_across = v(r.across[0]) - v(r.across[1]);
+            let current_through = current(&r.current);
+            ComponentResult {
+                id: r.id.to_string(),
+                voltage_across,
+                current_through,
+                power: if r.electrical {
+                    voltage_across * current_through
+                } else {
+                    sum(&r.power)
+                },
+            }
         })
         .collect();
+    for (r, c) in recipes.iter().zip(&folded) {
+        if let Some((kt, w)) = &r.motor {
+            let speed = v(w) - v(r.across[1]);
+            let torque = kt * c.current_through;
+            motors.insert(
+                r.id.to_string(),
+                MotorResult {
+                    speed,
+                    torque,
+                    mechanical_power: torque * speed,
+                },
+            );
+        }
+    }
     results.retain(|c| !is_internal(recipes, &c.id));
     results.extend(folded);
 }
