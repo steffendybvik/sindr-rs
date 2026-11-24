@@ -1498,6 +1498,34 @@ pub(crate) fn solve_transient_hooked(
     let node_map = NodeMap::from_circuit(circuit);
     let num_nodes = node_map.num_nodes();
     let num_vsources = circuit.count_voltage_sources();
+    // The hook sees each step as the result will hold it, so composites are
+    // folded back for it; a circuit without any passes its steps through.
+    let original_flat = match progress {
+        Some(_) => original.flattened().ok(),
+        None => None,
+    };
+    let folder = original_flat
+        .as_deref()
+        .and_then(crate::composite::StepFolder::new);
+    let mut folded_hook;
+    let progress: Hook<'_> = match (progress, &folder) {
+        (Some(hook), Some(folder)) => {
+            folded_hook = move |p: &TransientProgress<'_>| {
+                let Some(step) = p.step else {
+                    return hook(p);
+                };
+                let mut step = step.clone();
+                folder.fold(&mut step);
+                hook(&TransientProgress {
+                    step: Some(&step),
+                    ..*p
+                })
+            };
+            Some(&mut folded_hook)
+        }
+        (Some(hook), None) => Some(hook as &mut dyn FnMut(&TransientProgress<'_>) -> Flow),
+        (None, _) => None,
+    };
     let mut result = run_transient(
         circuit,
         &node_map,

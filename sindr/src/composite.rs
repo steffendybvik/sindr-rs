@@ -11,7 +11,7 @@ use crate::element::{Capacitor, Crystal, FerriteBead, Inductor, Resistor, Switch
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement, CrystalParams, FerriteBeadParams, SpdtPosition};
-use crate::results::{ComponentResult, SimulationResult};
+use crate::results::{ComponentResult, SimulationResult, TimestepSnapshot};
 use crate::SimError;
 
 /// Whether `element` is solved as a network of others.
@@ -229,6 +229,25 @@ pub(crate) fn fold(circuit: &Circuit, result: &mut SimulationResult) {
             fold_one(&recipes, &step.node_voltages, &mut step.component_results);
             strip(&recipes, &mut step.node_voltages);
         }
+    }
+}
+
+/// The composites of a flattened circuit, to fold its transient steps one
+/// at a time as they are taken.
+pub(crate) struct StepFolder<'a>(Vec<Recipe<'a>>);
+
+impl<'a> StepFolder<'a> {
+    /// `flat` is the caller's circuit flattened, before lowering; `None`
+    /// when it has no composites, so there is nothing to fold.
+    pub(crate) fn new(flat: &'a Circuit) -> Option<Self> {
+        let recipes = recipes(flat);
+        (!recipes.is_empty()).then_some(Self(recipes))
+    }
+
+    /// `step` as [`fold`] leaves it in the result.
+    pub(crate) fn fold(&self, step: &mut TimestepSnapshot) {
+        fold_one(&self.0, &step.node_voltages, &mut step.component_results);
+        strip(&self.0, &mut step.node_voltages);
     }
 }
 
