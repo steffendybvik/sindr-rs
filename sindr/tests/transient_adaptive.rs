@@ -2,7 +2,10 @@
 //! local truncation error demands, and grow on smooth stretches.
 
 use sindr::element::{Capacitor, CurrentSource, FerriteBead, Resistor, VoltageSource};
-use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig, TransientData, Waveform};
+use sindr::{
+    solve_transient, Circuit, CircuitElement, SimError, Solver, SolverOptions, TransientConfig,
+    TransientData, Waveform,
+};
 
 /// 0 → 1 V pulse at 10 µs with 1 ns edges, 40 µs wide, into RC with τ = 1 µs.
 const DELAY: f64 = 10e-6;
@@ -183,12 +186,9 @@ fn a_node_that_ramps_without_limit_stops_with_timestep_too_small() {
     );
 }
 
-/// 137 MHz into RC with τ = 1 ns, written out only every 1 µs. Following
-/// the sine takes steps four decades below `tstep` for the whole run, every
-/// one accepted: a fast circuit with a coarse `tstep`, not a stuck one.
-#[test]
-fn a_fast_circuit_with_a_coarse_tstep_runs_to_the_end() {
-    let circuit = Circuit {
+/// 137 MHz into RC with τ = 1 ns.
+fn fast_rc() -> Circuit {
+    Circuit {
         ground_node: "0".into(),
         components: vec![
             CircuitElement::VoltageSource(VoltageSource {
@@ -214,8 +214,15 @@ fn a_fast_circuit_with_a_coarse_tstep_runs_to_the_end() {
             }),
         ],
         ..Default::default()
-    };
-    let tran = solve_transient(&circuit, &TransientConfig::new(3e-6, 1e-6))
+    }
+}
+
+/// [`fast_rc`] written out only every 1 µs. Following the sine takes steps
+/// four decades below `tstep` for the whole run, every one accepted: a fast
+/// circuit with a coarse `tstep`, not a stuck one.
+#[test]
+fn a_fast_circuit_with_a_coarse_tstep_runs_to_the_end() {
+    let tran = solve_transient(&fast_rc(), &TransientConfig::new(3e-6, 1e-6))
         .expect("runs")
         .transient
         .unwrap();
@@ -226,4 +233,21 @@ fn a_fast_circuit_with_a_coarse_tstep_runs_to_the_end() {
         "{}",
         tran.stats.accepted_steps
     );
+}
+
+/// The same run with a budget of 2 000 steps: its step settles well above
+/// the floor, so only the budget stops it, short of `tstop`.
+#[test]
+fn a_run_whose_step_settles_above_the_floor_stops_at_the_step_budget() {
+    let mut options = SolverOptions::default();
+    options.max_transient_steps = 2_000;
+    let err = Solver::new(options)
+        .transient(&fast_rc(), &TransientConfig::new(3e-6, 1e-6))
+        .unwrap_err();
+    let SimError::TimestepTooSmall { time, step } = err else {
+        panic!("{err}")
+    };
+    assert!(time < 3e-6, "{time}");
+    // Above ten times the floor (1e-6 · tstep).
+    assert!(step > 1e-11, "{step}");
 }
