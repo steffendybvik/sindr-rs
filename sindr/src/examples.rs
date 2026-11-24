@@ -569,8 +569,14 @@ mod tests {
     #[test]
     fn regions_serialise_as_the_strings_they_replaced() {
         use crate::{BjtRegion, MosfetRegion};
-        assert_eq!(serde_json::to_string(&BjtRegion::Active).unwrap(), "\"active\"");
-        assert_eq!(serde_json::to_string(&MosfetRegion::Triode).unwrap(), "\"triode\"");
+        assert_eq!(
+            serde_json::to_string(&BjtRegion::Active).unwrap(),
+            "\"active\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MosfetRegion::Triode).unwrap(),
+            "\"triode\""
+        );
         let back: BjtRegion = serde_json::from_str("\"saturation\"").unwrap();
         assert_eq!(back, BjtRegion::Saturation);
     }

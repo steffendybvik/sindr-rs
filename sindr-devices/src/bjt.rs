@@ -443,6 +443,18 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
+    fn region_displays_as_its_label() {
+        for (region, label) in [
+            (BjtRegion::Cutoff, "cutoff"),
+            (BjtRegion::Active, "active"),
+            (BjtRegion::Saturation, "saturation"),
+        ] {
+            assert_eq!(region.to_string(), label);
+            assert_eq!(region.as_str(), label);
+        }
+    }
+
+    #[test]
     fn bjt_companion_at_zero_voltages() {
         let params = BjtParams::new(100.0);
         let comp = bjt_companion(0.0, 0.0, &params);

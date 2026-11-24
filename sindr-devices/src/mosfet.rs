@@ -466,6 +466,18 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
+    fn region_displays_as_its_label() {
+        for (region, label) in [
+            (MosfetRegion::Cutoff, "cutoff"),
+            (MosfetRegion::Triode, "triode"),
+            (MosfetRegion::Saturation, "saturation"),
+        ] {
+            assert_eq!(region.to_string(), label);
+            assert_eq!(region.as_str(), label);
+        }
+    }
+
+    #[test]
     fn nmos_cutoff() {
         let params = MosfetParams::default_nmos();
         let comp = mosfet_companion(0.0, 5.0, 0.0, &params);
