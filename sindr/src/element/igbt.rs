@@ -6,6 +6,7 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 
 use super::{AcBias, AcStamp, Conductance, DcStamp, Device};
+use crate::ratings::{RatingKind, RatingProbe};
 
 /// IGBT: MOSFET gate control + BJT output characteristics.
 /// Nonlinear element — requires Newton-Raphson iteration.
@@ -36,6 +37,21 @@ impl Device for Igbt {
 
     /// All of it is in [`linearise`](Device::linearise).
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        use RatingKind::*;
+        &[Vce, Vgs, Ic, Power]
+    }
+
+    /// Terminal voltages from `[gate, collector, emitter]`.
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        match kind {
+            RatingKind::Vce => m.between(1, 2),
+            RatingKind::Vgs => m.between(0, 2),
+            RatingKind::Ic => Some(m.port()?.current_through.abs()),
+            _ => m.port_rating(kind),
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(vp) = s.v_prev {

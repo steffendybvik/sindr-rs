@@ -6,6 +6,7 @@ use crate::stamp::stamp_diode_companion_at;
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
 use crate::noise::NoiseSources;
+use crate::ratings::{RatingKind, RatingProbe};
 
 /// Zener diode between two nodes: a silicon diode with SPICE reverse
 /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
@@ -53,6 +54,14 @@ impl Device for ZenerDiode {
         let [a, b] = &self.nodes;
         let i = n.current(&self.id);
         n.shot(&self.id, "", [a, b], i);
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::Power]
+    }
+
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        m.junction_rating(kind)
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {

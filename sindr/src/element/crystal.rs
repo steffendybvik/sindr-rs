@@ -5,6 +5,7 @@ use crate::circuit::CrystalParams;
 use crate::error::SimError;
 
 use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
+use crate::ratings::RatingKind;
 
 /// Quartz crystal: the Butterworth–Van Dyke model ([`CrystalParams`]).
 /// An open circuit at DC. Its result's `power` is what the motional
@@ -27,6 +28,10 @@ impl Device for Crystal {
 
     /// Split into its parts by `solver_circuit` first.
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::Power]
+    }
 
     fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
         Err(stamped_as_parts(&self.id))

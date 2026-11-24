@@ -4,6 +4,7 @@ use crate::error::SimError;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 
 use super::{AcStamp, DcStamp, Device, TranStamp};
+use crate::ratings::{RatingKind, RatingProbe};
 
 /// Varactor diode: voltage-dependent junction capacitance.
 /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
@@ -31,6 +32,14 @@ impl Device for Varactor {
         let y = s.s * c;
         let nodes = s.nodes();
         s.admittance(nodes, y);
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::ReverseVoltage]
+    }
+
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        m.junction_rating(kind)
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {

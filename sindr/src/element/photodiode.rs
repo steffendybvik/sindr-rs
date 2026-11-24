@@ -5,6 +5,7 @@ use crate::error::SimError;
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
 use crate::noise::NoiseSources;
+use crate::ratings::{RatingKind, RatingProbe};
 
 /// Photodiode: diode + photocurrent source driven by irradiance.
 /// nodes: [anode, cathode]
@@ -47,6 +48,15 @@ impl Device for Photodiode {
         let [a, b] = &self.nodes;
         let i = n.current(&self.id);
         n.shot(&self.id, "", [a, b], i);
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        use RatingKind::*;
+        &[ReverseVoltage, ForwardCurrent, Power]
+    }
+
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        m.junction_rating(kind)
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {

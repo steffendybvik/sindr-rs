@@ -7,6 +7,7 @@ use crate::stamp::stamp_resistor_at;
 
 use super::{AcStamp, Check, DcStamp, Device};
 use crate::noise::NoiseSources;
+use crate::ratings::RatingKind;
 
 /// Photoresistor (LDR): resistance varies logarithmically with light.
 /// light_level = 0.0 → ~1 MΩ (dark), 1.0 → ~1 kΩ (bright).
@@ -34,6 +35,10 @@ impl Device for Photoresistor {
     fn noise(&self, n: &mut NoiseSources<'_>) {
         let [a, b] = &self.nodes;
         n.thermal_27c(&self.id, "", [a, b], ldr_resistance(self.light_level));
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::Power]
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {

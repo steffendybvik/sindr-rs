@@ -10,6 +10,7 @@ use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
 
 use super::{AcStamp, Check, DcStamp, Device};
+use crate::ratings::{RatingKind, RatingProbe};
 use num_complex::Complex64;
 
 /// Linear voltage regulator: holds the output at `voltage` above its
@@ -92,6 +93,19 @@ impl Device for VoltageRegulator {
             ] {
                 s.add(r, col, c(sign * g_q));
             }
+        }
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        use RatingKind::*;
+        &[Voltage, Current, Power]
+    }
+
+    /// Its voltage rating is its maximum input, from input to ground.
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        match kind {
+            RatingKind::Voltage => m.between(0, 2),
+            _ => m.port_rating(kind),
         }
     }
 

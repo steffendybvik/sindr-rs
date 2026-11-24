@@ -5,6 +5,7 @@ use crate::stamp::stamp_resistor_at;
 
 use super::{AcStamp, DcStamp, Device};
 use crate::noise::NoiseSources;
+use crate::ratings::RatingKind;
 
 /// Resistor between two nodes.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -30,6 +31,10 @@ impl Device for Resistor {
     fn noise(&self, n: &mut NoiseSources<'_>) {
         let [a, b] = &self.nodes;
         n.thermal_27c(&self.id, "", [a, b], self.resistance);
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::Power]
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {

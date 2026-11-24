@@ -6,6 +6,7 @@ use crate::error::SimError;
 use crate::stamp::stamp_companion_at;
 
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use crate::ratings::RatingKind;
 use num_complex::Complex64;
 
 /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
@@ -57,6 +58,10 @@ impl Device for Inductor {
 
     fn pencil_rows(&self) -> usize {
         1
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::Current]
     }
 
     fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {

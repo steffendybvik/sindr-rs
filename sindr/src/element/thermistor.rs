@@ -5,6 +5,7 @@ use crate::stamp::stamp_resistor_at;
 
 use super::{AcStamp, Check, DcStamp, Device};
 use crate::noise::NoiseSources;
+use crate::ratings::RatingKind;
 
 /// NTC thermistor: resistance varies with temperature (passive, no NR).
 /// nodes: [n1, n2]
@@ -35,6 +36,10 @@ impl Device for Thermistor {
         let r = crate::device_params::thermistor_resistance(self.temperature);
         let [a, b] = &self.nodes;
         n.thermal(&self.id, "", [a, b], r, self.temperature);
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::Power]
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
