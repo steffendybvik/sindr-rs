@@ -228,14 +228,11 @@ pub(crate) fn temperature_sweep_with(
         }
 
         // A self-heated part sits in an ambient at the swept temperature.
+        // The circuit is flat here: a block's parts, a variant's included,
+        // are top-level parts under their instance path.
         let thermals = sweep_circuit
             .parts
             .values_mut()
-            .chain(sweep_circuit.blocks.values_mut().flat_map(|b| {
-                b.parts
-                    .values_mut()
-                    .chain(b.variants.values_mut().flat_map(|v| v.parts.values_mut()))
-            }))
             .filter_map(|p| p.thermal.as_mut());
         for thermal in thermals {
             thermal.ambient = t;

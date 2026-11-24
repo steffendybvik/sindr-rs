@@ -14,7 +14,7 @@ use sindr::element::{
 use sindr::TempSweepConfig;
 use sindr::{
     solve_circuit, temperature_sweep, BjtKind, Block, Circuit, CircuitElement, Instance, Part,
-    SimulationResult, Thermal,
+    SimulationResult, Thermal, Variant,
 };
 use sindr_devices::bjt::{bjt_companion, BjtParams};
 use sindr_devices::diode::{diode_current, temperature_scale_is, DiodeParams};
@@ -311,8 +311,8 @@ fn temperature_sweep_sets_every_junction_temperature() {
     }
 }
 
-/// A self-heated part, at the top level or inside a block, sits in an
-/// ambient at the swept temperature: its junction is that ambient plus its
+/// A self-heated part, at the top level, inside a block or inside a block's
+/// variant, sits in an ambient at the swept temperature: its junction is that ambient plus its
 /// own dissipation times its thermal resistance.
 #[test]
 fn temperature_sweep_moves_the_ambient_of_self_heated_parts() {
@@ -344,6 +344,11 @@ fn temperature_sweep_moves_the_ambient_of_self_heated_parts() {
                 nodes: ["n1".into(), "b".into()],
                 resistance: 150.0,
             }),
+            CircuitElement::Resistor(Resistor {
+                id: "R3".into(),
+                nodes: ["n1".into(), "c".into()],
+                resistance: 150.0,
+            }),
         ],
     );
     c.parts.insert("D1".into(), heated());
@@ -355,11 +360,31 @@ fn temperature_sweep_moves_the_ambient_of_self_heated_parts() {
     block.parts.insert("D2".into(), heated());
     c.blocks.insert("lamp".into(), block);
     c.instances.push(Instance::new("X1", "lamp", ["b"]));
+    let mut variant = Variant {
+        ports: vec!["k".into()],
+        components: vec![led("D3", "k")],
+        ..Variant::default()
+    };
+    variant.parts.insert("D3".into(), heated());
+    let mut block = Block {
+        ports: vec!["k".into()],
+        components: vec![CircuitElement::Resistor(Resistor {
+            id: "R1".into(),
+            nodes: ["k".into(), "0".into()],
+            resistance: 1e3,
+        })],
+        ..Block::default()
+    };
+    block.variants.insert("heated".into(), variant);
+    c.blocks.insert("dimmer".into(), block);
+    let mut x2 = Instance::new("X2", "dimmer", ["c"]);
+    x2.variant = Some("heated".into());
+    c.instances.push(x2);
 
     let sweep = temperature_sweep(&c, &TempSweepConfig::new(280.0, 340.0, 3)).unwrap();
     for point in &sweep.points {
         let t = point.temperature;
-        for id in ["D1", "X1.D2"] {
+        for id in ["D1", "X1.D2", "X2.D3"] {
             let tj = point.result.junction_temperatures[id];
             let p = point
                 .result
