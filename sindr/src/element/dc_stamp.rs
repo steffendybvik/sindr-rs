@@ -2,10 +2,9 @@
 
 use nalgebra::DVector;
 
-use crate::circuit::Circuit;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
-use crate::node_map::{NodeMap, Terminals};
+use crate::node_map::{NodeMap, Sensed, Terminals};
 
 use super::layout::Layout;
 
@@ -23,13 +22,9 @@ pub(crate) struct DcStamp<'a> {
     /// The iterate to linearise at, or `None` for the linear first pass,
     /// where devices that need one stamp nothing.
     pub(crate) v_prev: Option<&'a DVector<f64>>,
-    /// For the nets an element reads without connecting to them: a
-    /// controlled source's control pair, the nodes an expression reads, the
-    /// circuit's ground.
     pub(crate) node_map: &'a NodeMap,
-    /// The circuit being stamped.
-    pub(crate) circuit: &'a Circuit,
     terminals: &'a [Option<usize>],
+    sensed: &'a [Sensed],
     layout: &'a Layout,
     k: usize,
 }
@@ -38,7 +33,6 @@ impl<'a> DcStamp<'a> {
     /// The stamp of `circuit`'s element `k`.
     pub(crate) fn new(
         system: &'a mut MnaSystem,
-        circuit: &'a Circuit,
         node_map: &'a NodeMap,
         layout: &'a Layout,
         terminals: &'a Terminals,
@@ -50,8 +44,8 @@ impl<'a> DcStamp<'a> {
             branch: node_map.num_nodes() + layout.branch(k),
             v_prev,
             node_map,
-            circuit,
             terminals: terminals.of(k),
+            sensed: terminals.sensed(k),
             layout,
             k,
         }
@@ -61,6 +55,12 @@ impl<'a> DcStamp<'a> {
     /// order (`None` is ground).
     pub(crate) fn nodes<const N: usize>(&self) -> [Option<usize>; N] {
         std::array::from_fn(|i| self.terminals[i])
+    }
+
+    /// What the element reads without connecting to, in
+    /// [`Device::sensed`](super::Device::sensed) order.
+    pub(crate) fn sensed(&self) -> &'a [Sensed] {
+        self.sensed
     }
 
     /// The matrix row of the branch current a CCVS or CCCS reads, from

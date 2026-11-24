@@ -210,6 +210,24 @@ The electrical side of a microcontroller or logic-IC pin, after the IBIS I/O buf
 - **Results:** `voltage_across` is `v(pad) − v(gnd)`, `current_through` the current into the pin (negative while it sources), `power` what the buffer dissipates. `DigitalPin::reads(volts, previous)` is what its input buffer reads, with hysteresis between `vil` and `vih`; a transient session reads it with `logic_level(id)`.
 - **Ratings:** `Ratings::current` on the pin's part limits its current. Pins with the same `port` are also checked as a port: `Ratings::current` on a part named for the port limits the larger of what its pins source and sink together.
 
+### Logic gate
+
+```rust,ignore
+use sindr::element::{GateKind, LogicGate, PinModel};
+LogicGate::new("U1A", GateKind::Nand, [a, b], [y, vcc, gnd])
+    .with_model(PinModel::cmos(5.0))  // thresholds and output stage
+    .with_tpd(9e-9)                   // propagation delay (s)
+    .with_c_in(3.5e-12)               // each input to gnd (F)
+    .with_schmitt()                   // hysteresis, as a 74HC14 or 74HC132
+```
+
+A gate as a CMOS part behaves electrically, not digital simulation: `GateKind::Buffer`, `Not`, `And`, `Or`, `Nand`, `Nor`, `Xor` and `Xnor`, one input for the first two and two or more for the rest. `nodes` are `[inputs…, out, vdd, gnd]`.
+
+- **Inputs** switch steeply at the midpoint of the `PinModel`'s `vil` and `vih`, fully switched at each. Schmitt inputs turn high at `vih` and low at `vil`, through a state that settles in about 1 ns, which makes the circuit reactive.
+- **The output stage** is a push-pull digital pin's: `r_high` to `vdd`, `r_low` to `gnd`, the clamps and `c_comp`. It draws its current from the supply.
+- **`tpd`** delays the output: it slews to its new level and passes half way `tpd` after the inputs do, so three inverters in a ring oscillate at about 1/(6·`tpd`). `tpd`, `c_in`, `c_comp` and `schmitt` default to off, which keeps a gate's circuit DC-only.
+- **Results:** `voltage_across` is `v(out) − v(gnd)`, `current_through` the current into the output (negative while it sources), `power` what the output stage dissipates. `GateKind::eval` is the truth table.
+
 It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp diodes, `#c`, `#leak`), and `to_netlist` writes them, so ngspice can run the same pin.
 
 ### Diodes
@@ -967,7 +985,7 @@ for bin in spectrum.bins.iter().filter(|b| b.magnitude > 1e-3) {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The run should have settled by the span analysed: a start-up transient leaks into every bin. `Fourier::of` and `Fft::of` take a `(time, value)` trace you already have. A bin-centred tone stays within `Window::half_width` bins of its own (0 for rectangular, 1 for Hann and Hamming, 2 for Blackman, 4 for flat-top); see the module docs for the windows' coefficients.
+A deck's `.four 1k v(out) i(r1)` card parses into `ParsedNetlist::fourier`, one `FourierRequest` per signal: run each as `req.fourier.on(&result, &req.signal)`. The run should have settled by the span analysed: a start-up transient leaks into every bin. `Fourier::of` and `Fft::of` take a `(time, value)` trace you already have. A bin-centred tone stays within `Window::half_width` bins of its own (0 for rectangular, 1 for Hann and Hamming, 2 for Blackman, 4 for flat-top); see the module docs for the windows' coefficients.
 
 ## Importing a schematic netlist
 

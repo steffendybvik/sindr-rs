@@ -255,30 +255,35 @@ impl Device for DigitalPin {
     }
 
     fn validate(&self) -> Result<(), SimError> {
-        let check = Check::new(&self.id);
-        let m = &self.model;
-        check.positive("model.r_high", m.r_high, " Ω")?;
-        check.positive("model.r_low", m.r_low, " Ω")?;
-        check.positive("model.r_pull", m.r_pull, " Ω")?;
-        check.non_negative("model.c_comp", m.c_comp, " F")?;
-        check.finite("model.leakage", m.leakage, " A")?;
-        check.finite("model.vil", m.vil, " V")?;
-        check.finite("model.vih", m.vih, " V")?;
-        if m.vih <= m.vil {
-            return Err(check.fail(format_args!(
-                "model.vih {} V must be above model.vil {} V",
-                m.vih, m.vil
-            )));
-        }
-        let c = &m.clamp;
-        check.positive("model.clamp.is", c.is, " A")?;
-        check.positive("model.clamp.n", c.n, "")?;
-        check.non_negative("model.clamp.rs", c.rs, " Ω")?;
-        check.non_negative("model.clamp.cjo", c.cjo, " F")?;
-        check.positive("model.clamp.vj", c.vj, " V")?;
-        check.within("model.clamp.m", c.m, 0.9)?;
-        check.within("model.clamp.fc", c.fc, 0.95)?;
-        check.non_negative("model.clamp.tt", c.tt, " s")?;
-        Ok(())
+        validate_model(&Check::new(&self.id), &self.model)
     }
+}
+
+/// The values a [`PinModel`] can't take, named under `model.`: shared by
+/// the [`DigitalPin`] and the [`LogicGate`](super::LogicGate)'s output
+/// stage.
+pub(super) fn validate_model(check: &Check<'_>, m: &PinModel) -> Result<(), SimError> {
+    check.positive("model.r_high", m.r_high, " Ω")?;
+    check.positive("model.r_low", m.r_low, " Ω")?;
+    check.positive("model.r_pull", m.r_pull, " Ω")?;
+    check.non_negative("model.c_comp", m.c_comp, " F")?;
+    check.finite("model.leakage", m.leakage, " A")?;
+    check.finite("model.vil", m.vil, " V")?;
+    check.finite("model.vih", m.vih, " V")?;
+    if m.vih <= m.vil {
+        return Err(check.fail(format_args!(
+            "model.vih {} V must be above model.vil {} V",
+            m.vih, m.vil
+        )));
+    }
+    let c = &m.clamp;
+    check.positive("model.clamp.is", c.is, " A")?;
+    check.positive("model.clamp.n", c.n, "")?;
+    check.non_negative("model.clamp.rs", c.rs, " Ω")?;
+    check.non_negative("model.clamp.cjo", c.cjo, " F")?;
+    check.positive("model.clamp.vj", c.vj, " V")?;
+    check.within("model.clamp.m", c.m, 0.9)?;
+    check.within("model.clamp.fc", c.fc, 0.95)?;
+    check.non_negative("model.clamp.tt", c.tt, " s")?;
+    Ok(())
 }

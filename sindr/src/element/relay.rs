@@ -4,7 +4,6 @@ use crate::handle::NodeId;
 use nalgebra::DVector;
 
 use crate::error::SimError;
-use crate::node_map::NodeMap;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
 use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
@@ -70,12 +69,8 @@ impl Device for Relay {
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let [coil_a, coil_b, contact_a, contact_b] = s.nodes();
         s.conductance([coil_a, coil_b], 1.0 / self.coil_resistance);
-        let r = relay_contact_resistance(
-            s.node_map,
-            &self.nodes,
-            self.pickup_voltage,
-            Some(s.dc_solution),
-        );
+        let r =
+            relay_contact_resistance_at([coil_a, coil_b], self.pickup_voltage, Some(s.dc_solution));
         s.conductance([contact_a, contact_b], 1.0 / r);
     }
 
@@ -156,21 +151,10 @@ pub(crate) fn series_resistance(g: f64, i_hist: f64, r: f64) -> (f64, f64) {
     (g / k, i_hist / k)
 }
 
-/// Resistance of a relay's contact (`nodes[2]`–`nodes[3]`): closed when the
-/// coil voltage `nodes[0]`–`nodes[1]` in `v` is at least `pickup_voltage` in
-/// magnitude, open otherwise and when there is no `v` yet.
-pub(crate) fn relay_contact_resistance(
-    node_map: &NodeMap,
-    nodes: &[NodeId; 4],
-    pickup_voltage: f64,
-    v: Option<&DVector<f64>>,
-) -> f64 {
-    let coil = [node_map.index(&nodes[0]), node_map.index(&nodes[1])];
-    relay_contact_resistance_at(coil, pickup_voltage, v)
-}
-
-/// [`relay_contact_resistance`] with the coil's terminals as matrix
-/// indices (`None` is ground).
+/// Resistance of a relay's contact: closed when the coil voltage from
+/// `a` to `b` (matrix indices, `None` is ground) in `v` is at least
+/// `pickup_voltage` in magnitude, open otherwise and when there is no `v`
+/// yet.
 pub(crate) fn relay_contact_resistance_at(
     [a, b]: [Option<usize>; 2],
     pickup_voltage: f64,

@@ -77,8 +77,7 @@ impl Device for Jfet {
         let Some(pc) = &self.parasitic_caps else {
             return;
         };
-        for (_, c0, p, q) in jfet_junctions(&self.nodes, pc) {
-            let (p, q) = (s.node_map.index(&p), s.node_map.index(&q));
+        for (_, c0, p, q) in jfet_junctions(&s.nodes(), pc) {
             let (_, c) = jfet_gate_charge(s.voltage(p) - s.voltage(q), self.kind, pc, c0);
             let y = s.s * c;
             s.admittance([p, q], y);

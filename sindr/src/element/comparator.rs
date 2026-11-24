@@ -57,7 +57,7 @@ impl Device for Comparator {
     /// Linearised at the bias point, as a modelled op-amp (see
     /// [`OpAmpStamp::stamp_ac`]).
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
-        OpAmpStamp::of_comparator(self, &s.circuit.ground_node, s.branch).stamp_ac(s);
+        OpAmpStamp::of_comparator(self, s.branch).stamp_ac(s);
     }
 
     /// The output to the circuit's ground; the inputs only sense.
@@ -66,24 +66,17 @@ impl Device for Comparator {
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
-        let pins = Pins {
-            nodes: s.nodes(),
-            ground: s.node_map.index(&s.circuit.ground_node),
-        };
-        OpAmpStamp::of_comparator(self, &s.circuit.ground_node, s.branch)
-            .stamp_dc_at(s.system, &pins, s.v_prev);
+        let pins: Pins = s.nodes();
+        OpAmpStamp::of_comparator(self, s.branch).stamp_dc_at(s.system, &pins, s.v_prev);
         Ok(())
     }
 
     /// The macromodel's step, from its gain stage's history: with no pole,
     /// its DC rows at the iterate.
     fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
-        let pins = Pins {
-            nodes: s.nodes(),
-            ground: s.node_map.index(&s.circuit.ground_node),
-        };
+        let pins: Pins = s.nodes();
         let history = s.history(&self.id, OP_AMP_STAGE);
-        OpAmpStamp::of_comparator(self, &s.circuit.ground_node, s.branch)
+        OpAmpStamp::of_comparator(self, s.branch)
             .stamp_transient(s.system, &pins, s.integ, &history, s.v_prev);
         Ok(())
     }

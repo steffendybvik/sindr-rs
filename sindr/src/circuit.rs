@@ -20,9 +20,10 @@ use std::collections::BTreeMap;
 use crate::design::{Block, Instance, Part};
 use crate::element::{
     Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource,
-    DigitalPin, Diode, FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode,
-    Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt,
-    Thermistor, Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+    DigitalPin, Diode, FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, LogicGate, Mosfet, OpAmp,
+    Photodiode, Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch,
+    SwitchSpdt, Thermistor, Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource,
+    ZenerDiode,
 };
 use crate::expression::Expression;
 use crate::handle::{ComponentId, NodeId};
@@ -599,6 +600,12 @@ pub enum CircuitElement {
     /// pull resistor.
     #[cfg_attr(feature = "serde", serde(rename = "digital_pin"))]
     DigitalPin(DigitalPin),
+
+    /// Logic gate ([`LogicGate`]) at the analog
+    /// level: input thresholds, a pin's output stage and a propagation
+    /// delay.
+    #[cfg_attr(feature = "serde", serde(rename = "logic_gate"))]
+    LogicGate(LogicGate),
 }
 
 /// `From<Element> for CircuitElement` for each element type named, so a
@@ -652,6 +659,7 @@ element_from!(
     FerriteBead,
     Behavioural,
     DigitalPin,
+    LogicGate,
 );
 
 impl CircuitElement {
@@ -1513,6 +1521,12 @@ mod tests {
                 port: Some("PORTB".into()),
                 model: crate::element::PinModel::default(),
             }),
+            CircuitElement::LogicGate(LogicGate::new(
+                "G",
+                crate::element::GateKind::Nand,
+                ["G.0".into(), "G.1".into()],
+                ["G.2".into(), "G.3".into(), "G.4".into()],
+            )),
         ]
     }
 
@@ -1522,7 +1536,7 @@ mod tests {
     #[test]
     fn mutable_accessors_reach_the_fields_the_readers_read() {
         let elements = every_element();
-        assert_eq!(elements.len(), 35, "one of every CircuitElement");
+        assert_eq!(elements.len(), 36, "one of every CircuitElement");
         for mut element in elements {
             let id = element.id().to_string();
             let nodes = element.nodes().to_vec();

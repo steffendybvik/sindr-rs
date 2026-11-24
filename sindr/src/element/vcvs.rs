@@ -2,6 +2,7 @@
 
 use crate::error::SimError;
 use crate::handle::NodeId;
+use crate::node_map::{Read, Sensed};
 use crate::stamp::stamp_vcvs_at;
 
 use super::{AcStamp, Check, DcStamp, Device, Report};
@@ -40,8 +41,7 @@ impl Device for Vcvs {
         let (branch, nodes) = (s.branch, s.nodes());
         s.branch_pair(branch, nodes);
         let g = Complex64::new(self.gain, 0.0);
-        let cp = s.node_map.index(&self.control_nodes[0]);
-        let cq = s.node_map.index(&self.control_nodes[1]);
+        let [cp, cq] = Sensed::control_pair(s.sensed());
         if let Some(cp) = cp {
             s.a[(branch, cp)] -= g;
         }
@@ -51,8 +51,7 @@ impl Device for Vcvs {
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
-        let [cp, cq] = &self.control_nodes;
-        let control = [s.node_map.index(cp), s.node_map.index(cq)];
+        let control = Sensed::control_pair(s.sensed());
         let nodes = s.nodes();
         stamp_vcvs_at(s.system, nodes, control, self.gain, s.branch);
         Ok(())
@@ -62,6 +61,11 @@ impl Device for Vcvs {
         let [a, b] = &self.nodes;
         let [c, d] = &self.control_nodes;
         vec![a, b, c, d]
+    }
+
+    fn sensed(&self) -> Vec<Read<'_>> {
+        let [p, q] = &self.control_nodes;
+        vec![Read::Voltage(p, Some(q))]
     }
 
     fn branches(&self) -> usize {

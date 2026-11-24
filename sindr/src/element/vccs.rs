@@ -3,6 +3,7 @@
 use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::mna::MnaSystem;
+use crate::node_map::{Read, Sensed};
 
 use super::{AcStamp, Check, DcStamp, Device, Report};
 use num_complex::Complex64;
@@ -44,8 +45,7 @@ impl Device for Vccs {
     /// The same direction as the DC stamp: out of `from`, into `to`.
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let [from, to] = s.nodes();
-        let cp = s.node_map.index(&self.control_nodes[0]);
-        let cq = s.node_map.index(&self.control_nodes[1]);
+        let [cp, cq] = Sensed::control_pair(s.sensed());
         let g = Complex64::new(self.gm, 0.0);
         s.add(from, cp, g);
         s.add(from, cq, -g);
@@ -60,8 +60,7 @@ impl Device for Vccs {
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
-        let [cp, cq] = &self.control_nodes;
-        let control = [s.node_map.index(cp), s.node_map.index(cq)];
+        let control = Sensed::control_pair(s.sensed());
         let nodes = s.nodes();
         stamp_vccs_at(s.system, nodes, control, self.gm);
         Ok(())
@@ -71,6 +70,11 @@ impl Device for Vccs {
         let [a, b] = &self.nodes;
         let [c, d] = &self.control_nodes;
         vec![a, b, c, d]
+    }
+
+    fn sensed(&self) -> Vec<Read<'_>> {
+        let [p, q] = &self.control_nodes;
+        vec![Read::Voltage(p, Some(q))]
     }
 
     fn validate(&self) -> Result<(), SimError> {

@@ -66,7 +66,7 @@ pub(crate) fn stamp_circuit_with(
     v_prev: Option<&DVector<f64>>,
 ) -> Result<(), SimError> {
     for (k, component) in circuit.components.iter().enumerate() {
-        let mut s = DcStamp::new(system, circuit, node_map, layout, terminals, k, v_prev);
+        let mut s = DcStamp::new(system, node_map, layout, terminals, k, v_prev);
         component.device().stamp_dc(&mut s)?;
     }
     Ok(())

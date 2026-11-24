@@ -249,31 +249,35 @@ impl AcResult {
     }
 }
 
-/// Linearized small-signal model for a nonlinear element: its
-/// conductances at the DC bias point.
+/// A circuit linearised at its DC bias point, ready to stamp at any
+/// frequency: the nonlinear elements' conductances there, and where each
+/// element's terminals and branch rows are, resolved once for every
+/// frequency of a sweep.
 pub(crate) struct SmallSignalModel {
     conductances: Vec<Conductance>,
+    layout: Layout,
+    terminals: Terminals,
 }
 
-/// Extract small-signal models from nonlinear elements at DC operating point.
+/// Linearises `circuit`'s nonlinear elements at the DC operating point.
 pub(crate) fn linearize_at_dc(
     circuit: &Circuit,
     node_map: &NodeMap,
     dc_solution: &nalgebra::DVector<f64>,
-) -> Vec<SmallSignalModel> {
+) -> SmallSignalModel {
     let terminals = Terminals::new(circuit, node_map);
-    circuit
-        .components
-        .iter()
-        .enumerate()
-        .filter_map(|(k, component)| {
-            let conductances =
-                component
-                    .device()
-                    .linearise(&AcBias::new(&terminals, k, dc_solution));
-            (!conductances.is_empty()).then_some(SmallSignalModel { conductances })
+    let conductances = (0..circuit.components.len())
+        .flat_map(|k| {
+            circuit.components[k]
+                .device()
+                .linearise(&AcBias::new(&terminals, k, dc_solution))
         })
-        .collect()
+        .collect();
+    SmallSignalModel {
+        conductances,
+        layout: Layout::new(circuit),
+        terminals,
+    }
 }
 
 /// [`validate_config`], and that `config` drives a voltage source of flat
@@ -510,7 +514,7 @@ pub(crate) fn small_signal_system(
     circuit: &Circuit,
     node_map: &NodeMap,
     dc_solution: &DVector<f64>,
-    ss_models: &[SmallSignalModel],
+    ss_models: &SmallSignalModel,
     omega: f64,
 ) -> SmallSignalSystem {
     build_small_signal(
@@ -548,7 +552,7 @@ pub(crate) fn small_signal_pencil(
     circuit: &Circuit,
     node_map: &NodeMap,
     dc_solution: &DVector<f64>,
-    ss_models: &[SmallSignalModel],
+    ss_models: &SmallSignalModel,
 ) -> Result<SmallSignalPencil, SimError> {
     let at = |s: Complex64| build_small_signal(circuit, node_map, dc_solution, ss_models, s, true);
     // At s = j every stamp g + s·c is (g, c) with no rounding, which
@@ -587,7 +591,7 @@ fn build_small_signal(
     circuit: &Circuit,
     node_map: &NodeMap,
     dc_solution: &DVector<f64>,
-    ss_models: &[SmallSignalModel],
+    ss_models: &SmallSignalModel,
     s: Complex64,
     pencil: bool,
 ) -> SmallSignalSystem {
@@ -606,16 +610,14 @@ fn build_small_signal(
     let mut vsource_branches = HashMap::new();
     // The next free extra unknown of the pencil form.
     let mut aux = num_nodes + num_vsources;
-    let layout = Layout::new(circuit);
-    let terminals = Terminals::new(circuit, node_map);
-
+    debug_assert_eq!(ss_models.layout, Layout::new(circuit));
     for (k, component) in circuit.components.iter().enumerate() {
         let mut stamp = AcStamp::new(
             &mut a,
             circuit,
             node_map,
-            &layout,
-            &terminals,
+            &ss_models.layout,
+            &ss_models.terminals,
             k,
             dc_solution,
             s,
@@ -626,10 +628,8 @@ fn build_small_signal(
         component.device().stamp_ac(&mut stamp);
     }
 
-    for model in ss_models {
-        for &(row, col, val) in &model.conductances {
-            stamp_complex_conductance(&mut a, row, col, Complex64::new(val, 0.0));
-        }
+    for &(row, col, val) in &ss_models.conductances {
+        stamp_complex_conductance(&mut a, row, col, Complex64::new(val, 0.0));
     }
 
     SmallSignalSystem {
