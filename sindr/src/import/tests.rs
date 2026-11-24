@@ -3590,6 +3590,35 @@ B1 out gnd V = min(V(in, gnd) - 1, 3.3)
         }
     }
 
+    /// Under `Skip` every net is checked for an open end. A subcircuit's
+    /// pins are element terminals like any other: the regulator drives
+    /// `vout`, so the net isn't tied to ground or reported as floating.
+    #[test]
+    fn a_net_a_subcircuit_drives_is_not_high_impedance() {
+        let model = SubcktModel::new(REG, "REG33", ["VIN", "VOUT", "GND"]);
+        let netlist = Netlist {
+            components: vec![
+                Component::new("U2", ComponentKind::Regulator).with_model(Model::Subckt(model)),
+                Component::new("RL", ComponentKind::Resistor).with_value("100"),
+            ],
+            nets: vec![
+                Net::new("vin", [("U2", "1")]),
+                Net::new("vout", [("U2", "3"), ("RL", "1")]),
+                Net::new("gnd", [("U2", "2"), ("RL", "2")]),
+            ],
+        };
+        let options = ImportOptions::new()
+            .with_terminal_names("U2", [("1", "VIN"), ("2", "GND"), ("3", "VOUT")])
+            .with_unconnected(UnconnectedTerminals::Skip);
+        let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "vin", 5.0));
+        let out = simulate_with(&netlist, &bench, &options).expect("simulates");
+        assert_eq!(out.circuit.high_impedance, vec![]);
+        let Simulation::OperatingPoint(r) = &out.result else {
+            panic!()
+        };
+        assert!((r.node_voltages["vout"] - 3.3).abs() < 1e-6);
+    }
+
     #[test]
     fn a_pin_that_isnt_a_terminal_is_named_in_the_error() {
         let model = SubcktModel::new(OPAMP, "OPX", ["+", "-", "OUTPUT", "V+", "V-"]);
