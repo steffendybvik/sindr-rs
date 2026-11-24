@@ -341,6 +341,7 @@ pub mod pole_zero;
 pub mod ratings;
 pub mod results;
 pub mod sensitivity;
+pub mod session;
 pub mod solver;
 #[cfg(feature = "spice")]
 #[cfg_attr(docsrs, doc(cfg(feature = "spice")))]
@@ -378,6 +379,7 @@ pub use sensitivity::{
     solve_ac_sensitivity, solve_sensitivity, AcSensConfig, AcSensEntry, AcSensPoint, AcSensResult,
     SensConfig, SensEntry, SensParameter, SensResult,
 };
+pub use session::{Edge, Event, EventHit, Param, TransientSession};
 pub use solver::{Solver, SolverOptions};
 pub use temp_sweep::{temperature_sweep, TempSweepConfig, TempSweepPoint, TempSweepResult};
 pub use transfer_function::{solve_tf, TfConfig, TfOutput, TfResult};
@@ -624,15 +626,7 @@ fn solve_circuit_parts(
     if circuit.has_reactive_elements() || circuit.has_waveform_sources() {
         // The transient path doesn't consume the nodeset.
         let config = auto_transient_config(circuit, opts)?;
-        return transient::run_transient(
-            circuit,
-            &node_map,
-            num_nodes,
-            num_vsources,
-            &config,
-            opts,
-            None,
-        );
+        return transient::run_transient(circuit, &config, opts, None);
     }
 
     solve_dc_heated(circuit, |circuit| {

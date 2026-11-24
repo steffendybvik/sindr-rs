@@ -62,6 +62,7 @@ FLOORS = {
     "sindr/src/sensitivity.rs": 95.5,  # 97.22% when set
     "sindr/src/sensitivity/ac.rs": 92.5,  # 94.24% when set
     "sindr/src/sensitivity/device.rs": 97.0,  # 98.87% when set
+    "sindr/src/session.rs": 98.0,  # 99.45% when set
     "sindr/src/solver.rs": 98.5,  # 100.00% when set
     "sindr/src/spice/analysis.rs": 98.0,  # 99.79% when set
     "sindr/src/spice/ast.rs": 98.5,  # 100.00% when set

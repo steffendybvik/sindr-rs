@@ -1495,9 +1495,6 @@ pub(crate) fn solve_transient_hooked(
     let circuit: &Circuit = &flat;
     config.validate(opts.max_transient_steps)?;
     crate::validation::validate_circuit(circuit)?;
-    let node_map = NodeMap::from_circuit(circuit);
-    let num_nodes = node_map.num_nodes();
-    let num_vsources = circuit.count_voltage_sources();
     // The hook sees each step as the result will hold it, so composites are
     // folded back for it; a circuit without any passes its steps through.
     let original_flat = match progress {
@@ -1526,15 +1523,7 @@ pub(crate) fn solve_transient_hooked(
         (Some(hook), None) => Some(hook as &mut dyn FnMut(&TransientProgress<'_>) -> Flow),
         (None, _) => None,
     };
-    let mut result = run_transient(
-        circuit,
-        &node_map,
-        num_nodes,
-        num_vsources,
-        config,
-        opts,
-        progress,
-    )?;
+    let mut result = run_transient(circuit, config, opts, progress)?;
     crate::composite::fold(original, &mut result);
     Ok(result)
 }
@@ -1551,36 +1540,534 @@ const FLOOR_STEP_LIMIT: usize = 10_000;
 /// fast circuit sampled with a coarse `tstep`, and it gets somewhere.
 const NEAR_FLOOR: f64 = 10.0;
 
-/// The stepper behind [`solve_transient`] and the transient
-/// path of [`solve_circuit`](crate::solve_circuit), for a validated circuit
-/// and config.
+/// The stepper behind [`solve_transient`] and the transient path of
+/// [`solve_circuit`](crate::solve_circuit), for a validated circuit and
+/// config: from 0 to `tstop`, recording from `tstart`.
 pub(crate) fn run_transient(
     circuit: &Circuit,
-    node_map: &NodeMap,
-    num_nodes: usize,
-    num_vsources: usize,
     config: &TransientConfig,
     opts: &SolverOptions,
     mut progress: Hook<'_>,
 ) -> Result<SimulationResult, SimError> {
     let tstop = config.tstop;
-    let h_max = config.step();
-    // Newton failures halve the step down to this, then try
-    // pseudo-transient continuation before giving up.
-    let h_min = h_max * 1e-6;
+    let mut stepper = Stepper::new(circuit.clone(), config, opts)?;
+    let breakpoints = waveform_breakpoints(circuit, 0.0, tstop)?;
+    // Each breakpoint forces a step of its own, so they count against the
+    // step budget together with the tstep grid.
+    let h_max = stepper.h_max;
+    let steps = (tstop / h_max).ceil() + breakpoints.len() as f64;
+    let max_steps = opts.max_transient_steps as f64;
+    if steps > max_steps {
+        return Err(SimError::InvalidComponent(format!(
+            "transient: {:.3e} grid steps plus {} waveform breakpoints is more than the {max_steps:e} steps allowed",
+            (tstop / h_max).ceil(),
+            breakpoints.len()
+        )));
+    }
+    stepper.breakpoints = breakpoints;
 
-    check_initial_conditions(circuit, node_map, config)?;
+    let mut timesteps = Vec::new();
+    while !stepper.reached(tstop) {
+        let snapshot = stepper.step(tstop)?;
+        let recorded = stepper.recording();
+        if recorded {
+            timesteps.push(snapshot);
+        }
+        if let Some(hook) = progress.as_mut() {
+            let report = TransientProgress {
+                time: stepper.state.time,
+                tstop,
+                accepted_steps: stepper.state.stats.accepted_steps,
+                step: if recorded { timesteps.last() } else { None },
+            };
+            if hook(&report) == Flow::Stop {
+                return Err(SimError::Cancelled {
+                    time: stepper.state.time,
+                });
+            }
+        }
+    }
+    stepper.finish(timesteps)
+}
 
-    // Initial state: the DC operating point, or the config's initial
-    // conditions with uncharged caps (0 V) and inductors at rest (0 A)
-    // elsewhere, as if the circuit were switched on at t = 0.
-    let start = match config.start {
-        TransientStart::OperatingPoint => operating_point_start(circuit, config, opts)?,
-        TransientStart::InitialConditions => Start {
-            voltages: config.initial_voltages.clone(),
-            currents: config.initial_currents.clone(),
-        },
-    };
+/// What a run carries from one accepted step to the next. Saving it and
+/// putting it back rewinds the run, as a transient session does to find
+/// where an event happened.
+#[derive(Clone)]
+pub(crate) struct StepState {
+    /// Capacitor and inductor histories, in [`Layout`] slot order.
+    caps: Vec<History>,
+    inds: Vec<History>,
+    /// Other per-device state, keyed by "component_id-junction" ("Q1-be").
+    parasitic: FastMap<History>,
+    /// Self-heated junction temperatures (K), as [`Heated`] orders them.
+    temps: Vec<f64>,
+    /// The last accepted solution, where Newton starts the next step.
+    pub(crate) solution: DVector<f64>,
+    /// The accepted step before this one; `None` after a restart.
+    h_prev: Option<f64>,
+    /// The step to try next.
+    h: f64,
+    /// Time reached (s).
+    pub(crate) time: f64,
+    /// Accepted (time, node voltages) since the last restart, newest last.
+    recent: Vec<(f64, DVector<f64>)>,
+    /// Accepted steps in a row near the step floor (see FLOOR_STEP_LIMIT).
+    floor_steps: usize,
+    /// Index of the next breakpoint not yet passed.
+    pub(crate) next_bp: usize,
+    /// Index of the last tstep multiple reached.
+    grid: u64,
+    pub(crate) stats: TransientStats,
+}
+
+/// A transient run, one accepted step at a time. It owns its circuit, so a
+/// session can change a source or a part between steps.
+pub(crate) struct Stepper {
+    /// The flat solver circuit.
+    pub(crate) circuit: Circuit,
+    pub(crate) node_map: NodeMap,
+    placement: Placement,
+    prep: StepPrep,
+    num_nodes: usize,
+    num_vsources: usize,
+    opts: SolverOptions,
+    pub(crate) config: TransientConfig,
+    /// The longest step, and the floor Newton failures halve it down to
+    /// before trying pseudo-transient continuation.
+    pub(crate) h_max: f64,
+    h_min: f64,
+    /// Self-heating: a working copy of the circuit whose junction
+    /// temperatures follow each part's thermal RC, advanced after every
+    /// accepted step. The next step solves at the new temperatures. Only
+    /// junction temperatures change in it, so its elements sit where
+    /// `circuit`'s do and share `placement`.
+    heated: Option<Heated>,
+    work: Option<Circuit>,
+    /// Waveform breakpoints ahead, sorted.
+    pub(crate) breakpoints: Vec<f64>,
+    pub(crate) state: StepState,
+}
+
+impl Stepper {
+    /// A run of `circuit` (flat, validated) at t = 0, at its initial
+    /// conditions or operating point as `config` says, with no
+    /// breakpoints yet.
+    pub(crate) fn new(
+        circuit: Circuit,
+        config: &TransientConfig,
+        opts: &SolverOptions,
+    ) -> Result<Self, SimError> {
+        let node_map = NodeMap::from_circuit(&circuit);
+        let num_nodes = node_map.num_nodes();
+        let num_vsources = circuit.count_voltage_sources();
+        let h_max = config.step();
+        check_initial_conditions(&circuit, &node_map, config)?;
+
+        // Initial state: the DC operating point, or the config's initial
+        // conditions with uncharged caps (0 V) and inductors at rest (0 A)
+        // elsewhere, as if the circuit were switched on at t = 0.
+        let start = match config.start {
+            TransientStart::OperatingPoint => operating_point_start(&circuit, config, opts)?,
+            TransientStart::InitialConditions => Start {
+                voltages: config.initial_voltages.clone(),
+                currents: config.initial_currents.clone(),
+            },
+        };
+        let (caps, inds, parasitic) = initial_histories(&circuit, config, &start);
+
+        let placement = Placement::new(&circuit, &node_map);
+        let prep = StepPrep::new(&circuit, &node_map);
+        let heated = Heated::from_circuit(&circuit)?;
+        let temps = heated.as_ref().map(Heated::ambient).unwrap_or_default();
+        let work = heated.as_ref().map(|h| {
+            let mut work = circuit.clone();
+            h.apply(&mut work, &temps);
+            debug_assert_eq!(Layout::new(&work), placement.layout);
+            work
+        });
+
+        // Newton starts its first step from the initial node voltages, and
+        // an op-amp stage from where it starts.
+        let mut solution = DVector::zeros(num_nodes + num_vsources);
+        for (node, v) in &start.voltages {
+            if let Some(i) = node_map.index(node) {
+                solution[i] = *v;
+            }
+        }
+        for component in &circuit.components {
+            if let CircuitElement::OpAmp(OpAmp {
+                id, model: Some(_), ..
+            })
+            | CircuitElement::Comparator(Comparator { id, .. }) = component
+            {
+                if let (Some(branch), Some(stage)) = (
+                    circuit.vsource_branch_index(id),
+                    parasitic.get(&format!("{id}-{OP_AMP_STAGE}")),
+                ) {
+                    solution[num_nodes + branch + 1] = stage.x1;
+                }
+            }
+        }
+
+        let state = StepState {
+            caps,
+            inds,
+            parasitic,
+            temps,
+            solution,
+            h_prev: None,
+            // Start small: the switch-on at t = 0 is itself a corner.
+            h: if config.adaptive {
+                h_max / RESTART_FRACTION
+            } else {
+                h_max
+            },
+            time: 0.0,
+            recent: Vec::new(),
+            floor_steps: 0,
+            next_bp: 0,
+            grid: 0,
+            stats: TransientStats::default(),
+        };
+        Ok(Self {
+            circuit,
+            node_map,
+            placement,
+            prep,
+            num_nodes,
+            num_vsources,
+            opts: opts.clone(),
+            config: config.clone(),
+            h_max,
+            h_min: h_max * 1e-6,
+            heated,
+            work,
+            breakpoints: Vec::new(),
+            state,
+        })
+    }
+
+    /// Times closer than this are taken as reached, so no step is ever
+    /// vanishingly short.
+    pub(crate) fn eps(&self) -> f64 {
+        1e-9 * self.h_max
+    }
+
+    /// Whether the run has got to `t`.
+    pub(crate) fn reached(&self, t: f64) -> bool {
+        t - self.state.time <= self.eps()
+    }
+
+    /// Whether the step just taken is in the result: at or past `tstart`.
+    pub(crate) fn recording(&self) -> bool {
+        self.state.time >= self.config.tstart - self.eps()
+    }
+
+    /// Something in the circuit changed at the time reached: the history
+    /// before it doesn't predict what follows, so restart with a short
+    /// backward-Euler step.
+    pub(crate) fn restart(&mut self) {
+        self.state.h_prev = None;
+        self.state.recent.clear();
+        if self.config.adaptive {
+            self.state.h = self.state.h.min(self.h_max / RESTART_FRACTION);
+        }
+    }
+
+    /// Put `element` in place of element `k` of the circuit the run
+    /// solves (and of its self-heated copy), then
+    /// [`restart`](Self::restart). It must be the same kind of element on
+    /// the same nodes: only its values may differ.
+    pub(crate) fn edit(&mut self, k: usize, element: CircuitElement) {
+        if let (Some(heated), Some(work)) = (&self.heated, &mut self.work) {
+            work.components[k] = element.clone();
+            heated.apply(work, &self.state.temps);
+        }
+        self.circuit.components[k] = element;
+        self.restart();
+    }
+
+    /// Put back a state saved from this run.
+    pub(crate) fn rewind(&mut self, state: StepState) {
+        self.state = state;
+        if let (Some(heated), Some(work)) = (&self.heated, &mut self.work) {
+            heated.apply(work, &self.state.temps);
+        }
+    }
+
+    /// Take one accepted step, ending no later than `until`, and return
+    /// its snapshot. After an error the run can't go on.
+    pub(crate) fn step(&mut self, until: f64) -> Result<TimestepSnapshot, SimError> {
+        let h_max = self.h_max;
+        let h_min = self.h_min;
+        let eps = self.eps();
+        let config = &self.config;
+        let s = &mut self.state;
+        let heated_prep;
+        let (stepped, prep) = match &self.work {
+            Some(work) => {
+                heated_prep = StepPrep::new(work, &self.node_map);
+                (work, &heated_prep)
+            }
+            None => (&self.circuit, &self.prep),
+        };
+        let solver = StepSolver {
+            circuit: stepped,
+            node_map: &self.node_map,
+            placement: &self.placement,
+            num_nodes: self.num_nodes,
+            num_vsources: self.num_vsources,
+            prep,
+            opts: &self.opts,
+        };
+
+        // The next point a step must not pass: a breakpoint, a multiple of
+        // tstep, or `until`.
+        while s.next_bp < self.breakpoints.len() && self.breakpoints[s.next_bp] <= s.time + eps {
+            s.next_bp += 1;
+        }
+        while (s.grid + 1) as f64 * config.tstep <= s.time + eps {
+            s.grid += 1;
+        }
+        let (integ, dt, t_next, t_src, on_bp, landing, jumped, grow, next) = loop {
+            // A grid point within rounding of `until` is `until`.
+            let next_grid = match (s.grid + 1) as f64 * config.tstep {
+                g if until - g <= eps => until,
+                g => g,
+            };
+            let bp = self
+                .breakpoints
+                .get(s.next_bp)
+                .copied()
+                .unwrap_or(f64::INFINITY);
+            // Land on tstart, where the result begins. Unlike a breakpoint,
+            // nothing in the circuit changes there, so the integration
+            // carries straight on.
+            let save_from = if config.tstart > s.time + eps {
+                config.tstart
+            } else {
+                f64::INFINITY
+            };
+            let target = until.min(next_grid).min(bp).min(save_from);
+            let landing = target - s.time <= s.h * (1.0 + 1e-9);
+            let (dt, t_next) = if landing {
+                (target - s.time, target)
+            } else {
+                (s.h, s.time + s.h)
+            };
+
+            // A step that ends on a breakpoint integrates up to it, so it
+            // sees each source's left limit there: a jump at `bp` belongs
+            // to the step after. 1e-12 relative is far above rounding in
+            // the waveforms' `%` and far below anything a ramp could show.
+            let on_bp = landing && (t_next - bp).abs() <= eps;
+            let t_src = if on_bp {
+                t_next - 1e-12 * t_next.abs().max(h_max)
+            } else {
+                t_next
+            };
+
+            let integ = Integrator::for_step(config.method, dt, s.h_prev);
+            // Whether this step jumped an edge (pseudo-transient continuation).
+            let mut jumped = false;
+            let next =
+                match solver.solve(&integ, t_src, &s.caps, &s.inds, &s.parasitic, &s.solution) {
+                    Ok(next) => next,
+                    Err(e) if e.is_retryable() && dt / 2.0 >= h_min => {
+                        s.stats.newton_rejections += 1;
+                        s.h = dt / 2.0;
+                        continue;
+                    }
+                    // Even the shortest step fails: a regenerative edge the node
+                    // voltages jump across while the capacitors hold theirs.
+                    // Follow the jump in a pseudo time instead.
+                    Err(e) if e.is_retryable() => {
+                        match solver.solve_by_pseudo_transient(
+                            &integ,
+                            t_src,
+                            &s.caps,
+                            &s.inds,
+                            &s.parasitic,
+                            &s.solution,
+                        ) {
+                            Ok(next) => {
+                                s.stats.jumped_steps += 1;
+                                jumped = true;
+                                next
+                            }
+                            Err(_) => return Err(e),
+                        }
+                    }
+                    Err(e) => return Err(e),
+                };
+
+            // Accept or reject by local truncation error, and size the next
+            // step. A jump over an edge has no truncation error to speak
+            // of: it is already as short as a step gets.
+            let mut grow = 2.0;
+            if config.adaptive && !jumped {
+                if let Some(ratio) =
+                    lte_ratio(&integ, &s.recent, t_next, &next, self.num_nodes, &self.opts)
+                {
+                    let k = f64::from(integ.order + 1);
+                    let factor = 0.9 * ratio.powf(-1.0 / k);
+                    if ratio > 1.0 && dt > h_min {
+                        s.stats.lte_rejections += 1;
+                        s.h = dt * factor.clamp(0.25, 0.9);
+                        continue;
+                    }
+                    grow = factor.min(2.0);
+                }
+            }
+            break (integ, dt, t_next, t_src, on_bp, landing, jumped, grow, next);
+        };
+
+        // Steps that stay at the floor get nowhere. A sharp edge takes a run
+        // of them; a circuit that can't be followed at any step takes them
+        // for ever. A landing step is short only because the target was
+        // close, so it neither counts nor ends a run.
+        if config.adaptive && !landing {
+            if dt <= h_min * NEAR_FLOOR {
+                if s.floor_steps >= FLOOR_STEP_LIMIT {
+                    return Err(SimError::TimestepTooSmall {
+                        time: t_next,
+                        step: dt,
+                    });
+                }
+                s.floor_steps += 1;
+            } else {
+                s.floor_steps = 0;
+            }
+        }
+        // Above the floor a step can still settle so short that the run takes
+        // millions of them; the step budget bounds the whole run, not just
+        // the grid it starts with.
+        if s.stats.accepted_steps as u64 >= self.opts.max_transient_steps && t_next < until - eps {
+            return Err(SimError::TimestepTooSmall {
+                time: t_next,
+                step: dt,
+            });
+        }
+
+        // Accepted. From here on an error leaves the run part-way through
+        // the step, so it can't go on.
+        let (mut snapshot, new_caps, new_inds) = extract_timestep_results(
+            stepped,
+            &self.node_map,
+            &next,
+            self.num_nodes,
+            t_next,
+            t_src,
+            &integ,
+            &s.caps,
+            &s.inds,
+        );
+        // At the temperatures this step solved at, before self-heating
+        // moves them.
+        update_parasitic_histories(stepped, &self.node_map, &next, &integ, &mut s.parasitic);
+        add_diode_charge_currents(stepped, &s.parasitic, &mut snapshot.component_results);
+        snapshot.state_of_charge = crate::battery_state::finish_step(
+            stepped,
+            &snapshot.node_voltages,
+            &integ,
+            dt,
+            &mut s.parasitic,
+            &mut snapshot.component_results,
+        );
+        if let (Some(heated), Some(work)) = (&self.heated, &mut self.work) {
+            s.temps = heated.advance(&s.temps, &heated.powers(&snapshot.component_results), dt);
+            heated.check_runaway(&s.temps)?;
+            heated.apply(work, &s.temps);
+            snapshot.junction_temperatures = heated.report(&s.temps);
+        }
+        s.stats.accepted_steps += 1;
+        s.caps = new_caps;
+        s.inds = new_inds;
+        s.time = t_next;
+        // A landing step was cut short; size the next from the step wanted.
+        let base = if landing { s.h.max(dt) } else { dt };
+        s.h = if config.adaptive {
+            (base * grow).clamp(h_min, h_max)
+        } else {
+            (base * 2.0).min(h_max)
+        };
+        if on_bp || jumped {
+            // A corner in a source, or a jump over an edge: the history
+            // before it doesn't predict what follows, so restart with a
+            // short backward-Euler step.
+            s.h_prev = None;
+            s.recent.clear();
+            if config.adaptive {
+                s.h = s.h.min(h_max / RESTART_FRACTION);
+            }
+        } else {
+            s.h_prev = Some(dt);
+        }
+        s.recent
+            .push((t_next, next.rows(0, self.num_nodes).into_owned()));
+        if s.recent.len() > 3 {
+            s.recent.remove(0);
+        }
+        s.solution = next;
+        Ok(snapshot)
+    }
+
+    /// The run's result, from the steps it recorded.
+    pub(crate) fn finish(
+        self,
+        timesteps: Vec<TimestepSnapshot>,
+    ) -> Result<SimulationResult, SimError> {
+        let final_snapshot = timesteps.last().ok_or(SimError::InvalidSolution)?;
+
+        let mut branch_currents = HashMap::new();
+        for component in &self.circuit.components {
+            if let CircuitElement::VoltageSource(VoltageSource { id, .. }) = component {
+                if let Some(cr) = final_snapshot
+                    .component_results
+                    .iter()
+                    .find(|c| c.id == *id)
+                {
+                    branch_currents.insert(id.clone(), cr.current_through);
+                }
+            }
+        }
+
+        let last = self.work.as_ref().unwrap_or(&self.circuit);
+        let bjt_results = extract_bjt_results_from_snapshot(last, final_snapshot);
+        let mosfet_results = extract_mosfet_results_from_snapshot(last, final_snapshot);
+        let (op_amp_results, relay_results) =
+            crate::results::op_amp_and_relay_results(last, &final_snapshot.node_voltages);
+
+        Ok(SimulationResult {
+            node_voltages: final_snapshot.node_voltages.clone(),
+            branch_currents,
+            component_results: final_snapshot.component_results.clone(),
+            bjt_results,
+            mosfet_results,
+            op_amp_results,
+            relay_results,
+            convergence_aid: None,
+            junction_temperatures: final_snapshot.junction_temperatures.clone(),
+            state_of_charge: final_snapshot.state_of_charge.clone(),
+            transient: Some(TransientData {
+                timesteps,
+                time_step: self.config.tstep,
+                duration: self.config.tstop,
+                stats: self.state.stats,
+            }),
+        })
+    }
+}
+
+/// Each reactive element's history at the start: capacitors at the
+/// voltage across them, inductors at their current (or flux, when they
+/// saturate), and the per-device state kept by id.
+fn initial_histories(
+    circuit: &Circuit,
+    config: &TransientConfig,
+    start: &Start,
+) -> (Vec<History>, Vec<History>, FastMap<History>) {
     let ic = |node: &String| start.voltages.get(node).copied().unwrap_or(0.0);
     let across = |a: &String, b: &String| History::at(ic(a) - ic(b));
     let current = |id: &String| History::at(start.currents.get(id).copied().unwrap_or(0.0));
@@ -1702,307 +2189,7 @@ pub(crate) fn run_transient(
         config.start == TransientStart::OperatingPoint,
         &mut parasitic,
     );
-    // The accepted step before this one; `None` until the first is taken.
-    let mut h_prev: Option<f64> = None;
-
-    let placement = Placement::new(circuit, node_map);
-    let fixed_step = StepSolver::new(circuit, node_map, &placement, num_nodes, num_vsources, opts);
-
-    // Self-heating: a working copy of the circuit whose junction
-    // temperatures follow each part's thermal RC, advanced after every
-    // accepted step. The next step solves at the new temperatures.
-    let heated = Heated::from_circuit(circuit)?;
-    let mut temps = heated.as_ref().map(Heated::ambient).unwrap_or_default();
-    // Only junction temperatures change in it, so its elements sit where
-    // `circuit`'s do and share `placement`.
-    let mut work = heated.as_ref().map(|h| {
-        let mut work = circuit.clone();
-        h.apply(&mut work, &temps);
-        debug_assert_eq!(Layout::new(&work), placement.layout);
-        work
-    });
-
-    let breakpoints = waveform_breakpoints(circuit, tstop)?;
-    // Each breakpoint forces a step of its own, so they count against the
-    // step budget together with the tstep grid.
-    let steps = (tstop / h_max).ceil() + breakpoints.len() as f64;
-    let max_steps = opts.max_transient_steps as f64;
-    if steps > max_steps {
-        return Err(SimError::InvalidComponent(format!(
-            "transient: {:.3e} grid steps plus {} waveform breakpoints is more than the {max_steps:e} steps allowed",
-            (tstop / h_max).ceil(),
-            breakpoints.len()
-        )));
-    }
-    let mut next_bp = 0;
-    let mut grid = 0u64; // index of the last tstep multiple reached
-
-    // Newton starts its first step from the initial node voltages, and an
-    // op-amp stage from where it starts.
-    let mut solution = DVector::zeros(num_nodes + num_vsources);
-    for (node, v) in &start.voltages {
-        if let Some(i) = node_map.index(node) {
-            solution[i] = *v;
-        }
-    }
-    for component in &circuit.components {
-        if let CircuitElement::OpAmp(OpAmp {
-            id, model: Some(_), ..
-        })
-        | CircuitElement::Comparator(Comparator { id, .. }) = component
-        {
-            if let (Some(branch), Some(stage)) = (
-                circuit.vsource_branch_index(id),
-                parasitic.get(&format!("{id}-{OP_AMP_STAGE}")),
-            ) {
-                solution[num_nodes + branch + 1] = stage.x1;
-            }
-        }
-    }
-    let mut timesteps = Vec::new();
-    let mut stats = TransientStats::default();
-    // Accepted steps in a row near the step floor (see FLOOR_STEP_LIMIT).
-    let mut floor_steps = 0usize;
-    let mut time = 0.0;
-    // Start small: the switch-on at t = 0 is itself a corner.
-    let mut h = if config.adaptive {
-        h_max / RESTART_FRACTION
-    } else {
-        h_max
-    };
-    // Accepted (time, node voltages) since the last restart, newest last.
-    let mut recent: Vec<(f64, DVector<f64>)> = Vec::new();
-
-    while tstop - time > 1e-9 * h_max {
-        // The next point a step must not pass: a breakpoint, a multiple of
-        // tstep, or tstop.
-        // Targets closer than this are taken as already reached, so no step
-        // is ever vanishingly short.
-        let eps = 1e-9 * h_max;
-        while next_bp < breakpoints.len() && breakpoints[next_bp] <= time + eps {
-            next_bp += 1;
-        }
-        while (grid + 1) as f64 * config.tstep <= time + eps {
-            grid += 1;
-        }
-        // A grid point within rounding of tstop is tstop.
-        let next_grid = match (grid + 1) as f64 * config.tstep {
-            g if tstop - g <= eps => tstop,
-            g => g,
-        };
-        let bp = breakpoints.get(next_bp).copied().unwrap_or(f64::INFINITY);
-        // Land on tstart, where the result begins. Unlike a breakpoint,
-        // nothing in the circuit changes there, so the integration carries
-        // straight on.
-        let save_from = if config.tstart > time + eps {
-            config.tstart
-        } else {
-            f64::INFINITY
-        };
-        let target = tstop.min(next_grid).min(bp).min(save_from);
-        let landing = target - time <= h * (1.0 + 1e-9);
-        let (dt, t_next) = if landing {
-            (target - time, target)
-        } else {
-            (h, time + h)
-        };
-
-        // A step that ends on a breakpoint integrates up to it, so it sees
-        // each source's left limit there: a jump at `bp` belongs to the
-        // step after. 1e-12 relative is far above rounding in the waveforms'
-        // `%` and far below anything a ramp could show.
-        let on_bp = landing && (t_next - bp).abs() <= eps;
-        let t_src = if on_bp {
-            t_next - 1e-12 * t_next.abs().max(h_max)
-        } else {
-            t_next
-        };
-
-        let integ = Integrator::for_step(config.method, dt, h_prev);
-        let heated_step;
-        let (step, stepped) = match &work {
-            Some(work) => {
-                heated_step =
-                    StepSolver::new(work, node_map, &placement, num_nodes, num_vsources, opts);
-                (&heated_step, work)
-            }
-            None => (&fixed_step, circuit),
-        };
-        // Whether this step jumped an edge (pseudo-transient continuation).
-        let mut jumped = false;
-        let next = match step.solve(&integ, t_src, &caps, &inds, &parasitic, &solution) {
-            Ok(next) => next,
-            Err(e) if e.is_retryable() && dt / 2.0 >= h_min => {
-                stats.newton_rejections += 1;
-                h = dt / 2.0;
-                continue;
-            }
-            // Even the shortest step fails: a regenerative edge the node
-            // voltages jump across while the capacitors hold theirs. Follow
-            // the jump in a pseudo time instead.
-            Err(e) if e.is_retryable() => {
-                match step
-                    .solve_by_pseudo_transient(&integ, t_src, &caps, &inds, &parasitic, &solution)
-                {
-                    Ok(next) => {
-                        stats.jumped_steps += 1;
-                        jumped = true;
-                        next
-                    }
-                    Err(_) => return Err(e),
-                }
-            }
-            Err(e) => return Err(e),
-        };
-
-        // Accept or reject by local truncation error, and size the next step.
-        // A jump over an edge has no truncation error to speak of: it is
-        // already as short as a step gets.
-        let mut grow = 2.0;
-        if config.adaptive && !jumped {
-            if let Some(ratio) = lte_ratio(&integ, &recent, t_next, &next, num_nodes, opts) {
-                let k = f64::from(integ.order + 1);
-                let factor = 0.9 * ratio.powf(-1.0 / k);
-                if ratio > 1.0 && dt > h_min {
-                    stats.lte_rejections += 1;
-                    h = dt * factor.clamp(0.25, 0.9);
-                    continue;
-                }
-                grow = factor.min(2.0);
-            }
-        }
-
-        let (mut snapshot, new_caps, new_inds) = extract_timestep_results(
-            stepped, node_map, &next, num_nodes, t_next, t_src, &integ, &caps, &inds,
-        );
-        // At the temperatures this step solved at, before self-heating moves them.
-        update_parasitic_histories(stepped, node_map, &next, &integ, &mut parasitic);
-        add_diode_charge_currents(stepped, &parasitic, &mut snapshot.component_results);
-        snapshot.state_of_charge = crate::battery_state::finish_step(
-            stepped,
-            &snapshot.node_voltages,
-            &integ,
-            dt,
-            &mut parasitic,
-            &mut snapshot.component_results,
-        );
-        if let (Some(heated), Some(work)) = (&heated, &mut work) {
-            temps = heated.advance(&temps, &heated.powers(&snapshot.component_results), dt);
-            heated.check_runaway(&temps)?;
-            heated.apply(work, &temps);
-            snapshot.junction_temperatures = heated.report(&temps);
-        }
-        let recorded = t_next >= config.tstart - eps;
-        if recorded {
-            timesteps.push(snapshot);
-        }
-        stats.accepted_steps += 1;
-        if let Some(hook) = progress.as_mut() {
-            let report = TransientProgress {
-                time: t_next,
-                tstop,
-                accepted_steps: stats.accepted_steps,
-                step: if recorded { timesteps.last() } else { None },
-            };
-            if hook(&report) == Flow::Stop {
-                return Err(SimError::Cancelled { time: t_next });
-            }
-        }
-        // Steps that stay at the floor get nowhere. A sharp edge takes a run
-        // of them; a circuit that can't be followed at any step takes them
-        // for ever. A landing step is short only because the target was
-        // close, so it neither counts nor ends a run.
-        if config.adaptive && !landing {
-            if dt <= h_min * NEAR_FLOOR {
-                floor_steps += 1;
-                if floor_steps > FLOOR_STEP_LIMIT {
-                    return Err(SimError::TimestepTooSmall {
-                        time: t_next,
-                        step: dt,
-                    });
-                }
-            } else {
-                floor_steps = 0;
-            }
-        }
-        // Above the floor a step can still settle so short that the run takes
-        // millions of them; the step budget bounds the whole run, not just
-        // the grid it starts with.
-        if stats.accepted_steps as u64 >= opts.max_transient_steps && t_next < tstop - eps {
-            return Err(SimError::TimestepTooSmall {
-                time: t_next,
-                step: dt,
-            });
-        }
-        caps = new_caps;
-        inds = new_inds;
-        time = t_next;
-        // A landing step was cut short; size the next from the step wanted.
-        let base = if landing { h.max(dt) } else { dt };
-        h = if config.adaptive {
-            (base * grow).clamp(h_min, h_max)
-        } else {
-            (base * 2.0).min(h_max)
-        };
-
-        if on_bp || jumped {
-            // A corner in a source, or a jump over an edge: the history
-            // before it doesn't predict what follows, so restart with a
-            // short backward-Euler step.
-            h_prev = None;
-            recent.clear();
-            if config.adaptive {
-                h = h.min(h_max / RESTART_FRACTION);
-            }
-        } else {
-            h_prev = Some(dt);
-        }
-        recent.push((t_next, next.rows(0, num_nodes).into_owned()));
-        if recent.len() > 3 {
-            recent.remove(0);
-        }
-        solution = next;
-    }
-
-    let final_snapshot = timesteps.last().ok_or(SimError::InvalidSolution)?;
-
-    let mut branch_currents = HashMap::new();
-    for component in &circuit.components {
-        if let CircuitElement::VoltageSource(VoltageSource { id, .. }) = component {
-            if let Some(cr) = final_snapshot
-                .component_results
-                .iter()
-                .find(|c| c.id == *id)
-            {
-                branch_currents.insert(id.clone(), cr.current_through);
-            }
-        }
-    }
-
-    let last = work.as_ref().unwrap_or(circuit);
-    let bjt_results = extract_bjt_results_from_snapshot(last, final_snapshot);
-    let mosfet_results = extract_mosfet_results_from_snapshot(last, final_snapshot);
-    let (op_amp_results, relay_results) =
-        crate::results::op_amp_and_relay_results(last, &final_snapshot.node_voltages);
-
-    Ok(SimulationResult {
-        node_voltages: final_snapshot.node_voltages.clone(),
-        branch_currents,
-        component_results: final_snapshot.component_results.clone(),
-        bjt_results,
-        mosfet_results,
-        op_amp_results,
-        relay_results,
-        convergence_aid: None,
-        junction_temperatures: final_snapshot.junction_temperatures.clone(),
-        state_of_charge: final_snapshot.state_of_charge.clone(),
-        transient: Some(TransientData {
-            timesteps,
-            time_step: config.tstep,
-            duration: tstop,
-            stats,
-        }),
-    })
+    (caps, inds, parasitic)
 }
 
 /// The state a run starts from: node voltages (V) by node name, and
@@ -2228,14 +2415,18 @@ fn check_initial_conditions(
 /// A source with more than
 /// [`MAX_BREAKPOINTS`](crate::waveform::MAX_BREAKPOINTS) would have had the
 /// rest dropped, so it is rejected rather than stepped over.
-fn waveform_breakpoints(circuit: &Circuit, tstop: f64) -> Result<Vec<f64>, SimError> {
+pub(crate) fn waveform_breakpoints(
+    circuit: &Circuit,
+    from: f64,
+    tstop: f64,
+) -> Result<Vec<f64>, SimError> {
     let mut all = Vec::new();
     for c in &circuit.components {
         if let CircuitElement::Behavioural(Behavioural { expr, .. }) = c {
             all.extend(
                 expr.time_breakpoints()
                     .into_iter()
-                    .filter(|t| *t > 0.0 && *t < tstop),
+                    .filter(|t| *t > from.max(0.0) && *t < tstop),
             );
             continue;
         }
@@ -2252,10 +2443,10 @@ fn waveform_breakpoints(circuit: &Circuit, tstop: f64) -> Result<Vec<f64>, SimEr
         else {
             continue;
         };
-        let (bps, capped) = w.capped_breakpoints(tstop);
+        let (bps, capped) = w.breakpoints_between(from, tstop);
         if capped {
             return Err(SimError::InvalidComponent(format!(
-                "transient: source '{id}' has more than {} waveform breakpoints before tstop = {tstop} s",
+                "transient: source '{id}' has more than {} waveform breakpoints before {tstop} s",
                 crate::waveform::MAX_BREAKPOINTS
             )));
         }
@@ -2323,6 +2514,29 @@ impl Placement {
     }
 }
 
+/// What a step solver needs to know about a circuit before its first
+/// step: whether it needs Newton, and the junctions Newton limits.
+struct StepPrep {
+    nonlinear: bool,
+    diode_info: Vec<newton_raphson::DiodeLimitInfo>,
+    igbt_info: Vec<newton_raphson::IgbtLimitInfo>,
+}
+
+impl StepPrep {
+    fn new(circuit: &Circuit, node_map: &NodeMap) -> Self {
+        let nonlinear = circuit.has_nonlinear_elements();
+        Self {
+            nonlinear,
+            diode_info: if nonlinear {
+                newton_raphson::collect_diode_info(circuit, node_map)
+            } else {
+                Vec::new()
+            },
+            igbt_info: newton_raphson::collect_igbt_info(circuit, node_map),
+        }
+    }
+}
+
 /// Solves one transient step: a single linear solve, or Newton–Raphson when
 /// the circuit has nonlinear devices.
 struct StepSolver<'a> {
@@ -2331,41 +2545,11 @@ struct StepSolver<'a> {
     placement: &'a Placement,
     num_nodes: usize,
     num_vsources: usize,
-    nonlinear: bool,
-    diode_info: Vec<newton_raphson::DiodeLimitInfo>,
-    igbt_info: Vec<newton_raphson::IgbtLimitInfo>,
+    prep: &'a StepPrep,
     opts: &'a SolverOptions,
 }
 
-impl<'a> StepSolver<'a> {
-    /// The stepper for `circuit`, whose elements sit where `placement`
-    /// says.
-    fn new(
-        circuit: &'a Circuit,
-        node_map: &'a NodeMap,
-        placement: &'a Placement,
-        num_nodes: usize,
-        num_vsources: usize,
-        opts: &'a SolverOptions,
-    ) -> Self {
-        let nonlinear = circuit.has_nonlinear_elements();
-        Self {
-            circuit,
-            node_map,
-            placement,
-            num_nodes,
-            num_vsources,
-            nonlinear,
-            diode_info: if nonlinear {
-                newton_raphson::collect_diode_info(circuit, node_map)
-            } else {
-                Vec::new()
-            },
-            igbt_info: newton_raphson::collect_igbt_info(circuit, node_map),
-            opts,
-        }
-    }
-
+impl StepSolver<'_> {
     /// The solution at `t`, the end of a step integrated by `integ` from the
     /// histories `caps` / `inds` / `parasitic`. Newton starts from `start`,
     /// the previous step's solution.
@@ -2476,7 +2660,7 @@ impl<'a> StepSolver<'a> {
             Ok(system)
         };
 
-        if !self.nonlinear {
+        if !self.prep.nonlinear {
             return stamp(start)?.solve();
         }
 
@@ -2494,9 +2678,9 @@ impl<'a> StepSolver<'a> {
             let v_new = system.solve()?;
 
             let mut v_limited =
-                newton_raphson::apply_voltage_limiting(&v_new, &v_prev, &self.diode_info);
+                newton_raphson::apply_voltage_limiting(&v_new, &v_prev, &self.prep.diode_info);
             let igbt_limited =
-                newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &self.igbt_info);
+                newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &self.prep.igbt_info);
             let regulator_limited = crate::element::voltage_regulator::limit_regulator_step(
                 self.circuit,
                 self.node_map,
@@ -2511,7 +2695,7 @@ impl<'a> StepSolver<'a> {
                     &v_prev,
                     &v_limited,
                     self.num_nodes,
-                    &self.diode_info,
+                    &self.prep.diode_info,
                     self.opts,
                 )
                 && crate::element::voltage_regulator::regulator_pieces_settled(

@@ -28,7 +28,7 @@ These are non-goals for the current crate split. They may live in sibling crates
 | Electromagnetic / field solvers (FEM, FDTD, method-of-moments) | Out of scope |
 | Mechanical / multi-physics co-simulation | Out of scope |
 
-For embedded-system design, the practical implication is that sindr can simulate the **analog portions** of a board (power stages, sensor front-ends, signal conditioning, filters) but not the digital MCU + firmware behaviour. Co-simulation with a digital tool is not supported.
+For embedded-system design, the practical implication is that sindr can simulate the **analog portions** of a board (power stages, sensor front-ends, signal conditioning, filters) but not the digital MCU + firmware behaviour. To pair the two, run the firmware in your own emulator and drive the circuit with a `TransientSession`: advance it a tick at a time, set the pins' sources, read the ADC nodes, and stop on a threshold crossing for an interrupt.
 
 ## Not yet supported, but in scope
 
@@ -123,12 +123,12 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - An op-amp without a `model` is a VCVS with gain `1e5` and no frequency response or rail clamp, so its closed-loop bandwidth isn't realistic. Give the op-amp an `OpAmpModel` for GBW and slew rate. Its stage starts from 0 V at t = 0, like the capacitors, so a transient opens with a short settle unless you seed it.
 - A comparator has gain `1e5` and its output clamped to `v_neg`/`v_pos`, but no propagation delay, hysteresis or open-collector output: it switches the instant its inputs cross, and a slow, noisy input can chatter.
 - For accurate ringing amplitude in a resonant circuit, use `IntegrationMethod::Trapezoidal` with a step well below the period: Gear-2 and especially backward Euler damp it.
-- Photodiode / photoresistor / thermistor "stimulus" parameters (irradiance, light level, temperature) are **constants per solve**, not time-varying inputs. There is no environmental waveform.
+- Photodiode / photoresistor / thermistor "stimulus" parameters (irradiance, light level, temperature) have no waveform: they are constant through a `solve_transient`. A `TransientSession` can change them between steps (`set_param`).
 
 ## Useful workarounds
 
 - Need a vendor BJT / MOSFET? A level-1 MOSFET or JFET subcircuit loads as is; otherwise fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
-- Need digital control around an analog plant? Drive the analog circuit step-by-step from your own Rust loop, sampling node voltages between transient calls and updating sources / switches between them. This is not co-simulation, but it works for slow control loops.
+- Need digital control around an analog plant? Drive it with a `TransientSession` from your own loop: advance a control period, read node voltages, set sources, switches and pots, and use `run_until` to stop where a comparator would trip.
 - Need a second pole or phase margin on an op-amp? Build it from VCVS stages and RC networks around an `OpAmp` with an `OpAmpModel`.
 - Need a tolerance on a device-model parameter, or correlated parts? Loop in Rust over your own variations of the `Circuit`; sindr is fast enough for thousands of solves on small circuits.
 

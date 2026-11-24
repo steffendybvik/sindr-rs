@@ -1,0 +1,5 @@
+tran: a 5 V square, 1 ms high and 1 ms low, into an RC (tau = 1 ms); a transient session toggles the same square from outside
+V1 in 0 PULSE(0 5 1m 1n 1n 1m 2m)
+R1 in out 1k
+C1 out 0 1u
+.end

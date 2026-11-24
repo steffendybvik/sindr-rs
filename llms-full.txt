@@ -737,6 +737,31 @@ let result = solve_transient_with_progress(&circuit, &TransientConfig::new(1.0, 
 });
 ```
 
+#### Transient sessions
+
+`solve_transient` runs to `tstop` in one call. A `TransientSession` holds the run open, for a circuit paired with something outside it: firmware on an emulated microcontroller, a user turning a knob, a sensor whose surroundings change. It follows FMI 3.0 co-simulation: `advance_to(t)` integrates to `t` (FMI's `doStep`), `set_source(id, value)` and `set_param(id, Param::…)` change an input at the time reached, and `run_until(t_max, &[Event])` stops early at the first event, located to its tolerance.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+let mut sim = TransientSession::new(&circuit, &TransientConfig::new(10.0, 100e-6))?;
+sim.keep_steps(false); // read voltages, don't build up 10 s of snapshots
+for k in 1..=10_000 {
+    sim.advance_to(k as f64 * 1e-3)?;                 // one firmware tick
+    let adc = sim.voltage("adc0").unwrap();
+    sim.set_source("D13", if adc > 2.5 { 5.0 } else { 0.0 })?;
+}
+let hit = sim.run_until(10.0, &[Event::crosses("int0", 2.5, Edge::Rising)])?;
+# Ok::<(), SimError>(())
+```
+
+- **A change is a breakpoint.** The step that reached the time saw the old value, the next sees the new, and the integration restarts there with a short backward-Euler step, as at a waveform's corner. Writing a value a source already has changes nothing.
+- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, and the temperature of a thermistor or a junction device that isn't self-heated.
+- **Events** are a node crossing a level (`Edge::Rising`, `Falling`, `Either`). The session steps back and re-steps until the crossing is inside the event's tolerance (`Event::within`, default 10⁻⁴ of `tstep`), and stops just after it with the node past the level. Steps tried and undone along the way aren't kept.
+- **State survives between calls:** the flat circuit, node map, matrix layout and histories are set up once. Each step still assembles and factors its matrix.
+- **Results stream:** `drain_steps()` takes the steps kept since the last call; `voltage(node)` reads the solution directly, and `current(id)` and `last_step()` the latest step. `advance_to_with_progress` takes the same hook as `solve_transient_with_progress`, and a cancelled session carries on from where it stopped. No threads are needed, so it runs as is in `wasm32`.
+- The session ends at the config's `tstop` and records from its `tstart`. After an error other than `Cancelled` it refuses to go on.
+
 #### Which engine produced a result
 
 `sindr::VERSION` (and `sindr::devices::VERSION`) is the crate's version as a string, such as `"0.3.0"`. Store it with saved results, so a rerun can tell a change in the design from a change in the engine.
@@ -1225,7 +1250,7 @@ Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple
 | DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
 | Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
 
-A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. A transient session a microcontroller drives for 10 s, writing a pin and reading the filtered output every millisecond (10 000 updates, 130 000 steps at a 100 µs `tstep`), takes 73 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
 
 Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
 
@@ -1238,6 +1263,7 @@ The same solves built for `wasm32-unknown-unknown` (release) take 1.3–1.8× as
 | Operating point, 50 resistors and 50 diodes | 0.30 ms | 0.55 ms | 1.8× | 0.54 ms | 1.8× |
 | Transient, the rectifier over 5 000 steps | 5.3 ms | 8.5 ms | 1.6× | 9.5 ms | 1.8× |
 | AC, 100 RC stages at 100 frequencies | 5.1 ms | 6.4 ms | 1.3× | 6.4 ms | 1.3× |
+| Transient session, a pin written every 1 ms for 10 s (130 000 steps) | 73 ms | — | — | 134 ms | 1.8× |
 
 `sindr/tests/wasm_speed.rs` times them; its header has the commands for native, Node and a browser.
 
@@ -1451,7 +1477,7 @@ These are non-goals for the current crate split. They may live in sibling crates
 | Electromagnetic / field solvers (FEM, FDTD, method-of-moments) | Out of scope |
 | Mechanical / multi-physics co-simulation | Out of scope |
 
-For embedded-system design, the practical implication is that sindr can simulate the **analog portions** of a board (power stages, sensor front-ends, signal conditioning, filters) but not the digital MCU + firmware behaviour. Co-simulation with a digital tool is not supported.
+For embedded-system design, the practical implication is that sindr can simulate the **analog portions** of a board (power stages, sensor front-ends, signal conditioning, filters) but not the digital MCU + firmware behaviour. To pair the two, run the firmware in your own emulator and drive the circuit with a `TransientSession`: advance it a tick at a time, set the pins' sources, read the ADC nodes, and stop on a threshold crossing for an interrupt.
 
 ### Not yet supported, but in scope
 
@@ -1546,12 +1572,12 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - An op-amp without a `model` is a VCVS with gain `1e5` and no frequency response or rail clamp, so its closed-loop bandwidth isn't realistic. Give the op-amp an `OpAmpModel` for GBW and slew rate. Its stage starts from 0 V at t = 0, like the capacitors, so a transient opens with a short settle unless you seed it.
 - A comparator has gain `1e5` and its output clamped to `v_neg`/`v_pos`, but no propagation delay, hysteresis or open-collector output: it switches the instant its inputs cross, and a slow, noisy input can chatter.
 - For accurate ringing amplitude in a resonant circuit, use `IntegrationMethod::Trapezoidal` with a step well below the period: Gear-2 and especially backward Euler damp it.
-- Photodiode / photoresistor / thermistor "stimulus" parameters (irradiance, light level, temperature) are **constants per solve**, not time-varying inputs. There is no environmental waveform.
+- Photodiode / photoresistor / thermistor "stimulus" parameters (irradiance, light level, temperature) have no waveform: they are constant through a `solve_transient`. A `TransientSession` can change them between steps (`set_param`).
 
 ### Useful workarounds
 
 - Need a vendor BJT / MOSFET? A level-1 MOSFET or JFET subcircuit loads as is; otherwise fit Ebers-Moll / Level-1 parameters from the datasheet. Accuracy will be modest.
-- Need digital control around an analog plant? Drive the analog circuit step-by-step from your own Rust loop, sampling node voltages between transient calls and updating sources / switches between them. This is not co-simulation, but it works for slow control loops.
+- Need digital control around an analog plant? Drive it with a `TransientSession` from your own loop: advance a control period, read node voltages, set sources, switches and pots, and use `run_until` to stop where a comparator would trip.
 - Need a second pole or phase margin on an op-amp? Build it from VCVS stages and RC networks around an `OpAmp` with an `OpAmpModel`.
 - Need a tolerance on a device-model parameter, or correlated parts? Loop in Rust over your own variations of the `Circuit`; sindr is fast enough for thousands of solves on small circuits.
 
@@ -6542,6 +6568,8 @@ pub mod results;
 
 pub mod sensitivity;
 
+pub mod session;
+
 pub mod solver;
 
 pub mod spice;
@@ -8555,6 +8583,263 @@ impl SensResult {
 pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensResult, SimError> { … }
 ```
 
+## `sindr/src/session.rs`
+
+Transient sessions: a transient that runs as far as it's told, takes
+changes to its inputs between steps, and stops where a signal crosses a
+level.
+
+[`solve_transient`](crate::solve_transient) runs from 0 to `tstop` in one
+call. A [`TransientSession`] holds the same run open, for a circuit
+paired with something outside it: firmware on an emulated
+microcontroller driving a pin, a user dragging a potentiometer, a sensor
+whose surroundings change. It follows FMI 3.0 co-simulation: the caller
+advances the circuit to a time ([`advance_to`](TransientSession::advance_to),
+FMI's `doStep`), changes inputs at the time reached
+([`set_source`](TransientSession::set_source),
+[`set_param`](TransientSession::set_param)), and can ask to be stopped
+early at an event ([`run_until`](TransientSession::run_until)), as FMI's
+early return.
+
+A change takes effect at the time the session has reached: the step
+that got there saw the old value, the next one sees the new. The
+integration restarts there with a short backward-Euler step, as it does
+at a waveform's corner, so no step integrates across the change.
+
+Between calls the session keeps everything a run sets up (the flat
+circuit, the node map, where each element sits in the matrix, its
+histories), so a call costs only the steps it takes. Nothing needs
+threads: in a browser, run it where the rest of the simulation runs.
+
+```
+use sindr::{Circuit, CircuitElement, Edge, Event, TransientConfig, TransientSession};
+use sindr::element::{Capacitor, Resistor, VoltageSource};
+
+// A pin driving an RC: 1 kΩ into 1 µF, τ = 1 ms.
+let circuit = Circuit::new("0", vec![
+    CircuitElement::VoltageSource(VoltageSource {
+        id: "PIN".into(), nodes: ["pin".into(), "0".into()], voltage: 0.0, waveform: None,
+    }),
+    CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["pin".into(), "out".into()],
+        resistance: 1e3 }),
+    CircuitElement::Capacitor(Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()],
+        capacitance: 1e-6 }),
+]);
+let mut sim = TransientSession::new(&circuit, &TransientConfig::new(10e-3, 10e-6)).unwrap();
+
+// Firmware drives the pin high at 1 ms.
+sim.advance_to(1e-3).unwrap();
+sim.set_source("PIN", 5.0).unwrap();
+
+// Stop where the output crosses half the rail: τ·ln 2 after the edge.
+let hit = sim
+    .run_until(10e-3, &[Event::crosses("out", 2.5, Edge::Rising)])
+    .unwrap()
+    .expect("the output crosses 2.5 V");
+assert!((hit.time - (1e-3 + 1e-3 * 2f64.ln())).abs() < 5e-6);
+assert!((sim.voltage("out").unwrap() - 2.5).abs() < 1e-3);
+
+// Every step taken, to plot or log.
+let steps: Vec<_> = sim.drain_steps().collect();
+assert!((steps.last().unwrap().time - sim.time()).abs() < 1e-15);
+```
+
+```rust
+/// A transient held open between calls: advance it, change its inputs,
+/// stop it on events. See the [module docs](self).
+///
+/// The session runs from 0 to the config's
+/// [`tstop`](TransientConfig::tstop), which bounds it: it can't be advanced
+/// past that. Steps from [`tstart`](TransientConfig::tstart) on are kept
+/// until [`drain_steps`](Self::drain_steps) takes them, unless
+/// [`keep_steps`](Self::keep_steps) says not to.
+///
+/// After an error other than [`SimError::Cancelled`] the session can't go
+/// on, and every later call that steps it fails.
+pub struct TransientSession {
+    stepper: Stepper,
+    /// Solver-circuit element index by id.
+    index: HashMap<String, usize>,
+    /// The caller's circuit flattened, before lowering, when it has
+    /// composites whose parts each step folds back into them.
+    composites: Option<Circuit>,
+    /// Steps taken and not yet drained.
+    steps: Vec<TimestepSnapshot>,
+    /// The latest step, when it isn't the last of `steps`.
+    last: Option<TimestepSnapshot>,
+    keep: bool,
+    /// Set by an error the session can't step past.
+    failed: Option<f64>,
+}
+
+/// A value inside the circuit that a session can change between steps:
+/// what a user or the environment does to a part. A source's value is
+/// [`set_source`](TransientSession::set_source).
+pub enum Param {
+    /// A resistor's resistance (Ω).
+    Resistance(f64),
+    /// A potentiometer's wiper position, 0.0 (top) to 1.0 (bottom).
+    Position(f64),
+    /// Whether a switch or pushbutton conducts.
+    Closed(bool),
+    /// The throw an SPDT switch's common terminal is on.
+    Throw(SpdtPosition),
+    /// A photoresistor's light level, 0.0 (dark) to 1.0 (bright).
+    LightLevel(f64),
+    /// A photodiode's incident optical power (W).
+    Irradiance(f64),
+    /// The temperature (K) of a thermistor, or of a junction device
+    /// without self-heating.
+    Temperature(f64),
+}
+
+/// Which way a signal must cross an [`Event`]'s level.
+pub enum Edge {
+    /// From below the level to at or above it.
+    Rising,
+    /// From above the level to at or below it.
+    Falling,
+    /// Either way.
+    Either,
+}
+
+/// Something [`run_until`](TransientSession::run_until) stops at: a node
+/// voltage crossing a level, as a comparator or an interrupt pin sees it.
+pub struct Event {
+    /// The node watched.
+    pub node: String,
+    /// The level (V).
+    pub level: f64,
+    /// Which way the node must cross it.
+    pub edge: Edge,
+    /// How closely the crossing is located (s): the session stops no more
+    /// than this after it. `None` means 10⁻⁴ of the config's
+    /// [`tstep`](TransientConfig::tstep).
+    pub tolerance: Option<f64>,
+}
+
+impl Event {
+    /// `node` crossing `level` volts on `edge`.
+    pub fn crosses(node: impl Into<String>, level: f64, edge: Edge) -> Self { … }
+
+    /// Locate the crossing to `seconds`.
+    pub fn within(mut self, seconds: f64) -> Self { … }
+}
+
+/// Where [`run_until`](TransientSession::run_until) stopped.
+pub struct EventHit {
+    /// Which of the events given, by index.
+    pub event: usize,
+    /// The time the session stopped at (s), which is
+    /// [`time`](TransientSession::time): the crossing lies within the
+    /// event's tolerance before it.
+    pub time: f64,
+}
+
+impl TransientSession {
+    /// A session of `circuit` at t = 0, from its initial conditions or
+    /// operating point as `config` says.
+    ///
+    /// # Errors
+    ///
+    /// As [`solve_transient`](crate::solve_transient) before its first step:
+    /// an invalid config or circuit, or an operating point that won't
+    /// solve.
+    pub fn new(circuit: &Circuit, config: &TransientConfig) -> Result<Self, SimError> { … }
+
+    /// The time reached (s).
+    pub fn time(&self) -> f64 { … }
+
+    /// Step counts so far.
+    pub fn stats(&self) -> TransientStats { … }
+
+    /// The voltage (V) at `node` at the time reached, or `None` for a node
+    /// the circuit doesn't have. Read straight from the solution, so it's
+    /// cheap to call after every step.
+    pub fn voltage(&self, node: &str) -> Option<f64> { … }
+
+    /// The current (A) through component `id` at the latest step, with
+    /// the sign of its [`ComponentResult`](crate::ComponentResult); `None`
+    /// before the first step or for an id the circuit doesn't have.
+    pub fn current(&self, id: &str) -> Option<f64> { … }
+
+    /// The latest step taken, kept or not; `None` before the first.
+    pub fn last_step(&self) -> Option<&TimestepSnapshot> { … }
+
+    /// Whether to keep each step for [`drain_steps`](Self::drain_steps)
+    /// (the default). A long session that only reads
+    /// [`voltage`](Self::voltage) can turn it off, so nothing builds up.
+    pub fn keep_steps(&mut self, keep: bool) { … }
+
+    /// Take the steps kept since the last call, oldest first.
+    pub fn drain_steps(&mut self) -> std::vec::Drain<'_, TimestepSnapshot> { … }
+
+    /// Set source `id` (a voltage source's volts, a current source's amps)
+    /// to `value` from the time reached on. A waveform it had is dropped:
+    /// from now on the caller drives it.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::InvalidComponent`] for an id that isn't a voltage or
+    /// current source, or a value that isn't finite.
+    pub fn set_source(&mut self, id: &str, value: f64) -> Result<(), SimError> { … }
+
+    /// Change `param` of component `id` from the time reached on.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::InvalidComponent`] for an id the circuit doesn't have, a
+    /// part `param` doesn't apply to, or a temperature on a part whose
+    /// temperature self-heating sets; a value the part refuses fails as
+    /// [`validate_circuit`](crate::validate_circuit) would fail it. A
+    /// refused change changes nothing.
+    pub fn set_param(&mut self, id: &str, param: Param) -> Result<(), SimError> { … }
+
+    /// Advance to `t` (s).
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::InvalidComponent`] for a `t` before the time reached,
+    /// past `tstop` or not finite; otherwise as
+    /// [`solve_transient`](crate::solve_transient) for the steps taken.
+    pub fn advance_to(&mut self, t: f64) -> Result<(), SimError> { … }
+
+    /// [`advance_to`](Self::advance_to), calling `progress` after every
+    /// accepted step, whose [`tstop`](TransientProgress::tstop) is `t`.
+    ///
+    /// # Errors
+    ///
+    /// As [`advance_to`](Self::advance_to), and [`SimError::Cancelled`] when
+    /// the hook returns [`Flow::Stop`]. A cancelled session stays at the
+    /// step it stopped after, and can be advanced again from there.
+    pub fn advance_to_with_progress(
+        &mut self,
+        t: f64,
+        mut progress: impl FnMut(&TransientProgress<'_>) -> Flow,
+    ) -> Result<(), SimError> { … }
+
+    /// Advance to `t_max` (s), or stop early at the first of `events` to
+    /// happen. The crossing is located to the event's tolerance: the
+    /// session stops at most that long after it, with the node past the
+    /// level. `None` when nothing happened before `t_max`.
+    ///
+    /// The session starts watching from the time reached, so a node
+    /// already past the level counts only when it crosses again.
+    ///
+    /// # Errors
+    ///
+    /// As [`advance_to`](Self::advance_to), and
+    /// [`SimError::InvalidComponent`] for an event on a node the circuit
+    /// doesn't have, or with a level or tolerance that isn't finite (or
+    /// a tolerance that isn't positive).
+    pub fn run_until(
+        &mut self,
+        t_max: f64,
+        events: &[Event],
+    ) -> Result<Option<EventHit>, SimError> { … }
+}
+```
+
 ## `sindr/src/solver.rs`
 
 Solver options and the [`Solver`] that carries them into every analysis.
@@ -8701,6 +8986,18 @@ impl Solver {
         config: &TransientConfig,
         mut progress: impl FnMut(&crate::TransientProgress<'_>) -> crate::Flow,
     ) -> Result<SimulationResult, SimError> { … }
+
+    /// As [`TransientSession::new`](crate::TransientSession::new).
+    ///
+    /// # Errors
+    ///
+    /// As [`TransientSession::new`](crate::TransientSession::new), and
+    /// [`SolverOptions::validate`].
+    pub fn transient_session(
+        &self,
+        circuit: &Circuit,
+        config: &TransientConfig,
+    ) -> Result<crate::TransientSession, SimError> { … }
 
     /// As [`solve_ac`](crate::solve_ac).
     ///

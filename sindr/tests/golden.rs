@@ -1474,8 +1474,19 @@ fn compare_tran_within(
     tran: &sindr::TransientData,
     fraction: f64,
 ) {
+    compare_steps_within(case, vectors, &tran.timesteps, fraction);
+}
+
+/// As [`compare_tran_within`], for steps from anywhere: a transient
+/// session's.
+fn compare_steps_within(
+    case: &'static str,
+    vectors: &[&str],
+    steps: &[sindr::TimestepSnapshot],
+    fraction: f64,
+) {
     let golden = Golden::load(case);
-    let times: Vec<f64> = tran.timesteps.iter().map(|s| s.time).collect();
+    let times: Vec<f64> = steps.iter().map(|s| s.time).collect();
 
     let mut check = Check::new(case);
     let scale = golden.scale();
@@ -1483,8 +1494,7 @@ fn compare_tran_within(
         let want_all = golden.column(name);
         let full_scale = want_all.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
         let inner = &name[2..name.len() - 1];
-        let got: Vec<f64> = tran
-            .timesteps
+        let got: Vec<f64> = steps
             .iter()
             .map(|s| {
                 if name.starts_with("v(") {
@@ -1516,6 +1526,30 @@ fn interpolate(xs: &[f64], ys: &[f64], x: f64) -> f64 {
 #[test]
 fn tran_rc_step() {
     check_tran("tran_rc_step", &["v(out)"]);
+}
+
+/// The deck's PULSE driven from outside instead: a transient session sets
+/// the source to each level at each millisecond, the way firmware drives a
+/// pin. The 1 ns edges ngspice integrates are the only difference.
+#[test]
+fn tran_session_square() {
+    let case = "tran_session_square";
+    let mut circuit = parse(case);
+    for element in &mut circuit.components {
+        if let CircuitElement::VoltageSource(source) = element {
+            source.waveform = None;
+            source.voltage = 0.0;
+        }
+    }
+    let config = sindr::TransientConfig::new(10e-3, 10e-6);
+    let mut sim = sindr::TransientSession::new(&circuit, &config).unwrap();
+    for k in 1..=10 {
+        sim.advance_to(f64::from(k) * 1e-3).unwrap();
+        sim.set_source("v1", if k % 2 == 1 { 5.0 } else { 0.0 })
+            .unwrap();
+    }
+    let steps: Vec<_> = sim.drain_steps().collect();
+    compare_steps_within(case, &["v(out)"], &steps, 1e-3);
 }
 
 #[test]

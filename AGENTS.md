@@ -26,6 +26,7 @@ sindr-rs/
 │   │   ├── newton_raphson.rs   # nonlinear DC solver
 │   │   ├── solver.rs           # SolverOptions and Solver (.options, .nodeset)
 │   │   ├── transient.rs        # transient stepper (TransientConfig, solve_transient)
+│   │   ├── session.rs          # TransientSession: step a transient, change inputs, stop on events
 │   │   ├── integration.rs      # Gear-2 / trapezoidal / backward-Euler formulas
 │   │   ├── ac_analysis.rs      # small-signal AC (and the linearised system .tf reuses)
 │   │   ├── noise.rs            # .noise: thermal, shot and flicker noise
