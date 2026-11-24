@@ -693,6 +693,8 @@ assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
 
 `Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
 
+**Variants.** A block can hold more than one implementation of the same ports, such as an ideal supply and the real regulator circuit. The block's own body is one variant, named by `Block::base_variant` (`"base"` when unset). `Block::variants` holds the others as `Variant { ports, components, instances, parts }`. An instance picks one with `Instance::with_variant("detailed")`, or gets `Block::default_variant`. The picked body is flattened under the same instance path, so `X1.out` reads back whichever one runs. A variant whose ports differ from the block's, in name or order, is `DesignError::VariantPorts` naming the block. An unknown variant is `DesignError::UnknownVariant`. SPICE export writes the block's own body as `.subckt name` and each variant as `.subckt name_<variant>`, and each `X` line names the one its instance picked.
+
 ### Reading results
 
 `solve_circuit` returns `Result<SimulationResult, SimError>`. Read it by name:
@@ -2982,6 +2984,40 @@ assert_eq!(flat.components[1].id(), "X1.R1");
 assert_eq!(flat.components[2].nodes(), ["mid", "0"]);
 ```
 
+#### Variants
+
+A block can hold several implementations of the same ports: an ideal
+regulator and the real circuit, say. Its own body is one, named by
+[`Block::base_variant`]; [`Block::variants`] holds the others. An
+instance picks one with [`Instance::variant`], and otherwise gets
+[`Block::default_variant`]. Flattening expands the picked body under the
+same instance path, so `x1.out` reads back the same whatever was picked.
+
+```
+use sindr::{Block, Circuit, CircuitElement, Instance, Variant};
+use sindr::element::{Resistor, VoltageSource};
+
+let r = |id: &str, a: &str, b: &str, ohms: f64| {
+    CircuitElement::Resistor(Resistor { id: id.into(), nodes: [a.into(), b.into()], resistance: ohms })
+};
+let mut load = Block {
+    ports: vec!["a".into()],
+    components: vec![r("R1", "a", "0", 1e3)],
+    base_variant: Some("ideal".into()),
+    ..Block::default()
+};
+load.variants.insert("detailed".into(), Variant {
+    ports: vec!["a".into()],
+    components: vec![r("Rs", "a", "mid", 10.0), r("R1", "mid", "0", 990.0)],
+    ..Variant::default()
+});
+
+let mut circuit = Circuit::new("0", vec![]);
+circuit.blocks.insert("load".into(), load);
+circuit.instances.push(Instance::new("X1", "load", ["in"]).with_variant("detailed"));
+assert_eq!(circuit.flatten().unwrap().components[0].id(), "X1.Rs");
+```
+
 ```rust
 /// Separator between instance-path segments in flattened names.
 pub const PATH_SEPARATOR: char = '.';
@@ -3008,6 +3044,80 @@ pub struct Block {
         serde(default, skip_serializing_if = "BTreeMap::is_empty")
     )]
     pub parts: BTreeMap<String, Part>,
+    /// Name of the block's own body among its variants. `None` calls it
+    /// [`BASE_VARIANT`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub base_variant: Option<String>,
+    /// Other implementations of the same ports, by name: an ideal model, a
+    /// behavioural one, the real circuit.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub variants: BTreeMap<String, Variant>,
+    /// The variant an instance gets when it names none. `None` is the
+    /// block's own body.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub default_variant: Option<String>,
+}
+
+/// What [`Block::base_variant`] is when it isn't set.
+pub const BASE_VARIANT: &str = "base";
+
+impl Block {
+    /// The name of the block's own body among its variants.
+    pub fn base_variant_name(&self) -> &str { … }
+
+    /// The ports and body of variant `name`, the block's own body included,
+    /// or `None` when it has no variant by that name.
+    pub fn variant(&self, name: &str) -> Option<VariantRef<'_>> { … }
+
+    /// The name of the variant `instance` picks: its own choice, else the
+    /// block's default, else the block's own body. Not checked to exist.
+    pub fn picked_variant<'a>(&'a self, instance: &'a Instance) -> &'a str { … }
+}
+
+/// Another implementation of a [`Block`]'s ports, in [`Block::variants`].
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
+pub struct Variant {
+    /// Port nets: the block's [`ports`](Block::ports), same names in the same
+    /// order. Anything else is [`DesignError::VariantPorts`].
+    pub ports: Vec<String>,
+    /// Components, named in the block's scope.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub components: Vec<CircuitElement>,
+    /// Instances of other blocks placed inside this variant.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub instances: Vec<Instance>,
+    /// Part data for the variant's components and instances, keyed by id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "BTreeMap::is_empty")
+    )]
+    pub parts: BTreeMap<String, Part>,
+}
+
+/// One variant of a block, borrowed: [`Block::variant`].
+pub struct VariantRef<'a> {
+    /// Port nets.
+    pub ports: &'a [String],
+    /// Components.
+    pub components: &'a [CircuitElement],
+    /// Instances of other blocks.
+    pub instances: &'a [Instance],
+    /// Part data, keyed by id.
+    pub parts: &'a BTreeMap<String, Part>,
 }
 
 /// One placement of a [`Block`]: what an `X` line is in SPICE.
@@ -3019,6 +3129,13 @@ pub struct Instance {
     pub block: String,
     /// The caller's nets, bound to [`Block::ports`] by position.
     pub nodes: Vec<String>,
+    /// Which of the block's variants to place. `None` is the block's
+    /// [`default_variant`](Block::default_variant).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub variant: Option<String>,
 }
 
 impl Instance {
@@ -3028,6 +3145,9 @@ impl Instance {
         block: impl Into<String>,
         nodes: impl IntoIterator<Item = S>,
     ) -> Self { … }
+
+    /// This instance, placing the block's variant `name`.
+    pub fn with_variant(mut self, name: impl Into<String>) -> Self { … }
 }
 
 /// Part data for a component or instance: what a schematic or BOM needs.
@@ -3210,6 +3330,31 @@ pub enum DesignError {
         /// `"the top level"` or `"block `name`"`.
         scope: String,
     },
+    /// An instance, or its block's default, names a variant the block
+    /// doesn't have.
+    #[error("instance `{instance}` places variant `{variant}` of block `{block}`, which has no such variant")]
+    UnknownVariant {
+        /// Full path of the instance.
+        instance: String,
+        /// The block it places.
+        block: String,
+        /// The missing variant.
+        variant: String,
+    },
+    /// A variant's ports differ from its block's, in name or order.
+    #[error(
+        "variant `{variant}` of block `{block}` has ports {got:?}, but the block has {expected:?}"
+    )]
+    VariantPorts {
+        /// The block.
+        block: String,
+        /// The variant whose ports differ.
+        variant: String,
+        /// The block's ports.
+        expected: Vec<String>,
+        /// The variant's ports.
+        got: Vec<String>,
+    },
 }
 
 impl Circuit {
@@ -3222,8 +3367,9 @@ impl Circuit {
     ///
     /// # Errors
     ///
-    /// [`DesignError`] for an unknown block, a port-count mismatch, a
-    /// recursive block, or a repeated id in one scope.
+    /// [`DesignError`] for an unknown block or variant, a port-count
+    /// mismatch, a variant whose ports differ from its block's, a recursive
+    /// block, or a repeated id in one scope.
     pub fn flatten(&self) -> Result<Circuit, DesignError> { … }
 
     /// [`flatten`](Self::flatten), borrowing `self` when it is already flat.
