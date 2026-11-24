@@ -110,7 +110,9 @@ impl DcSweepAxis {
 
     /// SPICE's `.dc` form: from `start` in steps of `step` for as long as
     /// it doesn't pass `stop`. When `step` doesn't divide the span, the last
-    /// value is short of `stop`, as in SPICE.
+    /// value is short of `stop`, as in SPICE. When `start == stop`, or the
+    /// first step already passes `stop`, the axis is the one point `start`
+    /// (with `stop` set to `start`).
     ///
     /// # Errors
     ///
@@ -166,13 +168,14 @@ impl DcSweepAxis {
         self.start + (self.stop - self.start) * k as f64 / (self.num_points - 1) as f64
     }
 
-    /// Rejects an axis the sweep can't run: too few or too many points,
-    /// values that aren't finite, or a source that isn't in `circuit`.
-    fn check(&self, circuit: &Circuit, min_points: usize) -> Result<(), SimError> {
-        if self.num_points < min_points && !(self.num_points == 1 && self.start == self.stop) {
-            return Err(SimError::InvalidComponent(format!(
-                "DC sweep requires at least {min_points} points"
-            )));
+    /// Rejects an axis the sweep can't run: fewer than 2 points (1 is
+    /// allowed when `start == stop`), more than 10⁷, values that aren't
+    /// finite, or a source that isn't in `circuit`.
+    fn check(&self, circuit: &Circuit) -> Result<(), SimError> {
+        if self.num_points < 2 && !(self.num_points == 1 && self.start == self.stop) {
+            return Err(SimError::InvalidComponent(
+                "DC sweep requires at least 2 points, or 1 when start equals stop".to_string(),
+            ));
         }
         crate::validation::check_sweep_points("DC sweep", "num_points", self.num_points)?;
         if !self.start.is_finite() || !self.stop.is_finite() {
@@ -287,16 +290,17 @@ fn sweep_curve(
 /// - `source_id` — id of the [`VoltageSource`](CircuitElement::VoltageSource)
 ///   or [`CurrentSource`](CircuitElement::CurrentSource) to sweep
 /// - `start`, `stop` — sweep endpoints (V or A), inclusive
-/// - `num_points` — total points including both endpoints (minimum 2)
+/// - `num_points` — total points including both endpoints: at least 2, or
+///   1 when `start == stop` (one solve at `start`)
 ///
 /// For two sources at once, as SPICE's `.dc V1 … V2 …`, see
 /// [`dc_sweep_nested`].
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_points < 2` or above 10⁷, `start` or `stop`
-///   is not finite, or `source_id` doesn't match any voltage or current
-///   source in the circuit
+/// - [`SimError::InvalidComponent`] if `num_points < 2` (1 is allowed when
+///   `start == stop`) or above 10⁷, `start` or `stop` is not finite, or
+///   `source_id` doesn't match any voltage or current source in the circuit
 /// - Any [`SimError`] returned by [`solve_circuit`](crate::solve_circuit)
 ///   at one of the sweep points (propagated immediately)
 ///
@@ -347,12 +351,7 @@ pub(crate) fn dc_sweep_with(
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    if axis.num_points < 2 {
-        return Err(SimError::InvalidComponent(
-            "DC sweep requires at least 2 points".to_string(),
-        ));
-    }
-    axis.check(circuit, 2)?;
+    axis.check(circuit)?;
     crate::validation::validate_circuit(circuit)?;
     let mut sweep = sweep_curve(circuit, axis, None, opts)?;
     for point in &mut sweep.points {
@@ -464,8 +463,8 @@ pub(crate) fn dc_sweep_nested_with(
     let original = circuit;
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    inner.check(circuit, 2)?;
-    outer.check(circuit, 2)?;
+    inner.check(circuit)?;
+    outer.check(circuit)?;
     if inner.source_id == outer.source_id {
         return Err(SimError::InvalidComponent(format!(
             "DC sweep: '{}' can't be both the inner and the outer source",
@@ -502,6 +501,7 @@ mod tests {
     use super::*;
     use crate::circuit::CircuitElement;
     use crate::element::{Diode, Resistor};
+    use crate::solver::Solver;
     use approx::assert_relative_eq;
 
     #[test]
@@ -619,6 +619,78 @@ mod tests {
 
         let result = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 10.0, 1));
         assert!(result.is_err());
+        let result = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 0.0, 0));
+        assert!(result.is_err());
+    }
+
+    fn divider() -> Circuit {
+        Circuit::new(
+            "0",
+            vec![
+                CircuitElement::VoltageSource(VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["n1".into(), "0".into()],
+                    voltage: 0.0,
+                    waveform: None,
+                }),
+                CircuitElement::VoltageSource(VoltageSource {
+                    id: "V2".into(),
+                    nodes: ["n2".into(), "0".into()],
+                    voltage: 0.0,
+                    waveform: None,
+                }),
+                CircuitElement::Resistor(Resistor {
+                    id: "R1".into(),
+                    nodes: ["n1".into(), "n2".into()],
+                    resistance: 1000.0,
+                }),
+            ],
+        )
+    }
+
+    #[test]
+    fn sweep_one_point_when_start_equals_stop() {
+        let axis = DcSweepAxis::from_step("V1", 5.0, 5.0, 1.0).unwrap();
+        assert_eq!(axis.num_points, 1);
+        let sweep = dc_sweep(&divider(), &axis).unwrap();
+        assert_eq!(sweep.points.len(), 1);
+        assert_eq!(sweep.points[0].sweep_value, 5.0);
+        assert_relative_eq!(
+            sweep.component_current_curve("R1")[0].1,
+            5e-3,
+            epsilon = 1e-12
+        );
+
+        let sweep = Solver::default().dc_sweep(&divider(), &axis).unwrap();
+        assert_eq!(sweep.points.len(), 1);
+    }
+
+    #[test]
+    fn sweep_one_point_when_step_exceeds_span() {
+        // SPICE's `.dc V1 0 1 2`: the first step passes 1 V, so 0 V alone.
+        let axis = DcSweepAxis::from_step("V1", 0.0, 1.0, 2.0).unwrap();
+        assert_eq!((axis.num_points, axis.start, axis.stop), (1, 0.0, 0.0));
+        let sweep = dc_sweep(&divider(), &axis).unwrap();
+        assert_eq!(sweep.points.len(), 1);
+        assert_eq!(sweep.points[0].sweep_value, 0.0);
+    }
+
+    #[test]
+    fn nested_sweep_with_one_point_axes() {
+        let one = DcSweepAxis::from_step("V2", 2.0, 2.0, 1.0).unwrap();
+        let many = DcSweepAxis::new("V1", 0.0, 1.0, 3);
+        let sweep = dc_sweep_nested(&divider(), &many, &one).unwrap();
+        assert_eq!(sweep.curves.len(), 1);
+        assert_eq!(sweep.curves[0].outer_value, 2.0);
+        assert_eq!(sweep.curves[0].sweep.points.len(), 3);
+
+        let inner = DcSweepAxis::from_step("V1", 1.0, 1.0, 0.1).unwrap();
+        let outer = DcSweepAxis::new("V2", 0.0, 2.0, 3);
+        let sweep = Solver::default()
+            .dc_sweep_nested(&divider(), &inner, &outer)
+            .unwrap();
+        assert_eq!(sweep.curves.len(), 3);
+        assert!(sweep.curves.iter().all(|c| c.sweep.points.len() == 1));
     }
 
     #[test]

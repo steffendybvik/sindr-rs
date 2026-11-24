@@ -2608,7 +2608,9 @@ impl DcSweepAxis {
 
     /// SPICE's `.dc` form: from `start` in steps of `step` for as long as
     /// it doesn't pass `stop`. When `step` doesn't divide the span, the last
-    /// value is short of `stop`, as in SPICE.
+    /// value is short of `stop`, as in SPICE. When `start == stop`, or the
+    /// first step already passes `stop`, the axis is the one point `start`
+    /// (with `stop` set to `start`).
     ///
     /// # Errors
     ///
@@ -2639,16 +2641,17 @@ impl DcSweepAxis {
 /// - `source_id` — id of the [`VoltageSource`](CircuitElement::VoltageSource)
 ///   or [`CurrentSource`](CircuitElement::CurrentSource) to sweep
 /// - `start`, `stop` — sweep endpoints (V or A), inclusive
-/// - `num_points` — total points including both endpoints (minimum 2)
+/// - `num_points` — total points including both endpoints: at least 2, or
+///   1 when `start == stop` (one solve at `start`)
 ///
 /// For two sources at once, as SPICE's `.dc V1 … V2 …`, see
 /// [`dc_sweep_nested`].
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_points < 2` or above 10⁷, `start` or `stop`
-///   is not finite, or `source_id` doesn't match any voltage or current
-///   source in the circuit
+/// - [`SimError::InvalidComponent`] if `num_points < 2` (1 is allowed when
+///   `start == stop`) or above 10⁷, `start` or `stop` is not finite, or
+///   `source_id` doesn't match any voltage or current source in the circuit
 /// - Any [`SimError`] returned by [`solve_circuit`](crate::solve_circuit)
 ///   at one of the sweep points (propagated immediately)
 ///
