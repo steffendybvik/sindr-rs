@@ -7,7 +7,8 @@ use crate::error::SimError;
 use crate::op_amp::{OpAmpStamp, Pins, OP_AMP_STAGE};
 use crate::stamp::stamp_vcvs_at;
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use num_complex::Complex64;
 
 /// Op-amp, output referred to ground.
 ///
@@ -43,6 +44,30 @@ pub struct OpAmp {
 
 impl Device for OpAmp {
     device_identity!();
+
+    /// A modelled op-amp linearised at the bias point (see
+    /// [`OpAmpStamp::stamp_ac`]); without a model, a VCVS of gain 10⁵.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        if let Some(op) = OpAmpStamp::of_op_amp(self, &s.circuit.ground_node, s.branch) {
+            op.stamp_ac(s);
+            return;
+        }
+        let branch = s.branch;
+        let [in_p, in_m, out] = s.nodes();
+        let one = Complex64::new(1.0, 0.0);
+        let gain = Complex64::new(1e5, 0.0);
+        // The output is referred to ground.
+        if let Some(o) = out {
+            s.a[(o, branch)] += one;
+            s.a[(branch, o)] += one;
+        }
+        if let Some(p) = in_p {
+            s.a[(branch, p)] -= gain;
+        }
+        if let Some(m) = in_m {
+            s.a[(branch, m)] += gain;
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let nodes = s.nodes();

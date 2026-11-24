@@ -3,7 +3,8 @@
 use crate::error::SimError;
 use crate::stamp::stamp_resistor_at;
 
-use super::{Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device};
+use crate::noise::NoiseSources;
 
 /// Potentiometer: 3-terminal voltage divider.
 /// nodes: [top, wiper, bottom]
@@ -24,6 +25,22 @@ pub struct Potentiometer {
 
 impl Device for Potentiometer {
     device_identity!();
+
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let pos = self.position.clamp(0.001, 0.999);
+        let r_top = self.resistance * pos;
+        let r_bot = self.resistance * (1.0 - pos);
+        let [p, w, q] = s.nodes();
+        s.conductance([p, w], 1.0 / r_top);
+        s.conductance([w, q], 1.0 / r_bot);
+    }
+
+    fn noise(&self, n: &mut NoiseSources<'_>) {
+        let pos = self.position.clamp(0.001, 0.999);
+        let [p, w, q] = &self.nodes;
+        n.thermal_27c(&self.id, "top", [p, w], self.resistance * pos);
+        n.thermal_27c(&self.id, "bottom", [w, q], self.resistance * (1.0 - pos));
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let pos = self.position.clamp(0.001, 0.999);

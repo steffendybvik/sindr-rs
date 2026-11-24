@@ -9,7 +9,8 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::stamp::stamp_companion_at;
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
+use crate::noise::NoiseSources;
 
 /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
 /// DC, transient and AC.
@@ -50,6 +51,57 @@ pub struct Bjt {
 
 impl Device for Bjt {
     device_identity!();
+
+    /// The full terminal Jacobian `∂(Ib, Ic, Ie)/∂(Vb, Vc, Ve)`, with the
+    /// same parameters as the DC solve: gπ, gm, gμ and g_o in every
+    /// region. The entries are the same for NPN and PNP (the polarity sign
+    /// cancels).
+    fn linearise(&self, s: &AcBias<'_>) -> Vec<Conductance> {
+        let terminals: [Option<usize>; 3] = s.nodes();
+        let [vb, vc, ve] = terminals.map(|n| s.voltage(n));
+        let sign = match self.kind {
+            BjtKind::Npn => 1.0,
+            BjtKind::Pnp => -1.0,
+        };
+        let params = device_params::bjt(self.bf, self.model.as_ref(), self.temperature);
+        let jac = bjt::bjt_terminal_jacobian(sign * (vb - ve), sign * (vb - vc), &params);
+        let m = jac.terminal_matrix();
+        let mut conds = Vec::with_capacity(9);
+        for (r, &row) in terminals.iter().enumerate() {
+            for (k, &col) in terminals.iter().enumerate() {
+                conds.push((row, col, m[r][k]));
+            }
+        }
+        conds
+    }
+
+    /// Its parasitic capacitances; the rest is in
+    /// [`linearise`](Device::linearise).
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let Some(pc) = &self.parasitic_caps else {
+            return;
+        };
+        for (_, c, p, q) in bjt_parasitics(&self.nodes, pc) {
+            let y = s.s * c;
+            let pq = [s.node_map.index(&p), s.node_map.index(&q)];
+            s.admittance(pq, y);
+        }
+    }
+
+    /// Collector and base shot noise at the operating point, and base
+    /// flicker noise when the model has KF.
+    fn noise(&self, n: &mut NoiseSources<'_>) {
+        let Some(op) = n.dc.bjt_results.iter().find(|b| b.id == self.id) else {
+            return;
+        };
+        let (ic, ib) = (op.ic, op.ib);
+        let [b, c, e] = &self.nodes;
+        n.shot(&self.id, "ic", [c, e], ic);
+        n.shot(&self.id, "ib", [b, e], ib);
+        if let Some(m) = self.model.filter(|m| m.kf > 0.0) {
+            n.flicker(&self.id, "ib", [b, e], ib, m.kf, m.af);
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(vp) = s.v_prev {

@@ -3,7 +3,8 @@
 use crate::error::SimError;
 use crate::mna::MnaSystem;
 
-use super::{Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device};
+use num_complex::Complex64;
 
 /// Current-Controlled Voltage Source: V_out = rm * I_control.
 /// nodes: [out+, out-], control_source: id of controlling voltage source
@@ -23,6 +24,14 @@ pub struct Ccvs {
 
 impl Device for Ccvs {
     device_identity!();
+
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let (branch, nodes) = (s.branch, s.nodes());
+        s.branch_pair(branch, nodes);
+        if let Some(control) = s.source_branch(&self.control_source) {
+            s.a[(branch, control)] -= Complex64::new(self.rm, 0.0);
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(control) = s.source_branch(&self.control_source) {

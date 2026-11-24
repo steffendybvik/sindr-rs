@@ -3066,6 +3066,10 @@ impl Circuit {
 }
 ```
 
+## `sindr/src/element/ac_stamp.rs`
+
+What an element's small-signal (AC) stamp writes into and reads from.
+
 ## `sindr/src/element/battery.rs`
 
 A battery: open-circuit voltage by state of charge behind its internal

@@ -3,7 +3,7 @@
 use crate::error::SimError;
 use crate::stamp::{stamp_resistor_at, SWITCH_R_OPEN};
 
-use super::{Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device};
 
 /// Fuse between two nodes.
 ///
@@ -32,6 +32,12 @@ pub struct Fuse {
 
 impl Device for Fuse {
     device_identity!();
+
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let r = if self.blown { 1e9_f64 } else { 0.001_f64 };
+        let nodes = s.nodes();
+        s.conductance(nodes, 1.0 / r);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         // Intact (blown=false): 0.001 Ω (1 mΩ) — negligible drop.

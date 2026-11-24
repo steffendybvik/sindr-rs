@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::stamp::stamp_voltage_source_at;
 use crate::waveform::Waveform;
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
 /// Independent voltage source. `nodes[0]` is the positive terminal,
 /// `nodes[1]` is the negative terminal.
@@ -28,6 +28,14 @@ pub struct VoltageSource {
 
 impl Device for VoltageSource {
     device_identity!();
+
+    /// Zero in AC (a short), with its branch row where an AC sweep puts
+    /// its excitation.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let (branch, nodes) = (s.branch, s.nodes());
+        s.branch_pair(branch, nodes);
+        s.expose_vsource(&self.id);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let nodes = s.nodes();

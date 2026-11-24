@@ -3,7 +3,8 @@
 use crate::error::SimError;
 use crate::stamp::stamp_resistor_at;
 
-use super::{Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device};
+use crate::noise::NoiseSources;
 
 /// NTC thermistor: resistance varies with temperature (passive, no NR).
 /// nodes: [n1, n2]
@@ -22,6 +23,19 @@ pub struct Thermistor {
 
 impl Device for Thermistor {
     device_identity!();
+
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let r = crate::device_params::thermistor_resistance(self.temperature);
+        let nodes = s.nodes();
+        s.conductance(nodes, 1.0 / r);
+    }
+
+    /// Its thermal noise at its own temperature.
+    fn noise(&self, n: &mut NoiseSources<'_>) {
+        let r = crate::device_params::thermistor_resistance(self.temperature);
+        let [a, b] = &self.nodes;
+        n.thermal(&self.id, "", [a, b], r, self.temperature);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let r = crate::device_params::thermistor_resistance(self.temperature);

@@ -3,7 +3,8 @@
 use crate::device_params;
 use crate::error::SimError;
 
-use super::{Check, DcStamp, Device};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
+use crate::noise::NoiseSources;
 
 /// Photodiode: diode + photocurrent source driven by irradiance.
 /// nodes: [anode, cathode]
@@ -30,6 +31,23 @@ pub struct Photodiode {
 
 impl Device for Photodiode {
     device_identity!();
+
+    /// The photocurrent is a constant source, with no AC part.
+    fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {
+        let params = device_params::photodiode(self.temperature);
+        let (g_d, _) =
+            sindr_devices::photodiode::photodiode_companion(b.across(), self.irradiance, &params);
+        b.two_terminal(g_d)
+    }
+
+    /// All of it is in [`linearise`](Device::linearise).
+    fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
+
+    fn noise(&self, n: &mut NoiseSources<'_>) {
+        let [a, b] = &self.nodes;
+        let i = n.current(&self.id);
+        n.shot(&self.id, "", [a, b], i);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let Some(vp) = s.v_prev else {

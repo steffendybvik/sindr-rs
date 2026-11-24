@@ -9,7 +9,8 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
 
-use super::{Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device};
+use num_complex::Complex64;
 
 /// Linear voltage regulator: holds the output at `voltage` above its
 /// ground pin while it has headroom, and draws its output current plus
@@ -47,6 +48,52 @@ pub struct VoltageRegulator {
 
 impl Device for VoltageRegulator {
     device_identity!();
+
+    /// The piece of its characteristic the bias point is on: input ripple
+    /// reaches the output through line regulation (or all of it in
+    /// dropout), and load current through the output resistance. The
+    /// quiescent current only matters below dropout, where it ramps with
+    /// the input.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let branch = s.branch;
+        let piece = regulator_piece_at(
+            s.node_map,
+            &self.nodes,
+            self.voltage,
+            &self.model,
+            branch,
+            Some(s.dc_solution),
+        );
+        let c = |x: f64| Complex64::new(x, 0.0);
+        let [input, out, gnd] = s.nodes();
+        if let Some(o) = out {
+            s.a[(o, branch)] += c(1.0);
+            s.a[(branch, o)] += c(1.0);
+        }
+        if let Some(i) = input {
+            s.a[(i, branch)] -= c(1.0);
+            s.a[(branch, i)] -= c(piece.d_vin);
+        }
+        if let Some(g) = gnd {
+            s.a[(branch, g)] += c(piece.d_vin - 1.0);
+        }
+        s.a[(branch, branch)] += c(piece.d_iout);
+        // The quiescent current is fixed above dropout; below it, it ramps
+        // with the input, a conductance from input to ground.
+        if let Some(params) = &self.model {
+            let vin = regulator_state(s.node_map, &self.nodes, branch, Some(s.dc_solution))
+                .map_or(0.0, |(vin, _, _)| vin);
+            let (_, g_q) = sindr_devices::regulator::regulator_quiescent(params, self.voltage, vin);
+            for (r, col, sign) in [
+                (input, input, 1.0),
+                (input, gnd, -1.0),
+                (gnd, input, -1.0),
+                (gnd, gnd, 1.0),
+            ] {
+                s.add(r, col, c(sign * g_q));
+            }
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let nodes = s.nodes();

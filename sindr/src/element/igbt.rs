@@ -5,7 +5,7 @@ use nalgebra::DVector;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
 
-use super::{DcStamp, Device};
+use super::{AcBias, AcStamp, Conductance, DcStamp, Device};
 
 /// IGBT: MOSFET gate control + BJT output characteristics.
 /// Nonlinear element — requires Newton-Raphson iteration.
@@ -25,6 +25,17 @@ pub struct Igbt {
 
 impl Device for Igbt {
     device_identity!();
+
+    /// gm and g_ce of the same companion as the DC stamp.
+    fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {
+        let [g, c, e] = b.nodes();
+        let v = |n| b.voltage(n);
+        let comp = sindr_devices::igbt::igbt_companion(v(g) - v(e), v(c) - v(e), &self.params);
+        super::mosfet::fet_conductances([g, c, e], comp.gm, comp.g_ce)
+    }
+
+    /// All of it is in [`linearise`](Device::linearise).
+    fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(vp) = s.v_prev {

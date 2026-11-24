@@ -3,7 +3,8 @@
 use crate::error::SimError;
 use crate::stamp::stamp_vcvs_at;
 
-use super::{Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device};
+use num_complex::Complex64;
 
 /// Voltage-Controlled Voltage Source: V_out = mu * V_control.
 /// nodes: [out+, out-], control_nodes: [ctrl+, ctrl-]
@@ -23,6 +24,20 @@ pub struct Vcvs {
 
 impl Device for Vcvs {
     device_identity!();
+
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let (branch, nodes) = (s.branch, s.nodes());
+        s.branch_pair(branch, nodes);
+        let g = Complex64::new(self.gain, 0.0);
+        let cp = s.node_map.index(&self.control_nodes[0]);
+        let cq = s.node_map.index(&self.control_nodes[1]);
+        if let Some(cp) = cp {
+            s.a[(branch, cp)] -= g;
+        }
+        if let Some(cq) = cq {
+            s.a[(branch, cq)] += g;
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let [cp, cq] = &self.control_nodes;

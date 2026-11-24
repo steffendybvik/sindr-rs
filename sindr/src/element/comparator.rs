@@ -3,7 +3,7 @@
 use crate::error::SimError;
 use crate::op_amp::{OpAmpStamp, Pins, OP_AMP_STAGE};
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
 /// Comparator, output referred to ground: gain 1e5 from `v₊ − v₋` with
 /// no frequency response, its output clamped to `[v_neg, v_pos]`. It is
@@ -30,6 +30,12 @@ pub struct Comparator {
 
 impl Device for Comparator {
     device_identity!();
+
+    /// Linearised at the bias point, as a modelled op-amp (see
+    /// [`OpAmpStamp::stamp_ac`]).
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        OpAmpStamp::of_comparator(self, &s.circuit.ground_node, s.branch).stamp_ac(s);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let pins = Pins {

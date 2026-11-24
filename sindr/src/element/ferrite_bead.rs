@@ -4,7 +4,7 @@
 use crate::circuit::FerriteBeadParams;
 use crate::error::SimError;
 
-use super::{stamped_as_parts, DcStamp, Device, TranStamp};
+use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
 
 /// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC,
 /// lossy and inductive at high frequency. Its result's `power` is what
@@ -23,6 +23,9 @@ pub struct FerriteBead {
 
 impl Device for FerriteBead {
     device_identity!();
+
+    /// Split into its parts by `solver_circuit` first.
+    fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
 
     fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
         Err(stamped_as_parts(&self.id))

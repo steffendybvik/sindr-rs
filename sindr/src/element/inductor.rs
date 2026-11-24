@@ -5,7 +5,8 @@ use sindr_devices::inductor;
 use crate::error::SimError;
 use crate::stamp::stamp_companion_at;
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use num_complex::Complex64;
 
 /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
 /// solves DC as a single algebraic step, not as t→∞ of a transient);
@@ -35,6 +36,28 @@ pub struct Inductor {
 
 impl Device for Inductor {
     device_identity!();
+
+    /// `1/(sL)`, or in the pencil form the branch `V_p − V_q = sL·i`,
+    /// which is affine in `s`. At `s = 0` a short.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let [p, q] = s.nodes();
+        if s.pencil {
+            let i = s.aux();
+            s.branch_pair(i, [p, q]);
+            s.a[(i, i)] -= s.s * self.inductance;
+            return;
+        }
+        let y = if s.s.norm() > 1e-15 {
+            Complex64::new(1.0, 0.0) / (s.s * self.inductance)
+        } else {
+            Complex64::new(1e12, 0.0)
+        };
+        s.admittance([p, q], y);
+    }
+
+    fn pencil_rows(&self) -> usize {
+        1
+    }
 
     fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
         // Nothing of its own: the DC analyses short it with a 0 V source

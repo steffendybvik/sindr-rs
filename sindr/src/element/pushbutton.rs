@@ -3,7 +3,7 @@
 use crate::error::SimError;
 use crate::stamp::{stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
-use super::{DcStamp, Device};
+use super::{AcStamp, DcStamp, Device};
 
 /// Pushbutton (momentary switch): identical behaviour to Switch.
 /// When closed = true, current flows; when false, open circuit.
@@ -21,6 +21,12 @@ pub struct Pushbutton {
 
 impl Device for Pushbutton {
     device_identity!();
+
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let r = if self.closed { 0.01 } else { 1e9 };
+        let nodes = s.nodes();
+        s.conductance(nodes, 1.0 / r);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let resistance = if self.closed {

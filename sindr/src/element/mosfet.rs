@@ -8,7 +8,8 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::stamp::stamp_companion_at;
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
+use crate::noise::NoiseSources;
 
 /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
 /// to the source).
@@ -48,6 +49,56 @@ pub struct Mosfet {
 
 impl Device for Mosfet {
     device_identity!();
+
+    /// gm and gds at the bias point. The body is tied to the source, so
+    /// there is no gmb term.
+    fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {
+        let [g, d, s] = b.nodes();
+        let comp = crate::device_params::mosfet_op(
+            self.kind,
+            &self.params,
+            b.voltage(g),
+            b.voltage(d),
+            b.voltage(s),
+        );
+        fet_conductances([g, d, s], comp.gm, comp.gds)
+    }
+
+    /// Its parasitic capacitances; the rest is in
+    /// [`linearise`](Device::linearise).
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let Some(pc) = &self.parasitic_caps else {
+            return;
+        };
+        for (_, c, p, q) in mosfet_parasitics(&self.nodes, pc) {
+            let y = s.s * c;
+            let pq = [s.node_map.index(&p), s.node_map.index(&q)];
+            s.admittance(pq, y);
+        }
+    }
+
+    /// Channel thermal noise, and flicker noise when the model has KF.
+    fn noise(&self, n: &mut NoiseSources<'_>) {
+        let [g, d, s] = &self.nodes;
+        let comp = crate::device_params::mosfet_op(
+            self.kind,
+            &self.params,
+            n.voltage(g),
+            n.voltage(d),
+            n.voltage(s),
+        );
+        n.channel(&self.id, [d, s], comp.gm);
+        if self.params.kf > 0.0 {
+            n.flicker(
+                &self.id,
+                "",
+                [d, s],
+                comp.id,
+                self.params.kf,
+                self.params.af,
+            );
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(vp) = s.v_prev {
@@ -186,4 +237,24 @@ pub(crate) fn stamp_mosfet_companion_at(
     if let Some(si) = s {
         system.b[si] += i_rhs;
     }
+}
+
+/// A three-terminal transconductor's small-signal conductances: `gm` from
+/// the control terminal `g` into the channel `d` → `s`, and `gds` across
+/// the channel. A MOSFET, JFET and IGBT all linearise to it.
+pub(crate) fn fet_conductances(
+    [g, d, s]: [Option<usize>; 3],
+    gm: f64,
+    gds: f64,
+) -> Vec<super::Conductance> {
+    vec![
+        (d, g, gm),
+        (d, s, -gm),
+        (s, g, -gm),
+        (s, s, gm),
+        (d, d, gds),
+        (s, s, gds),
+        (d, s, -gds),
+        (s, d, -gds),
+    ]
 }
