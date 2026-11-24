@@ -188,6 +188,20 @@ fn input_pulls_and_high_z() {
     assert!((load(Pull::Down) - 0.8).abs() < 1e-6);
 }
 
+/// Input leakage flows into the pin: 1 µA through 10 kΩ drops 10 mV.
+#[test]
+fn input_leakage_sinks_into_the_pin() {
+    let mut p = pin("D4", "pad", PinMode::Input, false);
+    p.model.leakage = 1e-6;
+    let circuit = powered(vec![
+        CircuitElement::DigitalPin(p),
+        vsource("VS", "s", 1.0),
+        resistor("RS", "s", "pad", 10e3),
+    ]);
+    let pad = solve_circuit(&circuit).unwrap().node_voltages["pad"];
+    assert!((pad - 0.99).abs() < 1e-5, "pad at {pad} V");
+}
+
 /// Open drain pulls low, and released it's an input: the external pull-up
 /// takes the net to the supply.
 #[test]
