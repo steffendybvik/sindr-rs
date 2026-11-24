@@ -16,10 +16,10 @@ use std::collections::HashMap;
 
 use nalgebra::DVector;
 
-use sindr_devices::bjt::{self, BjtKind};
+use sindr_devices::bjt::{self, BjtKind, BjtRegion};
 use sindr_devices::diode;
 use sindr_devices::jfet;
-use sindr_devices::mosfet::MosfetKind;
+use sindr_devices::mosfet::{MosfetKind, MosfetRegion};
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::device_params;
@@ -77,8 +77,9 @@ pub struct BjtResult {
     /// Collector dissipation `|Ic·Vce|` (W). The base's `Ib·Vbe` is left
     /// out.
     pub power: f64,
-    /// Operating region: `"active"`, `"saturation"`, or `"cutoff"`.
-    pub region: String,
+    /// Operating region. Serialises as `"active"`, `"saturation"` or
+    /// `"cutoff"`, as the string it replaced did.
+    pub region: BjtRegion,
 }
 
 /// Per-MOSFET operating-point results.
@@ -98,8 +99,9 @@ pub struct MosfetResult {
     pub id_current: f64,
     /// Total dissipation (W).
     pub power: f64,
-    /// Operating region: `"cutoff"`, `"triode"`, or `"saturation"`.
-    pub region: String,
+    /// Operating region. Serialises as `"cutoff"`, `"triode"` or
+    /// `"saturation"`, as the string it replaced did.
+    pub region: MosfetRegion,
 }
 
 /// Per-op-amp / comparator results: input/output voltages.
@@ -463,6 +465,7 @@ impl SimulationResult {
 /// Each lookup joins the instance path to a name as the block writes it
 /// (`"sw"` inside `"X1.X2"` is `"X1.X2.sw"`) and reads the full result.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct InstanceResult<'a> {
     result: &'a SimulationResult,
     path: String,
@@ -881,7 +884,7 @@ pub(crate) fn extract_results(
                     ic,
                     ie,
                     power,
-                    region: region.as_str().to_string(),
+                    region,
                 });
             }
             CircuitElement::Mosfet(Mosfet {
@@ -918,7 +921,7 @@ pub(crate) fn extract_results(
                     vds: vds_phys,
                     id_current,
                     power,
-                    region: comp.region.as_str().to_string(),
+                    region: comp.region,
                 });
             }
             CircuitElement::Behavioural(Behavioural {

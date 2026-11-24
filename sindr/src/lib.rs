@@ -407,10 +407,10 @@ pub use sindr_devices as devices;
 // constructing CircuitElement variants without an extra crate import.
 /// Battery equivalent circuits and presets, for [`CircuitElement::Battery`].
 pub use sindr_devices::battery;
-pub use sindr_devices::bjt::BjtKind;
+pub use sindr_devices::bjt::{BjtKind, BjtRegion};
 pub use sindr_devices::igbt::IgbtParams;
 pub use sindr_devices::jfet::JfetKind;
-pub use sindr_devices::mosfet::MosfetKind;
+pub use sindr_devices::mosfet::{MosfetKind, MosfetRegion};
 /// Linear regulator parameters and presets, for [`CircuitElement::VoltageRegulator`]'s `model`.
 pub use sindr_devices::regulator;
 pub use sindr_devices::regulator::RegulatorParams;
