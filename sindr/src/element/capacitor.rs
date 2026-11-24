@@ -7,6 +7,9 @@ use crate::stamp::stamp_companion_at;
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
 /// Capacitor. Open-circuit in DC analysis; charges/discharges in
 /// transient. `voltage_across` is reported as `nodes[0] − nodes[1]`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -66,5 +69,16 @@ impl Device for Capacitor {
     /// negative or non-finite capacitance is refused.
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).non_negative("capacitance", self.capacitance, " F")
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'C'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let value = num(&self.id, "capacitance", self.capacitance)?;
+        deck.two_terminal(name, &self.nodes, value)
     }
 }

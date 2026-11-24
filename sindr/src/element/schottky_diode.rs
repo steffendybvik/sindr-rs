@@ -8,6 +8,9 @@ use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{nominal, shockley, Deck, ExportError};
+
 /// Schottky diode: lower forward voltage (~0.3V) than silicon diode.
 /// nodes: [anode, cathode]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -69,5 +72,17 @@ impl Device for SchottkyDiode {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).positive("temperature", self.temperature, " K")
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'D'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        nominal(&self.id, self.temperature)?;
+        let model = shockley(crate::device_params::schottky(sindr_devices::diode::T_NOM));
+        deck.diode(&self.id, name, &self.nodes, model)
     }
 }

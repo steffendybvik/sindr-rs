@@ -5,6 +5,9 @@ use crate::stamp::{stamp_resistor_at, SWITCH_R_OPEN};
 
 use super::{AcStamp, Check, DcStamp, Device};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
 /// Fuse between two nodes.
 ///
 /// Intact (blown=false): stamped as 0.001 Ω (1 mΩ) — negligible voltage drop.
@@ -30,6 +33,21 @@ pub struct Fuse {
     pub blown: bool,
 }
 
+/// An intact fuse's resistance (Ω).
+const FUSE_R_INTACT: f64 = 0.001;
+
+impl Fuse {
+    /// The resistance it's stamped and exported as (Ω): 1 mΩ intact,
+    /// open once blown.
+    pub(crate) fn resistance(&self) -> f64 {
+        if self.blown {
+            SWITCH_R_OPEN
+        } else {
+            FUSE_R_INTACT
+        }
+    }
+}
+
 impl Device for Fuse {
     device_identity!();
 
@@ -40,9 +58,7 @@ impl Device for Fuse {
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
-        // Intact (blown=false): 0.001 Ω (1 mΩ) — negligible drop.
-        // Blown (blown=true):  1e9 Ω — effectively open circuit.
-        let resistance = if self.blown { SWITCH_R_OPEN } else { 0.001 };
+        let resistance = self.resistance();
         let nodes = s.nodes();
         stamp_resistor_at(s.system, nodes, resistance);
         Ok(())
@@ -50,6 +66,12 @@ impl Device for Fuse {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).positive("rating", self.rating, " A")
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let r = num(&self.id, "resistance", self.resistance())?;
+        deck.two_terminal(name, &self.nodes, r)
     }
 }
 

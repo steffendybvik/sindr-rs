@@ -1,11 +1,6 @@
 //! Write a [`Circuit`] as a SPICE deck: [`to_netlist`].
 
-use crate::element::{
-    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, Diode,
-    FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor,
-    Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt, Thermistor,
-    Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
-};
+use crate::element::{Capacitor, Inductor, Resistor, Switch, VoltageSource};
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 
@@ -14,16 +9,8 @@ use thiserror::Error;
 
 use crate::circuit::{BjtModel, DiodeModel};
 use crate::design::{DesignError, Instance};
-use crate::element::photoresistor::ldr_resistance;
-use crate::expression::Variable;
 use crate::stamp::{SWITCH_R_CLOSED, SWITCH_R_OPEN};
-use crate::{
-    device_params, BehaviouralOutput, BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind,
-    Waveform,
-};
-
-/// Resistance of an intact fuse, as sindr stamps it (Ω).
-const FUSE_R_INTACT: f64 = 0.001;
+use crate::{BjtKind, Circuit, CircuitElement, Waveform};
 
 /// Why [`to_netlist`] couldn't write a circuit.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -194,7 +181,7 @@ pub fn to_netlist(circuit: &Circuit, title: &str) -> Result<String, ExportError>
     Ok(out)
 }
 
-struct Deck<'a> {
+pub(crate) struct Deck<'a> {
     ground: &'a str,
     /// Each element id's SPICE name.
     names: HashMap<&'a str, String>,
@@ -240,7 +227,7 @@ impl<'a> Deck<'a> {
         let mut taken = HashMap::<String, &str>::new();
         let ids = components
             .iter()
-            .map(|c| (c.id(), spice_letter(c)))
+            .map(|c| (c.id(), c.device().spice_letter()))
             .chain(instances.iter().map(|i| (i.id.as_str(), 'x')));
         for (id, letter) in ids {
             check_token("element", id)?;
@@ -305,7 +292,7 @@ impl<'a> Deck<'a> {
         Ok(std::mem::take(&mut self.lines))
     }
 
-    fn node(&mut self, node: &str) -> Result<String, ExportError> {
+    pub(crate) fn node(&mut self, node: &str) -> Result<String, ExportError> {
         if node == self.ground {
             return Ok("0".to_string());
         }
@@ -332,7 +319,10 @@ impl<'a> Deck<'a> {
         }
     }
 
-    fn nodes<const N: usize>(&mut self, nodes: &[String; N]) -> Result<String, ExportError> {
+    pub(crate) fn nodes<const N: usize>(
+        &mut self,
+        nodes: &[String; N],
+    ) -> Result<String, ExportError> {
         let mut out = Vec::with_capacity(N);
         for node in nodes {
             out.push(self.node(node)?);
@@ -342,7 +332,7 @@ impl<'a> Deck<'a> {
 
     /// `name` for a second line of element `id`, unless another element
     /// already has it.
-    fn extra_name(&self, id: &str, name: String) -> Result<String, ExportError> {
+    pub(crate) fn extra_name(&self, id: &str, name: String) -> Result<String, ExportError> {
         match self
             .names
             .iter()
@@ -357,12 +347,12 @@ impl<'a> Deck<'a> {
         }
     }
 
-    fn line(&mut self, line: String) {
+    pub(crate) fn line(&mut self, line: String) {
         self.lines.push(line);
     }
 
     /// A two-terminal line `<name> <a> <b> <value>`.
-    fn two_terminal(
+    pub(crate) fn two_terminal(
         &mut self,
         name: &str,
         nodes: &[String; 2],
@@ -373,427 +363,76 @@ impl<'a> Deck<'a> {
         Ok(())
     }
 
+    /// Writes `component`'s lines under its SPICE name.
     fn element(&mut self, component: &CircuitElement) -> Result<(), ExportError> {
-        let id = component.id();
-        let name = self.names[id].clone();
-        let unsupported = |reason: &str| ExportError::Unsupported {
-            id: id.to_string(),
-            reason: reason.to_string(),
-        };
-        match component {
-            CircuitElement::SwitchSpdt(SwitchSpdt { .. })
-            | CircuitElement::Crystal(Crystal { .. })
-            | CircuitElement::FerriteBead(FerriteBead { .. }) => {
-                let parts = crate::composite::lower(component)
-                    .map_err(|e| unsupported(&e.to_string()))?
-                    .unwrap_or_default();
-                // `<id>#m1` → `<id>_m1`: one SPICE-safe spelling for the
-                // parts' names and the internal nodes.
-                let local = |s: &str| s.replace('#', "_");
-                for part in &parts {
-                    let suffix = part.id().rsplit('#').next().unwrap_or("");
-                    let letter = spice_letter(part);
-                    let base = name.strip_prefix(['R', 'r']).unwrap_or(&name);
-                    let part_name = self.extra_name(id, format!("{letter}{base}_{suffix}"))?;
-                    let nodes = [local(&part.nodes()[0]), local(&part.nodes()[1])];
-                    let value = match part {
-                        CircuitElement::Resistor(Resistor { resistance, .. }) => {
-                            num(id, "resistance", *resistance)?
-                        }
-                        CircuitElement::Inductor(Inductor { inductance, .. }) => {
-                            num(id, "inductance", *inductance)?
-                        }
-                        CircuitElement::Capacitor(Capacitor { capacitance, .. }) => {
-                            num(id, "capacitance", *capacitance)?
-                        }
-                        CircuitElement::Switch(Switch { closed, .. }) => {
-                            let r = if *closed {
-                                SWITCH_R_CLOSED
-                            } else {
-                                SWITCH_R_OPEN
-                            };
-                            num(id, "resistance", r)?
-                        }
-                        _ => return Err(unsupported("an unexpected part")),
-                    };
-                    self.two_terminal(&part_name, &nodes, value)?;
-                }
-                Ok(())
-            }
-            CircuitElement::Behavioural(Behavioural {
-                nodes,
-                output,
-                expr,
-                ..
-            }) => {
-                // The expression reads nodes and sources by their deck names.
-                let mut deck_names = HashMap::new();
-                for variable in expr.variables() {
-                    match variable {
-                        Variable::Voltage { node, reference } => {
-                            for n in std::iter::once(node).chain(reference) {
-                                deck_names.insert(n.clone(), self.node(n)?);
-                            }
-                        }
-                        Variable::Current { source } => {
-                            let deck = self.names.get(source.as_str()).cloned().ok_or_else(|| {
-                                ExportError::BadName {
-                                    what: "element",
-                                    name: id.to_string(),
-                                    reason: format!(
-                                        "its expression reads i({source}), which isn't in the circuit"
-                                    ),
-                                }
-                            })?;
-                            deck_names.insert(source.clone(), deck);
-                        }
-                        _ => {}
-                    }
-                }
-                let mut expr = expr.clone();
-                expr.rename(|n| deck_names[n].clone(), |s| deck_names[s].clone());
-                let key = match output {
-                    BehaviouralOutput::Current => 'I',
-                    _ => 'V',
-                };
-                let nodes = self.nodes(nodes)?;
-                self.line(format!("{name} {nodes} {key}={{{expr}}}"));
-                Ok(())
-            }
-            CircuitElement::Battery(Battery { .. }) => Err(unsupported(
-                "a battery's state of charge has no SPICE3 primitive",
-            )),
-            CircuitElement::Resistor(Resistor {
-                nodes, resistance, ..
-            }) => self.two_terminal(&name, nodes, num(id, "resistance", *resistance)?),
-            CircuitElement::Capacitor(Capacitor {
-                nodes, capacitance, ..
-            }) => self.two_terminal(&name, nodes, num(id, "capacitance", *capacitance)?),
-            CircuitElement::Inductor(Inductor {
-                saturation: Some(_),
-                ..
-            })
-            | CircuitElement::Transformer(Transformer {
-                saturation: Some(_),
-                ..
-            }) => Err(unsupported("a saturating core has no SPICE3 primitive")),
-            CircuitElement::Inductor(Inductor {
-                nodes, inductance, ..
-            }) => self.two_terminal(&name, nodes, num(id, "inductance", *inductance)?),
-            CircuitElement::VoltageSource(VoltageSource {
-                nodes,
-                voltage: value,
-                waveform,
-                ..
-            })
-            | CircuitElement::CurrentSource(CurrentSource {
-                nodes,
-                current: value,
-                waveform,
-                ..
-            }) => {
-                let value = match waveform {
-                    None => format!("DC {}", num(id, "value", *value)?),
-                    Some(w) => waveform_card(id, w, *value)?,
-                };
-                self.two_terminal(&name, nodes, value)
-            }
-            CircuitElement::Switch(Switch { nodes, closed, .. })
-            | CircuitElement::Pushbutton(Pushbutton { nodes, closed, .. }) => {
-                let r = if *closed {
-                    SWITCH_R_CLOSED
-                } else {
-                    SWITCH_R_OPEN
-                };
-                self.two_terminal(&name, nodes, num(id, "resistance", r)?)
-            }
-            CircuitElement::Fuse(Fuse { nodes, blown, .. }) => {
-                let r = if *blown { SWITCH_R_OPEN } else { FUSE_R_INTACT };
-                self.two_terminal(&name, nodes, num(id, "resistance", r)?)
-            }
-            CircuitElement::Photoresistor(Photoresistor {
-                nodes, light_level, ..
-            }) => {
-                let r = ldr_resistance(*light_level);
-                self.two_terminal(&name, nodes, num(id, "resistance", r)?)
-            }
-            CircuitElement::Thermistor(Thermistor {
-                nodes, temperature, ..
-            }) => {
-                let r = crate::device_params::thermistor_resistance(*temperature);
-                self.two_terminal(&name, nodes, num(id, "resistance", r)?)
-            }
-            CircuitElement::Potentiometer(Potentiometer {
-                nodes,
-                resistance,
-                position,
-                ..
-            }) => {
-                // The clamp keeps the wiper off the ends, as the stamp does.
-                let pos = position.clamp(0.001, 0.999);
-                let top = num(id, "resistance", resistance * pos)?;
-                let bottom = num(id, "resistance", resistance * (1.0 - pos))?;
-                let [t, w, b] = nodes.clone();
-                let top_name = self.extra_name(id, format!("{name}_top"))?;
-                let bottom_name = self.extra_name(id, format!("{name}_bottom"))?;
-                self.two_terminal(&top_name, &[t, w.clone()], top)?;
-                self.two_terminal(&bottom_name, &[w, b], bottom)
-            }
-            CircuitElement::Diode(Diode {
-                nodes,
-                temperature,
-                model,
-                ..
-            }) => {
-                nominal(id, *temperature)?;
-                let model = model.unwrap_or_default();
-                self.diode(id, &name, nodes, model)
-            }
-            CircuitElement::Led(Led {
-                nodes,
-                color,
-                temperature,
-                ..
-            }) => {
-                nominal(id, *temperature)?;
-                let model = shockley(device_params::led(color, T_NOM));
-                self.diode(id, &name, nodes, model)
-            }
-            CircuitElement::SchottkyDiode(SchottkyDiode {
-                nodes, temperature, ..
-            }) => {
-                nominal(id, *temperature)?;
-                let model = shockley(device_params::schottky(T_NOM));
-                self.diode(id, &name, nodes, model)
-            }
-            CircuitElement::Bjt(Bjt {
-                nodes,
-                kind,
-                bf,
-                temperature,
-                parasitic_caps,
-                model,
-                ..
-            }) => {
-                nominal(id, *temperature)?;
-                if parasitic_caps
-                    .as_ref()
-                    .is_some_and(|c| c.cbe != 0.0 || c.cbc != 0.0)
-                {
-                    return Err(unsupported(
-                        "fixed parasitic capacitances have no SPICE BJT parameter",
-                    ));
-                }
-                let model_name = self.bjt_model(id, *kind, *bf, model.unwrap_or_default())?;
-                // SPICE's Q line is [collector, base, emitter]; sindr's is [b, c, e].
-                let [b, c, e] = nodes.clone();
-                let nodes = self.nodes(&[c, b, e])?;
-                self.line(format!("{name} {nodes} {model_name}"));
-                Ok(())
-            }
-            CircuitElement::Vcvs(Vcvs {
-                nodes,
-                control_nodes,
-                gain,
-                ..
-            }) => self.controlled(&name, nodes, control_nodes, num(id, "gain", *gain)?),
-            // VCCS and CCCS share SPICE's G and F direction, so their nodes
-            // go out as they are. Checked against ngspice by the
-            // `op_exported_controlled` golden.
-            CircuitElement::Vccs(Vccs {
-                nodes,
-                control_nodes,
-                gm,
-                ..
-            }) => self.controlled(&name, nodes, control_nodes, num(id, "gm", *gm)?),
-            CircuitElement::Ccvs(Ccvs {
-                nodes,
-                control_source,
-                rm,
-                ..
-            }) => {
-                let value = num(id, "rm", *rm)?;
-                self.current_controlled(&name, id, nodes, control_source, value)
-            }
-            CircuitElement::Cccs(Cccs {
-                nodes,
-                control_source,
-                alpha,
-                ..
-            }) => {
-                let value = num(id, "alpha", *alpha)?;
-                self.current_controlled(&name, id, nodes, control_source, value)
-            }
-            CircuitElement::Transformer(Transformer {
-                nodes, l1, l2, k, ..
-            }) => {
-                let [p1, q1, p2, q2] = nodes.clone();
-                let base = name.strip_prefix(['K', 'k']).unwrap_or(&name);
-                let primary = self.extra_name(id, format!("L{base}_p"))?;
-                let secondary = self.extra_name(id, format!("L{base}_s"))?;
-                self.two_terminal(&primary, &[p1, q1], num(id, "l1", *l1)?)?;
-                self.two_terminal(&secondary, &[p2, q2], num(id, "l2", *l2)?)?;
-                let k = num(id, "k", *k)?;
-                self.line(format!("{name} {primary} {secondary} {k}"));
-                Ok(())
-            }
-            CircuitElement::Mosfet(Mosfet {
-                nodes,
-                kind,
-                params,
-                parasitic_caps,
-                body_diode,
-                ..
-            }) => {
-                if params.kf != 0.0 {
-                    return Err(unsupported(
-                        "a level-1 card's flicker noise needs a gate oxide sindr doesn't model",
-                    ));
-                }
-                let caps = parasitic_caps.clone().unwrap_or_default();
-                // The card's drain–bulk junction holds a body diode with
-                // nothing SPICE's junction lacks; any other is its own D line.
-                let plain = DiodeModel {
-                    is: 0.0,
-                    cjo: 0.0,
-                    vj: 0.8,
-                    m: 0.5,
-                    fc: 0.5,
-                    ..DiodeModel::default()
-                };
-                let (junction, separate) = match body_diode {
-                    None => (plain, None),
-                    Some(d)
-                        if *d
-                            == DiodeModel {
-                                is: d.is,
-                                cjo: d.cjo,
-                                vj: d.vj,
-                                m: d.m,
-                                fc: d.fc,
-                                ..DiodeModel::default()
-                            } =>
-                    {
-                        (*d, None)
-                    }
-                    Some(d) => (plain, Some(*d)),
-                };
-                let card = format!(
-                    "{}(LEVEL=1 KP={} VTO={} LAMBDA={} GAMMA={} PHI={} CGSO={} CGDO={} IS={} CBD={} PB={} MJ={} FC={})",
-                    match kind {
-                        MosfetKind::Nmos => "NMOS",
-                        MosfetKind::Pmos => "PMOS",
-                    },
-                    num(id, "kp", params.kp)?,
-                    num(id, "vto", params.vto)?,
-                    num(id, "lambda", params.lambda)?,
-                    num(id, "gamma", params.gamma)?,
-                    num(id, "phi", params.phi)?,
-                    num(id, "cgs", caps.cgs)?,
-                    num(id, "cgd", caps.cgd)?,
-                    num(id, "is", junction.is)?,
-                    num(id, "cjo", junction.cjo)?,
-                    num(id, "vj", junction.vj)?,
-                    num(id, "m", junction.m)?,
-                    num(id, "fc", junction.fc)?,
-                );
-                let model_name = self.fet_model("mmod", card);
-                // SPICE's M line is [drain, gate, source, bulk]; sindr's is
-                // [g, d, s], its body tied to the source. W = L = 1 m makes
-                // KP and CGSO/CGDO sindr's values as they are.
-                let [g, d, s] = nodes.clone();
-                let line_nodes = self.nodes(&[d.clone(), g, s.clone(), s.clone()])?;
-                self.line(format!("{name} {line_nodes} {model_name} W=1 L=1"));
-                if let Some(diode) = separate {
-                    let diode_name = self.extra_name(id, format!("D{name}_body"))?;
-                    let (anode, cathode) = match kind {
-                        MosfetKind::Nmos => (s, d),
-                        MosfetKind::Pmos => (d, s),
-                    };
-                    self.diode(id, &diode_name, &[anode, cathode], diode)?;
-                }
-                Ok(())
-            }
-            CircuitElement::Jfet(Jfet {
-                nodes,
-                kind,
-                idss,
-                vp,
-                parasitic_caps,
-                ..
-            }) => {
-                // sindr's P-channel JFET pinches off at −|vp| in the mirrored
-                // frame, so either sign of `vp` is its |vp|; SPICE's VTO for
-                // both polarities is that negative number.
-                let vto = match kind {
-                    JfetKind::NChannel => *vp,
-                    JfetKind::PChannel => -vp.abs(),
-                };
-                if !(vto < 0.0 && *idss > 0.0) {
-                    return Err(unsupported(
-                        "SPICE's JFET needs IDSS above 0 and an N-channel pinch-off below 0",
-                    ));
-                }
-                // M only when it isn't SPICE's 0.5: ngspice's JFET has no M
-                // and grades its gate junctions at 0.5 regardless.
-                let caps = match parasitic_caps.filter(|c| c.stores_charge()) {
-                    Some(c) => {
-                        let mut caps = format!(
-                            " CGS={} CGD={} PB={} FC={}",
-                            num(id, "parasitic_caps.cgs", c.cgs)?,
-                            num(id, "parasitic_caps.cgd", c.cgd)?,
-                            num(id, "parasitic_caps.pb", c.pb)?,
-                            num(id, "parasitic_caps.fc", c.fc)?,
-                        );
-                        if c.m != 0.5 {
-                            caps += &format!(" M={}", num(id, "parasitic_caps.m", c.m)?);
-                        }
-                        caps
-                    }
-                    None => String::new(),
-                };
-                // IS=0: sindr's gate draws no current, as SPICE's then doesn't.
-                let card = format!(
-                    "{}(VTO={} BETA={} IS=0{caps})",
-                    match kind {
-                        JfetKind::NChannel => "NJF",
-                        JfetKind::PChannel => "PJF",
-                    },
-                    num(id, "vp", vto)?,
-                    num(id, "idss", idss / (vto * vto))?,
-                );
-                let model_name = self.fet_model("jmod", card);
-                // SPICE's J line is [drain, gate, source]; sindr's is [g, d, s].
-                let [g, d, s] = nodes.clone();
-                let line_nodes = self.nodes(&[d, g, s])?;
-                self.line(format!("{name} {line_nodes} {model_name}"));
-                Ok(())
-            }
-            CircuitElement::Igbt(Igbt { .. }) => Err(unsupported("SPICE has no IGBT primitive")),
-            CircuitElement::ZenerDiode(ZenerDiode { .. }) => Err(unsupported(
-                "sindr's breakdown clamp isn't SPICE's BV/IBV breakdown",
-            )),
-            CircuitElement::OpAmp(OpAmp { .. }) | CircuitElement::Comparator(Comparator { .. }) => {
-                Err(unsupported(
-                    "the saturating macromodel has no SPICE primitive",
-                ))
-            }
-            CircuitElement::Relay(Relay { .. }) => Err(unsupported(
-                "a voltage-operated contact has no SPICE3 primitive",
-            )),
-            CircuitElement::Photodiode(Photodiode { .. }) => Err(unsupported(
-                "the light-driven current has no SPICE primitive",
-            )),
-            CircuitElement::Varactor(Varactor { .. }) => Err(unsupported(
-                "a SPICE diode with junction capacitance also conducts",
-            )),
-            CircuitElement::VoltageRegulator(VoltageRegulator { .. }) => {
-                Err(unsupported("a regulator macromodel has no SPICE primitive"))
-            }
-        }
+        let name = self.names[component.id()].clone();
+        component.device().write_spice(self, &name)
     }
 
-    fn diode(
+    /// The SPICE name of element `id` in this scope, if it has one.
+    pub(crate) fn name_of(&self, id: &str) -> Option<&str> {
+        self.names.get(id).map(String::as_str)
+    }
+
+    /// An independent source's line: its static value as `DC`, or its
+    /// waveform card with the value folded in.
+    pub(crate) fn source(
+        &mut self,
+        id: &str,
+        name: &str,
+        nodes: &[String; 2],
+        value: f64,
+        waveform: Option<&Waveform>,
+    ) -> Result<(), ExportError> {
+        let value = match waveform {
+            None => format!("DC {}", num(id, "value", value)?),
+            Some(w) => waveform_card(id, w, value)?,
+        };
+        self.two_terminal(name, nodes, value)
+    }
+
+    /// The lines of an element solved as its parts
+    /// ([`composite::lower`](crate::composite::lower)): one two-terminal
+    /// line per part, named after `name`.
+    pub(crate) fn parts(
+        &mut self,
+        element: &CircuitElement,
+        name: &str,
+    ) -> Result<(), ExportError> {
+        let id = element.id();
+        let parts = crate::composite::lower(element)
+            .map_err(|e| unsupported(id, &e.to_string()))?
+            .unwrap_or_default();
+        // `<id>#m1` → `<id>_m1`: one SPICE-safe spelling for the parts'
+        // names and the internal nodes.
+        let local = |s: &str| s.replace('#', "_");
+        for part in &parts {
+            let suffix = part.id().rsplit('#').next().unwrap_or("");
+            let letter = part.device().spice_letter();
+            let base = name.strip_prefix(['R', 'r']).unwrap_or(name);
+            let part_name = self.extra_name(id, format!("{letter}{base}_{suffix}"))?;
+            let nodes = [local(&part.nodes()[0]), local(&part.nodes()[1])];
+            let value = match part {
+                CircuitElement::Resistor(Resistor { resistance, .. }) => {
+                    num(id, "resistance", *resistance)?
+                }
+                CircuitElement::Inductor(Inductor { inductance, .. }) => {
+                    num(id, "inductance", *inductance)?
+                }
+                CircuitElement::Capacitor(Capacitor { capacitance, .. }) => {
+                    num(id, "capacitance", *capacitance)?
+                }
+                CircuitElement::Switch(Switch { closed, .. }) => {
+                    num(id, "resistance", switch_resistance(*closed))?
+                }
+                _ => return Err(unsupported(id, "an unexpected part")),
+            };
+            self.two_terminal(&part_name, &nodes, value)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn diode(
         &mut self,
         id: &str,
         name: &str,
@@ -840,7 +479,7 @@ impl<'a> Deck<'a> {
         self.two_terminal(name, nodes, model_name)
     }
 
-    fn bjt_model(
+    pub(crate) fn bjt_model(
         &mut self,
         id: &str,
         kind: BjtKind,
@@ -875,7 +514,7 @@ impl<'a> Deck<'a> {
     }
 
     /// The name of the card `TYPE(params)`, writing it on first use.
-    fn fet_model(&mut self, prefix: &str, card: String) -> String {
+    pub(crate) fn fet_model(&mut self, prefix: &str, card: String) -> String {
         if let Some((_, n)) = self.fet_models.iter().find(|(c, _)| *c == card) {
             return n.clone();
         }
@@ -890,7 +529,7 @@ impl<'a> Deck<'a> {
         n
     }
 
-    fn controlled(
+    pub(crate) fn controlled(
         &mut self,
         name: &str,
         nodes: &[String; 2],
@@ -903,7 +542,7 @@ impl<'a> Deck<'a> {
         Ok(())
     }
 
-    fn current_controlled(
+    pub(crate) fn current_controlled(
         &mut self,
         name: &str,
         id: &str,
@@ -925,26 +564,20 @@ impl<'a> Deck<'a> {
     }
 }
 
-/// The SPICE element letter an element is written as.
-fn spice_letter(component: &CircuitElement) -> char {
-    match component {
-        CircuitElement::Capacitor(Capacitor { .. }) => 'C',
-        CircuitElement::Inductor(Inductor { .. }) => 'L',
-        CircuitElement::VoltageSource(VoltageSource { .. }) => 'V',
-        CircuitElement::CurrentSource(CurrentSource { .. }) => 'I',
-        CircuitElement::Diode(Diode { .. })
-        | CircuitElement::Led(Led { .. })
-        | CircuitElement::SchottkyDiode(SchottkyDiode { .. }) => 'D',
-        CircuitElement::Bjt(Bjt { .. }) => 'Q',
-        CircuitElement::Vcvs(Vcvs { .. }) => 'E',
-        CircuitElement::Vccs(Vccs { .. }) => 'G',
-        CircuitElement::Ccvs(Ccvs { .. }) => 'H',
-        CircuitElement::Cccs(Cccs { .. }) => 'F',
-        CircuitElement::Transformer(Transformer { .. }) => 'K',
-        CircuitElement::Mosfet(Mosfet { .. }) => 'M',
-        CircuitElement::Jfet(Jfet { .. }) => 'J',
-        CircuitElement::Behavioural(Behavioural { .. }) => 'B',
-        _ => 'R',
+/// An [`ExportError::Unsupported`] for element `id`.
+pub(crate) fn unsupported(id: &str, reason: &str) -> ExportError {
+    ExportError::Unsupported {
+        id: id.to_string(),
+        reason: reason.to_string(),
+    }
+}
+
+/// A switch's resistance, as sindr stamps it (Ω).
+pub(crate) fn switch_resistance(closed: bool) -> f64 {
+    if closed {
+        SWITCH_R_CLOSED
+    } else {
+        SWITCH_R_OPEN
     }
 }
 
@@ -969,7 +602,7 @@ fn check_token(what: &'static str, name: &str) -> Result<(), ExportError> {
     })
 }
 
-fn nominal(id: &str, temperature: f64) -> Result<(), ExportError> {
+pub(crate) fn nominal(id: &str, temperature: f64) -> Result<(), ExportError> {
     if (temperature - T_NOM).abs() > 1e-6 {
         return Err(ExportError::Unsupported {
             id: id.to_string(),
@@ -999,7 +632,7 @@ fn bjt_temperature(id: &str, model: &BjtModel) -> Result<String, ExportError> {
 
 /// ` KF=… AF=…` for a card with flicker noise; nothing when `kf` is 0, so
 /// cards without it read as they always have.
-fn flicker(id: &str, kf: f64, af: f64) -> Result<String, ExportError> {
+pub(crate) fn flicker(id: &str, kf: f64, af: f64) -> Result<String, ExportError> {
     if kf == 0.0 {
         return Ok(String::new());
     }
@@ -1010,7 +643,7 @@ fn flicker(id: &str, kf: f64, af: f64) -> Result<String, ExportError> {
     ))
 }
 
-fn shockley(params: DiodeParams) -> DiodeModel {
+pub(crate) fn shockley(params: DiodeParams) -> DiodeModel {
     DiodeModel {
         is: params.is,
         n: params.n,
@@ -1021,7 +654,7 @@ fn shockley(params: DiodeParams) -> DiodeModel {
 
 /// `value` written so it reads back as the same `f64`: plain decimals in a
 /// readable range, exponent notation outside it.
-fn num(id: &str, field: &'static str, value: f64) -> Result<String, ExportError> {
+pub(crate) fn num(id: &str, field: &'static str, value: f64) -> Result<String, ExportError> {
     if !value.is_finite() {
         return Err(ExportError::NonFinite {
             id: id.to_string(),
@@ -1040,7 +673,7 @@ fn num(id: &str, field: &'static str, value: f64) -> Result<String, ExportError>
 }
 
 /// A source's waveform card, with the source's static value `dc` folded in.
-fn waveform_card(id: &str, waveform: &Waveform, dc: f64) -> Result<String, ExportError> {
+pub(crate) fn waveform_card(id: &str, waveform: &Waveform, dc: f64) -> Result<String, ExportError> {
     let n = |field, v| num(id, field, v);
     let pulse = |v1: f64, v2: f64, td: f64, tr: f64, tf: f64, pw: f64, per: f64| {
         Ok::<_, ExportError>(format!(

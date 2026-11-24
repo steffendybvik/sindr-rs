@@ -6,6 +6,9 @@ use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 use super::{AcStamp, DcStamp, Device, TranStamp};
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
 /// Varactor diode: voltage-dependent junction capacitance.
 /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
 /// transient; in AC, its capacitance at the DC bias point.
@@ -65,5 +68,13 @@ impl Device for Varactor {
 
     fn is_reactive(&self) -> bool {
         true
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(
+            &self.id,
+            "a SPICE diode with junction capacitance also conducts",
+        ))
     }
 }

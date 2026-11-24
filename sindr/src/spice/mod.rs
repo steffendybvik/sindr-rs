@@ -280,7 +280,7 @@ mod analysis;
 mod ast;
 mod build;
 mod error;
-mod export;
+pub(crate) mod export;
 mod flatten;
 mod param_eval;
 mod parser;

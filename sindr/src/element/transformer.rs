@@ -8,6 +8,9 @@ use crate::stamp::stamp_voltage_source_at;
 
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, unsupported, Deck, ExportError};
+
 /// Ideal transformer with coupled inductors.
 ///
 /// nodes: [p1, q1, p2, q2] where:
@@ -158,6 +161,28 @@ impl Device for Transformer {
                 )));
             }
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'K'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let id = &self.id;
+        if self.saturation.is_some() {
+            return Err(unsupported(id, "a saturating core has no SPICE3 primitive"));
+        }
+        let [p1, q1, p2, q2] = self.nodes.clone();
+        let base = name.strip_prefix(['K', 'k']).unwrap_or(name);
+        let primary = deck.extra_name(id, format!("L{base}_p"))?;
+        let secondary = deck.extra_name(id, format!("L{base}_s"))?;
+        deck.two_terminal(&primary, &[p1, q1], num(id, "l1", self.l1)?)?;
+        deck.two_terminal(&secondary, &[p2, q2], num(id, "l2", self.l2)?)?;
+        let k = num(id, "k", self.k)?;
+        deck.line(format!("{name} {primary} {secondary} {k}"));
         Ok(())
     }
 }

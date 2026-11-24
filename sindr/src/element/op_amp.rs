@@ -10,6 +10,9 @@ use crate::stamp::stamp_vcvs_at;
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 use num_complex::Complex64;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
 /// Op-amp, output referred to ground.
 ///
 /// With `model: None` it is the near-ideal VCVS sindr has always used:
@@ -139,5 +142,13 @@ impl Device for OpAmp {
         check.non_negative("model.r_out", model.r_out, " Ω")?;
         check.finite("model.offset_voltage", model.offset_voltage, " V")?;
         check.finite("model.bias_current", model.bias_current, " A")
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(
+            &self.id,
+            "the saturating macromodel has no SPICE primitive",
+        ))
     }
 }

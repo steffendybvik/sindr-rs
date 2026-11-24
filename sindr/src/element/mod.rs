@@ -13,6 +13,9 @@ use crate::circuit::CircuitElement;
 use crate::error::SimError;
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{Deck, ExportError};
+
 use crate::noise::NoiseSources;
 
 pub(crate) use ac_stamp::{AcBias, AcStamp, Conductance};
@@ -163,6 +166,24 @@ pub(crate) trait Device {
     fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
         m.port_rating(kind)
     }
+
+    /// The SPICE letter it's written under. The provided `R` is for an
+    /// element written as resistors, or not at all.
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'R'
+    }
+
+    /// Writes its line, under SPICE name `name`, and any model card and
+    /// extra lines it needs, into `deck`.
+    ///
+    /// # Errors
+    ///
+    /// [`ExportError::Unsupported`] for an element SPICE3 has no primitive
+    /// for, and what the deck refuses: a value that isn't finite, a name
+    /// SPICE can't hold.
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError>;
 
     /// Rejects a value the models can't use, naming the component, the
     /// field and the value. Left alone, a 0 K junction divides by zero and

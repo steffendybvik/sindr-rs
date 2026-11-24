@@ -6,6 +6,9 @@ use crate::mna::MnaSystem;
 use super::{AcStamp, Check, DcStamp, Device};
 use num_complex::Complex64;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
 /// Voltage-Controlled Current Source: I_out = gm * V_control.
 /// nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-]
 ///
@@ -59,6 +62,20 @@ impl Device for Vccs {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).finite("gm", self.gm, " S")
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'G'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        // VCCS and CCCS share SPICE's G and F direction, so their nodes
+        // go out as they are. Checked against ngspice by the
+        // `op_exported_controlled` golden.
+        let value = num(&self.id, "gm", self.gm)?;
+        deck.controlled(name, &self.nodes, &self.control_nodes, value)
     }
 }
 

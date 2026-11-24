@@ -8,6 +8,9 @@ use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
 /// Zener diode between two nodes: a silicon diode with SPICE reverse
 /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
 /// (the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`), so it holds about
@@ -84,5 +87,13 @@ impl Device for ZenerDiode {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).positive("temperature", self.temperature, " K")
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(
+            &self.id,
+            "sindr's breakdown clamp isn't SPICE's BV/IBV breakdown",
+        ))
     }
 }

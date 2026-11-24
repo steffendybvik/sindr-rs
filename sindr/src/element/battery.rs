@@ -8,6 +8,9 @@ use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 use num_complex::Complex64;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
 /// A battery: open-circuit voltage by state of charge behind a series
 /// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
 /// its open-circuit voltage at `state_of_charge` behind `R0 + R1`. In
@@ -122,5 +125,13 @@ impl Device for Battery {
             ));
         }
         check.within("state_of_charge", self.state_of_charge, 1.0)
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(
+            &self.id,
+            "a battery's state of charge has no SPICE3 primitive",
+        ))
     }
 }

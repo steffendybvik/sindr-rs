@@ -6,6 +6,9 @@ use crate::stamp::stamp_vcvs_at;
 use super::{AcStamp, Check, DcStamp, Device};
 use num_complex::Complex64;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
 /// Voltage-Controlled Voltage Source: V_out = mu * V_control.
 /// nodes: [out+, out-], control_nodes: [ctrl+, ctrl-]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -59,5 +62,16 @@ impl Device for Vcvs {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).finite("gain", self.gain, "")
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'E'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let value = num(&self.id, "gain", self.gain)?;
+        deck.controlled(name, &self.nodes, &self.control_nodes, value)
     }
 }

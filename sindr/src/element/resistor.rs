@@ -7,6 +7,9 @@ use super::{AcStamp, DcStamp, Device};
 use crate::noise::NoiseSources;
 use crate::ratings::RatingKind;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
 /// Resistor between two nodes.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -52,5 +55,11 @@ impl Device for Resistor {
         } else {
             Err(SimError::InvalidResistance(self.id.clone()))
         }
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let value = num(&self.id, "resistance", self.resistance)?;
+        deck.two_terminal(name, &self.nodes, value)
     }
 }

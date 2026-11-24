@@ -12,6 +12,9 @@ use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, unsupported, Deck, ExportError};
+
 /// N-channel or P-channel JFET (Shockley square-law model).
 /// nodes: [gate, drain, source]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -134,6 +137,64 @@ impl Device for Jfet {
         check.positive("parasitic_caps.pb", caps.pb, " V")?;
         check.within("parasitic_caps.m", caps.m, 0.9)?;
         check.within("parasitic_caps.fc", caps.fc, 0.95)
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'J'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let id = &self.id;
+        let (idss, vp) = (self.idss, self.vp);
+        // sindr's P-channel JFET pinches off at −|vp| in the mirrored
+        // frame, so either sign of `vp` is its |vp|; SPICE's VTO for
+        // both polarities is that negative number.
+        let vto = match self.kind {
+            JfetKind::NChannel => vp,
+            JfetKind::PChannel => -vp.abs(),
+        };
+        if !(vto < 0.0 && idss > 0.0) {
+            return Err(unsupported(
+                id,
+                "SPICE's JFET needs IDSS above 0 and an N-channel pinch-off below 0",
+            ));
+        }
+        // M only when it isn't SPICE's 0.5: ngspice's JFET has no M
+        // and grades its gate junctions at 0.5 regardless.
+        let caps = match self.parasitic_caps.filter(|c| c.stores_charge()) {
+            Some(c) => {
+                let mut caps = format!(
+                    " CGS={} CGD={} PB={} FC={}",
+                    num(id, "parasitic_caps.cgs", c.cgs)?,
+                    num(id, "parasitic_caps.cgd", c.cgd)?,
+                    num(id, "parasitic_caps.pb", c.pb)?,
+                    num(id, "parasitic_caps.fc", c.fc)?,
+                );
+                if c.m != 0.5 {
+                    caps += &format!(" M={}", num(id, "parasitic_caps.m", c.m)?);
+                }
+                caps
+            }
+            None => String::new(),
+        };
+        // IS=0: sindr's gate draws no current, as SPICE's then doesn't.
+        let card = format!(
+            "{}(VTO={} BETA={} IS=0{caps})",
+            match self.kind {
+                JfetKind::NChannel => "NJF",
+                JfetKind::PChannel => "PJF",
+            },
+            num(id, "vp", vto)?,
+            num(id, "idss", idss / (vto * vto))?,
+        );
+        let model_name = deck.fet_model("jmod", card);
+        // SPICE's J line is [drain, gate, source]; sindr's is [g, d, s].
+        let [g, d, s] = self.nodes.clone();
+        let line_nodes = deck.nodes(&[d, g, s])?;
+        deck.line(format!("{name} {line_nodes} {model_name}"));
+        Ok(())
     }
 }
 

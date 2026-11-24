@@ -10,6 +10,9 @@ use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 use num_complex::Complex64;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{nominal, Deck, ExportError};
+
 /// Diode (Shockley model, silicon unless `model` says otherwise).
 /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
 /// positive `voltage_across` corresponds to forward bias.
@@ -173,5 +176,17 @@ impl Device for Diode {
             check.non_negative("model.xti", model.xti, "")?;
         }
         Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'D'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        nominal(&self.id, self.temperature)?;
+        let model = self.model.unwrap_or_default();
+        deck.diode(&self.id, name, &self.nodes, model)
     }
 }
