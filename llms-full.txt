@@ -9359,9 +9359,9 @@ inside every instance instead of taking its prefix.
 [`ParsedNetlist::options`]; [`ParsedNetlist::solver`] runs the deck's
 analyses with them.
 
-Enable the optional `spice` feature to pull this module in
-(`sindr = { version = "0.3", features = ["spice"] }`); it is off by
-default so the parser dependencies stay out of the baseline build.
+The module is the `spice` feature, on by default like every feature.
+A build that turns the defaults off (`default-features = false`) keeps
+it by listing it: `features = ["spice"]`.
 
 ### Quick start
 
