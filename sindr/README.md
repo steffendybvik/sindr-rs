@@ -173,6 +173,25 @@ CircuitElement::FerriteBead(FerriteBead { id, nodes: [String; 2], params: Ferrit
 
 Both, and the SPDT switch, are solved as those networks: results and ratings come back under the element's own id, and `to_netlist` writes the network.
 
+### Digital I/O pin
+
+```rust,ignore
+use sindr::element::{DigitalPin, PinMode, PinModel, Pull};
+CircuitElement::DigitalPin(DigitalPin {
+    id, nodes: [pad, vdd, gnd], mode: PinMode, level: bool, pull: Pull,
+    port: Option<String>, model: PinModel,
+})
+```
+
+The electrical side of a microcontroller or logic-IC pin, after the IBIS I/O buffer, in place of an ideal voltage source standing in for it. `vdd` and `gnd` are the rails the buffer returns to, so a driven pin draws its current from the supply.
+
+- **Modes:** `PinMode::Input` (high impedance, the default), `PushPull` (`r_high` to `vdd` when `level` is high, `r_low` to `gnd` when low) and `OpenDrain` (`r_low` when low, released when high). `Pull::Up` or `Pull::Down` adds the weak `r_pull`.
+- **`PinModel`:** the output resistances (from the datasheet's VOH at IOH and VOL at IOL: `r_high = (VDD − VOH)/IOH`), `r_pull`, the power and ground clamp diodes (`clamp`, a `DiodeModel`), the die capacitance `c_comp`, input `leakage`, and the input thresholds `vil` < `vih` (volts from `gnd`). `PinModel::cmos(vdd)` is a CMOS pin with thresholds at 30 % and 70 % of `vdd`, 50 Ω outputs, 40 kΩ pull, clamps with 10 Ω series resistance and no `c_comp`; it's the `Default` at 3.3 V. A `c_comp` makes the circuit reactive.
+- **Results:** `voltage_across` is `v(pad) − v(gnd)`, `current_through` the current into the pin (negative while it sources), `power` what the buffer dissipates. `DigitalPin::reads(volts, previous)` is what its input buffer reads, with hysteresis between `vil` and `vih`; a transient session reads it with `logic_level(id)`.
+- **Ratings:** `Ratings::current` on the pin's part limits its current. Pins with the same `port` are also checked as a port: `Ratings::current` on a part named for the port limits the larger of what its pins source and sink together.
+
+It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp diodes, `#c`, `#leak`), and `to_netlist` writes them, so ngspice can run the same pin.
+
 ### Diodes
 
 ```rust,ignore
@@ -555,14 +574,15 @@ sim.keep_steps(false); // read voltages, don't build up 10 s of snapshots
 for k in 1..=10_000 {
     sim.advance_to(k as f64 * 1e-3)?;                 // one firmware tick
     let adc = sim.voltage("adc0").unwrap();
-    sim.set_source("D13", if adc > 2.5 { 5.0 } else { 0.0 })?;
+    sim.set_param("D13", Param::Level(adc > 2.5))?;  // a DigitalPin
 }
 let hit = sim.run_until(10.0, &[Event::crosses("int0", 2.5, Edge::Rising)])?;
 # Ok::<(), SimError>(())
 ```
 
 - **A change is a breakpoint.** The step that reached the time saw the old value, the next sees the new, and the integration restarts there with a short backward-Euler step, as at a waveform's corner. Writing a value a source already has changes nothing.
-- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, and the temperature of a thermistor or a junction device that isn't self-heated.
+- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, the temperature of a thermistor or a junction device that isn't self-heated, and a digital pin's mode, level and pull (`Param::PinMode`, `Level`, `Pull`).
+- **Pins read back:** `logic_level(id)` is what a digital pin's input reads at the time reached, `LogicLevel::High` or `Low` against its `vil` and `vih` with hysteresis. It's taken after each step, so to catch an edge, `run_until` an event at the threshold.
 - **Events** are a node crossing a level (`Edge::Rising`, `Falling`, `Either`). The session steps back and re-steps until the crossing is inside the event's tolerance (`Event::within`, default 10⁻⁴ of `tstep`), and stops just after it with the node past the level. Steps tried and undone along the way aren't kept.
 - **State survives between calls:** the flat circuit, node map, matrix layout and histories are set up once. Each step still assembles and factors its matrix.
 - **Results stream:** `drain_steps()` takes the steps kept since the last call; `voltage(node)` reads the solution directly, and `current(id)` and `last_step()` the latest step. `advance_to_with_progress` takes the same hook as `solve_transient_with_progress`, and a cancelled session carries on from where it stopped. No threads are needed, so it runs as is in `wasm32`.

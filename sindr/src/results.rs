@@ -7,10 +7,10 @@
 //! appear in the circuit.
 
 use crate::element::{
-    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, Diode,
-    FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor,
-    Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt, Thermistor,
-    Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+    Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource,
+    DigitalPin, Diode, FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode,
+    Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt,
+    Thermistor, Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
 };
 use std::collections::HashMap;
 
@@ -718,7 +718,8 @@ pub(crate) fn extract_results(
             // Split into their parts by `solver_circuit` first.
             CircuitElement::SwitchSpdt(SwitchSpdt { .. })
             | CircuitElement::Crystal(Crystal { .. })
-            | CircuitElement::FerriteBead(FerriteBead { .. }) => {}
+            | CircuitElement::FerriteBead(FerriteBead { .. })
+            | CircuitElement::DigitalPin(DigitalPin { .. }) => {}
             CircuitElement::Resistor(Resistor {
                 id,
                 nodes,

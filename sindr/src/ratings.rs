@@ -24,6 +24,13 @@
 //! | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 //! | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
 //! | voltage regulator | `voltage` (input, from its ground pin), `current` (output), `power` |
+//! | digital pin | `current` (into or out of the pin) |
+//! | digital pin's port | `current`: the larger of what its pins source and what they sink |
+//!
+//! A digital pin's [`port`](crate::element::DigitalPin::port) is checked
+//! as a part of its own: the `current` on the [`Part`](crate::Part) named
+//! for the port limits the sum over its pins, as a datasheet limits the
+//! current a port sources and sinks.
 //!
 //! A part with [`Thermal`](crate::Thermal) data also needs `tj_max`, checked
 //! against the junction temperature self-heating reports. Without thermal
@@ -66,6 +73,7 @@ use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::design::Ratings;
+use crate::element::DigitalPin;
 use crate::error::SimError;
 use crate::results::{ComponentResult, SimulationResult};
 
@@ -391,7 +399,46 @@ pub fn check_ratings(
             checks.push(judge(id, kind, limit, worst));
         }
     }
+    checks.extend(port_checks(&flat, &samples));
     Ok(RatingsReport { checks })
+}
+
+/// Each digital-pin port's current: the larger of the sums its pins source
+/// and sink, against the `current` on the part named for the port.
+fn port_checks(flat: &Circuit, samples: &[Sample<'_>]) -> Vec<RatingCheck> {
+    let mut ports: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+    for element in &flat.components {
+        if let CircuitElement::DigitalPin(DigitalPin {
+            id,
+            port: Some(port),
+            ..
+        }) = element
+        {
+            ports.entry(port).or_default().push(id);
+        }
+    }
+    ports
+        .into_iter()
+        .map(|(port, pins)| {
+            let limit = flat.parts.get(port).and_then(|p| p.ratings.current);
+            let mut worst: Option<(f64, Option<f64>)> = None;
+            for sample in samples {
+                let (mut sourced, mut sunk) = (0.0, 0.0);
+                for pin in &pins {
+                    if let Some(r) = sample.ports.get(pin) {
+                        // Into the pin is positive.
+                        sunk += r.current_through.max(0.0);
+                        sourced += (-r.current_through).max(0.0);
+                    }
+                }
+                let value = f64::max(sourced, sunk);
+                if value.is_finite() && worst.is_none_or(|(w, _)| value > w) {
+                    worst = Some((value, sample.time));
+                }
+            }
+            judge(port, RatingKind::Current, limit, worst)
+        })
+        .collect()
 }
 
 fn judge(

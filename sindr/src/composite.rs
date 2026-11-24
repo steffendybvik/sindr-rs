@@ -1,13 +1,17 @@
 //! Elements solved as a network of simpler ones: the SPDT switch (two
-//! switches), the crystal (C0 beside Rm–Lm–Cm) and the ferrite bead (Rdc
-//! into L ∥ Rac ∥ C).
+//! switches), the crystal (C0 beside Rm–Lm–Cm), the ferrite bead (Rdc
+//! into L ∥ Rac ∥ C) and the digital pin (its output stage, clamps, die
+//! capacitance and leakage).
 //!
 //! [`lower`] turns each into its parts before any analysis, with internal
 //! ids and nodes `<id>#…`. [`fold`] puts a result back together: one
 //! [`ComponentResult`] under the element's own id, from its parts', and the
 //! parts and internal nodes gone.
 
-use crate::element::{Capacitor, Crystal, FerriteBead, Inductor, Resistor, Switch, SwitchSpdt};
+use crate::element::{
+    Capacitor, Crystal, CurrentSource, DigitalPin, Diode, FerriteBead, Inductor, Resistor, Switch,
+    SwitchSpdt,
+};
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement, CrystalParams, FerriteBeadParams, SpdtPosition};
@@ -21,6 +25,7 @@ pub(crate) fn is_composite(element: &CircuitElement) -> bool {
         CircuitElement::SwitchSpdt(SwitchSpdt { .. })
             | CircuitElement::Crystal(Crystal { .. })
             | CircuitElement::FerriteBead(FerriteBead { .. })
+            | CircuitElement::DigitalPin(DigitalPin { .. })
     )
 }
 
@@ -67,6 +72,7 @@ pub(crate) fn lower(element: &CircuitElement) -> Result<Option<Vec<CircuitElemen
         }
         CircuitElement::Crystal(Crystal { id, nodes, params }) => crystal(id, nodes, params)?,
         CircuitElement::FerriteBead(FerriteBead { id, nodes, params }) => bead(id, nodes, params)?,
+        CircuitElement::DigitalPin(p) => pin(p)?,
         _ => return Ok(None),
     };
     Ok(Some(parts))
@@ -155,13 +161,69 @@ fn bead(
     Ok(parts)
 }
 
+/// A digital pin's parts: `#up` from the supply and `#down` to ground (the
+/// output stage and the pull resistor, [`DigitalPin::stage`]), the clamp
+/// diodes `#pc` (pin to supply) and `#gc` (ground to pin), and with a
+/// `c_comp` or `leakage` the capacitor `#c` and current source `#leak`.
+///
+/// The parts are the same whatever the mode, level and pull, which only
+/// set the two resistances, so a session changes them in place.
+pub(crate) fn pin(p: &DigitalPin) -> Result<Vec<CircuitElement>, SimError> {
+    use crate::element::Device;
+    p.validate()?;
+    let DigitalPin {
+        id, nodes, model, ..
+    } = p;
+    let [pad, vdd, gnd] = nodes.clone();
+    let (r_up, r_down) = p.stage();
+    let diode = |suffix: &str, nodes: [String; 2]| {
+        CircuitElement::Diode(Diode {
+            id: part(id, suffix),
+            nodes,
+            temperature: 300.15,
+            model: Some(model.clamp),
+        })
+    };
+    let mut parts = vec![
+        CircuitElement::Resistor(Resistor {
+            id: part(id, "up"),
+            nodes: [vdd.clone(), pad.clone()],
+            resistance: r_up,
+        }),
+        CircuitElement::Resistor(Resistor {
+            id: part(id, "down"),
+            nodes: [pad.clone(), gnd.clone()],
+            resistance: r_down,
+        }),
+        diode("pc", [pad.clone(), vdd]),
+        diode("gc", [gnd.clone(), pad.clone()]),
+    ];
+    if model.c_comp > 0.0 {
+        parts.push(CircuitElement::Capacitor(Capacitor {
+            id: part(id, "c"),
+            nodes: [pad.clone(), gnd.clone()],
+            capacitance: model.c_comp,
+        }));
+    }
+    if model.leakage != 0.0 {
+        parts.push(CircuitElement::CurrentSource(CurrentSource {
+            id: part(id, "leak"),
+            nodes: [pad, gnd],
+            current: model.leakage,
+            waveform: None,
+        }));
+    }
+    Ok(parts)
+}
+
 /// How to rebuild one composite's result from its parts'.
 struct Recipe<'a> {
     id: &'a str,
     /// The terminals whose voltage difference is `voltage_across`.
     across: [&'a str; 2],
-    /// Parts whose `current_through` add up to the terminal current.
-    current: Vec<String>,
+    /// Parts whose `current_through`, each times its sign, add up to the
+    /// terminal current.
+    current: Vec<(String, f64)>,
     /// Parts whose `power` adds up to the element's.
     power: Vec<String>,
 }
@@ -183,22 +245,39 @@ fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
                 Some(Recipe {
                     id,
                     across: [&nodes[0], throw],
-                    current: vec![part(id, suffix)],
+                    current: vec![(part(id, suffix), 1.0)],
                     power: vec![part(id, "a"), part(id, "b")],
                 })
             }
             CircuitElement::Crystal(Crystal { id, nodes, .. }) => Some(Recipe {
                 id,
                 across: [&nodes[0], &nodes[1]],
-                current: vec![part(id, "rm"), part(id, "c0")],
+                current: vec![(part(id, "rm"), 1.0), (part(id, "c0"), 1.0)],
                 power: vec![part(id, "rm")],
             }),
             CircuitElement::FerriteBead(FerriteBead { id, nodes, .. }) => Some(Recipe {
                 id,
                 across: [&nodes[0], &nodes[1]],
-                current: vec![part(id, "rdc")],
+                current: vec![(part(id, "rdc"), 1.0)],
                 power: vec![part(id, "rdc"), part(id, "rac")],
             }),
+            // Into the pin: what leaves the pad through each part.
+            CircuitElement::DigitalPin(DigitalPin { id, nodes, .. }) => {
+                let parts = [
+                    ("up", -1.0),
+                    ("down", 1.0),
+                    ("pc", 1.0),
+                    ("gc", -1.0),
+                    ("c", 1.0),
+                    ("leak", 1.0),
+                ];
+                Some(Recipe {
+                    id,
+                    across: [&nodes[0], &nodes[2]],
+                    current: parts.iter().map(|(s, k)| (part(id, s), *k)).collect(),
+                    power: parts.iter().map(|(s, _)| part(id, s)).collect(),
+                })
+            }
             _ => None,
         })
         .collect()
@@ -276,10 +355,16 @@ fn fold_one(
 ) {
     let by_id: HashMap<&str, &ComponentResult> =
         results.iter().map(|r| (r.id.as_str(), r)).collect();
-    let sum = |ids: &[String], f: fn(&ComponentResult) -> f64| -> f64 {
+    let sum = |ids: &[String]| -> f64 {
         ids.iter()
             .filter_map(|id| by_id.get(id.as_str()))
-            .map(|r| f(r))
+            .map(|r| r.power)
+            .sum()
+    };
+    let current = |parts: &[(String, f64)]| -> f64 {
+        parts
+            .iter()
+            .filter_map(|(id, sign)| Some(sign * by_id.get(id.as_str())?.current_through))
             .sum()
     };
     let v = |node: &str| voltages.get(node).copied().unwrap_or(0.0);
@@ -288,8 +373,8 @@ fn fold_one(
         .map(|r| ComponentResult {
             id: r.id.to_string(),
             voltage_across: v(r.across[0]) - v(r.across[1]),
-            current_through: sum(&r.current, |c| c.current_through),
-            power: sum(&r.power, |c| c.power),
+            current_through: current(&r.current),
+            power: sum(&r.power),
         })
         .collect();
     results.retain(|c| !is_internal(recipes, &c.id));

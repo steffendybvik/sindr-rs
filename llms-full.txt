@@ -367,6 +367,25 @@ CircuitElement::FerriteBead(FerriteBead { id, nodes: [String; 2], params: Ferrit
 
 Both, and the SPDT switch, are solved as those networks: results and ratings come back under the element's own id, and `to_netlist` writes the network.
 
+#### Digital I/O pin
+
+```rust,ignore
+use sindr::element::{DigitalPin, PinMode, PinModel, Pull};
+CircuitElement::DigitalPin(DigitalPin {
+    id, nodes: [pad, vdd, gnd], mode: PinMode, level: bool, pull: Pull,
+    port: Option<String>, model: PinModel,
+})
+```
+
+The electrical side of a microcontroller or logic-IC pin, after the IBIS I/O buffer, in place of an ideal voltage source standing in for it. `vdd` and `gnd` are the rails the buffer returns to, so a driven pin draws its current from the supply.
+
+- **Modes:** `PinMode::Input` (high impedance, the default), `PushPull` (`r_high` to `vdd` when `level` is high, `r_low` to `gnd` when low) and `OpenDrain` (`r_low` when low, released when high). `Pull::Up` or `Pull::Down` adds the weak `r_pull`.
+- **`PinModel`:** the output resistances (from the datasheet's VOH at IOH and VOL at IOL: `r_high = (VDD − VOH)/IOH`), `r_pull`, the power and ground clamp diodes (`clamp`, a `DiodeModel`), the die capacitance `c_comp`, input `leakage`, and the input thresholds `vil` < `vih` (volts from `gnd`). `PinModel::cmos(vdd)` is a CMOS pin with thresholds at 30 % and 70 % of `vdd`, 50 Ω outputs, 40 kΩ pull, clamps with 10 Ω series resistance and no `c_comp`; it's the `Default` at 3.3 V. A `c_comp` makes the circuit reactive.
+- **Results:** `voltage_across` is `v(pad) − v(gnd)`, `current_through` the current into the pin (negative while it sources), `power` what the buffer dissipates. `DigitalPin::reads(volts, previous)` is what its input buffer reads, with hysteresis between `vil` and `vih`; a transient session reads it with `logic_level(id)`.
+- **Ratings:** `Ratings::current` on the pin's part limits its current. Pins with the same `port` are also checked as a port: `Ratings::current` on a part named for the port limits the larger of what its pins source and sink together.
+
+It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp diodes, `#c`, `#leak`), and `to_netlist` writes them, so ngspice can run the same pin.
+
 #### Diodes
 
 ```rust,ignore
@@ -749,14 +768,15 @@ sim.keep_steps(false); // read voltages, don't build up 10 s of snapshots
 for k in 1..=10_000 {
     sim.advance_to(k as f64 * 1e-3)?;                 // one firmware tick
     let adc = sim.voltage("adc0").unwrap();
-    sim.set_source("D13", if adc > 2.5 { 5.0 } else { 0.0 })?;
+    sim.set_param("D13", Param::Level(adc > 2.5))?;  // a DigitalPin
 }
 let hit = sim.run_until(10.0, &[Event::crosses("int0", 2.5, Edge::Rising)])?;
 # Ok::<(), SimError>(())
 ```
 
 - **A change is a breakpoint.** The step that reached the time saw the old value, the next sees the new, and the integration restarts there with a short backward-Euler step, as at a waveform's corner. Writing a value a source already has changes nothing.
-- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, and the temperature of a thermistor or a junction device that isn't self-heated.
+- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, the temperature of a thermistor or a junction device that isn't self-heated, and a digital pin's mode, level and pull (`Param::PinMode`, `Level`, `Pull`).
+- **Pins read back:** `logic_level(id)` is what a digital pin's input reads at the time reached, `LogicLevel::High` or `Low` against its `vil` and `vih` with hysteresis. It's taken after each step, so to catch an edge, `run_until` an event at the threshold.
 - **Events** are a node crossing a level (`Edge::Rising`, `Falling`, `Either`). The session steps back and re-steps until the crossing is inside the event's tolerance (`Event::within`, default 10⁻⁴ of `tstep`), and stops just after it with the node past the level. Steps tried and undone along the way aren't kept.
 - **State survives between calls:** the flat circuit, node map, matrix layout and histories are set up once. Each step still assembles and factors its matrix.
 - **Results stream:** `drain_steps()` takes the steps kept since the last call; `voltage(node)` reads the solution directly, and `current(id)` and `last_step()` the latest step. `advance_to_with_progress` takes the same hook as `solve_transient_with_progress`, and a cancelled session carries on from where it stopped. No threads are needed, so it runs as is in `wasm32`.
@@ -1456,7 +1476,7 @@ Status: `0.3.0`, before 1.0. Anything below may change.
 ### What sindr is
 
 - DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain and stability margins, DC sweep, temperature sweep
-- Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead
+- Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead, digital I/O pin (IBIS parametric buffer)
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
 - Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
 - Programmatic Rust API + serde JSON for circuits and results
@@ -1524,6 +1544,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **JFET gate capacitances are depletion charge only, at 27 °C.** `parasitic_caps` gives CGS and CGD as SPICE's graded junctions (`PB`, `M`, `FC`), but the gate junction conducts no current, and `PB` and the capacitances don't follow temperature. ngspice's JFET grades at `M = 0.5` whatever the card says, so a deck with another `M` solves differently there.
 - **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
 - **No SiC / GaN device models.**
+- **Digital pins are IBIS's parametric buffer, DC plus `c_comp`.** A pin's output stage is a resistance to each rail and its clamps are Shockley diodes: no `.ibs` V-I or V-t tables, so a driver doesn't current-limit as a real one does into a short, and edges are only the RC of the output resistance and `c_comp`, with no ramp rate. There's no package R, L or C, no slew-rate control or drive-strength setting, no supply current from the chip's core, and the thresholds are fixed volts that don't follow a sagging supply. A session reads the input once per step.
 - **Crystals and ferrite beads are linear networks.** A crystal is the Butterworth–Van Dyke model: no overtones, spurious modes, drive-level dependence or aging. A ferrite bead is R + L ∥ R (∥ C) with no DC-bias derating, so its impedance doesn't fall with current as a real bead's does.
 - **Magnetics: saturating cores, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), and so can a `Transformer`'s magnetising branch, which carries the shared core flux behind each winding's leakage. There's no hysteresis, remanence, core loss or temperature dependence, a transformer has two windings, and SPICE export refuses a saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
@@ -2275,6 +2296,12 @@ pub enum CircuitElement {
     /// and time.
     #[cfg_attr(feature = "serde", serde(rename = "behavioural"))]
     Behavioural(Behavioural),
+
+    /// Digital I/O pin ([`PinModel`](crate::element::PinModel)), after the
+    /// IBIS I/O buffer: input, push-pull or open-drain, with clamps and a
+    /// pull resistor.
+    #[cfg_attr(feature = "serde", serde(rename = "digital_pin"))]
+    DigitalPin(DigitalPin),
 }
 
 impl CircuitElement {
@@ -3373,6 +3400,143 @@ pub struct CurrentSource {
 
 What an element's DC stamp writes into and reads from.
 
+## `sindr/src/element/digital_pin.rs`
+
+A digital I/O pin: the electrical side of a microcontroller or logic-IC
+pin, after the IBIS I/O buffer. The analyses replace it with its parts.
+
+```rust
+/// What a [`DigitalPin`]'s output stage does.
+pub enum PinMode {
+    /// High-impedance input: the output stage is off, leaving the clamps,
+    /// the leakage and the pull resistor, if one is on. A pin out of reset.
+    #[default]
+    Input,
+    /// Push-pull output: `r_high` to the supply when the level is high,
+    /// `r_low` to ground when it is low.
+    PushPull,
+    /// Open-drain output: `r_low` to ground when the level is low,
+    /// released (as an input) when it is high.
+    OpenDrain,
+}
+
+/// A [`DigitalPin`]'s weak pull resistor, `r_pull`.
+pub enum Pull {
+    /// No pull resistor.
+    #[default]
+    None,
+    /// `r_pull` to the supply.
+    Up,
+    /// `r_pull` to ground.
+    Down,
+}
+
+/// What a [`DigitalPin`]'s input buffer reads.
+pub enum LogicLevel {
+    /// At or below `vil`, or between `vil` and `vih` after reading low.
+    Low,
+    /// At or above `vih`, or between `vil` and `vih` after reading high.
+    High,
+}
+
+/// A [`DigitalPin`]'s electrical model: IBIS's parametric I/O buffer, as
+/// a datasheet's DC characteristics give it.
+///
+/// The output stage is a resistance to each rail, IBIS's pull-up and
+/// pull-down. Take each from the datasheet's output levels:
+/// `r_high = (VDD − VOH) / IOH`, `r_low = VOL / IOL`. The power and ground
+/// clamps are diodes from the pin to each rail, so a pin driven past a rail
+/// conducts as its ESD diodes do; `c_comp` is the pad's die capacitance.
+///
+/// [`Default`] is [`PinModel::cmos(3.3)`](Self::cmos).
+pub struct PinModel {
+    /// Output resistance driving high (Ω), positive. Default 50 Ω:
+    /// VOH = VDD − 0.4 V at 8 mA.
+    pub r_high: f64,
+    /// Output resistance driving low (Ω), positive. Default 50 Ω:
+    /// VOL = 0.4 V at 8 mA.
+    pub r_low: f64,
+    /// The weak pull resistor's resistance (Ω), positive. Default 40 kΩ.
+    pub r_pull: f64,
+    /// Both clamp diodes. Default: IS 10⁻¹⁴ A, N 1, RS 10 Ω, so a pin
+    /// driven 1 V past a rail conducts about 30 mA.
+    pub clamp: DiodeModel,
+    /// Die capacitance from pin to ground (F), zero or positive. Default
+    /// 0, which keeps a pin from making its circuit reactive; a few pF
+    /// gives an output its edges.
+    pub c_comp: f64,
+    /// Input leakage into the pin, to ground (A), finite. Default 0.
+    pub leakage: f64,
+    /// Input low threshold (V, from the ground terminal): at or below it
+    /// the pin reads low.
+    pub vil: f64,
+    /// Input high threshold (V, from the ground terminal), above `vil`: at
+    /// or above it the pin reads high. Between the two the reading holds,
+    /// as a Schmitt trigger's does.
+    pub vih: f64,
+}
+
+impl PinModel {
+    /// A CMOS pin on a `vdd` volt supply: thresholds at 30 % and 70 % of
+    /// it, and the other defaults on [`PinModel`].
+    pub fn cmos(vdd: f64) -> Self { … }
+}
+
+/// Digital I/O pin, after the IBIS I/O buffer: an output stage to each
+/// rail, power and ground clamp diodes, leakage, die capacitance and a
+/// weak pull resistor ([`PinModel`]).
+/// `nodes: [pin, vdd, gnd]`: the pad, and the supply and ground the pin's
+/// buffer returns to.
+///
+/// [`mode`](Self::mode), [`level`](Self::level) and [`pull`](Self::pull)
+/// are what firmware sets; a [`TransientSession`](crate::TransientSession)
+/// changes them between steps with [`Param::PinMode`](crate::Param),
+/// [`Param::Level`](crate::Param) and [`Param::Pull`](crate::Param), and
+/// reads the input back with
+/// [`logic_level`](crate::TransientSession::logic_level).
+///
+/// Its result's `voltage_across` is `v(pin) − v(gnd)` and its
+/// `current_through` the current into the pin from the circuit: positive
+/// while it sinks, negative while it sources. `power` is what the pin's
+/// buffer dissipates. A [`Ratings::current`](crate::Ratings) on its part
+/// limits the pin's current, and one on a part named for its
+/// [`port`](Self::port) the port's.
+pub struct DigitalPin {
+    /// Unique component identifier.
+    pub id: String,
+    /// Terminals `[pin, vdd, gnd]`.
+    pub nodes: [String; 3],
+    /// The output stage. Default [`PinMode::Input`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mode: PinMode,
+    /// The level an output drives, `true` for high. Open drain releases
+    /// the pin when it's high. Default low.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub level: bool,
+    /// The weak pull resistor. Default none.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub pull: Pull,
+    /// The port the pin belongs to (`"PORTB"`), whose current rating sums
+    /// its pins. Scoped like an id in a block.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub port: Option<String>,
+    /// The electrical model. Default [`PinModel::cmos(3.3)`](PinModel::cmos).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub model: PinModel,
+}
+
+impl DigitalPin {
+    /// What the input buffer reads at `volts` (from the ground terminal),
+    /// having read `previous`: high at or above `vih`, low at or below
+    /// `vil`, and `previous` between. With no previous reading, between
+    /// the thresholds reads as the nearer one, high from their midpoint up.
+    pub fn reads(&self, volts: f64, previous: Option<LogicLevel>) -> LogicLevel { … }
+}
+```
+
 ## `sindr/src/element/diode.rs`
 
 A junction diode with a SPICE diode model.
@@ -3588,6 +3752,8 @@ pub use comparator::Comparator;
 pub use crystal::Crystal;
 
 pub use current_source::CurrentSource;
+
+pub use digital_pin::{DigitalPin, LogicLevel, PinMode, PinModel, Pull};
 
 pub use diode::Diode;
 
@@ -7608,6 +7774,13 @@ or not. A needed rating that isn't set comes back
 | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
 | voltage regulator | `voltage` (input, from its ground pin), `current` (output), `power` |
+| digital pin | `current` (into or out of the pin) |
+| digital pin's port | `current`: the larger of what its pins source and what they sink |
+
+A digital pin's [`port`](crate::element::DigitalPin::port) is checked
+as a part of its own: the `current` on the [`Part`](crate::Part) named
+for the port limits the sum over its pins, as a datasheet limits the
+current a port sources and sinks.
 
 A part with [`Thermal`](crate::Thermal) data also needs `tj_max`, checked
 against the junction temperature self-heating reports. Without thermal
@@ -8704,6 +8877,10 @@ pub struct TransientSession {
     keep: bool,
     /// Set by an error the session can't step past.
     failed: Option<f64>,
+    /// The circuit's digital pins, as last set.
+    pins: Vec<Pin>,
+    /// What each pin's input reads at the time reached.
+    readings: Vec<LogicLevel>,
 }
 
 /// A value inside the circuit that a session can change between steps:
@@ -8725,6 +8902,12 @@ pub enum Param {
     /// The temperature (K) of a thermistor, or of a junction device
     /// without self-heating.
     Temperature(f64),
+    /// A digital pin's output stage: firmware's pin mode.
+    PinMode(PinMode),
+    /// The level a digital pin's output drives, `true` for high.
+    Level(bool),
+    /// A digital pin's weak pull resistor.
+    Pull(Pull),
 }
 
 /// Which way a signal must cross an [`Event`]'s level.
@@ -8796,6 +8979,18 @@ impl TransientSession {
     /// the sign of its [`ComponentResult`](crate::ComponentResult); `None`
     /// before the first step or for an id the circuit doesn't have.
     pub fn current(&self, id: &str) -> Option<f64> { … }
+
+    /// What digital pin `id`'s input buffer reads at the time reached,
+    /// against its `vil` and `vih`, or `None` for an id that isn't a
+    /// digital pin. An output reads its own pad, as a microcontroller's
+    /// input register does.
+    ///
+    /// The reading has the thresholds' hysteresis: between them it holds
+    /// what the last step read. It's taken after every step, so a pad that
+    /// crosses a threshold and comes back within one step isn't seen; to
+    /// catch an edge, [`run_until`](Self::run_until) an
+    /// [`Event`] at the threshold.
+    pub fn logic_level(&self, id: &str) -> Option<LogicLevel> { … }
 
     /// The latest step taken, kept or not; `None` before the first.
     pub fn last_step(&self) -> Option<&TimestepSnapshot> { … }

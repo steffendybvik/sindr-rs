@@ -249,6 +249,7 @@ mod comparator;
 mod crystal;
 mod current_source;
 mod dc_stamp;
+mod digital_pin;
 pub(crate) mod diode;
 mod ferrite_bead;
 mod fuse;
@@ -287,6 +288,7 @@ pub use ccvs::Ccvs;
 pub use comparator::Comparator;
 pub use crystal::Crystal;
 pub use current_source::CurrentSource;
+pub use digital_pin::{DigitalPin, LogicLevel, PinMode, PinModel, Pull};
 pub use diode::Diode;
 pub use ferrite_bead::FerriteBead;
 pub use fuse::Fuse;
@@ -353,6 +355,7 @@ impl CircuitElement {
             CircuitElement::Crystal(d) => d,
             CircuitElement::FerriteBead(d) => d,
             CircuitElement::Behavioural(d) => d,
+            CircuitElement::DigitalPin(d) => d,
         }
     }
 
@@ -394,6 +397,7 @@ impl CircuitElement {
             CircuitElement::Crystal(d) => d,
             CircuitElement::FerriteBead(d) => d,
             CircuitElement::Behavioural(d) => d,
+            CircuitElement::DigitalPin(d) => d,
         }
     }
 }

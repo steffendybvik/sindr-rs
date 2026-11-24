@@ -42,6 +42,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::circuit::{Circuit, CircuitElement};
+use crate::element::DigitalPin;
 
 /// Separator between instance-path segments in flattened names.
 pub const PATH_SEPARATOR: char = '.';
@@ -439,6 +440,12 @@ impl<'a> Expander<'a> {
             }
             if let Some(source) = el.control_source_mut() {
                 *source = join(&path, source);
+            }
+            if let CircuitElement::DigitalPin(DigitalPin {
+                port: Some(port), ..
+            }) = &mut el
+            {
+                *port = join(&path, port);
             }
             if let Some(expr) = el.expression_mut() {
                 expr.rename(

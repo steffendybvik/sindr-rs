@@ -1,0 +1,20 @@
+dc_exported_digital_pin: written by sindr::spice::to_netlist
+vdd vdd 0 DC 3.3
+v1 ext 0 DC 0
+Rp1_up vdd a 50
+Rp1_down a 0 1e12
+Dp1_pc a vdd dmod1
+Dp1_gc 0 a dmod1
+r1 ext a 100
+Rp2_up vdd b 40000
+Rp2_down b 0 1e12
+Dp2_pc b vdd dmod1
+Dp2_gc 0 b dmod1
+r2 ext b 1000
+Rp3_up vdd c 1e12
+Rp3_down c 0 50
+Dp3_pc c vdd dmod1
+Dp3_gc 0 c dmod1
+r3 ext c 330
+.model dmod1 D(IS=1e-14 N=1 RS=10)
+.end
