@@ -1562,8 +1562,9 @@ pub struct HighImpedanceNet {
 }
 
 /// Ties every node an unsimulated pin leaves floating (fewer than two
-/// element or subcircuit terminals, or no path to ground but through such
-/// pins) to ground through [`HIGH_IMPEDANCE_OHMS`].
+/// element or subcircuit terminals, or no DC path to ground but through
+/// such pins) to ground through [`HIGH_IMPEDANCE_OHMS`]. A capacitor, a
+/// current source or a FET's gate isn't a DC path.
 fn tie_high_impedance_nets(
     circuit: &mut Circuit,
     unsimulated: BTreeMap<String, Vec<Pin>>,
@@ -1573,19 +1574,32 @@ fn tie_high_impedance_nets(
     let floating: Vec<(String, Vec<Pin>)> = {
         let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
         let mut adjacent: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        // Ground is reached only through what conducts at DC, as the
+        // solver stamps it: a net whose way down is a capacitor, a
+        // current source or a MOSFET's gate floats in the operating point.
+        let element_paths = circuit
+            .components
+            .iter()
+            .flat_map(|e| e.device().dc_paths(&ground));
         // A subcircuit instance's ports are element terminals too: the
-        // vendor model behind them drives its nets.
+        // vendor model behind them drives its nets. What it joins inside
+        // isn't known here, so every port counts as joined to the first.
+        let port_paths = circuit
+            .instances
+            .iter()
+            .flat_map(|i| i.nodes.iter().map(|n| [&i.nodes[0], n]));
+        for [a, b] in element_paths.chain(port_paths) {
+            adjacent.entry(a.as_str()).or_default().insert(b.as_str());
+            adjacent.entry(b.as_str()).or_default().insert(a.as_str());
+        }
         let terminals = circuit
             .components
             .iter()
             .map(CircuitElement::all_nodes)
             .chain(circuit.instances.iter().map(|i| i.nodes.iter().collect()));
         for nodes in terminals {
-            for n in &nodes {
+            for n in nodes {
                 *degree.entry(n.as_str()).or_default() += 1;
-                for m in &nodes {
-                    adjacent.entry(n.as_str()).or_default().insert(m.as_str());
-                }
             }
         }
         let mut grounded = BTreeSet::from([ground.as_str()]);

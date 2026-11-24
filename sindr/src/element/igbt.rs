@@ -56,6 +56,12 @@ impl Device for Igbt {
         }
     }
 
+    /// Collector to emitter; the gate draws no current.
+    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+        let [_, c, e] = &self.nodes;
+        vec![[c, e]]
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(vp) = s.v_prev {
             let nodes = s.nodes();

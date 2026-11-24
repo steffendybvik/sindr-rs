@@ -51,6 +51,23 @@ pub(crate) trait Device {
         self.nodes().iter().collect()
     }
 
+    /// The pairs of nets its DC stamp joins with a conductance or a
+    /// voltage constraint, so that one net's voltage fixes the other's.
+    /// `ground` is the circuit's ground node, for an element whose output
+    /// is referred to it.
+    ///
+    /// The provided method joins every terminal to the first, which is
+    /// right for anything that conducts between all its terminals. An
+    /// element that is open at DC between some of them (a capacitor, a
+    /// current source, a MOSFET's gate) overrides it. A tiny shunt the
+    /// stamp adds, such as a junction's gmin or a varactor's 1 TΩ, still
+    /// counts: the matrix isn't singular with it.
+    fn dc_paths<'a>(&'a self, ground: &'a String) -> Vec<[&'a String; 2]> {
+        let _ = ground;
+        let nodes = self.nodes();
+        nodes.iter().skip(1).map(|n| [&nodes[0], n]).collect()
+    }
+
     /// MNA unknowns the element adds after the node voltages, its branch
     /// rows.
     fn branches(&self) -> usize {

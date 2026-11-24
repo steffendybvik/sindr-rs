@@ -40,6 +40,11 @@ impl Device for Comparator {
         OpAmpStamp::of_comparator(self, &s.circuit.ground_node, s.branch).stamp_ac(s);
     }
 
+    /// The output to the circuit's ground; the inputs only sense.
+    fn dc_paths<'a>(&'a self, ground: &'a String) -> Vec<[&'a String; 2]> {
+        vec![[&self.nodes[2], ground]]
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let pins = Pins {
             nodes: s.nodes(),

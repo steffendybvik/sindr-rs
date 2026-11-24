@@ -36,6 +36,11 @@ impl Device for CurrentSource {
     /// Zero in AC: open.
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
 
+    /// None: a current source fixes no voltage.
+    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+        Vec::new()
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let nodes = s.nodes();
         stamp_current_source_at(s.system, nodes, self.current);

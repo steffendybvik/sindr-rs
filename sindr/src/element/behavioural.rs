@@ -95,6 +95,18 @@ impl Device for Behavioural {
         }
     }
 
+    /// A voltage output's two terminals; a current output fixes no
+    /// voltage.
+    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+        match self.output {
+            BehaviouralOutput::Voltage => {
+                let [p, q] = &self.nodes;
+                vec![[p, q]]
+            }
+            BehaviouralOutput::Current => Vec::new(),
+        }
+    }
+
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         // Linear first pass: linearised at all-zero unknowns.
         let zero;

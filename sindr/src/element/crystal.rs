@@ -36,6 +36,12 @@ impl Device for Crystal {
         &[RatingKind::Power]
     }
 
+    /// None: its motional arm and its shunt capacitance are both open at
+    /// DC.
+    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+        Vec::new()
+    }
+
     fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
         Err(stamped_as_parts(&self.id))
     }
