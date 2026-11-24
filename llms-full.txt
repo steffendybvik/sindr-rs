@@ -4678,6 +4678,13 @@ impl Bench {
     /// called: a power port's name is only a hint. [`supply_names`] says
     /// which supplies this assumes and which supply-like names it left for
     /// the caller to set.
+    ///
+    /// Ground names (`GND`, `AGND`, `GND_ISO`, `0V`) get nothing either, `0V`
+    /// included though it states a voltage. A ground net other than the
+    /// bench's own stays a separate node: join it with
+    /// [`with_tie`](Self::with_tie) when it is the same return, or validation
+    /// reports it floating. Joining it here would short an isolated return
+    /// without a word.
     pub fn with_supplies_from_net_names(mut self, netlist: &Netlist) -> Self { … }
 }
 
