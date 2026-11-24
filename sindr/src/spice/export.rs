@@ -244,6 +244,15 @@ impl<'a> Deck<'a> {
             .chain(instances.iter().map(|i| (i.id.as_str(), 'x')));
         for (id, letter) in ids {
             check_token("element", id)?;
+            // Two elements with one id would share one entry in `names`, so
+            // the first would be written under the second's SPICE name.
+            if self.names.contains_key(id) {
+                return Err(ExportError::BadName {
+                    what: "element",
+                    name: id.to_string(),
+                    reason: "another element has the same id".to_string(),
+                });
+            }
             let name = if id
                 .chars()
                 .next()
