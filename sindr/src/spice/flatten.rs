@@ -59,6 +59,8 @@ pub(crate) struct Flattened {
     pub node_values: Vec<NodeValueCard>,
     /// Top-level `.meas` cards, in source order.
     pub measures: Vec<(RawMeasure, Span)>,
+    /// Top-level `.four` cards, in source order.
+    pub fours: Vec<FourCard>,
     /// Top-level `.options` cards, in source order.
     pub options: Vec<OptionsCard>,
     /// `.global` nets from anywhere in the deck, deduplicated, in source
@@ -74,6 +76,10 @@ pub(crate) type OptionsCard = (Vec<(String, Option<ParamExpr>)>, Span);
 
 /// A `.ic` / `.nodeset` card: its kind, `V(node)=value` pairs and span.
 pub(crate) type NodeValueCard = (NodeValueKind, Vec<(String, ParamExpr)>, Span);
+
+/// A `.four` card: the fundamental (unevaluated), the signals and the
+/// card's source line.
+pub(crate) type FourCard = (ParamExpr, Vec<crate::measure::Signal>, Span);
 
 /// One device-instance line lifted out of all subckt nesting. The
 /// `scope_snapshot` carries every parameter visible at the point of
@@ -125,6 +131,7 @@ pub(crate) fn flatten(
     let mut top_analyses: Vec<(RawAnalysis, Span)> = Vec::new();
     let mut top_node_values = Vec::new();
     let mut top_measures: Vec<(RawMeasure, Span)> = Vec::new();
+    let mut top_fours: Vec<FourCard> = Vec::new();
     let mut top_options: Vec<OptionsCard> = Vec::new();
     let mut top_elements: Vec<RawElement> = Vec::new();
     let mut globals: Vec<String> = Vec::new();
@@ -143,6 +150,7 @@ pub(crate) fn flatten(
             RawCard::Analysis(a, span) => top_analyses.push((a, span)),
             RawCard::NodeValues(kind, values, span) => top_node_values.push((kind, values, span)),
             RawCard::Measure(m, span) => top_measures.push((m, span)),
+            RawCard::Four(f0, signals, span) => top_fours.push((f0, signals, span)),
             RawCard::Options(o, span) => top_options.push((o, span)),
             RawCard::Element(e) => top_elements.push(e),
             RawCard::Global(nets) => {
@@ -219,6 +227,7 @@ pub(crate) fn flatten(
         analyses: top_analyses,
         node_values: top_node_values,
         measures: top_measures,
+        fours: top_fours,
         options: top_options,
         globals: sink.globals,
         top_params: top_params_snapshot,
@@ -440,6 +449,7 @@ fn expand_instance(
             | RawCard::Global(_)
             | RawCard::NodeValues(..)
             | RawCard::Measure(..)
+            | RawCard::Four(..)
             | RawCard::Options(..)
             | RawCard::Ends(_) => {
                 // Ignore inside subckt bodies.

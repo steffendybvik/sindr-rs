@@ -133,6 +133,8 @@ where it holds up:
   on an edge that falls 5 V in 3 µs. The base itself is held to 0.1 %.
 - **Fourier (`.four`):** the golden is ngspice's waveform; ngspice's
   `fourier` table, printed when the `.ctl` runs, is copied into the test.
+  The deck carries a `.four 1k v(out)` card, and the test runs the
+  `Fourier` it parses to, which must equal `Fourier::new(1e3)`.
   `Fourier` on ngspice's own waveform matches that table to 1e-5 relative
   in magnitude and 1e-3° in phase, which pins the algorithm. On sindr's
   waveform each harmonic is held to 0.1 % of the fundamental and the THD

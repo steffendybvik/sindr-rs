@@ -152,7 +152,7 @@ a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics
 | Main input | `Circuit` values or JSON; a SPICE3 subset (feature `spice`) | SPICE netlists in its own dialect |
 | WebAssembly, no C library | Yes | Usually not |
 | Ratings, self-heating, pass/fail specs | Built in | Scripted by hand, if at all |
-| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens` (DC and AC), `.noise`, `.pz`, loop gain, `.meas` | Those and more: Fourier, distortion |
+| Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens` (DC and AC), `.noise`, `.pz`, loop gain, `.meas`, `.four` and FFT | Those and more: distortion |
 | Device models | Shockley diode, Ebers–Moll BJT, MOSFET Level 1, JFET, IGBT, op-amp macromodel, and part-level elements (LED, regulator, relay, battery …) | **Far more:** Gummel–Poon, BSIM, transmission lines, behavioural and code models |
 | SPICE dialect coverage | A practical subset | Full |
 
@@ -172,7 +172,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.four`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeps `.subckt` hierarchy as blocks and instances (flattened with `.`-separated naming when simulated), and returns a `SourceMap` to recover original instance paths. `to_netlist` writes a `Circuit` back out, `.subckt`s included. See the [`sindr::spice`](https://docs.rs/sindr/latest/sindr/spice/) module docs for the exact supported subset and strictness options.
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
 
@@ -1180,7 +1180,7 @@ for bin in spectrum.bins.iter().filter(|b| b.magnitude > 1e-3) {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The run should have settled by the span analysed: a start-up transient leaks into every bin. `Fourier::of` and `Fft::of` take a `(time, value)` trace you already have. A bin-centred tone stays within `Window::half_width` bins of its own (0 for rectangular, 1 for Hann and Hamming, 2 for Blackman, 4 for flat-top); see the module docs for the windows' coefficients.
+A deck's `.four 1k v(out) i(r1)` card parses into `ParsedNetlist::fourier`, one `FourierRequest` per signal: run each as `req.fourier.on(&result, &req.signal)`. The run should have settled by the span analysed: a start-up transient leaks into every bin. `Fourier::of` and `Fft::of` take a `(time, value)` trace you already have. A bin-centred tone stays within `Window::half_width` bins of its own (0 for rectangular, 1 for Hann and Hamming, 2 for Blackman, 4 for flat-top); see the module docs for the windows' coefficients.
 
 ### Importing a schematic netlist
 
@@ -1544,7 +1544,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 #### Netlist & ecosystem
 
-- **SPICE netlist import: partial.** The `spice` feature (`sindr::spice`, on by default) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, M, J, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`, `EG`, `XTI` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF`, `EG`, `XTI` on BJTs. `EG` and `XTI` set how `IS` follows temperature, as SPICE's `IS(T)`; `TNOM` is read only at 27 °C, the temperature sindr's values are at. Temperature moves `IS` and the thermal voltage only: `VJ`, `CJO` and `BF` (`XTB`) stay at their 27 °C values. Anything else (BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
+- **SPICE netlist import: partial.** The `spice` feature (`sindr::spice`, on by default) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, M, J, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.four`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`, `EG`, `XTI` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF`, `EG`, `XTI` on BJTs. `EG` and `XTI` set how `IS` follows temperature, as SPICE's `IS(T)`; `TNOM` is read only at 27 °C, the temperature sindr's values are at. Temperature moves `IS` and the thermal voltage only: `VJ`, `CJO` and `BF` (`XTB`) stay at their 27 °C values. Anything else (BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, M, J, B, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. A MOSFET with flicker noise, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, MOSFET and JFET take level-1 `NMOS`/`PMOS` and `NJF`/`PJF` cards (a JFET's `VTO`, `BETA` and gate capacitances `CGS`, `CGD`, `PB`, `M`, `FC`), and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
@@ -1565,7 +1565,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.pz` (pole-zero) | ✅ | poles and zeros of a voltage gain or transimpedance between node pairs (`solve_pz`). A repeated root is only accurate to about √ε; a root more than ~1e13 times the circuit's own frequency scale counts as infinite |
 | `.sens` (sensitivity) | ⚠️ | DC (`solve_sensitivity`) and AC (`solve_ac_sensitivity`, `.sens ... ac`), for resistance, source values, all four controlled-source gains, and diode (IS, N, RS), BJT (BF, IS, BR, NF, NR, VAF) and MOSFET (KP, VTO, LAMBDA) model parameters; in AC also C, L, the stimulus's AC magnitude and a diode's CJO and TT. AC holds the bias point fixed, as ngspice does: a parameter's effect through the operating point (and so on every other device's small-signal conductances) is left out, and a source's DC value has no AC entry. No entries for LED, Zener, Schottky, photodiode, JFET or IGBT parameters, a diode's BV/IBV, VJ/M/FC, or a transformer. A self-heated device is held at its balanced junction temperature (the thermal loop's dependence on the parameter is left out) |
 | Monte Carlo / worst-case / corner analysis | ✅ | `variation::monte_carlo` and `variation::corners`, over resistance, capacitance, inductance and source values (uniform or Gaussian, independent, seeded). Specs (`check_specs`) and ratings (`ratings_over`) at their worst run. No correlated tolerances, no device-model parameters, no `.mc` / `.step` cards, no derating or SOA yet |
-| `.four` (Fourier analysis) | ✅ | `sindr::fourier::Fourier`: harmonics, phases and THD of a transient signal, as ngspice's (last period, linear resample, 200 points by default). The `.four` card isn't parsed yet: call it on the result |
+| `.four` (Fourier analysis) | ✅ | `sindr::fourier::Fourier`: harmonics, phases and THD of a transient signal, as ngspice's (last period, linear resample, 200 points by default). A deck's `.four f0 v(out) i(r1)` card parses into `ParsedNetlist::fourier`, one request per signal; ngspice's `nfreqs` and `fourgridsize` options aren't read, so a card always gets 9 harmonics on 200 points |
 | `.fft` on transient output | ✅ | `sindr::fourier::Fft`: a radix-2 FFT of a linear resample onto a power of two of points, windowed (Hann by default; rectangular, Hamming, Blackman, flat-top), one-sided and scaled to peak amplitude. No zero padding, no averaging of segments (Welch) |
 | `.meas` (measurements) | ⚠️ | `sindr::measure`: statistics, `FIND … AT`, `WHEN`, `TRIG`/`TARG`, plus rise/fall, settling and −3 dB in the API. No `FIND … WHEN`, `DERIV` or `PARAM=`; no currents on AC results |
 | Periodic steady-state (PSS / shooting / harmonic balance) | ❌ | relevant for switching converters, RF |
@@ -9905,6 +9905,33 @@ pub struct MeasureRequest {
     /// The measurement, named as the card names it.
     pub measurement: crate::measure::Measurement,
 }
+
+/// A signal on a `.four` card and the Fourier analysis to run on it.
+///
+/// `.four 1k v(out) i(r1)` gives two, one per signal, each with ngspice's
+/// defaults at the card's fundamental: 9 harmonics above DC on a
+/// 200-point grid. Run it with
+/// [`Fourier::on`](crate::fourier::Fourier::on) on the deck's `.tran`
+/// result.
+///
+/// ```
+/// use sindr::spice::parse_str;
+///
+/// let deck = "* divider\nV1 in 0 SIN(0 1 1k)\nR1 in out 1k\nR2 out 0 1k\n\
+///             .tran 5u 2m\n.four 1k v(out)\n.end\n";
+/// let netlist = parse_str(deck)?;
+/// let four = &netlist.fourier[0];
+/// let result = sindr::solve_transient(&netlist.circuit, &netlist.transient_config().unwrap())?;
+/// let harmonics = four.fourier.on(&result, &four.signal)?;
+/// assert!((harmonics.harmonic(1).unwrap().magnitude - 0.5).abs() < 1e-3);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct FourierRequest {
+    /// The voltage or current to analyse.
+    pub signal: crate::measure::Signal,
+    /// The analysis at the card's fundamental.
+    pub fourier: crate::fourier::Fourier,
+}
 ```
 
 ## `sindr/src/spice/ast.rs`
@@ -10717,6 +10744,9 @@ pub struct ParsedNetlist {
     /// `.meas` / `.measure` cards, in source order. Only top-level cards are
     /// read.
     pub measurements: Vec<MeasureRequest>,
+    /// `.four` cards, one request per signal, in source order: run each
+    /// on the deck's `.tran` result. Only top-level cards are read.
+    pub fourier: Vec<FourierRequest>,
     /// The `AC` specs on the deck's `V` and `I` lines, in source order,
     /// those inside `.subckt` bodies included under their flattened ids.
     /// [`Self::ac_config`] drives `.ac` from them.
