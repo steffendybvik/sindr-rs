@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::stamp::stamp_current_source_at;
 use crate::waveform::Waveform;
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
 /// Independent current source. Current flows through it from `nodes[0]`
 /// to `nodes[1]`: drawn out of `nodes[0]` and pushed into `nodes[1]`, as
@@ -29,6 +29,9 @@ pub struct CurrentSource {
 
 impl Device for CurrentSource {
     device_identity!();
+
+    /// Zero in AC: open.
+    fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let nodes = s.nodes();

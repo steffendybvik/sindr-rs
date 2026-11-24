@@ -8,7 +8,8 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::stamp::stamp_companion_at;
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
+use crate::noise::NoiseSources;
 
 /// N-channel or P-channel JFET (Shockley square-law model).
 /// nodes: [gate, drain, source]
@@ -39,6 +40,44 @@ pub struct Jfet {
 
 impl Device for Jfet {
     device_identity!();
+
+    /// gm and gds at the bias point, the same in the physical frame for
+    /// both channel types (see `stamp_jfet_companion`).
+    fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {
+        let [g, d, s] = b.nodes();
+        let v = |n| b.voltage(n);
+        let c = sindr_devices::jfet::jfet_companion(
+            v(g) - v(s),
+            v(d) - v(s),
+            self.kind,
+            self.idss,
+            self.vp,
+        );
+        super::mosfet::fet_conductances([g, d, s], c.gm, c.gds)
+    }
+
+    /// Each gate junction's capacitance at the DC bias; the rest is in
+    /// [`linearise`](Device::linearise).
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let Some(pc) = &self.parasitic_caps else {
+            return;
+        };
+        for (_, c0, p, q) in jfet_junctions(&self.nodes, pc) {
+            let (p, q) = (s.node_map.index(&p), s.node_map.index(&q));
+            let (_, c) = jfet_gate_charge(s.voltage(p) - s.voltage(q), self.kind, pc, c0);
+            let y = s.s * c;
+            s.admittance([p, q], y);
+        }
+    }
+
+    /// Channel thermal noise.
+    fn noise(&self, n: &mut NoiseSources<'_>) {
+        let [g, d, s] = &self.nodes;
+        let (vg, vd, vs) = (n.voltage(g), n.voltage(d), n.voltage(s));
+        let comp =
+            sindr_devices::jfet::jfet_companion(vg - vs, vd - vs, self.kind, self.idss, self.vp);
+        n.channel(&self.id, [d, s], comp.gm);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(vp_prev) = s.v_prev {

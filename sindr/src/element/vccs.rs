@@ -3,7 +3,8 @@
 use crate::error::SimError;
 use crate::mna::MnaSystem;
 
-use super::{Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device};
+use num_complex::Complex64;
 
 /// Voltage-Controlled Current Source: I_out = gm * V_control.
 /// nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-]
@@ -29,6 +30,18 @@ pub struct Vccs {
 
 impl Device for Vccs {
     device_identity!();
+
+    /// The same direction as the DC stamp: out of `from`, into `to`.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let [from, to] = s.nodes();
+        let cp = s.node_map.index(&self.control_nodes[0]);
+        let cq = s.node_map.index(&self.control_nodes[1]);
+        let g = Complex64::new(self.gm, 0.0);
+        s.add(from, cp, g);
+        s.add(from, cq, -g);
+        s.add(to, cp, -g);
+        s.add(to, cq, g);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let [cp, cq] = &self.control_nodes;

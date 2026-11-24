@@ -6,7 +6,7 @@ use crate::error::SimError;
 use crate::node_map::NodeMap;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
 /// Relay: 4-terminal component with a coil and a contact pair.
 /// nodes: [coil+, coil-, contact1, contact2]
@@ -33,6 +33,20 @@ pub struct Relay {
 
 impl Device for Relay {
     device_identity!();
+
+    /// The coil's resistance, and the contact open or closed as at the DC
+    /// bias point.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let [coil_a, coil_b, contact_a, contact_b] = s.nodes();
+        s.conductance([coil_a, coil_b], 1.0 / self.coil_resistance);
+        let r = relay_contact_resistance(
+            s.node_map,
+            &self.nodes,
+            self.pickup_voltage,
+            Some(s.dc_solution),
+        );
+        s.conductance([contact_a, contact_b], 1.0 / r);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         // The coil is a resistive load; its inductance is the transient's.

@@ -297,6 +297,32 @@ impl<'a> OpAmpStamp<'a> {
         (self.tau().unwrap_or(0.0), c_x, c_u, self.sat(x).1)
     }
 
+    /// Writes the op-amp's small-signal model, linearised at the bias
+    /// point in `s.dc_solution`: the output's branch row through R_out to
+    /// the gain stage `x`, and the stage's `τ·ẋ = c_u·(V+ − V−) − c_x·x`.
+    /// The output is referred to ground, which has no row.
+    pub(crate) fn stamp_ac(&self, s: &mut crate::element::AcStamp<'_>) {
+        use num_complex::Complex64;
+        let br = self.branch;
+        let x = br + 1;
+        let one = Complex64::new(1.0, 0.0);
+        let [in_p, in_m, out] = s.nodes();
+        if let Some(o) = out {
+            s.a[(o, br)] += one;
+            s.a[(br, o)] += one;
+        }
+        let (tau, c_x, c_u, slope) = self.small_signal(s.node_map, s.dc_solution);
+        s.a[(br, x)] -= Complex64::new(slope, 0.0);
+        s.a[(br, br)] -= Complex64::new(self.model.r_out, 0.0);
+        s.a[(x, x)] += Complex64::new(c_x, 0.0) + s.s * tau;
+        if let Some(p) = in_p {
+            s.a[(x, p)] -= Complex64::new(c_u, 0.0);
+        }
+        if let Some(m) = in_m {
+            s.a[(x, m)] += Complex64::new(c_u, 0.0);
+        }
+    }
+
     /// The stage's history after a step that ended at `solution`.
     pub(crate) fn advance(
         &self,

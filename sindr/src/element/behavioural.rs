@@ -9,7 +9,8 @@ use crate::mna::MnaSystem;
 use crate::node_map::NodeMap;
 use crate::stamp::stamp_voltage_source_at;
 
-use super::{DcStamp, Device, TranStamp};
+use super::{AcStamp, DcStamp, Device, TranStamp};
+use num_complex::Complex64;
 
 /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
 /// voltage or current set by an [`Expression`] of node voltages,
@@ -56,6 +57,38 @@ pub struct Behavioural {
 
 impl Device for Behavioural {
     device_identity!();
+
+    /// Its Jacobian at the bias point; the constant term is a DC source
+    /// and drops out of the small-signal system. The bias solve checked
+    /// the circuit, so this can't fail here.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let (jacobian, _) = behavioural_linearisation(
+            s.circuit,
+            s.node_map,
+            &self.id,
+            &self.expr,
+            s.dc_solution,
+            0.0,
+        )
+        .unwrap_or_default();
+        let [p, q] = s.nodes();
+        match self.output {
+            BehaviouralOutput::Current => {
+                for (k, g) in &jacobian {
+                    let g = Complex64::new(*g, 0.0);
+                    s.add(p, Some(*k), g);
+                    s.add(q, Some(*k), -g);
+                }
+            }
+            BehaviouralOutput::Voltage => {
+                let branch = s.branch;
+                s.branch_pair(branch, [p, q]);
+                for (k, g) in &jacobian {
+                    s.a[(branch, *k)] -= Complex64::new(*g, 0.0);
+                }
+            }
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         // Linear first pass: linearised at all-zero unknowns.

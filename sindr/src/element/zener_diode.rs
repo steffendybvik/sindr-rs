@@ -4,7 +4,8 @@ use crate::device_params;
 use crate::error::SimError;
 use crate::stamp::stamp_diode_companion_at;
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
+use crate::noise::NoiseSources;
 
 /// Zener diode between two nodes: a silicon diode with SPICE reverse
 /// breakdown, `BV = vz` at `IBV` = 5 mA and 1 Ω of series resistance
@@ -37,6 +38,22 @@ pub struct ZenerDiode {
 
 impl Device for ZenerDiode {
     device_identity!();
+
+    /// The same parameters as the DC stamp, including the IS scaling.
+    fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {
+        let params = device_params::zener_diode(self.vz, self.temperature);
+        let (g_d, _) = sindr_devices::diode::diode_companion(b.across(), &params);
+        b.two_terminal(g_d)
+    }
+
+    /// All of it is in [`linearise`](Device::linearise).
+    fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
+
+    fn noise(&self, n: &mut NoiseSources<'_>) {
+        let [a, b] = &self.nodes;
+        let i = n.current(&self.id);
+        n.shot(&self.id, "", [a, b], i);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if let Some(vp) = s.v_prev {

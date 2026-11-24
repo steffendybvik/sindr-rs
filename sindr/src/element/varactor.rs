@@ -3,7 +3,7 @@
 use crate::error::SimError;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 
-use super::{DcStamp, Device, TranStamp};
+use super::{AcStamp, DcStamp, Device, TranStamp};
 
 /// Varactor diode: voltage-dependent junction capacitance.
 /// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
@@ -24,6 +24,14 @@ pub struct Varactor {
 
 impl Device for Varactor {
     device_identity!();
+
+    /// Its capacitance at the DC bias.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let c = sindr_devices::varactor::junction_capacitance(s.across(), &self.params);
+        let y = s.s * c;
+        let nodes = s.nodes();
+        s.admittance(nodes, y);
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         // Open at DC: a 1e12 Ω shunt, open for practical purposes.

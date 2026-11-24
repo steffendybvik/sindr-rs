@@ -6,7 +6,7 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::stamp::stamp_voltage_source_at;
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
 /// Ideal transformer with coupled inductors.
 ///
@@ -61,6 +61,23 @@ pub struct Transformer {
 
 impl Device for Transformer {
     device_identity!();
+
+    /// Coupled inductors with a branch current per winding (I1 into p1,
+    /// I2 into p2), as in transient:
+    /// `V1 = s·L1·I1 + s·M·I2`, `V2 = s·M·I1 + s·L2·I2`, with
+    /// `M = k·√(L1·L2)`. At `s = 0` both windings are shorts.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let m = self.k * (self.l1 * self.l2).sqrt();
+        let z = [[s.s * self.l1, s.s * m], [s.s * m, s.s * self.l2]];
+        let rows = [s.branch, s.branch + 1];
+        let [p1, q1, p2, q2] = s.nodes();
+        for (w, &row) in rows.iter().enumerate() {
+            s.branch_pair(row, [[p1, p2][w], [q1, q2][w]]);
+            for (j, &col) in rows.iter().enumerate() {
+                s.a[(row, col)] -= z[w][j];
+            }
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         // Both windings shorted, each a 0 V source on one of its two branch

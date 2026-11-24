@@ -12,6 +12,9 @@ use std::fmt::Display;
 use crate::circuit::CircuitElement;
 use crate::error::SimError;
 
+use crate::noise::NoiseSources;
+
+pub(crate) use ac_stamp::{AcBias, AcStamp, Conductance};
 use dc_stamp::stamped_as_parts;
 pub(crate) use dc_stamp::DcStamp;
 pub(crate) use tran_stamp::{parasitic_history, TranStamp};
@@ -112,6 +115,33 @@ pub(crate) trait Device {
         self.stamp_dc(&mut s.dc())
     }
 
+    /// The element's conductances, linearised at the DC bias point: what a
+    /// nonlinear device adds to the small-signal system at every frequency,
+    /// after the [`stamp_ac`](Self::stamp_ac) of every element. Taken once
+    /// per bias point; empty for a linear device.
+    fn linearise(&self, _: &AcBias<'_>) -> Vec<Conductance> {
+        Vec::new()
+    }
+
+    /// Writes the element's small-signal model at `s.s` into `s.a`, past
+    /// its [`linearise`](Self::linearise) conductances: admittances,
+    /// branch rows, the reactive part a nonlinear device's bias leaves it.
+    /// Independent sources stamp their branch and no excitation; a current
+    /// source stamps nothing.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>);
+
+    /// Extra unknowns the element takes in the small-signal pencil form,
+    /// where a stamp that isn't affine in `s` (an inductor's `1/(sL)`)
+    /// becomes a branch.
+    fn pencil_rows(&self) -> usize {
+        0
+    }
+
+    /// The element's noise generators at the DC operating point, pushed
+    /// onto `n`. None for a noiseless element (sources, reactances,
+    /// controlled sources).
+    fn noise(&self, _: &mut NoiseSources<'_>) {}
+
     /// Rejects a value the models can't use, naming the component, the
     /// field and the value. Left alone, a 0 K junction divides by zero and
     /// fails much later as a bare [`SimError::InvalidSolution`], and a BJT's
@@ -148,6 +178,7 @@ macro_rules! device_identity {
     };
 }
 
+mod ac_stamp;
 mod battery;
 pub(crate) mod behavioural;
 pub(crate) mod bjt;

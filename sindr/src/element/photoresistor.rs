@@ -5,7 +5,8 @@ use sindr_devices::photoresistor::{ldr_resistance as rs_ldr_resistance, Photores
 use crate::error::SimError;
 use crate::stamp::stamp_resistor_at;
 
-use super::{Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device};
+use crate::noise::NoiseSources;
 
 /// Photoresistor (LDR): resistance varies logarithmically with light.
 /// light_level = 0.0 → ~1 MΩ (dark), 1.0 → ~1 kΩ (bright).
@@ -23,6 +24,17 @@ pub struct Photoresistor {
 
 impl Device for Photoresistor {
     device_identity!();
+
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let r = ldr_resistance(self.light_level);
+        let nodes = s.nodes();
+        s.conductance(nodes, 1.0 / r);
+    }
+
+    fn noise(&self, n: &mut NoiseSources<'_>) {
+        let [a, b] = &self.nodes;
+        n.thermal_27c(&self.id, "", [a, b], ldr_resistance(self.light_level));
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let nodes = s.nodes();

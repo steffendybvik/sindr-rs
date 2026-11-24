@@ -5,7 +5,8 @@ use crate::battery_state;
 use crate::error::SimError;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 
-use super::{Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use num_complex::Complex64;
 
 /// A battery: open-circuit voltage by state of charge behind a series
 /// resistance and an optional RC pair ([`BatteryParams`]). At DC it is
@@ -33,6 +34,42 @@ pub struct Battery {
 
 impl Device for Battery {
     device_identity!();
+
+    /// Its open-circuit voltage is a DC source, zero in AC; what is left
+    /// is `Z = R0 + R1‖C1`. In the pencil form that is a branch current
+    /// `i` through R0 into an internal node `m`, then R1‖C1 from `m` to
+    /// `nodes[1]`.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let [p, q] = s.nodes();
+        let params = &self.params;
+        if let (true, Some(pair)) = (s.pencil, params.rc) {
+            let (i, m) = (s.aux(), s.aux());
+            let one = Complex64::new(1.0, 0.0);
+            if let Some(p) = p {
+                s.a[(p, i)] += one;
+                s.a[(i, p)] += one;
+            }
+            s.a[(i, m)] -= one;
+            s.a[(i, i)] -= Complex64::new(params.r_series, 0.0);
+            s.a[(m, i)] -= one;
+            let y = Complex64::new(1.0 / pair.r, 0.0) + s.s * pair.c;
+            s.admittance([Some(m), q], y);
+            return;
+        }
+        let mut z = Complex64::new(params.r_series, 0.0);
+        if let Some(pair) = params.rc {
+            z += Complex64::new(pair.r, 0.0) / (Complex64::new(1.0, 0.0) + s.s * pair.r * pair.c);
+        }
+        s.admittance([p, q], Complex64::new(1.0, 0.0) / z);
+    }
+
+    fn pencil_rows(&self) -> usize {
+        if self.params.rc.is_some() {
+            2
+        } else {
+            0
+        }
+    }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         let (g, i_hist) = battery_state::dc_norton(&self.params, self.state_of_charge);
