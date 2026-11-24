@@ -7,7 +7,7 @@ Status: `0.3.0`, before 1.0. Anything below may change.
 ## What sindr is
 
 - DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain and stability margins, DC sweep, temperature sweep
-- Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead, digital I/O pin (IBIS parametric buffer)
+- Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead, digital I/O pin (IBIS parametric buffer), logic gates at the analog level (thresholds, a pin's output stage, propagation delay)
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
 - Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
 - Programmatic Rust API + serde JSON for circuits and results
@@ -20,7 +20,7 @@ These are non-goals for the current crate split. They may live in sibling crates
 
 | Area | Status |
 |------|--------|
-| Digital logic simulation (gates, flip-flops, clocked sequential, event-driven kernel) | Out of scope |
+| Digital logic simulation (flip-flops, clocked sequential, event-driven kernel; gates only as the analog `LogicGate`) | Out of scope |
 | HDL ingestion (Verilog, VHDL, SystemVerilog, Verilog-A, VHDL-AMS, SystemC-AMS) | Out of scope |
 | Microcontroller / instruction-set simulation | Out of scope |
 | PCB layout, routing, parasitics extraction | Out of scope |
@@ -76,6 +76,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
 - **No SiC / GaN device models.**
 - **Digital pins are IBIS's parametric buffer, DC plus `c_comp`.** A pin's output stage is a resistance to each rail and its clamps are Shockley diodes: no `.ibs` V-I or V-t tables, so a driver doesn't current-limit as a real one does into a short, and edges are only the RC of the output resistance and `c_comp`, with no ramp rate. There's no package R, L or C, no slew-rate control or drive-strength setting, no supply current from the chip's core, and the thresholds are fixed volts that don't follow a sagging supply. A session reads the input once per step.
+- **Logic gates are a smooth input stage, a slew-limited delay and a pin's output stage.** Inputs switch over a tenth of the `vil`–`vih` band, at fixed volts that don't follow a sagging supply. `tpd` is one number for both edges, independent of load and supply, and the output's edge is the delay's slew plus the RC of the output resistance and the load. There's no quiescent or shoot-through supply current, no output enable or tri-state, and no flip-flops or latches; a Schmitt input's hysteresis is a 1 ns internal state.
 - **Crystals and ferrite beads are linear networks.** A crystal is the Butterworth–Van Dyke model: no overtones, spurious modes, drive-level dependence or aging. A ferrite bead is R + L ∥ R (∥ C) with no DC-bias derating, so its impedance doesn't fall with current as a real bead's does.
 - **Magnetics: saturating cores, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), and so can a `Transformer`'s magnetising branch, which carries the shared core flux behind each winding's leakage. There's no hysteresis, remanence, core loss or temperature dependence, a transformer has two windings, and SPICE export refuses a saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
