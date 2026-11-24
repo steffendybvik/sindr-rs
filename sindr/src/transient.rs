@@ -201,7 +201,6 @@ fn stamp_circuit_transient(
     for (k, component) in circuit.components.iter().enumerate() {
         let mut s = TranStamp::new(
             system,
-            circuit,
             node_map,
             &placement.layout,
             &placement.terminals,
@@ -2172,8 +2171,7 @@ fn initial_histories(
             {
                 // The gain stage starts settled at the operating point's
                 // input, so a pole doesn't drag the output from 0 V.
-                if let Some(op) = crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, 0)
-                {
+                if let Some(op) = crate::op_amp::OpAmpStamp::of(component, 0) {
                     let vd = ic(&op.nodes[0]) - ic(&op.nodes[1]);
                     parasitic.insert(
                         format!("{}-{OP_AMP_STAGE}", component.id()),
@@ -2684,7 +2682,7 @@ impl StepSolver<'_> {
                 newton_raphson::apply_igbt_limiting(&mut v_limited, &v_prev, &self.prep.igbt_info);
             let regulator_limited = crate::element::voltage_regulator::limit_regulator_step(
                 self.circuit,
-                self.node_map,
+                &self.placement.terminals,
                 self.num_nodes,
                 &v_prev,
                 &mut v_limited,
@@ -2701,7 +2699,7 @@ impl StepSolver<'_> {
                 )
                 && crate::element::voltage_regulator::regulator_pieces_settled(
                     self.circuit,
-                    self.node_map,
+                    &self.placement.terminals,
                     self.num_nodes,
                     &v_prev,
                     &v_limited,
@@ -2709,7 +2707,7 @@ impl StepSolver<'_> {
             {
                 crate::element::behavioural::behavioural_finite_at(
                     self.circuit,
-                    self.node_map,
+                    &self.placement.terminals,
                     &v_limited,
                     t,
                 )?;
@@ -2740,7 +2738,7 @@ fn update_parasitic_histories(
     let v = |n: &str| node_map.index(n).map_or(0.0, |i| solution[i]);
     let num_nodes = node_map.num_nodes();
     for component in &circuit.components {
-        if let Some(op) = crate::op_amp::OpAmpStamp::of(component, &circuit.ground_node, 0) {
+        if let Some(op) = crate::op_amp::OpAmpStamp::of(component, 0) {
             let id = component.id();
             let Some(branch) = circuit.vsource_branch_index(id) else {
                 continue;
