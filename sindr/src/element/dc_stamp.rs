@@ -31,6 +31,7 @@ pub(crate) struct DcStamp<'a> {
     pub(crate) circuit: &'a Circuit,
     terminals: &'a [Option<usize>],
     layout: &'a Layout,
+    k: usize,
 }
 
 impl<'a> DcStamp<'a> {
@@ -52,6 +53,7 @@ impl<'a> DcStamp<'a> {
             circuit,
             terminals: terminals.of(k),
             layout,
+            k,
         }
     }
 
@@ -61,18 +63,12 @@ impl<'a> DcStamp<'a> {
         std::array::from_fn(|i| self.terminals[i])
     }
 
-    /// The matrix row of the branch current of the element `source` names,
-    /// as a CCVS or CCCS reads it: the first one with that id whose branch
-    /// current others can read. `None` when there is none.
-    pub(crate) fn source_branch(&self, source: &str) -> Option<usize> {
-        self.circuit
-            .components
-            .iter()
-            .position(|c| {
-                let device = c.device();
-                device.exposes_branch_current() && device.id() == source
-            })
-            .map(|k| self.node_map.num_nodes() + self.layout.branch(k))
+    /// The matrix row of the branch current a CCVS or CCCS reads, from
+    /// its [`Layout::control`]. `None` when its control source isn't there.
+    pub(crate) fn control_branch(&self) -> Option<usize> {
+        self.layout
+            .control(self.k)
+            .map(|b| self.node_map.num_nodes() + b)
     }
 }
 

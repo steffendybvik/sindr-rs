@@ -57,6 +57,12 @@ pub(crate) trait Device {
         self.branches() > 0
     }
 
+    /// The id of the element whose branch current it reads, for a CCVS or
+    /// CCCS; `None` for the others.
+    fn control_source(&self) -> Option<&str> {
+        None
+    }
+
     /// Capacitor histories the transient keeps for it, step to step.
     fn capacitor_histories(&self) -> usize {
         0

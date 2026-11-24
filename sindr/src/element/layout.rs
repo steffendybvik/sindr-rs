@@ -1,5 +1,7 @@
 //! Where each element's extra MNA unknowns and transient history sit.
 
+use std::collections::HashMap;
+
 use crate::circuit::Circuit;
 
 /// For each element of a circuit, by its index in `components`: its first
@@ -20,6 +22,10 @@ use crate::circuit::Circuit;
 ///   whose coil has inductance (none for a purely resistive coil), and two
 ///   for a transformer (primary, then secondary).
 ///
+/// - **Control branches**: for a CCVS or CCCS, the branch row of the
+///   source whose current it reads, so a stamp doesn't search the circuit
+///   for it on every iteration.
+///
 /// Other state a transient carries (junction and parasitic capacitances,
 /// a diode's stored charge, a battery's state of charge, an op-amp's gain
 /// stage) is kept by component id, not here.
@@ -38,6 +44,9 @@ pub(crate) struct Layout {
     /// Per element: first branch, capacitor and inductor slot. One more
     /// entry than elements, holding the totals.
     starts: Vec<Slots>,
+    /// Per element: the branch row its control source's current is in.
+    /// Empty when the circuit has no current-controlled source.
+    controls: Vec<Option<usize>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -60,7 +69,27 @@ impl Layout {
             next.inductor += device.inductor_histories();
         }
         starts.push(next);
-        Self { starts }
+        let controls = Self::controls(circuit, &starts);
+        Self { starts, controls }
+    }
+
+    /// Each element's control branch: the first element with its control
+    /// source's id whose branch current others can read, as
+    /// [`Circuit::vsource_branch_index`] finds it.
+    fn controls(circuit: &Circuit, starts: &[Slots]) -> Vec<Option<usize>> {
+        let devices = || circuit.components.iter().map(|c| c.device());
+        if devices().all(|d| d.control_source().is_none()) {
+            return Vec::new();
+        }
+        let mut readable: HashMap<&str, usize> = HashMap::new();
+        for (k, device) in devices().enumerate() {
+            if device.exposes_branch_current() {
+                readable.entry(device.id()).or_insert(starts[k].branch);
+            }
+        }
+        devices()
+            .map(|d| d.control_source().and_then(|id| readable.get(id).copied()))
+            .collect()
     }
 
     /// Element `k`'s first branch row, counted from the first row past the
@@ -71,6 +100,13 @@ impl Layout {
     /// If `k` is past the last element.
     pub(crate) fn branch(&self, k: usize) -> usize {
         self.slots(k).branch
+    }
+
+    /// The branch row, counted from the first past the node voltages, of
+    /// the current element `k` reads: its control source's, for a CCVS or
+    /// CCCS whose source is in the circuit; `None` otherwise.
+    pub(crate) fn control(&self, k: usize) -> Option<usize> {
+        self.controls.get(k).copied().flatten()
     }
 
     /// Element `k`'s first capacitor history slot.
@@ -133,8 +169,8 @@ mod tests {
     use super::*;
     use crate::circuit::{BehaviouralOutput, CircuitElement, OpAmpModel};
     use crate::element::{
-        Behavioural, Capacitor, Ccvs, Comparator, Inductor, OpAmp, Relay, Resistor, Transformer,
-        Varactor, Vcvs, VoltageRegulator, VoltageSource,
+        Behavioural, Capacitor, Cccs, Ccvs, Comparator, Inductor, OpAmp, Relay, Resistor,
+        Transformer, Varactor, Vcvs, VoltageRegulator, VoltageSource,
     };
     use crate::expression::Expression;
 
@@ -250,6 +286,53 @@ mod tests {
                 resistor("R2"),
             ],
         )
+    }
+
+    /// A CCVS's or CCCS's control branch is the one
+    /// `vsource_branch_index` gives for its source, the first of a repeated
+    /// id that exposes a branch current; a missing source has none.
+    #[test]
+    fn controls_agree_with_vsource_branch_index() {
+        let mut circuit = circuit();
+        let cccs = |id: &str, source: &str| {
+            CircuitElement::Cccs(Cccs {
+                id: id.into(),
+                nodes: two(id),
+                control_source: source.into(),
+                alpha: 1.0,
+            })
+        };
+        circuit.components.extend([
+            cccs("F1", "U2"),
+            cccs("F2", "REG1"),
+            cccs("F3", "V9"),
+            cccs("F4", "R1"),
+            CircuitElement::VoltageSource(VoltageSource {
+                id: "U2".into(),
+                nodes: two("U2b"),
+                voltage: 1.0,
+                waveform: None,
+            }),
+        ]);
+        let layout = Layout::new(&circuit);
+        let mut controlled = 0;
+        for (k, component) in circuit.components.iter().enumerate() {
+            match component.device().control_source() {
+                Some(source) => {
+                    controlled += 1;
+                    assert_eq!(
+                        layout.control(k),
+                        circuit.vsource_branch_index(source),
+                        "{}",
+                        component.id()
+                    );
+                }
+                None => assert_eq!(layout.control(k), None, "{}", component.id()),
+            }
+        }
+        assert_eq!(controlled, 5);
+        assert_eq!(layout.control(circuit.components.len() - 3), None);
+        assert_eq!(Layout::new(&Circuit::new("0", Vec::new())).control(0), None);
     }
 
     /// Every element whose branch current others read starts where

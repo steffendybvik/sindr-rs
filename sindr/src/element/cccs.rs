@@ -32,11 +32,15 @@ impl Device for Cccs {
     device_identity!();
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
-        if let Some(control) = s.source_branch(&self.control_source) {
+        if let Some(control) = s.control_branch() {
             let nodes = s.nodes();
             stamp_cccs_at(s.system, nodes, self.alpha, control);
         }
         Ok(())
+    }
+
+    fn control_source(&self) -> Option<&str> {
+        Some(&self.control_source)
     }
 
     fn validate(&self) -> Result<(), SimError> {
