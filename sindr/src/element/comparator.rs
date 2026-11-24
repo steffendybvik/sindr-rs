@@ -5,6 +5,9 @@ use crate::op_amp::{OpAmpStamp, Pins, OP_AMP_STAGE};
 
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
 /// Comparator, output referred to ground: gain 1e5 from `v₊ − v₋` with
 /// no frequency response, its output clamped to `[v_neg, v_pos]`. It is
 /// an op-amp with an [`OpAmpModel`] of that gain and no pole, so it makes
@@ -75,5 +78,13 @@ impl Device for Comparator {
         check.finite("v_pos", self.v_pos, " V")?;
         check.finite("v_neg", self.v_neg, " V")?;
         check.rails_ordered(self.v_pos, self.v_neg)
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(
+            &self.id,
+            "the saturating macromodel has no SPICE primitive",
+        ))
     }
 }

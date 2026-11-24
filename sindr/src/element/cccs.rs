@@ -6,6 +6,9 @@ use crate::mna::MnaSystem;
 use super::{AcStamp, Check, DcStamp, Device};
 use num_complex::Complex64;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
 /// Current-Controlled Current Source: I_out = alpha * I_control.
 /// nodes: [out_from, out_to], control_source: id of controlling voltage source
 ///
@@ -56,6 +59,17 @@ impl Device for Cccs {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).finite("alpha", self.alpha, "")
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'F'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let value = num(&self.id, "alpha", self.alpha)?;
+        deck.current_controlled(name, &self.id, &self.nodes, &self.control_source, value)
     }
 }
 

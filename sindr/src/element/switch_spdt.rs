@@ -6,6 +6,9 @@ use crate::error::SimError;
 
 use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{Deck, ExportError};
+
 /// Single-pole double-throw switch: `nodes: [common, a, b]`. The common
 /// terminal connects to `a` or `b` as [`Switch`] does
 /// (0.01 Ω), and the other throw is open (1 GΩ). Its result is the path
@@ -39,5 +42,10 @@ impl Device for SwitchSpdt {
     /// Nothing: the transient steps its parts.
     fn stamp_transient(&self, _: &mut TranStamp<'_>) -> Result<(), SimError> {
         Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        deck.parts(&crate::CircuitElement::SwitchSpdt(self.clone()), name)
     }
 }

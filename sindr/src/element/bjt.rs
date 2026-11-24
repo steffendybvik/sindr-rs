@@ -13,6 +13,9 @@ use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{nominal, unsupported, Deck, ExportError};
+
 /// BJT transistor (3 terminals): Ebers–Moll with Early effect, solved in
 /// DC, transient and AC.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -167,6 +170,33 @@ impl Device for Bjt {
             check.positive("model.eg", model.eg, " eV")?;
             check.non_negative("model.xti", model.xti, "")?;
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'Q'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let id = &self.id;
+        nominal(id, self.temperature)?;
+        if self
+            .parasitic_caps
+            .as_ref()
+            .is_some_and(|c| c.cbe != 0.0 || c.cbc != 0.0)
+        {
+            return Err(unsupported(
+                id,
+                "fixed parasitic capacitances have no SPICE BJT parameter",
+            ));
+        }
+        let model_name = deck.bjt_model(id, self.kind, self.bf, self.model.unwrap_or_default())?;
+        // SPICE's Q line is [collector, base, emitter]; sindr's is [b, c, e].
+        let [b, c, e] = self.nodes.clone();
+        let nodes = deck.nodes(&[c, b, e])?;
+        deck.line(format!("{name} {nodes} {model_name}"));
         Ok(())
     }
 }

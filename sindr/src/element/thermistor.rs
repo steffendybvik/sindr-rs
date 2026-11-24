@@ -7,6 +7,9 @@ use super::{AcStamp, Check, DcStamp, Device};
 use crate::noise::NoiseSources;
 use crate::ratings::RatingKind;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
 /// NTC thermistor: resistance varies with temperature (passive, no NR).
 /// nodes: [n1, n2]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -51,6 +54,12 @@ impl Device for Thermistor {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).positive("temperature", self.temperature, " K")
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let r = crate::device_params::thermistor_resistance(self.temperature);
+        deck.two_terminal(name, &self.nodes, num(&self.id, "resistance", r)?)
     }
 }
 

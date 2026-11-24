@@ -8,6 +8,9 @@ use crate::stamp::{stamp_companion_at, stamp_resistor_at, SWITCH_R_CLOSED, SWITC
 
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
 /// Relay: 4-terminal component with a coil and a contact pair.
 /// nodes: [coil+, coil-, contact1, contact2]
 /// Contact closes when |V_coil| >= pickup_voltage. AC and `.tf` take the
@@ -93,6 +96,14 @@ impl Device for Relay {
         check.positive("coil_resistance", self.coil_resistance, " Ω")?;
         check.positive("pickup_voltage", self.pickup_voltage, " V")?;
         check.non_negative("inductance", self.inductance, " H")
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(
+            &self.id,
+            "a voltage-operated contact has no SPICE3 primitive",
+        ))
     }
 }
 

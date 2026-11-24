@@ -6,6 +6,9 @@ use crate::waveform::Waveform;
 
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{Deck, ExportError};
+
 /// Independent current source. Current flows through it from `nodes[0]`
 /// to `nodes[1]`: drawn out of `nodes[0]` and pushed into `nodes[1]`, as
 /// SPICE's `I`.
@@ -52,5 +55,21 @@ impl Device for CurrentSource {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).finite("current", self.current, " A")
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'I'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        deck.source(
+            &self.id,
+            name,
+            &self.nodes,
+            self.current,
+            self.waveform.as_ref(),
+        )
     }
 }

@@ -8,6 +8,9 @@ use crate::mna::MnaSystem;
 use super::{AcBias, AcStamp, Conductance, DcStamp, Device};
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
 /// IGBT: MOSFET gate control + BJT output characteristics.
 /// Nonlinear element — requires Newton-Raphson iteration.
 /// nodes: [gate, collector, emitter]
@@ -63,6 +66,11 @@ impl Device for Igbt {
 
     fn is_nonlinear(&self) -> bool {
         true
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(&self.id, "SPICE has no IGBT primitive"))
     }
 }
 

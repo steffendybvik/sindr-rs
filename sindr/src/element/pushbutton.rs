@@ -5,6 +5,9 @@ use crate::stamp::{stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
 use super::{AcStamp, DcStamp, Device};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, switch_resistance, Deck, ExportError};
+
 /// Pushbutton (momentary switch): identical behaviour to Switch.
 /// When closed = true, current flows; when false, open circuit.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -37,5 +40,11 @@ impl Device for Pushbutton {
         let nodes = s.nodes();
         stamp_resistor_at(s.system, nodes, resistance);
         Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let r = switch_resistance(self.closed);
+        deck.two_terminal(name, &self.nodes, num(&self.id, "resistance", r)?)
     }
 }

@@ -13,6 +13,9 @@ use super::{AcStamp, Check, DcStamp, Device};
 use crate::ratings::{RatingKind, RatingProbe};
 use num_complex::Complex64;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
 /// Linear voltage regulator: holds the output at `voltage` above its
 /// ground pin while it has headroom, and draws its output current plus
 /// its quiescent current from the input.
@@ -152,6 +155,14 @@ impl Device for VoltageRegulator {
             }
         }
         Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(
+            &self.id,
+            "a regulator macromodel has no SPICE primitive",
+        ))
     }
 }
 

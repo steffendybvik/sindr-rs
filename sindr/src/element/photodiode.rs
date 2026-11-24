@@ -7,6 +7,9 @@ use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
 /// Photodiode: diode + photocurrent source driven by irradiance.
 /// nodes: [anode, cathode]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -98,5 +101,13 @@ impl Device for Photodiode {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).positive("temperature", self.temperature, " K")
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(
+            &self.id,
+            "the light-driven current has no SPICE primitive",
+        ))
     }
 }

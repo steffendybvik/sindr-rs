@@ -12,6 +12,9 @@ use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, unsupported, Deck, ExportError};
+
 /// MOSFET transistor (3 terminals: gate, drain, source; the body is tied
 /// to the source).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -148,6 +151,86 @@ impl Device for Mosfet {
         let check = Check::new(&self.id);
         check.non_negative("params.kf", self.params.kf, "")?;
         check.positive("params.af", self.params.af, "")
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'M'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let id = &self.id;
+        let params = &self.params;
+        if params.kf != 0.0 {
+            return Err(unsupported(
+                id,
+                "a level-1 card's flicker noise needs a gate oxide sindr doesn't model",
+            ));
+        }
+        let caps = self.parasitic_caps.clone().unwrap_or_default();
+        // The card's drain–bulk junction holds a body diode with
+        // nothing SPICE's junction lacks; any other is its own D line.
+        let plain = DiodeModel {
+            is: 0.0,
+            cjo: 0.0,
+            vj: 0.8,
+            m: 0.5,
+            fc: 0.5,
+            ..DiodeModel::default()
+        };
+        let (junction, separate) = match &self.body_diode {
+            None => (plain, None),
+            Some(d)
+                if *d
+                    == DiodeModel {
+                        is: d.is,
+                        cjo: d.cjo,
+                        vj: d.vj,
+                        m: d.m,
+                        fc: d.fc,
+                        ..DiodeModel::default()
+                    } =>
+            {
+                (*d, None)
+            }
+            Some(d) => (plain, Some(*d)),
+        };
+        let card = format!(
+            "{}(LEVEL=1 KP={} VTO={} LAMBDA={} GAMMA={} PHI={} CGSO={} CGDO={} IS={} CBD={} PB={} MJ={} FC={})",
+            match self.kind {
+                MosfetKind::Nmos => "NMOS",
+                MosfetKind::Pmos => "PMOS",
+            },
+            num(id, "kp", params.kp)?,
+            num(id, "vto", params.vto)?,
+            num(id, "lambda", params.lambda)?,
+            num(id, "gamma", params.gamma)?,
+            num(id, "phi", params.phi)?,
+            num(id, "cgs", caps.cgs)?,
+            num(id, "cgd", caps.cgd)?,
+            num(id, "is", junction.is)?,
+            num(id, "cjo", junction.cjo)?,
+            num(id, "vj", junction.vj)?,
+            num(id, "m", junction.m)?,
+            num(id, "fc", junction.fc)?,
+        );
+        let model_name = deck.fet_model("mmod", card);
+        // SPICE's M line is [drain, gate, source, bulk]; sindr's is
+        // [g, d, s], its body tied to the source. W = L = 1 m makes
+        // KP and CGSO/CGDO sindr's values as they are.
+        let [g, d, s] = self.nodes.clone();
+        let line_nodes = deck.nodes(&[d.clone(), g, s.clone(), s.clone()])?;
+        deck.line(format!("{name} {line_nodes} {model_name} W=1 L=1"));
+        if let Some(diode) = separate {
+            let diode_name = deck.extra_name(id, format!("D{name}_body"))?;
+            let (anode, cathode) = match self.kind {
+                MosfetKind::Nmos => (s, d),
+                MosfetKind::Pmos => (d, s),
+            };
+            deck.diode(id, &diode_name, &[anode, cathode], diode)?;
+        }
+        Ok(())
     }
 }
 

@@ -9,6 +9,9 @@ use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 use crate::ratings::RatingKind;
 use num_complex::Complex64;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, unsupported, Deck, ExportError};
+
 /// Inductor. Stamped as **open-circuit in pure DC analysis** (sindr
 /// solves DC as a single algebraic step, not as t→∞ of a transient);
 /// integrates `dI/dt` properly during transient. The DC bias point that
@@ -120,5 +123,22 @@ impl Device for Inductor {
             }
         }
         Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'L'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        if self.saturation.is_some() {
+            return Err(unsupported(
+                &self.id,
+                "a saturating core has no SPICE3 primitive",
+            ));
+        }
+        let value = num(&self.id, "inductance", self.inductance)?;
+        deck.two_terminal(name, &self.nodes, value)
     }
 }

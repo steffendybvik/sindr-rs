@@ -7,6 +7,9 @@ use super::{AcStamp, Check, DcStamp, Device};
 use crate::noise::NoiseSources;
 use crate::ratings::RatingKind;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
 /// Potentiometer: 3-terminal voltage divider.
 /// nodes: [top, wiper, bottom]
 /// position = 0.0 → wiper at top, 1.0 → wiper at bottom.
@@ -63,5 +66,19 @@ impl Device for Potentiometer {
         let check = Check::new(&self.id);
         check.positive("resistance", self.resistance, " Ω")?;
         check.finite("position", self.position, "")
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        // The clamp keeps the wiper off the ends, as the stamp does.
+        let id = &self.id;
+        let pos = self.position.clamp(0.001, 0.999);
+        let top = num(id, "resistance", self.resistance * pos)?;
+        let bottom = num(id, "resistance", self.resistance * (1.0 - pos))?;
+        let [t, w, b] = self.nodes.clone();
+        let top_name = deck.extra_name(id, format!("{name}_top"))?;
+        let bottom_name = deck.extra_name(id, format!("{name}_bottom"))?;
+        deck.two_terminal(&top_name, &[t, w.clone()], top)?;
+        deck.two_terminal(&bottom_name, &[w, b], bottom)
     }
 }

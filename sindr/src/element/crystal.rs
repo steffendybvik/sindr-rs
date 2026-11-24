@@ -7,6 +7,9 @@ use crate::error::SimError;
 use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
 use crate::ratings::RatingKind;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{Deck, ExportError};
+
 /// Quartz crystal: the Butterworth–Van Dyke model ([`CrystalParams`]).
 /// An open circuit at DC. Its result's `power` is what the motional
 /// resistance dissipates: the drive level a datasheet limits.
@@ -40,5 +43,10 @@ impl Device for Crystal {
     /// Nothing: the transient steps its parts.
     fn stamp_transient(&self, _: &mut TranStamp<'_>) -> Result<(), SimError> {
         Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        deck.parts(&crate::CircuitElement::Crystal(self.clone()), name)
     }
 }

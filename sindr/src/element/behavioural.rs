@@ -12,6 +12,11 @@ use crate::stamp::stamp_voltage_source_at;
 use super::{AcStamp, DcStamp, Device, TranStamp};
 use num_complex::Complex64;
 
+#[cfg(feature = "spice")]
+use crate::expression::Variable;
+#[cfg(feature = "spice")]
+use crate::spice::export::{Deck, ExportError};
+
 /// Behavioural source, SPICE's `B n+ n- V={expr}` or `I={expr}`: a
 /// voltage or current set by an [`Expression`] of node voltages,
 /// branch currents and time.
@@ -153,6 +158,48 @@ impl Device for Behavioural {
 
     fn is_nonlinear(&self) -> bool {
         true
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'B'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        // The expression reads nodes and sources by their deck names.
+        let mut deck_names = std::collections::HashMap::new();
+        for variable in self.expr.variables() {
+            match variable {
+                Variable::Voltage { node, reference } => {
+                    for n in std::iter::once(node).chain(reference) {
+                        deck_names.insert(n.clone(), deck.node(n)?);
+                    }
+                }
+                Variable::Current { source } => {
+                    let name = deck.name_of(source).map(str::to_string).ok_or_else(|| {
+                        ExportError::BadName {
+                            what: "element",
+                            name: self.id.clone(),
+                            reason: format!(
+                                "its expression reads i({source}), which isn't in the circuit"
+                            ),
+                        }
+                    })?;
+                    deck_names.insert(source.clone(), name);
+                }
+                _ => {}
+            }
+        }
+        let mut expr = self.expr.clone();
+        expr.rename(|n| deck_names[n].clone(), |s| deck_names[s].clone());
+        let key = match self.output {
+            BehaviouralOutput::Current => 'I',
+            _ => 'V',
+        };
+        let nodes = deck.nodes(&self.nodes)?;
+        deck.line(format!("{name} {nodes} {key}={{{expr}}}"));
+        Ok(())
     }
 }
 

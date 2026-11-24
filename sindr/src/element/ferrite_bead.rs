@@ -7,6 +7,9 @@ use crate::error::SimError;
 use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
 use crate::ratings::RatingKind;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{Deck, ExportError};
+
 /// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC,
 /// lossy and inductive at high frequency. Its result's `power` is what
 /// its two resistances dissipate. `nodes: [a, b]`
@@ -40,5 +43,10 @@ impl Device for FerriteBead {
     /// Nothing: the transient steps its parts.
     fn stamp_transient(&self, _: &mut TranStamp<'_>) -> Result<(), SimError> {
         Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        deck.parts(&crate::CircuitElement::FerriteBead(self.clone()), name)
     }
 }

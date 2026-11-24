@@ -6,6 +6,9 @@ use crate::waveform::Waveform;
 
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{Deck, ExportError};
+
 /// Independent voltage source. `nodes[0]` is the positive terminal,
 /// `nodes[1]` is the negative terminal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -60,5 +63,21 @@ impl Device for VoltageSource {
 
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).finite("voltage", self.voltage, " V")
+    }
+
+    #[cfg(feature = "spice")]
+    fn spice_letter(&self) -> char {
+        'V'
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        deck.source(
+            &self.id,
+            name,
+            &self.nodes,
+            self.voltage,
+            self.waveform.as_ref(),
+        )
     }
 }

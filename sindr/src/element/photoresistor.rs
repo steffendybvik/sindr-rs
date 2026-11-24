@@ -9,6 +9,9 @@ use super::{AcStamp, Check, DcStamp, Device};
 use crate::noise::NoiseSources;
 use crate::ratings::RatingKind;
 
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
 /// Photoresistor (LDR): resistance varies logarithmically with light.
 /// light_level = 0.0 → ~1 MΩ (dark), 1.0 → ~1 kΩ (bright).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -51,6 +54,12 @@ impl Device for Photoresistor {
     /// value is refused.
     fn validate(&self) -> Result<(), SimError> {
         Check::new(&self.id).finite("light_level", self.light_level, "")
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let r = ldr_resistance(self.light_level);
+        deck.two_terminal(name, &self.nodes, num(&self.id, "resistance", r)?)
     }
 }
 
