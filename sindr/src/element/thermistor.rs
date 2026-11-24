@@ -1,6 +1,7 @@
 //! An NTC thermistor: a resistance set by its temperature.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::stamp_resistor_at;
 
 use super::{AcStamp, Check, DcStamp, Device};
@@ -19,7 +20,7 @@ pub struct Thermistor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[n1, n2]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Temperature in Kelvin, positive and finite. Default: 298.15 K (25°C).
     #[cfg_attr(feature = "serde", serde(default = "default_temperature"))]
     pub temperature: f64,

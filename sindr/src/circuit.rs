@@ -2,9 +2,13 @@
 //!
 //! [`Circuit`] is the root struct sindr's analyses take: a list of
 //! [`CircuitElement`]s plus the name of the ground node, and optionally a
-//! design hierarchy (see [`crate::design`]). Components share a node by
-//! referencing the same node-name string; there are no separate "wire" or
-//! "net" objects.
+//! design hierarchy (see [`crate::design`]). Element terminals are
+//! [`NodeId`] handles, and components share a node when their handles name
+//! the same net; there are no separate "wire" or "net" objects. A handle is
+//! its name underneath (`"out".into()` makes one, and it serialises as the
+//! string), and [`CircuitBuilder`](crate::CircuitBuilder) hands them out
+//! checked, so a misspelt net is an error at build time rather than a new
+//! floating node.
 //!
 //! [`CircuitElement`] is the open-ended enum of supported component types
 //! (resistors, sources, semiconductors, magnetics, …). Each variant wraps a
@@ -21,6 +25,7 @@ use crate::element::{
     Thermistor, Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
 };
 use crate::expression::Expression;
+use crate::handle::{ComponentId, NodeId};
 
 /// BJT parasitic capacitances. All values in Farads. Default 0.0 disables each cap.
 ///
@@ -596,14 +601,67 @@ pub enum CircuitElement {
     DigitalPin(DigitalPin),
 }
 
+/// `From<Element> for CircuitElement` for each element type named, so a
+/// [`CircuitBuilder`](crate::CircuitBuilder) takes any of them.
+macro_rules! element_from {
+    ($($variant:ident),* $(,)?) => {
+        $(
+            impl From<$variant> for CircuitElement {
+                fn from(element: $variant) -> Self {
+                    CircuitElement::$variant(element)
+                }
+            }
+        )*
+    };
+}
+
+element_from!(
+    Resistor,
+    VoltageSource,
+    CurrentSource,
+    Switch,
+    Capacitor,
+    Battery,
+    Inductor,
+    Diode,
+    Led,
+    Bjt,
+    Mosfet,
+    Jfet,
+    Vcvs,
+    Vccs,
+    Ccvs,
+    Cccs,
+    Pushbutton,
+    Relay,
+    Photoresistor,
+    Potentiometer,
+    ZenerDiode,
+    OpAmp,
+    Comparator,
+    SchottkyDiode,
+    Thermistor,
+    Photodiode,
+    Varactor,
+    Igbt,
+    Transformer,
+    Fuse,
+    VoltageRegulator,
+    SwitchSpdt,
+    Crystal,
+    FerriteBead,
+    Behavioural,
+    DigitalPin,
+);
+
 impl CircuitElement {
     /// Returns a reference to the node array for this component.
-    pub fn nodes(&self) -> &[String] {
+    pub fn nodes(&self) -> &[NodeId] {
         self.device().nodes()
     }
 
     /// Returns all node names referenced by this component, including control nodes.
-    pub fn all_nodes(&self) -> Vec<&String> {
+    pub fn all_nodes(&self) -> Vec<&NodeId> {
         self.device().all_nodes()
     }
 
@@ -621,7 +679,7 @@ impl CircuitElement {
     }
 
     /// Mutable [`nodes`](Self::nodes), for renaming nets.
-    pub fn nodes_mut(&mut self) -> &mut [String] {
+    pub fn nodes_mut(&mut self) -> &mut [NodeId] {
         self.device_mut().nodes_mut()
     }
 
@@ -631,7 +689,7 @@ impl CircuitElement {
     }
 
     /// The control-net pair of a VCVS or VCCS.
-    pub fn control_nodes_mut(&mut self) -> Option<&mut [String; 2]> {
+    pub fn control_nodes_mut(&mut self) -> Option<&mut [NodeId; 2]> {
         match self {
             CircuitElement::Vcvs(Vcvs { control_nodes, .. })
             | CircuitElement::Vccs(Vccs { control_nodes, .. }) => Some(control_nodes),
@@ -640,7 +698,7 @@ impl CircuitElement {
     }
 
     /// The controlling source id of a CCVS or CCCS.
-    pub fn control_source_mut(&mut self) -> Option<&mut String> {
+    pub fn control_source_mut(&mut self) -> Option<&mut ComponentId> {
         match self {
             CircuitElement::Ccvs(Ccvs { control_source, .. })
             | CircuitElement::Cccs(Cccs { control_source, .. }) => Some(control_source),
@@ -754,7 +812,7 @@ impl Circuit {
             .chain(
                 self.components
                     .iter()
-                    .flat_map(|c| c.all_nodes().into_iter().map(String::as_str)),
+                    .flat_map(|c| c.all_nodes().into_iter().map(NodeId::as_str)),
             )
             .chain(
                 self.instances
@@ -819,6 +877,17 @@ mod tests {
     use sindr_devices::bjt::BjtKind;
     use sindr_devices::jfet::JfetKind;
     use sindr_devices::mosfet::{MosfetKind, MosfetParams};
+
+    #[test]
+    fn every_element_converts_into_a_circuit_element() {
+        let r = Resistor {
+            id: "R1".into(),
+            nodes: ["a".into(), "0".into()],
+            resistance: 1e3,
+        };
+        let element: CircuitElement = r.clone().into();
+        assert_eq!(element, CircuitElement::Resistor(r));
+    }
 
     #[test]
     fn has_reactive_elements_true_with_capacitor() {
@@ -1228,8 +1297,8 @@ mod tests {
     /// One of every element, with nets `<id>.0`, `<id>.1`, …, so a test can
     /// tell which field an accessor reached.
     fn every_element() -> Vec<CircuitElement> {
-        fn n<const N: usize>(id: &str) -> [String; N] {
-            std::array::from_fn(|k| format!("{id}.{k}"))
+        fn n<const N: usize>(id: &str) -> [NodeId; N] {
+            std::array::from_fn(|k| format!("{id}.{k}").into())
         }
         vec![
             CircuitElement::Resistor(Resistor {
@@ -1466,7 +1535,7 @@ mod tests {
             );
             assert_eq!(element.nodes_mut().to_vec(), nodes, "{id}");
             for net in element.nodes_mut() {
-                net.insert_str(0, "top/");
+                net.name_mut().insert_str(0, "top/");
             }
             let renamed: Vec<String> = nodes.iter().map(|n| format!("top/{n}")).collect();
             assert_eq!(element.nodes(), renamed.as_slice(), "{id}");

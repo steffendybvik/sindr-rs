@@ -6,6 +6,7 @@
 //! device curves and transfer characteristics.
 
 use crate::element::{CurrentSource, VoltageSource};
+use crate::handle::ComponentId;
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -37,7 +38,7 @@ pub struct DcSweepPoint {
 #[non_exhaustive]
 pub struct DcSweepResult {
     /// Component id of the source that was swept.
-    pub source_id: String,
+    pub source_id: ComponentId,
     /// Operating points, in sweep order from `start` to `stop`.
     pub points: Vec<DcSweepPoint>,
 }
@@ -45,7 +46,8 @@ pub struct DcSweepResult {
 impl DcSweepResult {
     /// `(sweep value in V, node voltage in V)` pairs for a node, one per
     /// point.
-    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> {
+    pub fn node_voltage_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> {
+        let node = node.as_ref();
         self.points
             .iter()
             .filter_map(|p| p.result.voltage(node).map(|v| (p.sweep_value, v)))
@@ -58,7 +60,8 @@ impl DcSweepResult {
     /// drain current for a transistor).
     ///
     /// [`ComponentResult::current_through`]: crate::ComponentResult::current_through
-    pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> {
+    pub fn component_current_curve(&self, component_id: impl AsRef<str>) -> Vec<(f64, f64)> {
+        let component_id = component_id.as_ref();
         self.points
             .iter()
             .filter_map(|p| {
@@ -88,7 +91,7 @@ impl DcSweepResult {
 pub struct DcSweepAxis {
     /// Id of the [`VoltageSource`](CircuitElement::VoltageSource) or
     /// [`CurrentSource`](CircuitElement::CurrentSource) to sweep.
-    pub source_id: String,
+    pub source_id: ComponentId,
     /// First value (V or A).
     pub start: f64,
     /// Last value (V or A).
@@ -99,7 +102,12 @@ pub struct DcSweepAxis {
 
 impl DcSweepAxis {
     /// `num_points` values of `source_id` from `start` to `stop`.
-    pub fn new(source_id: impl Into<String>, start: f64, stop: f64, num_points: usize) -> Self {
+    pub fn new(
+        source_id: impl Into<ComponentId>,
+        start: f64,
+        stop: f64,
+        num_points: usize,
+    ) -> Self {
         Self {
             source_id: source_id.into(),
             start,
@@ -257,7 +265,7 @@ fn sweep_curve(
             crate::solve_dc_heated(&work, |dc| crate::solve_dc_circuit(dc, &point_opts)).map_err(
                 |e| {
                     e.at(crate::SolvePoint::DcSweep {
-                        source: axis.source_id.clone(),
+                        source: axis.source_id.to_string(),
                         value: sweep_value,
                     })
                 },
@@ -368,7 +376,7 @@ pub(crate) fn dc_sweep_with(
 #[non_exhaustive]
 pub struct NestedDcSweepResult {
     /// Component id of the outer (slower) source.
-    pub outer_source_id: String,
+    pub outer_source_id: ComponentId,
     /// One curve per outer value, in sweep order.
     pub curves: Vec<NestedDcSweepCurve>,
 }

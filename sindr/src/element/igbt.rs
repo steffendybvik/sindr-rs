@@ -1,5 +1,6 @@
 //! An IGBT: MOSFET gate control driving a BJT output stage.
 
+use crate::handle::NodeId;
 use nalgebra::DVector;
 
 use crate::error::SimError;
@@ -21,7 +22,7 @@ pub struct Igbt {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[gate, collector, emitter]`.
-    pub nodes: [String; 3],
+    pub nodes: [NodeId; 3],
     /// Model parameters (threshold voltage, transconductance, etc.).
     #[cfg_attr(feature = "serde", serde(default))]
     pub params: sindr_devices::igbt::IgbtParams,
@@ -57,7 +58,7 @@ impl Device for Igbt {
     }
 
     /// Collector to emitter; the gate draws no current.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         let [_, c, e] = &self.nodes;
         vec![[c, e]]
     }
@@ -85,7 +86,7 @@ impl Device for Igbt {
 pub(crate) fn stamp_igbt_companion(
     system: &mut MnaSystem,
     node_map: &crate::node_map::NodeMap,
-    nodes: &[String; 3],
+    nodes: &[NodeId; 3],
     v_prev: &DVector<f64>,
     params: &sindr_devices::igbt::IgbtParams,
 ) {

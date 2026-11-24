@@ -1,6 +1,7 @@
 //! A current-controlled current source, SPICE's `F`.
 
 use crate::error::SimError;
+use crate::handle::{ComponentId, NodeId};
 use crate::mna::MnaSystem;
 
 use super::{AcStamp, Check, DcStamp, Device};
@@ -25,9 +26,9 @@ pub struct Cccs {
     /// Unique component identifier.
     pub id: String,
     /// Output terminals `[out_from, out_to]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Id of the voltage source whose current is sensed.
-    pub control_source: String,
+    pub control_source: ComponentId,
     /// Current gain α (A/A): `I_out = alpha * I_control`.
     pub alpha: f64,
 }
@@ -46,7 +47,7 @@ impl Device for Cccs {
     }
 
     /// None: its output is a current.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         Vec::new()
     }
 

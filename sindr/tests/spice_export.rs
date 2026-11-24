@@ -9,6 +9,7 @@ use sindr::element::{
     OpAmp, Photodiode, Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode,
     Switch, Thermistor, Varactor, VoltageRegulator, VoltageSource, ZenerDiode,
 };
+use sindr::NodeId;
 use std::collections::HashMap;
 
 use sindr::spice::{parse_str, to_netlist, ExportError};
@@ -588,7 +589,7 @@ fn globals_round_trip() {
     assert_eq!(back, circuit, "deck:\n{deck}");
 
     let nets = |c: &Circuit| {
-        let mut nets: Vec<String> = c
+        let mut nets: Vec<NodeId> = c
             .flatten()
             .unwrap()
             .components
@@ -615,11 +616,11 @@ fn s(names: &[&str]) -> Vec<String> {
     names.iter().map(|n| n.to_string()).collect()
 }
 
-fn two(a: &str, b: &str) -> [String; 2] {
+fn two(a: &str, b: &str) -> [NodeId; 2] {
     [a.into(), b.into()]
 }
 
-fn three(a: &str, b: &str, c: &str) -> [String; 3] {
+fn three(a: &str, b: &str, c: &str) -> [NodeId; 3] {
     [a.into(), b.into(), c.into()]
 }
 

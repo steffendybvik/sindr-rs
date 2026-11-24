@@ -1,5 +1,6 @@
 //! A junction FET: the Shockley square law, with optional gate junctions.
 
+use crate::handle::NodeId;
 use nalgebra::DVector;
 use sindr_devices::jfet::JfetKind;
 
@@ -24,7 +25,7 @@ pub struct Jfet {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[gate, drain, source]`.
-    pub nodes: [String; 3], // [gate, drain, source]
+    pub nodes: [NodeId; 3], // [gate, drain, source]
     /// Channel type (N-channel or P-channel).
     pub kind: JfetKind,
     /// Drain saturation current at Vgs=0 (A). Typical: 1–20 mA.
@@ -94,7 +95,7 @@ impl Device for Jfet {
     }
 
     /// Drain to source; the model draws no gate current.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         let [_, d, s] = &self.nodes;
         vec![[d, s]]
     }
@@ -260,7 +261,7 @@ pub(crate) fn jfet_gate_charge(
 pub(crate) fn stamp_jfet_companion(
     system: &mut MnaSystem,
     node_map: &crate::node_map::NodeMap,
-    nodes: &[String; 3], // [gate, drain, source]
+    nodes: &[NodeId; 3], // [gate, drain, source]
     kind: JfetKind,
     idss: f64,
     vp: f64,

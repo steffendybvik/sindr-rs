@@ -73,15 +73,35 @@ println!("R1 current = {:.3} mA", result.current("R1").unwrap() * 1e3); // 3.333
 
 ## Building circuits
 
-Every component has an `id` (arbitrary string) and `nodes` (node names as strings). One node must match `ground_node` — it is held at 0 V.
+Every component has an `id` (arbitrary string) and `nodes`, an array of `NodeId` handles. A `NodeId` is a net's name underneath: `"out".into()` makes one, and two elements share a net when their handles name the same net. One node must match `ground_node` — it is held at 0 V.
+
+`CircuitBuilder` hands the handles out and checks them: declare each net once with `node`, and `build` fails with `SimError::UnknownNode` on an element that names a net nobody declared, so a typo is an error rather than a new floating net. Analysis configs take handles too (`NodeId` for an output net, `ComponentId` for a source), and result accessors take either a handle or a name.
+
+```rust
+use sindr::element::{Resistor, VoltageSource};
+use sindr::{solve_circuit, CircuitBuilder};
+
+let mut b = CircuitBuilder::new(); // ground is "0"
+let gnd = b.ground();
+let n1 = b.node("n1");
+let n2 = b.node("n2");
+b.add(VoltageSource::dc("V1", [n1.clone(), gnd.clone()], 10.0));
+b.add(Resistor { id: "R1".into(), nodes: [n1, n2.clone()], resistance: 1_000.0 });
+b.add(Resistor { id: "R2".into(), nodes: [n2.clone(), gnd], resistance: 2_000.0 });
+let circuit = b.build()?;
+
+let result = solve_circuit(&circuit)?;
+assert!((result.voltage(&n2).unwrap() - 6.667).abs() < 1e-3);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
 ### Passive components
 
 ```rust,ignore
 use sindr::element::{Capacitor, Inductor, Resistor};
-CircuitElement::Resistor(Resistor { id, nodes: [String; 2], resistance: f64 })
-CircuitElement::Capacitor(Capacitor { id, nodes: [String; 2], capacitance: f64 })
-CircuitElement::Inductor(Inductor { id, nodes: [String; 2], inductance: f64, saturation: Option<InductorSaturation> })
+CircuitElement::Resistor(Resistor { id, nodes: [NodeId; 2], resistance: f64 })
+CircuitElement::Capacitor(Capacitor { id, nodes: [NodeId; 2], capacitance: f64 })
+CircuitElement::Inductor(Inductor { id, nodes: [NodeId; 2], inductance: f64, saturation: Option<InductorSaturation> })
 ```
 
 Capacitors and inductors trigger transient analysis automatically. In pure DC (no reactive elements, no waveforms), they are treated as open circuits.
@@ -106,8 +126,8 @@ let l1 = CircuitElement::Inductor(Inductor {
 
 ```rust,ignore
 use sindr::element::{CurrentSource, VoltageSource};
-CircuitElement::VoltageSource(VoltageSource { id, nodes: [String; 2], voltage: f64, waveform: Option<Waveform> })
-CircuitElement::CurrentSource(CurrentSource { id, nodes: [String; 2], current: f64, waveform: Option<Waveform> })
+CircuitElement::VoltageSource(VoltageSource { id, nodes: [NodeId; 2], voltage: f64, waveform: Option<Waveform> })
+CircuitElement::CurrentSource(CurrentSource { id, nodes: [NodeId; 2], current: f64, waveform: Option<Waveform> })
 ```
 
 `nodes[0]` is the positive terminal for voltage sources. A current source's current flows through it from `nodes[0]` to `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`, as SPICE's `I` does.
@@ -118,7 +138,7 @@ A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers tr
 
 ```rust,ignore
 use sindr::element::Battery;
-CircuitElement::Battery(Battery { id, nodes: [String; 2], params: BatteryParams, state_of_charge: f64 })
+CircuitElement::Battery(Battery { id, nodes: [NodeId; 2], params: BatteryParams, state_of_charge: f64 })
 ```
 
 `nodes` are `[positive, negative]`. The cell is an equivalent circuit: open-circuit voltage by state of charge (`params.ocv`, interpolated), behind a series resistance `r_series` and an optional RC pair (`params.rc`) for the slow sag after a load step and the recovery after it. Its terminal voltage is `OCV(SoC) − R0·i − v1`.
@@ -147,15 +167,15 @@ let cell = CircuitElement::Battery(Battery {
 
 ```rust,ignore
 use sindr::element::{Pushbutton, Switch};
-CircuitElement::Switch(Switch { id, nodes: [String; 2], closed: bool })
-CircuitElement::Pushbutton(Pushbutton { id, nodes: [String; 2], closed: bool })
+CircuitElement::Switch(Switch { id, nodes: [NodeId; 2], closed: bool })
+CircuitElement::Pushbutton(Pushbutton { id, nodes: [NodeId; 2], closed: bool })
 ```
 
 Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 
 ```rust,ignore
 use sindr::element::SwitchSpdt;
-CircuitElement::SwitchSpdt(SwitchSpdt { id, nodes: [String; 3], position: SpdtPosition })  // [common, a, b]
+CircuitElement::SwitchSpdt(SwitchSpdt { id, nodes: [NodeId; 3], position: SpdtPosition })  // [common, a, b]
 ```
 
 A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default) or to `b`, each path a `Switch`. Its result is the path in use: common minus the selected throw, and the current from common into it.
@@ -164,8 +184,8 @@ A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default
 
 ```rust,ignore
 use sindr::element::{Crystal, FerriteBead};
-CircuitElement::Crystal(Crystal { id, nodes: [String; 2], params: CrystalParams })
-CircuitElement::FerriteBead(FerriteBead { id, nodes: [String; 2], params: FerriteBeadParams })
+CircuitElement::Crystal(Crystal { id, nodes: [NodeId; 2], params: CrystalParams })
+CircuitElement::FerriteBead(FerriteBead { id, nodes: [NodeId; 2], params: FerriteBeadParams })
 ```
 
 - **Crystal:** the Butterworth–Van Dyke model, `Rm`–`Lm`–`Cm` in series beside `C0`, with `Lm` set by the series-resonant `frequency`. `CrystalParams::from_datasheet(frequency, esr, c0)` takes `Cm = C0/250`, typical of AT-cut crystals; set `cm` when you know it. Open at DC. Its result's `power` is what `Rm` dissipates, the drive level, which `Ratings::power` limits. The load capacitance a datasheet names is the two capacitors on your board, not part of the crystal.
@@ -196,11 +216,11 @@ It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp dio
 
 ```rust,ignore
 use sindr::element::{Diode, Led, Photodiode, SchottkyDiode, ZenerDiode};
-CircuitElement::Diode(Diode { id, nodes: [String; 2], model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
-CircuitElement::Led(Led { id, nodes: [String; 2], color: String }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
-CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [String; 2], vz: f64 })   // breakdown voltage at 5 mA
-CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [String; 2] })            // Vf ≈ 0.3 V
-CircuitElement::Photodiode(Photodiode { id, nodes: [String; 2], irradiance: f64 }) // irradiance in W
+CircuitElement::Diode(Diode { id, nodes: [NodeId; 2], model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
+CircuitElement::Led(Led { id, nodes: [NodeId; 2], color: String }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
+CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [NodeId; 2], vz: f64 })   // breakdown voltage at 5 mA
+CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [NodeId; 2] })            // Vf ≈ 0.3 V
+CircuitElement::Photodiode(Photodiode { id, nodes: [NodeId; 2], irradiance: f64 }) // irradiance in W
 ```
 
 All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
@@ -211,7 +231,7 @@ All diodes use Newton-Raphson automatically when present. `Diode`'s optional `mo
 use sindr::element::Varactor;
 CircuitElement::Varactor(Varactor {
     id: String,
-    nodes: [String; 2],  // [anode, cathode]
+    nodes: [NodeId; 2],  // [anode, cathode]
     params: VaractorParams, // { cj0, phi, m }
 })
 ```
@@ -225,7 +245,7 @@ use sindr::element::{Bjt, Igbt, Jfet, Mosfet};
 // BJT — nodes: [base, collector, emitter]
 CircuitElement::Bjt(Bjt {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     kind: BjtKind,                          // BjtKind::Npn or BjtKind::Pnp
     bf: f64,                                // forward beta, default 100
     temperature: f64,                       // junction temp (K), default 300.15 K
@@ -236,7 +256,7 @@ CircuitElement::Bjt(Bjt {
 // MOSFET — nodes: [gate, drain, source]; body tied to source
 CircuitElement::Mosfet(Mosfet {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     kind: MosfetKind,                          // MosfetKind::Nmos or MosfetKind::Pmos
     params: MosfetParams,                      // KP, VTO, LAMBDA, GAMMA, PHI; VTO SPICE-signed (negative for PMOS)
     parasitic_caps: Option<MosfetParasiticCaps>, // { cgs, cgd } in Farads; None = disabled
@@ -246,14 +266,14 @@ CircuitElement::Mosfet(Mosfet {
 // IGBT — nodes: [gate, collector, emitter]
 CircuitElement::Igbt(Igbt {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     params: IgbtParams, // { vth, k, vce_sat }
 })
 
 // JFET — nodes: [gate, drain, source]
 CircuitElement::Jfet(Jfet {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     kind: JfetKind, // JfetKind::NChannel or JfetKind::PChannel
     idss: f64,      // drain saturation current at Vgs = 0 (A)
     vp: f64,        // pinch-off voltage (V), negative for N-channel
@@ -315,7 +335,7 @@ println!("Vbe = {:.3} V, Vce = {:.3} V, Ic = {:.3} mA, region = {}",
 use sindr::element::Transformer;
 CircuitElement::Transformer(Transformer {
     id: String,
-    nodes: [String; 4],  // [p1, q1, p2, q2] — primary (p1,q1), secondary (p2,q2)
+    nodes: [NodeId; 4],  // [p1, q1, p2, q2] — primary (p1,q1), secondary (p2,q2)
     l1: f64,             // primary inductance (H)
     l2: f64,             // secondary inductance (H)
     k: f64,              // coupling coefficient [0, 0.999]; default 0.999 (near-ideal)
@@ -335,10 +355,10 @@ CircuitElement::Vcvs(Vcvs { id, nodes: [out+, out-], control_nodes: [ctrl+, ctrl
 CircuitElement::Vccs(Vccs { id, nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-], gm: f64 })
 
 // Current-controlled voltage source: V_out = rm × I_ctrl
-CircuitElement::Ccvs(Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 })
+CircuitElement::Ccvs(Ccvs { id, nodes: [out+, out-], control_source: ComponentId, rm: f64 })
 
 // Current-controlled current source: I_out = alpha × I_ctrl
-CircuitElement::Cccs(Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 })
+CircuitElement::Cccs(Cccs { id, nodes: [out_from, out_to], control_source: ComponentId, alpha: f64 })
 
 // Behavioural source (SPICE's B): a voltage or current set by an expression
 CircuitElement::Behavioural(Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression })
@@ -355,8 +375,8 @@ The current sources follow SPICE's `G` and `F` and sindr's own `CurrentSource`: 
 ```rust,ignore
 use sindr::element::{Comparator, OpAmp};
 // nodes: [in_plus, in_minus, out]
-CircuitElement::OpAmp(OpAmp { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> }) // rails, default ±15 V
-CircuitElement::Comparator(Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 }) // output high / low, default ±15 V
+CircuitElement::OpAmp(OpAmp { id, nodes: [NodeId; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> }) // rails, default ±15 V
+CircuitElement::Comparator(Comparator { id, nodes: [NodeId; 3], v_pos: f64, v_neg: f64 }) // output high / low, default ±15 V
 ```
 
 With `model: None` the op-amp is a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. A comparator has the same gain and no frequency response, but its output is clamped to `v_neg`/`v_pos`, so overdrive beyond `v_pos / 1e5` (50 µV for a 5 V rail) pins it to a rail in DC, transient and AC (where its gain at a rail is zero). It has no hysteresis or open-collector output; `v_pos` must be above `v_neg`. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
@@ -380,17 +400,17 @@ The pole and slew limit act in transient and AC runs. An op-amp doesn't count as
 
 ```rust,ignore
 use sindr::element::{Fuse, Photoresistor, Potentiometer, Relay, Thermistor, VoltageRegulator};
-CircuitElement::Photoresistor(Photoresistor { id, nodes: [String; 2], light_level: f64 }) // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
-CircuitElement::Thermistor(Thermistor { id, nodes: [String; 2], temperature: f64 }) // Kelvin, default 298.15 K (25 °C)
+CircuitElement::Photoresistor(Photoresistor { id, nodes: [NodeId; 2], light_level: f64 }) // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
+CircuitElement::Thermistor(Thermistor { id, nodes: [NodeId; 2], temperature: f64 }) // Kelvin, default 298.15 K (25 °C)
 CircuitElement::Potentiometer(Potentiometer { id, nodes: [top, wiper, bottom], resistance: f64, position: f64 }) // position 0.0–1.0
 CircuitElement::Relay(Relay {
     id,
-    nodes: [String; 4],     // [coil+, coil-, contact1, contact2]
+    nodes: [NodeId; 4],     // [coil+, coil-, contact1, contact2]
     coil_resistance: f64,
     pickup_voltage: f64,
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
 })
-CircuitElement::Fuse(Fuse { id, nodes: [String; 2], rating: f64, blown: bool }) // 1 mΩ intact, 1 GΩ blown; rating is display-only
+CircuitElement::Fuse(Fuse { id, nodes: [NodeId; 2], rating: f64, blown: bool }) // 1 mΩ intact, 1 GΩ blown; rating is display-only
 CircuitElement::VoltageRegulator(VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> })
 ```
 

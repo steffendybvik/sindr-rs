@@ -1,6 +1,7 @@
 //! A linear resistor.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::stamp_resistor_at;
 
 use super::{AcStamp, DcStamp, Device};
@@ -18,7 +19,7 @@ pub struct Resistor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Resistance (Ω).
     pub resistance: f64,
 }

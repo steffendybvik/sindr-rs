@@ -1,6 +1,7 @@
 //! A two-terminal switch, open or closed.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::{stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
 use super::{AcStamp, DcStamp, Device};
@@ -17,7 +18,7 @@ pub struct Switch {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// When true the switch conducts (closed); when false it is open.
     pub closed: bool,
 }

@@ -80,6 +80,26 @@ pub enum SimError {
     #[error("Invalid component: {0}")]
     InvalidComponent(String),
 
+    /// A net no component names: a typo in a [`CircuitBuilder`] element, or
+    /// a name [`Circuit::node_id`] can't find.
+    ///
+    /// [`CircuitBuilder`]: crate::CircuitBuilder
+    /// [`Circuit::node_id`]: crate::Circuit::node_id
+    #[error("{}", unknown_node_message(node, component.as_deref()))]
+    UnknownNode {
+        /// The net's name.
+        node: String,
+        /// The component that names it, when one does.
+        component: Option<String>,
+    },
+
+    /// A component id nothing in the circuit has, as
+    /// [`Circuit::component_id`] looks it up.
+    ///
+    /// [`Circuit::component_id`]: crate::Circuit::component_id
+    #[error("No component \"{0}\" in the circuit.")]
+    UnknownComponent(String),
+
     /// A resistor's resistance is zero, negative or not finite.
     #[error(
         "Resistor \"{0}\" has a zero, negative or non-finite resistance, which is not physically meaningful."
@@ -303,9 +323,41 @@ fn stuck(node: &Option<String>, components: &[String], step: &f64) -> String {
     format!(": node `{node}`{on} was still moving {step:.3e} V per iteration")
 }
 
+fn unknown_node_message(node: &str, component: Option<&str>) -> String {
+    match component {
+        Some(c) => format!(
+            "\"{c}\" connects to net \"{node}\", which was never declared. \
+             Declare it with `CircuitBuilder::node`, or check the name for a typo."
+        ),
+        None => format!("No net \"{node}\" in the circuit."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_handles_name_what_is_missing() {
+        let from_builder = SimError::UnknownNode {
+            node: "vout".into(),
+            component: Some("R1".into()),
+        };
+        assert_eq!(
+            from_builder.to_string(),
+            "\"R1\" connects to net \"vout\", which was never declared. \
+             Declare it with `CircuitBuilder::node`, or check the name for a typo."
+        );
+        let lookup = SimError::UnknownNode {
+            node: "vout".into(),
+            component: None,
+        };
+        assert_eq!(lookup.to_string(), "No net \"vout\" in the circuit.");
+        assert_eq!(
+            SimError::UnknownComponent("Q9".into()).to_string(),
+            "No component \"Q9\" in the circuit."
+        );
+    }
 
     #[test]
     fn convergence_failed_carries_diagnostics() {

@@ -1,6 +1,7 @@
 //! A comparator: the op-amp macromodel with no pole, its output clamped.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::op_amp::{OpAmpStamp, Pins, OP_AMP_STAGE};
 
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
@@ -21,7 +22,7 @@ pub struct Comparator {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[in_plus, in_minus, out]`.
-    pub nodes: [String; 3], // [in_plus, in_minus, out]
+    pub nodes: [NodeId; 3], // [in_plus, in_minus, out]
     /// Output high level (V): the output's upper limit. Default 15.
     #[cfg_attr(feature = "serde", serde(default = "super::default_v_pos"))]
     pub v_pos: f64,
@@ -41,7 +42,7 @@ impl Device for Comparator {
     }
 
     /// The output to the circuit's ground; the inputs only sense.
-    fn dc_paths<'a>(&'a self, ground: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, ground: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         vec![[&self.nodes[2], ground]]
     }
 

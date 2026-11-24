@@ -2,6 +2,7 @@
 
 use crate::device_params;
 use crate::error::SimError;
+use crate::handle::NodeId;
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
 use crate::noise::NoiseSources;
@@ -19,7 +20,7 @@ pub struct Photodiode {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Incident irradiance in W (optical power, not W/m²).
     /// 0.0 = dark, 0.1 = ~50mA photocurrent with default responsivity.
     #[cfg_attr(feature = "serde", serde(default))]

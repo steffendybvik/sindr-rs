@@ -1,6 +1,7 @@
 //! A voltage-controlled voltage source, SPICE's `E`.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::stamp_vcvs_at;
 
 use super::{AcStamp, Check, DcStamp, Device};
@@ -18,9 +19,9 @@ pub struct Vcvs {
     /// Unique component identifier.
     pub id: String,
     /// Output terminals `[out+, out-]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Sensing terminals `[ctrl+, ctrl-]`.
-    pub control_nodes: [String; 2],
+    pub control_nodes: [NodeId; 2],
     /// Voltage gain μ (V/V): `V_out = gain * V_control`.
     pub gain: f64, // mu
 }
@@ -50,7 +51,7 @@ impl Device for Vcvs {
         Ok(())
     }
 
-    fn all_nodes(&self) -> Vec<&String> {
+    fn all_nodes(&self) -> Vec<&NodeId> {
         let [a, b] = &self.nodes;
         let [c, d] = &self.control_nodes;
         vec![a, b, c, d]

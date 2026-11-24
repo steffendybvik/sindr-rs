@@ -1,6 +1,7 @@
 //! An independent voltage source, DC plus an optional waveform.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::stamp_voltage_source_at;
 use crate::waveform::Waveform;
 
@@ -18,7 +19,7 @@ pub struct VoltageSource {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[positive, negative]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// DC voltage (V); also the offset added to any `waveform`.
     pub voltage: f64,
     /// Optional time-varying waveform added on top of `voltage`.
@@ -27,6 +28,26 @@ pub struct VoltageSource {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub waveform: Option<Waveform>,
+}
+
+impl VoltageSource {
+    /// A DC source of `voltage` (V) with no waveform, `nodes[0]` positive.
+    ///
+    /// ```
+    /// use sindr::element::VoltageSource;
+    ///
+    /// let v1 = VoltageSource::dc("V1", ["in", "0"], 5.0);
+    /// assert_eq!(v1.nodes[0], "in");
+    /// assert!(v1.waveform.is_none());
+    /// ```
+    pub fn dc<N: Into<NodeId>>(id: impl Into<String>, nodes: [N; 2], voltage: f64) -> Self {
+        Self {
+            id: id.into(),
+            nodes: nodes.map(Into::into),
+            voltage,
+            waveform: None,
+        }
+    }
 }
 
 impl Device for VoltageSource {

@@ -75,6 +75,7 @@ use crate::circuit::{Circuit, CircuitElement};
 use crate::design::Ratings;
 use crate::element::DigitalPin;
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::results::{ComponentResult, SimulationResult};
 
 /// One absolute-maximum rating. Each is a magnitude; see [`Ratings`] for
@@ -273,7 +274,7 @@ fn measure(
 ///
 /// [`Device::rating`]: crate::element::Device::rating
 pub(crate) struct RatingProbe<'a> {
-    nodes: &'a [String],
+    nodes: &'a [NodeId],
     voltages: &'a HashMap<String, f64>,
     port: Option<&'a ComponentResult>,
 }
@@ -287,7 +288,7 @@ impl RatingProbe<'_> {
 
     /// `|V(nodes[a]) − V(nodes[b])|`.
     pub(crate) fn between(&self, a: usize, b: usize) -> Option<f64> {
-        let v = |i: usize| self.voltages.get(self.nodes.get(i)?).copied();
+        let v = |i: usize| self.voltages.get(self.nodes.get(i)?.as_str()).copied();
         Some((v(a)? - v(b)?).abs())
     }
 

@@ -11,6 +11,7 @@ use std::fmt::Display;
 
 use crate::circuit::CircuitElement;
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::ratings::{RatingKind, RatingProbe};
 
 #[cfg(feature = "spice")]
@@ -39,15 +40,15 @@ pub(crate) trait Device {
     fn id_mut(&mut self) -> &mut String;
 
     /// The terminals, in the order the element's docs give them.
-    fn nodes(&self) -> &[String];
+    fn nodes(&self) -> &[NodeId];
 
     /// The terminals, for renaming nets.
-    fn nodes_mut(&mut self) -> &mut [String];
+    fn nodes_mut(&mut self) -> &mut [NodeId];
 
     /// Every net the element touches: its terminals, then any it senses
     /// without connecting to (a controlled source's control pair, the
     /// nodes a behavioural expression reads).
-    fn all_nodes(&self) -> Vec<&String> {
+    fn all_nodes(&self) -> Vec<&NodeId> {
         self.nodes().iter().collect()
     }
 
@@ -62,7 +63,7 @@ pub(crate) trait Device {
     /// current source, a MOSFET's gate) overrides it. A tiny shunt the
     /// stamp adds, such as a junction's gmin or a varactor's 1 TΩ, still
     /// counts: the matrix isn't singular with it.
-    fn dc_paths<'a>(&'a self, ground: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, ground: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         let _ = ground;
         let nodes = self.nodes();
         nodes.iter().skip(1).map(|n| [&nodes[0], n]).collect()
@@ -228,11 +229,11 @@ macro_rules! device_identity {
             &mut self.id
         }
 
-        fn nodes(&self) -> &[String] {
+        fn nodes(&self) -> &[NodeId] {
             &self.nodes
         }
 
-        fn nodes_mut(&mut self) -> &mut [String] {
+        fn nodes_mut(&mut self) -> &mut [NodeId] {
             &mut self.nodes
         }
     };

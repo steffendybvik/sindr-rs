@@ -87,7 +87,7 @@ fn every_example_circuit() {
 
 /// The elements no example or `transient_matches_dc` bench uses.
 fn remaining_elements() -> Circuit {
-    let n = |a: &str, b: &str| [a.to_string(), b.to_string()];
+    let n = |a: &str, b: &str| -> [sindr::NodeId; 2] { [a.into(), b.into()] };
     Circuit::new(
         "0",
         vec![

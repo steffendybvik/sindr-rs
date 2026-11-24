@@ -14,6 +14,7 @@ sindr-rs/
 │   ├── src/
 │   │   ├── lib.rs              # public API surface, re-exports
 │   │   ├── circuit.rs          # data model: Circuit, CircuitElement
+│   │   ├── handle.rs           # NodeId / ComponentId handles, CircuitBuilder
 │   │   ├── element/            # one file per CircuitElement variant: its struct and Device impl
 │   │   ├── design.rs           # hierarchy: Block, Instance, Part, flatten
 │   │   ├── waveform.rs         # sine, pulse, square, triangle, PWM, PWL
@@ -121,6 +122,8 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 
 These trip up human users *and* code-generating agents. If you are producing example circuits or tests:
 
+- **Terminals are `NodeId` handles, not `String`s.** `nodes: ["a".into(), "0".into()]` still works, but a `format!` or a `String` needs `.into()` (`[format!("n{i}").into(), "0".into()]`). CCVS/CCCS `control_source` is a `ComponentId`; element `id` fields stay `String`. Analysis configs take handles too (`AcConfig::source_id`, `NoiseConfig::output`, `PzConfig`, `TfOutput`, `LoopGainConfig::probe`, …) and their constructors take `impl Into<…>`, so names still work; result accessors (`voltage`, `current`, `component`, the curves) take `impl AsRef<str>`, a handle or a name. Both handles serialise as plain strings.
+- **Prefer `CircuitBuilder` when writing circuits by hand.** `b.node("out")` declares a net and returns its `NodeId`; `b.build()` fails with `SimError::UnknownNode` for an element wired to an undeclared net, which catches typos that would otherwise surface as `FloatingNode`. `Circuit::node_id` / `component_id` check a name against an existing circuit.
 - **One node must equal `Circuit::ground_node`.** Otherwise → `SimError::NoGround`.
 - **Every node must have a DC path to ground.** Floating sub-circuits (e.g. capacitor stack with no DC return) → `FloatingNode`. Add a large bleeder resistor if the topology calls for it.
 - **Every node needs at least two connections.** A node reached by a single component (a dangling resistor end) is also `FloatingNode`.

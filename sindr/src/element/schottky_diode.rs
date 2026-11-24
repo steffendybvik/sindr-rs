@@ -2,6 +2,7 @@
 
 use crate::device_params;
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::stamp_diode_companion_at;
 
 use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
@@ -20,7 +21,7 @@ pub struct SchottkyDiode {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[anode, cathode]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Junction temperature (K), positive and finite. Default 300.15 K.
     /// Sets IS (SPICE temperature scaling) and the thermal voltage kT/q.
     #[cfg_attr(

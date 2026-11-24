@@ -37,6 +37,7 @@ use crate::ac_analysis::{
 };
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::SimError;
+use crate::handle::{ComponentId, NodeId};
 use crate::node_map::NodeMap;
 use crate::results::SimulationResult;
 use crate::transfer_function::Port;
@@ -57,11 +58,11 @@ const T_NOISE: f64 = 300.15;
 #[non_exhaustive]
 pub struct NoiseConfig {
     /// The output node.
-    pub output: String,
+    pub output: NodeId,
     /// The node the output is measured against; ground when `None`.
-    pub reference: Option<String>,
+    pub reference: Option<NodeId>,
     /// The independent voltage or current source noise is referred back to.
-    pub input_source: String,
+    pub input_source: ComponentId,
     /// Start frequency (Hz), above 0: flicker noise is infinite at DC.
     pub f_start: f64,
     /// Stop frequency (Hz).
@@ -89,8 +90,8 @@ impl NoiseConfig {
     /// assert_eq!(config.reference.as_deref(), Some("ref"));
     /// ```
     pub fn new(
-        output: impl Into<String>,
-        input_source: impl Into<String>,
+        output: impl Into<NodeId>,
+        input_source: impl Into<ComponentId>,
         f_start: f64,
         f_stop: f64,
         num_points: usize,
@@ -107,7 +108,7 @@ impl NoiseConfig {
     }
 
     /// Measure the output against node `reference` instead of ground.
-    pub fn with_reference(mut self, reference: impl Into<String>) -> Self {
+    pub fn with_reference(mut self, reference: impl Into<NodeId>) -> Self {
         self.reference = Some(reference.into());
         self
     }
@@ -424,7 +425,7 @@ impl NoiseSources<'_> {
         id: &str,
         kind: NoiseKind,
         branch: &str,
-        [a, b]: [&String; 2],
+        [a, b]: [&NodeId; 2],
         white: f64,
         flicker: f64,
     ) {
@@ -443,7 +444,7 @@ impl NoiseSources<'_> {
 
     /// The thermal noise `4kT/R` of a resistance `r` (Ω) at `t` (K) from
     /// `a` to `b`; none for a resistance that isn't positive.
-    pub(crate) fn thermal(&mut self, id: &str, branch: &str, ab: [&String; 2], r: f64, t: f64) {
+    pub(crate) fn thermal(&mut self, id: &str, branch: &str, ab: [&NodeId; 2], r: f64, t: f64) {
         let white = if r > 0.0 {
             4.0 * BOLTZMANN * t / r
         } else {
@@ -453,12 +454,12 @@ impl NoiseSources<'_> {
     }
 
     /// [`thermal`](Self::thermal) at the 27 °C noise temperature.
-    pub(crate) fn thermal_27c(&mut self, id: &str, branch: &str, ab: [&String; 2], r: f64) {
+    pub(crate) fn thermal_27c(&mut self, id: &str, branch: &str, ab: [&NodeId; 2], r: f64) {
         self.thermal(id, branch, ab, r, T_NOISE);
     }
 
     /// The shot noise `2q|I|` of a junction current `i` (A) from `a` to `b`.
-    pub(crate) fn shot(&mut self, id: &str, branch: &str, ab: [&String; 2], i: f64) {
+    pub(crate) fn shot(&mut self, id: &str, branch: &str, ab: [&NodeId; 2], i: f64) {
         self.push(id, NoiseKind::Shot, branch, ab, 2.0 * CHARGE * i.abs(), 0.0);
     }
 
@@ -468,7 +469,7 @@ impl NoiseSources<'_> {
         &mut self,
         id: &str,
         branch: &str,
-        ab: [&String; 2],
+        ab: [&NodeId; 2],
         i: f64,
         kf: f64,
         af: f64,
@@ -485,7 +486,7 @@ impl NoiseSources<'_> {
 
     /// A FET channel's thermal noise, `(8/3)·kT·|gm|`, from drain `d` to
     /// source `s`.
-    pub(crate) fn channel(&mut self, id: &str, ds: [&String; 2], gm: f64) {
+    pub(crate) fn channel(&mut self, id: &str, ds: [&NodeId; 2], gm: f64) {
         let white = 8.0 / 3.0 * BOLTZMANN * T_NOISE * gm.abs();
         self.push(id, NoiseKind::Thermal, "", ds, white, 0.0);
     }

@@ -14,7 +14,7 @@ use sindr::{
 fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
     CircuitElement::Resistor(Resistor {
         id,
-        nodes: [a, b],
+        nodes: [a.into(), b.into()],
         resistance,
     })
 }
@@ -22,7 +22,7 @@ fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
 fn c(id: String, a: String, b: String, capacitance: f64) -> CircuitElement {
     CircuitElement::Capacitor(Capacitor {
         id,
-        nodes: [a, b],
+        nodes: [a.into(), b.into()],
         capacitance,
     })
 }

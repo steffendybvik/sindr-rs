@@ -1,5 +1,6 @@
 //! A behavioural source: a voltage or current set by an expression.
 
+use crate::handle::NodeId;
 use nalgebra::DVector;
 
 use crate::circuit::{BehaviouralOutput, Circuit, CircuitElement};
@@ -53,7 +54,7 @@ pub struct Behavioural {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[n+, n-]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Whether the expression is a voltage or a current.
     pub output: BehaviouralOutput,
     /// The value, in volts or amperes.
@@ -97,7 +98,7 @@ impl Device for Behavioural {
 
     /// A voltage output's two terminals; a current output fixes no
     /// voltage.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         match self.output {
             BehaviouralOutput::Voltage => {
                 let [p, q] = &self.nodes;
@@ -150,8 +151,8 @@ impl Device for Behavioural {
     }
 
     /// The nodes the expression reads count as connections too.
-    fn all_nodes(&self) -> Vec<&String> {
-        let mut all: Vec<&String> = self.nodes.iter().collect();
+    fn all_nodes(&self) -> Vec<&NodeId> {
+        let mut all: Vec<&NodeId> = self.nodes.iter().collect();
         for node in self.expr.nodes() {
             if !all.contains(&node) {
                 all.push(node);
@@ -185,7 +186,7 @@ impl Device for Behavioural {
             match variable {
                 Variable::Voltage { node, reference } => {
                     for n in std::iter::once(node).chain(reference) {
-                        deck_names.insert(n.clone(), deck.node(n)?);
+                        deck_names.insert(n.to_string(), deck.node(n)?);
                     }
                 }
                 Variable::Current { source } => {
@@ -198,7 +199,7 @@ impl Device for Behavioural {
                             ),
                         }
                     })?;
-                    deck_names.insert(source.clone(), name);
+                    deck_names.insert(source.to_string(), name);
                 }
                 _ => {}
             }

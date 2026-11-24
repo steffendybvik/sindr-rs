@@ -1,5 +1,6 @@
 //! A bipolar junction transistor: Ebers–Moll with the Early effect.
 
+use crate::handle::NodeId;
 use nalgebra::DVector;
 use sindr_devices::bjt::{self, BjtKind, BjtParams};
 
@@ -25,7 +26,7 @@ pub struct Bjt {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[base, collector, emitter]`.
-    pub nodes: [String; 3], // [base, collector, emitter]
+    pub nodes: [NodeId; 3], // [base, collector, emitter]
     /// Polarity (NPN or PNP).
     pub kind: BjtKind,
     /// Forward current gain β (unitless), positive and finite. Default 100.
@@ -225,7 +226,7 @@ pub(crate) fn bjt_parasitics<T: Clone>(
 pub(crate) fn stamp_bjt_companion(
     system: &mut MnaSystem,
     node_map: &crate::node_map::NodeMap,
-    nodes: &[String; 3],
+    nodes: &[NodeId; 3],
     v_prev: &DVector<f64>,
     params: &BjtParams,
     kind: BjtKind,

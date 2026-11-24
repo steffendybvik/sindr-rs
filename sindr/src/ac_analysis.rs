@@ -10,6 +10,7 @@ use crate::element::layout::Layout;
 use crate::element::{
     AcBias, AcStamp, Conductance, Inductor, Transformer, VoltageRegulator, VoltageSource,
 };
+use crate::handle::ComponentId;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -52,7 +53,7 @@ pub struct AcConfig {
     /// Frequency spacing.
     pub spacing: FrequencySpacing,
     /// ID of the AC source (voltage source with AC stimulus).
-    pub source_id: String,
+    pub source_id: ComponentId,
     /// AC amplitude of the source: volts, linear (not dB). Results scale
     /// with it; 1 V makes node voltages read as gain.
     pub ac_magnitude: f64,
@@ -80,7 +81,12 @@ impl AcConfig {
     ///     .with_phase_deg(90.0);
     /// assert_eq!(config.num_points, 101);
     /// ```
-    pub fn new(source_id: impl Into<String>, f_start: f64, f_stop: f64, num_points: usize) -> Self {
+    pub fn new(
+        source_id: impl Into<ComponentId>,
+        f_start: f64,
+        f_stop: f64,
+        num_points: usize,
+    ) -> Self {
         Self {
             f_start,
             f_stop,
@@ -130,12 +136,14 @@ pub struct AcPoint {
 impl AcPoint {
     /// The complex voltage at `node` (V), or `None` when there's no such
     /// node. Ground reads 0.
-    pub fn voltage(&self, node: &str) -> Option<Complex64> {
+    pub fn voltage(&self, node: impl AsRef<str>) -> Option<Complex64> {
+        let node = node.as_ref();
         self.node_voltages.get(node).copied()
     }
 
     /// The magnitude of the voltage at `node`, `|V(node)|` (V).
-    pub fn magnitude(&self, node: &str) -> Option<f64> {
+    pub fn magnitude(&self, node: impl AsRef<str>) -> Option<f64> {
+        let node = node.as_ref();
         self.voltage(node).map(|v| v.norm())
     }
 
@@ -143,7 +151,8 @@ impl AcPoint {
     /// voltage ratio. `source_magnitude` is in volts, normally
     /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
     /// circuit.
-    pub fn gain_db(&self, node: &str, source_magnitude: f64) -> Option<f64> {
+    pub fn gain_db(&self, node: impl AsRef<str>, source_magnitude: f64) -> Option<f64> {
+        let node = node.as_ref();
         self.node_voltages.get(node).map(|v| {
             let gain = v.norm() / source_magnitude;
             20.0 * gain.log10()
@@ -154,7 +163,8 @@ impl AcPoint {
     /// the source when [`AcConfig::ac_phase_deg`] is 0, absolute otherwise,
     /// as ngspice reports it. `None` when the node isn't in the
     /// circuit.
-    pub fn phase_deg(&self, node: &str) -> Option<f64> {
+    pub fn phase_deg(&self, node: impl AsRef<str>) -> Option<f64> {
+        let node = node.as_ref();
         self.node_voltages.get(node).map(|v| v.arg().to_degrees())
     }
 }
@@ -197,7 +207,8 @@ impl AcResult {
     /// # Ok::<(), sindr::SimError>(())
     /// ```
     ///
-    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, Complex64)> {
+    pub fn node_voltage_curve(&self, node: impl AsRef<str>) -> Vec<(f64, Complex64)> {
+        let node = node.as_ref();
         self.points
             .iter()
             .filter_map(|p| p.voltage(node).map(|v| (p.frequency, v)))
@@ -206,7 +217,8 @@ impl AcResult {
 
     /// A node's voltage magnitude as `(frequency in Hz, |V| in V)` pairs,
     /// one per point; [`AcResult::gain_curve`] has it in dB.
-    pub fn magnitude_curve(&self, node: &str) -> Vec<(f64, f64)> {
+    pub fn magnitude_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> {
+        let node = node.as_ref();
         self.points
             .iter()
             .filter_map(|p| p.magnitude(node).map(|m| (p.frequency, m)))
@@ -215,7 +227,8 @@ impl AcResult {
 
     /// The gain curve for a node as `(frequency in Hz, gain in dB)` pairs,
     /// one per point, using [`AcConfig::ac_magnitude`].
-    pub fn gain_curve(&self, node: &str) -> Vec<(f64, f64)> {
+    pub fn gain_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> {
+        let node = node.as_ref();
         self.points
             .iter()
             .filter_map(|p| {
@@ -227,7 +240,8 @@ impl AcResult {
 
     /// The phase curve for a node as `(frequency in Hz, phase in degrees)`
     /// pairs, one per point; see [`AcPoint::phase_deg`].
-    pub fn phase_curve(&self, node: &str) -> Vec<(f64, f64)> {
+    pub fn phase_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> {
+        let node = node.as_ref();
         self.points
             .iter()
             .filter_map(|p| p.phase_deg(node).map(|ph| (p.frequency, ph)))

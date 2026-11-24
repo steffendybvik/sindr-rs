@@ -1243,7 +1243,7 @@ fn exported<'a>(case: &str, circuit: &'a Circuit) -> &'a Circuit {
     circuit
 }
 
-fn with_names(id: &str, nodes: [&str; 2]) -> (String, [String; 2]) {
+fn with_names(id: &str, nodes: [&str; 2]) -> (String, [sindr::NodeId; 2]) {
     (id.into(), [nodes[0].into(), nodes[1].into()])
 }
 
@@ -2207,7 +2207,7 @@ fn op_exported_spdt() {
     let spdt = |id: &str, nodes: [&str; 3], position| {
         CircuitElement::SwitchSpdt(SwitchSpdt {
             id: id.into(),
-            nodes: nodes.map(String::from),
+            nodes: nodes.map(sindr::NodeId::from),
             position,
         })
     };

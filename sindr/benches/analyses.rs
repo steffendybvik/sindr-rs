@@ -17,7 +17,7 @@ use sindr::{DcSweepAxis, TempSweepConfig};
 fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
     CircuitElement::Resistor(Resistor {
         id,
-        nodes: [a, b],
+        nodes: [a.into(), b.into()],
         resistance,
     })
 }
@@ -43,7 +43,7 @@ fn rc_ladder(n: usize) -> Circuit {
         ));
         components.push(CircuitElement::Capacitor(Capacitor {
             id: format!("C{i}"),
-            nodes: [format!("n{i}"), "0".into()],
+            nodes: [format!("n{i}").into(), "0".into()],
             capacitance: 1e-9,
         }));
     }
@@ -63,7 +63,7 @@ fn diode_chain(n: usize) -> Circuit {
         components.push(r(format!("RP{i}"), "n0".into(), format!("n{i}"), 10e3));
         components.push(CircuitElement::Diode(Diode {
             id: format!("D{i}"),
-            nodes: [format!("n{i}"), "0".into()],
+            nodes: [format!("n{i}").into(), "0".into()],
             temperature: 300.15,
             model: None,
         }));
@@ -115,7 +115,7 @@ fn ac_config(points: usize) -> AcConfig {
 
 fn v_out(node: String) -> TfOutput {
     TfOutput::Voltage {
-        node,
+        node: node.into(),
         reference: None,
     }
 }

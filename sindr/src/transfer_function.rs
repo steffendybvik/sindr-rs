@@ -5,6 +5,7 @@
 //! sees, and the resistance at the output.
 
 use crate::element::{CurrentSource, VoltageSource};
+use crate::handle::{ComponentId, NodeId};
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -26,15 +27,15 @@ pub enum TfOutput {
     /// or against ground when `reference` is `None`.
     Voltage {
         /// Output node.
-        node: String,
+        node: NodeId,
         /// Reference node; ground when `None`.
-        reference: Option<String>,
+        reference: Option<NodeId>,
     },
     /// `I(source)`: the current through an independent voltage source,
     /// from its `nodes[0]` through the source to its `nodes[1]`.
     Current {
         /// Id of the voltage source the current runs through.
-        source_id: String,
+        source_id: ComponentId,
     },
 }
 
@@ -49,7 +50,7 @@ impl TfOutput {
     ///     TfOutput::Voltage { node: "out".into(), reference: None },
     /// );
     /// ```
-    pub fn voltage(node: impl Into<String>) -> Self {
+    pub fn voltage(node: impl Into<NodeId>) -> Self {
         TfOutput::Voltage {
             node: node.into(),
             reference: None,
@@ -57,7 +58,7 @@ impl TfOutput {
     }
 
     /// `V(node,reference)`: the voltage of `node` against `reference`.
-    pub fn voltage_between(node: impl Into<String>, reference: impl Into<String>) -> Self {
+    pub fn voltage_between(node: impl Into<NodeId>, reference: impl Into<NodeId>) -> Self {
         TfOutput::Voltage {
             node: node.into(),
             reference: Some(reference.into()),
@@ -66,7 +67,7 @@ impl TfOutput {
 
     /// `I(source_id)`: the current through the independent voltage source
     /// `source_id`.
-    pub fn current(source_id: impl Into<String>) -> Self {
+    pub fn current(source_id: impl Into<ComponentId>) -> Self {
         TfOutput::Current {
             source_id: source_id.into(),
         }
@@ -83,7 +84,7 @@ pub struct TfConfig {
     /// The output the gain is measured at.
     pub output: TfOutput,
     /// Id of the input: an independent voltage or current source.
-    pub input_source: String,
+    pub input_source: ComponentId,
 }
 
 impl TfConfig {
@@ -97,7 +98,7 @@ impl TfConfig {
     /// let config = TfConfig::new(TfOutput::voltage("out"), "V1");
     /// assert_eq!(config.input_source, "V1");
     /// ```
-    pub fn new(output: TfOutput, input_source: impl Into<String>) -> Self {
+    pub fn new(output: TfOutput, input_source: impl Into<ComponentId>) -> Self {
         Self {
             output,
             input_source: input_source.into(),

@@ -13,7 +13,7 @@ use sindr::{solve_op, BjtKind, Circuit, CircuitElement};
 fn r(id: String, a: String, b: String, ohms: f64) -> CircuitElement {
     CircuitElement::Resistor(Resistor {
         id,
-        nodes: [a, b],
+        nodes: [a.into(), b.into()],
         resistance: ohms,
     })
 }
@@ -52,7 +52,11 @@ fn row(stages: usize, shared: bool) -> Circuit {
         parts.push(r(format!("RE{i}"), format!("e{i}"), "0".into(), 100.0));
         parts.push(CircuitElement::Bjt(Bjt {
             id: format!("Q{i}"),
-            nodes: [format!("b{i}"), format!("c{i}"), format!("e{i}")],
+            nodes: [
+                format!("b{i}").into(),
+                format!("c{i}").into(),
+                format!("e{i}").into(),
+            ],
             kind: BjtKind::Npn,
             bf: 100.0,
             temperature: 300.15,
@@ -81,7 +85,7 @@ fn a_shared_rail_solves_as_separate_supplies() {
     }
     assert_eq!(shared.voltage("vcc"), Some(5.0));
     let total: f64 = (1..=stages)
-        .map(|i| separate.current(&format!("vcc{i}")).unwrap())
+        .map(|i| separate.current(format!("vcc{i}")).unwrap())
         .sum();
     let rail = shared.current("vcc").unwrap();
     assert!(
@@ -90,7 +94,7 @@ fn a_shared_rail_solves_as_separate_supplies() {
     );
     // KCL at the rail: the source supplies what the collector resistors draw.
     let drawn: f64 = (1..=stages)
-        .map(|i| shared.current(&format!("RC{i}")).unwrap())
+        .map(|i| shared.current(format!("RC{i}")).unwrap())
         .sum();
     assert!(
         (rail.abs() - drawn.abs()).abs() <= 1e-9 * drawn.abs(),

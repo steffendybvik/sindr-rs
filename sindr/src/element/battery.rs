@@ -3,6 +3,7 @@
 
 use crate::battery_state;
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 
 use super::{AcStamp, Check, DcStamp, Device, TranStamp};
@@ -28,7 +29,7 @@ pub struct Battery {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[positive, negative]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// The cell's equivalent circuit.
     pub params: sindr_devices::battery::BatteryParams,
     /// State of charge at the start, 0 (empty) to 1 (full).

@@ -118,6 +118,7 @@ use crate::element::{
     Relay, Resistor, SchottkyDiode, Switch, Thermistor, Transformer, Varactor, VoltageRegulator,
     VoltageSource, ZenerDiode,
 };
+use crate::handle::NodeId;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "spice")]
@@ -1571,6 +1572,7 @@ fn tie_high_impedance_nets(
     ids: &BTreeSet<&str>,
 ) -> Vec<HighImpedanceNet> {
     let ground = circuit.ground_node.clone();
+    let ground_id = NodeId::from(&ground);
     let floating: Vec<(String, Vec<Pin>)> = {
         let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
         let mut adjacent: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -1580,26 +1582,37 @@ fn tie_high_impedance_nets(
         let element_paths = circuit
             .components
             .iter()
-            .flat_map(|e| e.device().dc_paths(&ground));
+            .flat_map(|e| e.device().dc_paths(&ground_id))
+            .map(|[a, b]| [a.as_str(), b.as_str()]);
         // A subcircuit instance's ports are element terminals too: the
         // vendor model behind them drives its nets. What it joins inside
         // isn't known here, so every port counts as joined to the first.
         let port_paths = circuit
             .instances
             .iter()
-            .flat_map(|i| i.nodes.iter().map(|n| [&i.nodes[0], n]));
+            .flat_map(|i| i.nodes.iter().map(|n| [i.nodes[0].as_str(), n.as_str()]));
         for [a, b] in element_paths.chain(port_paths) {
-            adjacent.entry(a.as_str()).or_default().insert(b.as_str());
-            adjacent.entry(b.as_str()).or_default().insert(a.as_str());
+            adjacent.entry(a).or_default().insert(b);
+            adjacent.entry(b).or_default().insert(a);
         }
         let terminals = circuit
             .components
             .iter()
-            .map(CircuitElement::all_nodes)
-            .chain(circuit.instances.iter().map(|i| i.nodes.iter().collect()));
+            .map(|c| {
+                c.all_nodes()
+                    .into_iter()
+                    .map(NodeId::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .chain(
+                circuit
+                    .instances
+                    .iter()
+                    .map(|i| i.nodes.iter().map(String::as_str).collect()),
+            );
         for nodes in terminals {
             for n in nodes {
-                *degree.entry(n.as_str()).or_default() += 1;
+                *degree.entry(n).or_default() += 1;
             }
         }
         let mut grounded = BTreeSet::from([ground.as_str()]);
@@ -1632,7 +1645,7 @@ fn tie_high_impedance_nets(
         }
         circuit.components.push(CircuitElement::Resistor(Resistor {
             id: resistor.clone(),
-            nodes: [node.clone(), ground.clone()],
+            nodes: [NodeId::from(&node), NodeId::from(&ground)],
             resistance: HIGH_IMPEDANCE_OHMS,
         }));
         tied.push(HighImpedanceNet {
@@ -2052,14 +2065,18 @@ impl Netlist {
                 node(resolver.net(&source.plus, &source.id)?),
                 side(&source.minus, &source.id)?,
             ];
-            circuit.components.push(source.element(nodes));
+            circuit
+                .components
+                .push(source.element(nodes.map(NodeId::from)));
         }
         for load in &bench.loads {
             let nodes = [
                 node(resolver.net(&load.a, &load.id)?),
                 side(&load.b, &load.id)?,
             ];
-            circuit.components.push(load.element(nodes)?);
+            circuit
+                .components
+                .push(load.element(nodes.map(NodeId::from))?);
         }
 
         // A schematic still being drawn has open ends: a net only one
@@ -2487,16 +2504,10 @@ fn build_element(
             terminal: names[0].to_string(),
         })?);
     }
-    let n2 = || [nodes[0].clone(), nodes[1].clone()];
-    let n3 = || [nodes[0].clone(), nodes[1].clone(), nodes[2].clone()];
-    let n4 = || {
-        [
-            nodes[0].clone(),
-            nodes[1].clone(),
-            nodes[2].clone(),
-            nodes[3].clone(),
-        ]
-    };
+    let n = |i: usize| NodeId::from(&nodes[i]);
+    let n2 = || [n(0), n(1)];
+    let n3 = || [n(0), n(1), n(2)];
+    let n4 = || [n(0), n(1), n(2), n(3)];
 
     let r = Reader { component };
     let id = component.id.clone();

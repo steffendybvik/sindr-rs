@@ -44,7 +44,8 @@ pub struct TempSweepResult {
 impl TempSweepResult {
     /// `(temperature in K, node voltage in V)` pairs for a node, one per
     /// point. Empty when there's no such node.
-    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> {
+    pub fn node_voltage_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> {
+        let node = node.as_ref();
         self.points
             .iter()
             .filter_map(|p| p.result.voltage(node).map(|v| (p.temperature, v)))
@@ -57,7 +58,8 @@ impl TempSweepResult {
     ///
     /// [`ComponentResult::current_through`]: crate::ComponentResult::current_through
     /// [`DcSweepResult::component_current_curve`]: crate::DcSweepResult::component_current_curve
-    pub fn component_current_curve(&self, component_id: &str) -> Vec<(f64, f64)> {
+    pub fn component_current_curve(&self, component_id: impl AsRef<str>) -> Vec<(f64, f64)> {
+        let component_id = component_id.as_ref();
         self.points
             .iter()
             .filter_map(|p| {

@@ -1177,11 +1177,14 @@ fn output_variable(input: &mut Input<'_>) -> ModalResult<crate::TfOutput> {
             (ws, ')'),
         )
         .map(|((node, _), reference)| crate::TfOutput::Voltage {
-            node,
-            reference: reference.map(|(r, _)| r),
+            node: node.into(),
+            reference: reference.map(|(r, _)| r.into()),
         }),
-        delimited(('i', ws, '(', ws), ident, (ws, ')'))
-            .map(|(source_id, _)| crate::TfOutput::Current { source_id }),
+        delimited(('i', ws, '(', ws), ident, (ws, ')')).map(|(source_id, _)| {
+            crate::TfOutput::Current {
+                source_id: source_id.into(),
+            }
+        }),
     ))
     .parse_next(input)
 }
@@ -1286,8 +1289,8 @@ fn parse_card_noise(input: &mut Input<'_>) -> ModalResult<RawCard> {
     }
     Ok(RawCard::Analysis(
         RawAnalysis::Noise {
-            node,
-            reference,
+            node: node.into_string(),
+            reference: reference.map(crate::NodeId::into_string),
             input: source,
             sweep,
             points,

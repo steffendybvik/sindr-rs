@@ -12,6 +12,7 @@ use crate::element::{
     Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, SwitchSpdt,
     Thermistor, Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
 };
+use crate::handle::NodeId;
 use std::collections::HashMap;
 
 use nalgebra::DVector;
@@ -357,7 +358,8 @@ impl SimulationResult {
     /// # Ok::<(), sindr::SimError>(())
     /// ```
     ///
-    pub fn voltage(&self, node: &str) -> Option<f64> {
+    pub fn voltage(&self, node: impl AsRef<str>) -> Option<f64> {
+        let node = node.as_ref();
         self.node_voltages.get(node).copied()
     }
 
@@ -369,7 +371,8 @@ impl SimulationResult {
     /// when there's no such component.
     ///
     /// This is what a measurement's `Signal::i` reads.
-    pub fn current(&self, id: &str) -> Option<f64> {
+    pub fn current(&self, id: impl AsRef<str>) -> Option<f64> {
+        let id = id.as_ref();
         current_in(&self.component_results, Some(&self.branch_currents), id)
     }
 
@@ -378,37 +381,43 @@ impl SimulationResult {
     /// delivering power reads negative. `None` when `id` has no branch
     /// current (resistors, diodes and other parts without a current
     /// unknown) or isn't in the circuit.
-    pub fn branch_current(&self, id: &str) -> Option<f64> {
+    pub fn branch_current(&self, id: impl AsRef<str>) -> Option<f64> {
+        let id = id.as_ref();
         self.branch_currents.get(id).copied()
     }
 
     /// The voltage, current and power of component `id`, or `None` when
     /// there's no such component.
-    pub fn component(&self, id: &str) -> Option<&ComponentResult> {
+    pub fn component(&self, id: impl AsRef<str>) -> Option<&ComponentResult> {
+        let id = id.as_ref();
         find_by_id(&self.component_results, id, |c| &c.id)
     }
 
     /// The operating point of BJT `id`, or `None` when there's no BJT by
     /// that id.
-    pub fn bjt(&self, id: &str) -> Option<&BjtResult> {
+    pub fn bjt(&self, id: impl AsRef<str>) -> Option<&BjtResult> {
+        let id = id.as_ref();
         find_by_id(&self.bjt_results, id, |b| &b.id)
     }
 
     /// The operating point of MOSFET `id`, or `None` when there's no
     /// MOSFET by that id.
-    pub fn mosfet(&self, id: &str) -> Option<&MosfetResult> {
+    pub fn mosfet(&self, id: impl AsRef<str>) -> Option<&MosfetResult> {
+        let id = id.as_ref();
         find_by_id(&self.mosfet_results, id, |m| &m.id)
     }
 
     /// The inputs and output of op-amp or comparator `id`, or `None` when
     /// there's no op-amp or comparator by that id.
-    pub fn op_amp(&self, id: &str) -> Option<&OpAmpResult> {
+    pub fn op_amp(&self, id: impl AsRef<str>) -> Option<&OpAmpResult> {
+        let id = id.as_ref();
         find_by_id(&self.op_amp_results, id, |o| &o.id)
     }
 
     /// The coil voltage and contact state of relay `id`, or `None` when
     /// there's no relay by that id.
-    pub fn relay(&self, id: &str) -> Option<&RelayResult> {
+    pub fn relay(&self, id: impl AsRef<str>) -> Option<&RelayResult> {
+        let id = id.as_ref();
         find_by_id(&self.relay_results, id, |r| &r.id)
     }
 
@@ -498,64 +507,75 @@ impl<'a> InstanceResult<'a> {
 
     /// The voltage at local net `node` (V); see
     /// [`SimulationResult::voltage`].
-    pub fn voltage(&self, node: &str) -> Option<f64> {
-        self.result.voltage(&self.name(node))
+    pub fn voltage(&self, node: impl AsRef<str>) -> Option<f64> {
+        let node = node.as_ref();
+        self.result.voltage(self.name(node))
     }
 
     /// The current through component `id` (A); see
     /// [`SimulationResult::current`].
-    pub fn current(&self, id: &str) -> Option<f64> {
-        self.result.current(&self.name(id))
+    pub fn current(&self, id: impl AsRef<str>) -> Option<f64> {
+        let id = id.as_ref();
+        self.result.current(self.name(id))
     }
 
     /// The branch current of component `id` (A); see
     /// [`SimulationResult::branch_current`].
-    pub fn branch_current(&self, id: &str) -> Option<f64> {
-        self.result.branch_current(&self.name(id))
+    pub fn branch_current(&self, id: impl AsRef<str>) -> Option<f64> {
+        let id = id.as_ref();
+        self.result.branch_current(self.name(id))
     }
 
     /// The voltage, current and power of component `id`.
-    pub fn component(&self, id: &str) -> Option<&'a ComponentResult> {
-        self.result.component(&self.name(id))
+    pub fn component(&self, id: impl AsRef<str>) -> Option<&'a ComponentResult> {
+        let id = id.as_ref();
+        self.result.component(self.name(id))
     }
 
     /// The operating point of BJT `id`.
-    pub fn bjt(&self, id: &str) -> Option<&'a BjtResult> {
-        self.result.bjt(&self.name(id))
+    pub fn bjt(&self, id: impl AsRef<str>) -> Option<&'a BjtResult> {
+        let id = id.as_ref();
+        self.result.bjt(self.name(id))
     }
 
     /// The operating point of MOSFET `id`.
-    pub fn mosfet(&self, id: &str) -> Option<&'a MosfetResult> {
-        self.result.mosfet(&self.name(id))
+    pub fn mosfet(&self, id: impl AsRef<str>) -> Option<&'a MosfetResult> {
+        let id = id.as_ref();
+        self.result.mosfet(self.name(id))
     }
 
     /// The inputs and output of op-amp or comparator `id`.
-    pub fn op_amp(&self, id: &str) -> Option<&'a OpAmpResult> {
-        self.result.op_amp(&self.name(id))
+    pub fn op_amp(&self, id: impl AsRef<str>) -> Option<&'a OpAmpResult> {
+        let id = id.as_ref();
+        self.result.op_amp(self.name(id))
     }
 
     /// The coil voltage and contact state of relay `id`.
-    pub fn relay(&self, id: &str) -> Option<&'a RelayResult> {
-        self.result.relay(&self.name(id))
+    pub fn relay(&self, id: impl AsRef<str>) -> Option<&'a RelayResult> {
+        let id = id.as_ref();
+        self.result.relay(self.name(id))
     }
 }
 
 impl TimestepSnapshot {
     /// The voltage at `node` at this instant (V), or `None` when there's
     /// no such node. Ground reads `0.0`.
-    pub fn voltage(&self, node: &str) -> Option<f64> {
+    pub fn voltage(&self, node: impl AsRef<str>) -> Option<f64> {
+        let node = node.as_ref();
         self.node_voltages.get(node).copied()
     }
 
     /// The current through component `id` at this instant (A), its
     /// [`ComponentResult::current_through`], or `None` when there's no
     /// such component.
-    pub fn current(&self, id: &str) -> Option<f64> {
+    pub fn current(&self, id: impl AsRef<str>) -> Option<f64> {
+        let id = id.as_ref();
         current_in(&self.component_results, None, id)
     }
 
     /// The voltage, current and power of component `id` at this instant.
-    pub fn component(&self, id: &str) -> Option<&ComponentResult> {
+    pub fn component(&self, id: impl AsRef<str>) -> Option<&ComponentResult> {
+        let id = id.as_ref();
         find_by_id(&self.component_results, id, |c| &c.id)
     }
 }
@@ -584,7 +604,8 @@ impl TransientData {
     /// # Ok::<(), sindr::SimError>(())
     /// ```
     ///
-    pub fn node_voltage_curve(&self, node: &str) -> Vec<(f64, f64)> {
+    pub fn node_voltage_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> {
+        let node = node.as_ref();
         self.timesteps
             .iter()
             .filter_map(|s| s.voltage(node).map(|v| (s.time, v)))
@@ -594,7 +615,8 @@ impl TransientData {
     /// A component's current as `(time in s, current in A)` pairs, one per
     /// step; see [`TimestepSnapshot::current`]. Empty when there's no such
     /// component.
-    pub fn component_current_curve(&self, id: &str) -> Vec<(f64, f64)> {
+    pub fn component_current_curve(&self, id: impl AsRef<str>) -> Vec<(f64, f64)> {
+        let id = id.as_ref();
         self.timesteps
             .iter()
             .filter_map(|s| s.current(id).map(|i| (s.time, i)))
@@ -604,13 +626,15 @@ impl TransientData {
     /// The voltage at `node` at time `t` (V), linearly interpolated between
     /// the steps either side. `None` when there's no such node or `t` is
     /// outside the run.
-    pub fn voltage_at(&self, node: &str, t: f64) -> Option<f64> {
+    pub fn voltage_at(&self, node: impl AsRef<str>, t: f64) -> Option<f64> {
+        let node = node.as_ref();
         crate::measure::interpolate(&self.node_voltage_curve(node), t)
     }
 
     /// The current through component `id` at time `t` (A), linearly
     /// interpolated as [`TransientData::voltage_at`] is.
-    pub fn current_at(&self, id: &str, t: f64) -> Option<f64> {
+    pub fn current_at(&self, id: impl AsRef<str>, t: f64) -> Option<f64> {
+        let id = id.as_ref();
         crate::measure::interpolate(&self.component_current_curve(id), t)
     }
 }
@@ -638,7 +662,7 @@ pub(crate) fn behavioural_result(
     solution: &DVector<f64>,
     t: f64,
     id: &str,
-    nodes: &[String; 2],
+    nodes: &[NodeId; 2],
     output: crate::BehaviouralOutput,
     expr: &crate::expression::Expression,
     branch: usize,
@@ -666,7 +690,7 @@ pub(crate) fn behavioural_result(
 
 pub(crate) fn regulator_result(
     id: &str,
-    nodes: &[String; 3],
+    nodes: &[NodeId; 3],
     voltage: f64,
     model: &Option<sindr_devices::regulator::RegulatorParams>,
     node_map: &NodeMap,
@@ -1319,7 +1343,7 @@ pub(crate) fn op_amp_and_relay_results(
     circuit: &Circuit,
     node_voltages: &HashMap<String, f64>,
 ) -> (Vec<OpAmpResult>, Vec<RelayResult>) {
-    let v = |n: &String| node_voltages.get(n).copied().unwrap_or(0.0);
+    let v = |n: &NodeId| node_voltages.get(n.as_str()).copied().unwrap_or(0.0);
     let mut op_amps = Vec::new();
     let mut relays = Vec::new();
     for component in &circuit.components {
@@ -1465,7 +1489,7 @@ mod extract_tests {
     /// their own branch current.
     #[test]
     fn raw_elements_report_their_dc_terminal_values() {
-        let two = |a: &str, b: &str| -> [String; 2] { [a.into(), b.into()] };
+        let two = |a: &str, b: &str| -> [NodeId; 2] { [a.into(), b.into()] };
         let circuit = Circuit::new(
             "0",
             vec![

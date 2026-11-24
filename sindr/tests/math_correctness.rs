@@ -38,7 +38,7 @@ fn kcl_residuals(circuit: &Circuit, result: &SimulationResult) -> HashMap<String
 
     let mut sums: HashMap<String, f64> = HashMap::new();
     for el in &circuit.components {
-        let (id, n0, n1): (&String, &String, &String) = match el {
+        let (id, n0, n1): (&String, &sindr::NodeId, &sindr::NodeId) = match el {
             CircuitElement::Resistor(Resistor { id, nodes, .. })
             | CircuitElement::VoltageSource(VoltageSource { id, nodes, .. })
             | CircuitElement::Diode(Diode { id, nodes, .. })
@@ -52,10 +52,10 @@ fn kcl_residuals(circuit: &Circuit, result: &SimulationResult) -> HashMap<String
             None => continue,
         };
         if n0 != &circuit.ground_node {
-            *sums.entry(n0.clone()).or_default() -= i;
+            *sums.entry(n0.to_string()).or_default() -= i;
         }
         if n1 != &circuit.ground_node {
-            *sums.entry(n1.clone()).or_default() += i;
+            *sums.entry(n1.to_string()).or_default() += i;
         }
     }
     sums

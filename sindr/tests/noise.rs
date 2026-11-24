@@ -288,7 +288,7 @@ fn thermistor_and_photoresistor_noise_is_4ktr() {
 /// as its diode card, so it lands in the diode's arm.
 #[test]
 fn junction_shot_noise_is_2qi() {
-    let nodes = || ["a".to_string(), "0".to_string()];
+    let nodes = || -> [sindr::NodeId; 2] { ["a".into(), "0".into()] };
     let devices = [
         CircuitElement::Led(Led {
             id: "D1".into(),

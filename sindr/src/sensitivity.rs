@@ -15,6 +15,7 @@ mod device;
 pub use ac::{solve_ac_sensitivity, AcSensConfig, AcSensEntry, AcSensPoint, AcSensResult};
 
 use crate::element::{Cccs, Ccvs, CurrentSource, Resistor, Vccs, Vcvs, VoltageSource};
+use crate::handle::ComponentId;
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -115,7 +116,7 @@ pub enum SensParameter {
 #[non_exhaustive]
 pub struct SensEntry {
     /// Id of the component.
-    pub component_id: String,
+    pub component_id: ComponentId,
     /// Which of its parameters.
     pub parameter: SensParameter,
     /// The parameter's value, in its own unit.
@@ -144,7 +145,8 @@ pub struct SensResult {
 impl SensResult {
     /// The entry for the component `id`: its first, for a device with
     /// several parameters (see [`get_parameter`](Self::get_parameter)).
-    pub fn get(&self, id: &str) -> Option<&SensEntry> {
+    pub fn get(&self, id: impl AsRef<str>) -> Option<&SensEntry> {
+        let id = id.as_ref();
         self.entries.iter().find(|e| e.component_id == id)
     }
 
@@ -184,7 +186,12 @@ impl SensResult {
     /// # Ok::<(), sindr::SimError>(())
     /// ```
     ///
-    pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&SensEntry> {
+    pub fn get_parameter(
+        &self,
+        id: impl AsRef<str>,
+        parameter: SensParameter,
+    ) -> Option<&SensEntry> {
+        let id = id.as_ref();
         self.entries
             .iter()
             .find(|e| e.component_id == id && e.parameter == parameter)
@@ -275,14 +282,14 @@ pub(crate) fn solve_sensitivity_with(
     let output = Port::output(circuit, &node_map, &system, &config.output)?;
     let adjoint: DVector<Complex64> = system.solve_transpose(&output.excitation(system.size()))?;
 
-    let node = |name: &String| node_map.index(name);
+    let node = |name: &str| node_map.index(name);
     let v = |n: Option<usize>| n.map_or(0.0, |i| dc_solution[i]);
     let lambda = |n: Option<usize>| n.map_or(0.0, |i| adjoint[i].re);
 
     let mut entries = Vec::new();
     let mut push = |id: &str, parameter, value: f64, sensitivity: f64| {
         entries.push(SensEntry {
-            component_id: id.to_string(),
+            component_id: id.into(),
             parameter,
             value,
             sensitivity,
@@ -290,7 +297,7 @@ pub(crate) fn solve_sensitivity_with(
         });
     };
     // The DC current through each controlling source, for CCVS and CCCS.
-    let control = |id: &String| op.branch_currents.get(id).copied().unwrap_or(0.0);
+    let control = |id: &str| op.branch_currents.get(id).copied().unwrap_or(0.0);
     for component in &heated.components {
         let devices = device::dc_parameters(component, &node_map, &dc_solution);
         for d in devices {

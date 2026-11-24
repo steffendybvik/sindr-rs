@@ -255,9 +255,9 @@ impl Placed {
 fn for_each_net(block: &mut Block, mut f: impl FnMut(&mut String)) {
     block.ports.iter_mut().for_each(&mut f);
     for element in &mut block.components {
-        element.nodes_mut().iter_mut().for_each(&mut f);
+        element.nodes_mut().iter_mut().for_each(|n| f(n.name_mut()));
         if let Some(control) = element.control_nodes_mut() {
-            control.iter_mut().for_each(&mut f);
+            control.iter_mut().for_each(|n| f(n.name_mut()));
         }
         if let Some(expr) = element.expression_mut() {
             expr.rename(

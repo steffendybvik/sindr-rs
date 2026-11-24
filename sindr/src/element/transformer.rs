@@ -1,5 +1,6 @@
 //! A transformer: two coupled windings, linear or with a saturating core.
 
+use crate::handle::NodeId;
 use sindr_devices::inductor;
 
 use crate::error::SimError;
@@ -44,7 +45,7 @@ pub struct Transformer {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[p1, q1, p2, q2]`: primary `[p1, q1]`, secondary `[p2, q2]`.
-    pub nodes: [String; 4], // [p1, q1, p2, q2]
+    pub nodes: [NodeId; 4], // [p1, q1, p2, q2]
     /// Primary winding inductance (H).
     pub l1: f64, // Primary inductance (H)
     /// Secondary winding inductance (H).
@@ -83,7 +84,7 @@ impl Device for Transformer {
     }
 
     /// Each winding's two ends; nothing joins one winding to the other.
-    fn dc_paths<'a>(&'a self, _: &'a String) -> Vec<[&'a String; 2]> {
+    fn dc_paths<'a>(&'a self, _: &'a NodeId) -> Vec<[&'a NodeId; 2]> {
         let [p1, q1, p2, q2] = &self.nodes;
         vec![[p1, q1], [p2, q2]]
     }

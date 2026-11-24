@@ -6,6 +6,7 @@ use crate::circuit::{BehaviouralOutput, Circuit, CircuitElement};
 use crate::dc_sweep::{dc_sweep, DcSweepAxis, DcSweepResult};
 use crate::element::{Behavioural, Capacitor, CurrentSource, Inductor, Resistor, VoltageSource};
 use crate::expression::Expression;
+use crate::handle::NodeId;
 use crate::results::SimulationResult;
 use crate::transient::{solve_transient, TransientConfig};
 use crate::waveform::Waveform;
@@ -152,7 +153,7 @@ impl BenchSource {
         self
     }
 
-    pub(super) fn element(&self, nodes: [String; 2]) -> CircuitElement {
+    pub(super) fn element(&self, nodes: [NodeId; 2]) -> CircuitElement {
         let id = self.id.clone();
         match &self.kind {
             SourceKind::Voltage { volts, waveform } => {
@@ -310,7 +311,7 @@ impl BenchLoad {
         self
     }
 
-    pub(super) fn element(&self, nodes: [String; 2]) -> Result<CircuitElement, ImportError> {
+    pub(super) fn element(&self, nodes: [NodeId; 2]) -> Result<CircuitElement, ImportError> {
         let id = self.id.clone();
         Ok(match self.kind {
             LoadKind::Resistor(resistance) => CircuitElement::Resistor(Resistor {

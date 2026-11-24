@@ -1,5 +1,6 @@
 //! An inductor, linear or with a saturating core.
 
+use crate::handle::NodeId;
 use sindr_devices::inductor;
 
 use crate::error::SimError;
@@ -26,7 +27,7 @@ pub struct Inductor {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[a, b]`; `current_through` flows `nodes[0] → nodes[1]`.
-    pub nodes: [String; 2],
+    pub nodes: [NodeId; 2],
     /// Inductance (H): the small-signal value, at zero current.
     pub inductance: f64,
     /// Core saturation: the inductance falls towards `l_sat` as the

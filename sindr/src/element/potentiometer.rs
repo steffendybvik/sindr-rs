@@ -1,6 +1,7 @@
 //! A potentiometer: two resistors split at the wiper.
 
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::stamp::stamp_resistor_at;
 
 use super::{AcStamp, Check, DcStamp, Device};
@@ -20,7 +21,7 @@ pub struct Potentiometer {
     /// Unique component identifier.
     pub id: String,
     /// Terminals `[top, wiper, bottom]`.
-    pub nodes: [String; 3],
+    pub nodes: [NodeId; 3],
     /// End-to-end resistance (Ω).
     pub resistance: f64,
     /// Wiper position, 0.0 (at top) to 1.0 (at bottom).
