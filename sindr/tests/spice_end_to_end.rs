@@ -98,6 +98,27 @@ fn parse_file_bjt_amplifier_solves() {
     );
 }
 
+/// Part numbers that start with a digit are model and subckt names, as in
+/// ngspice. ngspice solves this deck to v(b) = 0.6884151 V.
+#[test]
+fn model_and_subckt_names_may_start_with_a_digit() {
+    let deck = "* part numbers\n\
+                .subckt 74x a b\nR1 a b 1k\n.ends 74x\n\
+                V1 a 0 5\nR1 a b 1k\nD1 b 0 1n4148\nX1 b 0 74x\n\
+                Q1 c b2 0 2n3904\nV2 c 0 5\nR2 c b2 100k\n\
+                .model 1n4148 d(is=1e-14)\n\
+                .model 2n3904 npn(bf=100)\n\
+                .op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let op = sindr::solve_circuit(&netlist.circuit).unwrap();
+    assert_relative_eq!(op.node_voltages["b"], 0.688_415_1, max_relative = 1e-4);
+    assert!(netlist
+        .circuit
+        .components
+        .iter()
+        .any(|c| matches!(c, CircuitElement::Bjt(Bjt { id, .. }) if id == "q1")));
+}
+
 #[test]
 fn parse_file_subckt_flattening() {
     let nl = parse_file(fixture_path("subckt_filter.cir")).expect("parse subckt_filter");
