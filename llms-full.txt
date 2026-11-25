@@ -134,15 +134,15 @@ spawned per run with `ngspice -b`, or driven by one `.control` loop.
 
 | Size | sindr | ngspice, solve only |
 |---|---:|---:|
-| Operating point, 1 000-diode chain | 8.6 ms | 16 ms |
-| Operating point, 3 000-diode chain | 27 ms | 82 ms |
-| Transient, 1 000-stage RC ladder, 200 steps | 151 ms | 29 ms |
-| Transient, 3 000-stage RC ladder, 200 steps | 462 ms | 85 ms |
+| Operating point, 1 000-diode chain | 3.2 ms | 17 ms |
+| Operating point, 3 000-diode chain | 9.6 ms | 87 ms |
+| Transient, 1 000-stage RC ladder, 200 steps | 72 ms | 32 ms |
+| Transient, 3 000-stage RC ladder, 200 steps | 213 ms | 91 ms |
 
 Embedded, a small solve costs microseconds against ngspice's 14 ms start,
 and sindr has no global state, so solves run in parallel threads. ngspice
-solves large transients about five times faster: past a few hundred nodes,
-a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics)).
+solves large transients a little over twice as fast: past several hundred
+nodes, a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics)).
 
 ### When to use sindr
 
@@ -1637,7 +1637,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **A transient starts switched on at t = 0 unless asked otherwise:** `TransientConfig::new` starts from the initial conditions alone (SPICE's `UIC`), where SPICE starts from the DC operating point. `TransientStart::OperatingPoint` does what SPICE does, and a deck's `.tran` maps onto it (`uic` onto the other). The operating point it starts from is solved without self-heating. Initial winding currents on a transformer can't be set, and inductor `IC=` on SPICE element lines isn't parsed. With `tstart`, sindr's first snapshot is at `tstart` itself, where ngspice's is its first step past it.
 - **Truncation-error control is per node voltage** (SPICE-style RELTOL 1e-3, VNTOL 1 µV, TRTOL 7 by default; set them in `SolverOptions`), not per charge or flux. The step never exceeds `tstep`, so a coarse `tstep` buys speed only between edges.
 - **No checkpointing / restart** of long transient runs.
-- **Large transients are slower than ngspice.** On a 1 000-node RC ladder, 200 steps take 151 ms in sindr and about 29 ms in ngspice's solve (5×, `examples/vs_ngspice.rs`). Each step re-assembles and refactors the matrix. sindr wins up to a few hundred nodes, where ngspice's 14 ms start dominates, and on DC operating points at every size measured (a 3 000-diode chain: 27 ms against 82 ms). Long transients of thousands of nodes are ngspice's ground.
+- **Large transients are slower than ngspice.** On a 1 000-node RC ladder, 200 steps take 72 ms in sindr and about 32 ms in ngspice's solve (2.2×, `examples/vs_ngspice.rs`). Each step stamps into a fixed sparse layout and refactors it numerically; most of the gap left is recording each step's results by name. sindr wins up to several hundred nodes, where ngspice's 14 ms start dominates, and on DC operating points at every size measured (a 3 000-diode chain: 9.6 ms against 87 ms). Long transients of thousands of nodes are ngspice's ground.
 - **No multithreading** inside one solve. Separate solves do run in parallel threads.
 - **Automatic differentiation for behavioural sources only.** A `Behavioural` source's Jacobian comes from forward-mode automatic differentiation of its expression. Device models are differentiated by hand, and so are the sensitivities: adjoint sensitivity (DC, and AC at a fixed bias) covers the parameters in the table above. There's no differentiation of a whole circuit with respect to arbitrary inputs.
 - **No interval / affine arithmetic** for guaranteed bounds.
