@@ -101,7 +101,7 @@ FLOORS = {
     "sindr/src/loop_gain.rs": 88.5,  # 90.45% when set
     "sindr/src/measure.rs": 97.5,  # 99.17% when set
     "sindr/src/mna.rs": 97.0,  # 98.78% when set
-    "sindr/src/newton_raphson.rs": 96.5,  # 98.17% when set
+    "sindr/src/newton_raphson.rs": 97.0,  # 98.69% when set
     "sindr/src/node_map.rs": 98.5,  # 100.00% when set
     "sindr/src/noise.rs": 97.5,  # 99.22% when set
     "sindr/src/op_amp.rs": 96.5,  # 98.35% when set
