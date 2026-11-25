@@ -70,12 +70,12 @@ impl Device for Transformer {
     /// windings. DC stamps the windings as near-shorts, so there it reports
     /// no current. A saturating core's histories hold fluxes.
     fn report(&self, r: &mut Report<'_>) {
-        let v_primary = r.across(&self.nodes[0], &self.nodes[1]);
+        let v_primary = r.across(0, 1);
         let Some(step) = r.step() else {
             r.component(&self.id, v_primary, 0.0, 0.0);
             return;
         };
-        let v_secondary = r.across(&self.nodes[2], &self.nodes[3]);
+        let v_secondary = r.across(2, 3);
         let (i1, i2) = (r.branch_current(0), r.branch_current(1));
         let (h1, h2) = (r.inductor(0), r.inductor(1));
         // Winding rate is the branch-convention voltage (see

@@ -282,7 +282,7 @@ fn check_ports(circuit: &Circuit, config: &TfConfig) -> Result<(), SimError> {
 /// too, and that isn't a source to name.
 pub(crate) fn independent_vsource_branch(
     circuit: &Circuit,
-    system: &SmallSignalSystem,
+    system: &SmallSignalSystem<'_>,
     id: &str,
 ) -> Option<usize> {
     circuit
@@ -306,7 +306,7 @@ impl Port {
     pub(crate) fn input(
         circuit: &Circuit,
         node_map: &NodeMap,
-        system: &SmallSignalSystem,
+        system: &SmallSignalSystem<'_>,
         id: &str,
     ) -> Result<Self, SimError> {
         if let Some(branch) = independent_vsource_branch(circuit, system, id) {
@@ -339,7 +339,7 @@ impl Port {
     pub(crate) fn output(
         circuit: &Circuit,
         node_map: &NodeMap,
-        system: &SmallSignalSystem,
+        system: &SmallSignalSystem<'_>,
         output: &TfOutput,
     ) -> Result<Self, SimError> {
         match output {

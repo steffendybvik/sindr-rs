@@ -39,7 +39,7 @@ impl Device for Cccs {
     /// With its control source missing, it reads no current.
     fn report(&self, r: &mut Report<'_>) {
         let i = self.alpha * r.control_current().unwrap_or(0.0);
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         r.port(&self.id, v, i);
     }
 

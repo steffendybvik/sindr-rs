@@ -43,7 +43,7 @@ impl Device for Relay {
     /// step is the inductor's, and the inductor sees the coil voltage less
     /// the resistive drop.
     fn report(&self, r: &mut Report<'_>) {
-        let coil_voltage = r.across(&self.nodes[0], &self.nodes[1]);
+        let coil_voltage = r.across(0, 1);
         let coil_current = match r.step() {
             Some(step) if self.inductance > 0.0 => {
                 let history = r.inductor(0);

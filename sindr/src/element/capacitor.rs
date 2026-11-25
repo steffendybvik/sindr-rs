@@ -34,7 +34,7 @@ impl Device for Capacitor {
             r.component(&self.id, 0.0, 0.0, 0.0);
             return;
         };
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         let history = r.capacitor(0);
         let (g, i_hist) = step.integ.capacitor(self.capacitance, &history);
         let i = g * v + i_hist;

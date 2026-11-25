@@ -53,9 +53,9 @@ impl Device for OpAmp {
     /// Its output: `Vout` and the output current, and after a DC solve
     /// its input pins.
     fn report(&self, r: &mut Report<'_>) {
-        let v_in_plus = r.v(&self.nodes[0]);
-        let v_in_minus = r.v(&self.nodes[1]);
-        let v_out = r.v(&self.nodes[2]);
+        let v_in_plus = r.v(0);
+        let v_in_minus = r.v(1);
+        let v_out = r.v(2);
         let i = r.branch_current(0);
         r.branch_current_of(&self.id, i);
         r.port(&self.id, v_out, i);

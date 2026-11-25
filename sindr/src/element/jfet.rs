@@ -48,9 +48,9 @@ impl Device for Jfet {
 
     /// Its drain: `Vds`, `Id` and the dissipation.
     fn report(&self, r: &mut Report<'_>) {
-        let vg = r.v(&self.nodes[0]);
-        let vd = r.v(&self.nodes[1]);
-        let vs = r.v(&self.nodes[2]);
+        let vg = r.v(0);
+        let vd = r.v(1);
+        let vs = r.v(2);
         let vds = vd - vs;
         let i = jfet_drain_current(vg - vs, vds, self.kind, self.idss, self.vp);
         r.component(&self.id, vds, i, (i * vds).abs());

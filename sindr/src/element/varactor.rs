@@ -33,7 +33,7 @@ impl Device for Varactor {
     /// Open at DC. Over a step its current is the companion the step was
     /// solved with, at the junction capacitance of the step's start.
     fn report(&self, r: &mut Report<'_>) {
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         let Some(step) = r.step() else {
             r.component(&self.id, v, 0.0, 0.0);
             return;

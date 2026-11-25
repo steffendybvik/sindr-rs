@@ -259,6 +259,8 @@ pub(crate) struct SmallSignalModel {
     conductances: Vec<Conductance>,
     layout: Layout,
     terminals: Terminals,
+    /// Branch row of each independent voltage source, by id.
+    vsource_branches: HashMap<String, usize>,
 }
 
 /// Linearises `circuit`'s nonlinear elements at the DC operating point.
@@ -275,10 +277,23 @@ pub(crate) fn linearize_at_dc(
                 .linearise(&AcBias::new(&terminals, k, dc_solution))
         })
         .collect();
+    let layout = Layout::new(circuit);
+    let vsource_branches = circuit
+        .components
+        .iter()
+        .enumerate()
+        .filter_map(|(k, c)| match c {
+            CircuitElement::VoltageSource(VoltageSource { id, .. }) => {
+                Some((id.clone(), node_map.num_nodes() + layout.branch(k)))
+            }
+            _ => None,
+        })
+        .collect();
     SmallSignalModel {
         conductances,
-        layout: Layout::new(circuit),
+        layout,
         terminals,
+        vsource_branches,
     }
 }
 
@@ -484,16 +499,16 @@ pub(crate) fn bias_point_with_result(
 /// The linearised (small-signal) MNA system of `circuit` at angular
 /// frequency `omega`, with every source zero: `b` is left for the caller
 /// to excite.
-pub(crate) struct SmallSignalSystem {
+pub(crate) struct SmallSignalSystem<'m> {
     a: MnaMatrix<Complex64>,
     /// Branch row of each independent voltage source, by id.
-    vsource_branches: HashMap<String, usize>,
+    vsource_branches: &'m HashMap<String, usize>,
     /// `a` factorised on the first solve, for every later one (an adjoint
     /// included) to reuse.
     lu: OnceCell<Factor<'static, Complex64>>,
 }
 
-impl SmallSignalSystem {
+impl SmallSignalSystem<'_> {
     /// Size of the system: node rows, then branch rows.
     pub(crate) fn size(&self) -> usize {
         self.a.size()
@@ -528,13 +543,13 @@ impl SmallSignalSystem {
 
 /// Builds the small-signal system of `circuit` at `omega` (rad/s),
 /// linearised around `dc_solution` through `ss_models`.
-pub(crate) fn small_signal_system(
+pub(crate) fn small_signal_system<'m>(
     circuit: &Circuit,
     node_map: &NodeMap,
     dc_solution: &DVector<f64>,
-    ss_models: &SmallSignalModel,
+    ss_models: &'m SmallSignalModel,
     omega: f64,
-) -> SmallSignalSystem {
+) -> SmallSignalSystem<'m> {
     build_small_signal(
         circuit,
         node_map,
@@ -576,9 +591,7 @@ pub(crate) fn small_signal_pencil(
     // At s = j every stamp g + s·c is (g, c) with no rounding, which
     // subtracting A(0) from A(1) would not give for a small c beside a
     // large g.
-    let a1 = at(Complex64::new(0.0, 1.0));
-    let vsource_branches = a1.vsource_branches;
-    let a1 = a1.a.to_dense();
+    let a1 = at(Complex64::new(0.0, 1.0)).a.to_dense();
     let g = a1.map(|z| z.re);
     let c = a1.map(|z| z.im);
     // Every stamp is affine in s, so A(0) = G and A(2j) = G + 2j·C.
@@ -598,7 +611,7 @@ pub(crate) fn small_signal_pencil(
     Ok(SmallSignalPencil {
         g,
         c,
-        vsource_branches,
+        vsource_branches: ss_models.vsource_branches.clone(),
     })
 }
 
@@ -606,14 +619,14 @@ pub(crate) fn small_signal_pencil(
 /// stamps that aren't affine in `s` take extra unknowns instead (see
 /// [`SmallSignalPencil`]); without it the system is the plain node and
 /// branch one AC solves.
-fn build_small_signal(
+fn build_small_signal<'m>(
     circuit: &Circuit,
     node_map: &NodeMap,
     dc_solution: &DVector<f64>,
-    ss_models: &SmallSignalModel,
+    ss_models: &'m SmallSignalModel,
     s: Complex64,
     pencil: bool,
-) -> SmallSignalSystem {
+) -> SmallSignalSystem<'m> {
     let num_nodes = node_map.num_nodes();
     let num_vsources = circuit.count_voltage_sources();
     let extra: usize = if pencil {
@@ -626,7 +639,6 @@ fn build_small_signal(
         0
     };
     let mut a = MnaMatrix::zeros(num_nodes + num_vsources + extra);
-    let mut vsource_branches = HashMap::new();
     // The next free extra unknown of the pencil form.
     let mut aux = num_nodes + num_vsources;
     debug_assert_eq!(ss_models.layout, Layout::new(circuit));
@@ -642,7 +654,6 @@ fn build_small_signal(
             s,
             pencil,
             &mut aux,
-            &mut vsource_branches,
         );
         component.device().stamp_ac(&mut stamp);
     }
@@ -653,7 +664,7 @@ fn build_small_signal(
 
     SmallSignalSystem {
         a,
-        vsource_branches,
+        vsource_branches: &ss_models.vsource_branches,
         lu: OnceCell::new(),
     }
 }

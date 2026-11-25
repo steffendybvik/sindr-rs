@@ -75,7 +75,6 @@ impl Device for VoltageSource {
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let (branch, nodes) = (s.branch, s.nodes());
         s.branch_pair(branch, nodes);
-        s.expose_vsource(&self.id);
     }
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
