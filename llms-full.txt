@@ -11152,7 +11152,7 @@ A node name runs to the next separator (whitespace, `=`, `(`, `)` or
 `,`), as in ngspice, so a schematic exporter's `/in` and
 `Net-_R1-Pad2_` read as written. A comment is a `*` line, or runs from
 `;`, or from a `$` at the start of a line or after whitespace or a
-comma, to the end of the line.
+comma, to the end of the line; the commas before that `$` go with it.
 
 The module is the `spice` feature, on by default like every feature.
 A build that turns the defaults off (`default-features = false`) keeps
