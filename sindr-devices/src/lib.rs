@@ -44,7 +44,7 @@
 //! let (g_eq, i_eq) = diode_companion(v_applied, &params);
 //!
 //! // Stamp g_eq into Y(p,p), Y(q,q), -g_eq into Y(p,q)/Y(q,p),
-//! // and i_eq into b(p)/-i_eq into b(q) in your MNA system.
+//! // and -i_eq into b(p), i_eq into b(q) in your MNA system.
 //! assert!(g_eq > 0.0);
 //! ```
 //!
@@ -57,8 +57,9 @@
 //!   so scale it with [`diode::temperature_scale_is`] away from
 //!   [`diode::T_NOM`].
 //! - **Sign convention** for two-terminal companions: `v_applied` is the
-//!   voltage from `nodes[0]` to `nodes[1]`, and `i_eq` is the current
-//!   flowing into `nodes[0]`.
+//!   voltage from `nodes[0]` to `nodes[1]`, and `g_eq·v + i_eq` is the
+//!   current through the device from `nodes[0]` to `nodes[1]`, so `i_eq`
+//!   leaves `nodes[0]` and enters `nodes[1]`.
 //! - **Companion form**: each `*_companion` function returns the linearised
 //!   `(g_eq, i_eq)` at the operating point — the form Newton–Raphson stamps
 //!   directly.

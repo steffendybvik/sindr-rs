@@ -132,7 +132,7 @@ The two crates share one version. A bump touches:
   the root `Cargo.toml`, plus `Cargo.lock`
 - the version in status lines: `README.md`, `LIMITATIONS.md`, `AGENTS.md`;
   and, on a minor bump, the `"0.x"` requirement in the install snippets of
-  `README.md`, `sindr/README.md`, `sindr-devices/README.md`, `sindr/src/lib.rs` and `sindr/src/spice/mod.rs`
+  `README.md`, `sindr/README.md`, `sindr-devices/README.md` and `sindr/src/lib.rs`
 - `CHANGELOG.md`: move the `[Unreleased]` entries into the new section and
   update the compare links at the bottom
 

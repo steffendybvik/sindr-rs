@@ -27,8 +27,10 @@ and SPICE input are unchanged.
 - **Nodes and components are handles.** Terminals are `[NodeId; N]`, a
   controlled source's `control_source` is a `ComponentId`, and analysis
   configs take `NodeId`/`ComponentId`. `"n1".into()` still compiles; a
-  `String` needs `.into()` or `NodeId::from`. `AcSensEntry::component_id`
-  is a `ComponentId` (`.as_str()` for the name).
+  `String` needs `.into()` or `NodeId::from`. `SensEntry::component_id`,
+  `AcSensEntry::component_id`, `DcSweepResult::source_id` and
+  `NestedDcSweepResult::outer_source_id` are handles (`.as_str()` for the
+  name).
 - **Errors have typed causes.** `SimError::InvalidComponent(msg)` is
   `InvalidComponent { id, reason }`. `InvalidResistance` is gone: a bad
   resistance is `InvalidComponent`. A bad analysis setting is
@@ -49,10 +51,11 @@ and SPICE input are unchanged.
   serialise as the same lowercase strings. `LedColor` and
   `RegulatorRegion` are `#[non_exhaustive]`, so a `match` needs a
   wildcard arm.
-- **Two structs gained a field.** `BenchSource` has `assumed` (use
-  `..BenchSource::voltage(..)` or set `assumed: false`), and `Instance`
-  has `variant` (`variant: None`, or `Instance::new`). Both default in
-  JSON.
+- **Three structs gained fields.** `BenchSource` has `assumed` (use
+  `..BenchSource::voltage(..)` or set `assumed: false`), `Instance` has
+  `variant` (`variant: None`, or `Instance::new`), and `Block` has
+  `base_variant`, `variants` and `default_variant` (end a literal with
+  `..Default::default()`). All default in JSON.
 - **Every feature is on by default.** `sindr = "0.3"` gets serde, JSON
   Schema, SPICE, examples and threaded Monte Carlo. To keep a build
   small, set `default-features = false` and list the features you want.
@@ -118,8 +121,10 @@ and SPICE input are unchanged.
   and a `TempSweepConfig`, with renamed result fields.
 - **Breaking:** `BjtResult::region` and `MosfetResult::region` are
   enums; `LedColor` and `RegulatorRegion` are `#[non_exhaustive]`.
-- **Breaking:** `BenchSource` has an `assumed` field and `Instance` a
-  `variant` field.
+- **Breaking:** `BenchSource` has an `assumed` field, `Instance` a
+  `variant` field, and `Block` `base_variant`, `variants` and
+  `default_variant`. Sensitivity entries' `component_id` and DC sweep
+  results' `source_id` are handles.
 - Every feature but `internals` is on by default.
 - A net named `0V` counts as a ground, not a 0 V supply.
 - `Bench::with_supplies_from_net_names` doesn't put a second source on a

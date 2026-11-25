@@ -14,7 +14,7 @@ A circuit simulator you embed in Rust: build a circuit as a typed value, solve i
 - **Builds for WebAssembly.** `wasm32-unknown-unknown` with every feature on, so the same engine runs in a web app.
 - **Answers design questions.** `check_ratings` says whether each part stays inside its absolute maximum ratings, self-heating flags thermal runaway, and `check_specs` turns `.meas`-style measurements into pass/fail with margins.
 - **Real parts as primitives.** 39 element types: the usual R, L, C, sources and semiconductors, plus LEDs, zeners, linear and switching regulators, op-amps, comparators, relays, fuses, switches, potentiometers, thermistors, photoresistors, transformers, batteries, crystals, ferrite beads, DC motors, MCU pins and logic gates.
-- **Checked against ngspice.** Every analysis has golden cases solved by both (below).
+- **Checked against ngspice.** Every analysis ngspice also runs, except `.tf`, has golden cases solved by both (below).
 
 ## Quick start
 
@@ -76,7 +76,7 @@ Both build for `wasm32-unknown-unknown`, with default and all features, so sindr
 
 ## Accuracy
 
-Each analysis is checked against [ngspice](https://ngspice.sourceforge.io/) 47 on golden circuits solved by both: diodes with their `.model` cards and charge, BJTs, MOSFETs, JFETs, LEDs, controlled sources, transformers, subcircuits. The worst deviation of any quantity at any point, per analysis:
+Each analysis but `.tf` is checked against [ngspice](https://ngspice.sourceforge.io/) 47 on golden circuits solved by both: diodes with their `.model` cards and charge, BJTs, MOSFETs, JFETs, LEDs, controlled sources, transformers, subcircuits. The worst deviation of any quantity at any point, per analysis:
 
 <!-- accuracy:start -->
 | Analysis | Cases | Worst relative error | Worst other |
@@ -146,14 +146,14 @@ nodes, a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--n
 | WebAssembly, no C library | Yes | Usually not |
 | Ratings, self-heating, pass/fail specs | Built in | Scripted by hand, if at all |
 | Analyses | op, DC, AC, transient, temperature, `.tf`, `.sens` (DC and AC), `.noise`, `.pz`, loop gain, `.meas`, `.four` and FFT | Those and more: distortion |
-| Device models | Shockley diode, Ebers–Moll BJT, MOSFET Level 1, JFET, IGBT, op-amp macromodel, and part-level elements (LED, regulator, relay, battery …) | **Far more:** Gummel–Poon, BSIM, transmission lines, behavioural and code models |
+| Device models | Shockley diode, Ebers–Moll BJT, MOSFET Level 1, JFET, IGBT, op-amp macromodel, behavioural sources, and part-level elements (LED, regulator, relay, battery …) | **Far more:** Gummel–Poon, BSIM, transmission lines, XSPICE code models |
 | SPICE dialect coverage | A practical subset | Full |
 
 Use a full SPICE simulator to run existing decks and vendor model libraries as they are. Use sindr to put a simulator inside a Rust program or a web app, describe circuits as data, and ask whether the parts survive.
 
 ## SPICE netlist input
 
-A SPICE3 netlist parser ships inside `sindr` as the `spice` feature, on by default like every feature (`default-features = false` and a `features` list keeps only the ones you pick):
+A SPICE3 netlist parser ships inside `sindr` as the `spice` feature, on by default like every feature but the unstable `internals` (`default-features = false` and a `features` list keeps only the ones you pick):
 
 ```toml
 [dependencies]

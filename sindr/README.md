@@ -104,9 +104,9 @@ CircuitElement::Capacitor(Capacitor { id, nodes: [NodeId; 2], capacitance: f64 }
 CircuitElement::Inductor(Inductor { id, nodes: [NodeId; 2], inductance: f64, saturation: Option<InductorSaturation> })
 ```
 
-Capacitors and inductors trigger transient analysis automatically. In pure DC (no reactive elements, no waveforms), they are treated as open circuits.
+Capacitors and inductors trigger transient analysis automatically. In the DC analyses (`solve_op`, DC sweeps, the bias point of AC), capacitors are open circuits and inductors short circuits.
 
-An inductor with `saturation: Some(InductorSaturation { i_sat, l_sat })` has a core that saturates: its flux is `λ(i) = l_sat·i + (inductance − l_sat)·i_sat·tanh(i/i_sat)`, so its inductance falls from `inductance` at zero current towards `l_sat` past `i_sat` (to 42 % of the way at `i_sat`, 7 % at `2·i_sat`). A datasheet's saturation current, where L has dropped 20–30 %, is about `0.6·i_sat`. The transient integrates the flux, and AC and noise use the incremental inductance `dλ/di` at the DC current. There's no hysteresis or core loss; add a resistor for loss.
+An inductor with `saturation: Some(InductorSaturation { i_sat, l_sat })` has a core that saturates: its flux is `λ(i) = l_sat·i + (inductance − l_sat)·i_sat·tanh(i/i_sat)`, so its inductance falls from `inductance` at zero current towards `l_sat` past `i_sat` (at `i_sat` it keeps 42 % of its excess over `l_sat`, at `2·i_sat` 7 %). A datasheet's saturation current, where L has dropped 20–30 %, is about `0.6·i_sat`. The transient integrates the flux, and AC and noise use the incremental inductance `dλ/di` at the DC current. There's no hysteresis or core loss; add a resistor for loss.
 
 ```rust,no_run
 # use sindr::*;
@@ -210,6 +210,8 @@ The electrical side of a microcontroller or logic-IC pin, after the IBIS I/O buf
 - **Results:** `voltage_across` is `v(pad) − v(gnd)`, `current_through` the current into the pin (negative while it sources), `power` what the buffer dissipates. `DigitalPin::reads(volts, previous)` is what its input buffer reads, with hysteresis between `vil` and `vih`; a transient session reads it with `logic_level(id)`.
 - **Ratings:** `Ratings::current` on the pin's part limits its current. Pins with the same `port` are also checked as a port: `Ratings::current` on a part named for the port limits the larger of what its pins source and sink together.
 
+It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp diodes, `#c`, `#leak`), and `to_netlist` writes them, so ngspice can run the same pin.
+
 ### Logic gate
 
 ```rust,ignore
@@ -228,7 +230,7 @@ A gate as a CMOS part behaves electrically, not digital simulation: `GateKind::B
 - **`tpd`** delays the output: it slews to its new level and passes half way `tpd` after the inputs do, so three inverters in a ring oscillate at about 1/(6·`tpd`). `tpd`, `c_in`, `c_comp` and `schmitt` default to off, which keeps a gate's circuit DC-only.
 - **Results:** `voltage_across` is `v(out) − v(gnd)`, `current_through` the current into the output (negative while it sources), `power` what the output stage dissipates. `GateKind::eval` is the truth table.
 
-It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp diodes, `#c`, `#leak`), and `to_netlist` writes them, so ngspice can run the same pin.
+It's solved as its parts (behavioural sources for the inputs, the function and the output stage, a slew-limited delay, clamp diodes, resistors and capacitors), and `to_netlist` writes them, the behavioural ones as B lines, so ngspice can run the same gate.
 
 ### DC motor
 
@@ -321,7 +323,7 @@ A MOSFET's `body_diode` is a SPICE diode card (`DiodeModel`) from source to drai
 
 `BjtKind`, `BjtRegion`, `MosfetKind`, `MosfetRegion`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
-When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC; a JFET's CGS/CGD as charge companions, with per-junction charge state. This automatically triggers transient analysis.
+When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC; a JFET's CGS/CGD as charge companions, with per-junction charge state. A non-zero capacitance automatically triggers transient analysis.
 
 **NPN common-emitter example:**
 
@@ -506,7 +508,7 @@ let ids: Vec<&str> = flat.components.iter().map(|c| c.id()).collect();
 assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
 ```
 
-`Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
+The simulator ignores `Part` data, except `Part::thermal`, which heats the part's junction by the power it dissipates. `Part::ratings` holds absolute maximum `Ratings`, which `check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
 
 **Variants.** A block can hold more than one implementation of the same ports, such as an ideal supply and the real regulator circuit. The block's own body is one variant, named by `Block::base_variant` (`"base"` when unset). `Block::variants` holds the others as `Variant { ports, components, instances, parts }`. An instance picks one with `Instance::with_variant("detailed")`, or gets `Block::default_variant`. The picked body is flattened under the same instance path, so `X1.out` reads back whichever one runs. A variant whose ports differ from the block's, in name or order, is `DesignError::VariantPorts` naming the block. An unknown variant is `DesignError::UnknownVariant`. SPICE export writes the block's own body as `.subckt name` and each variant as `.subckt name_<variant>`, and each `X` line names the one its instance picked.
 
@@ -537,7 +539,7 @@ Every accessor returns `None` for a name the result doesn't have. Names are exac
 |--------|---------|
 | `TimestepSnapshot` | `voltage(node)`, `current(id)`, `component(id)` |
 | `TransientData` | `node_voltage_curve(node)` and `component_current_curve(id)` as `(t, value)`; `voltage_at(node, t)`, `current_at(id, t)`, interpolated |
-| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, ref)` |
+| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, source_magnitude)` |
 | `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°) as `(Hz, value)` |
 | `DcSweepResult`, `TempSweepResult` | `node_voltage_curve(node)`, `component_current_curve(id)` as `(sweep value, value)`; each point's `result` has the accessors above |
 
@@ -546,11 +548,11 @@ The fields behind them stay public:
 ```rust,ignore
 pub struct SimulationResult {
     pub node_voltages:    HashMap<String, f64>,  // every node including ground (0.0)
-    pub branch_currents:  HashMap<String, f64>,  // voltage source branch currents by id
+    pub branch_currents:  HashMap<String, f64>,  // branch currents by id: voltage sources, controlled sources, op-amps, regulators
     pub component_results: Vec<ComponentResult>, // V, I, P for every component
     pub bjt_results:      Vec<BjtResult>,        // present only if circuit has BJTs
     pub mosfet_results:   Vec<MosfetResult>,     // present only if circuit has MOSFETs
-    pub op_amp_results:   Vec<OpAmpResult>,      // present only if circuit has op-amps
+    pub op_amp_results:   Vec<OpAmpResult>,      // present only if circuit has op-amps or comparators
     pub relay_results:    Vec<RelayResult>,      // present only if circuit has relays
     pub transient:        Option<TransientData>, // present only for reactive/waveform circuits
     pub convergence_aid:  Option<ConvergenceAid>, // gmin or source stepping, when Newton needed it
@@ -578,7 +580,7 @@ pub struct MosfetResult {
 }
 ```
 
-For transient circuits, `result.transient` contains a time series. `solve_circuit` picks the duration (5 τ) and step (τ/50) from the circuit's time constants; to set them yourself, as SPICE's `.tran tstep tstop` does, use `solve_transient`:
+For transient circuits, `result.transient` contains a time series. `solve_circuit` picks the duration (5 τ, and at least three periods of any periodic source) and step (τ/50, at most a hundredth of a period, and no less than 1 µs) from the circuit's time constants; to set them yourself, as SPICE's `.tran tstep tstop` does, use `solve_transient`:
 
 ```rust,ignore
 use sindr::{solve_transient, TransientConfig};
@@ -726,7 +728,7 @@ for e in &sens.entries {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Entries cover resistance, voltage and current source values, the gains of all four controlled sources (VCVS, VCCS, CCVS, CCCS), and device-model parameters: a diode's IS, N and RS, a BJT's BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA. A device has an entry per parameter; `sens.get_parameter("D1", SensParameter::SaturationCurrent)` picks one. Each is the total derivative, the operating point moving with the parameter. Capacitors, inductors and the other devices (LED, Zener, Schottky, photodiode, JFET, IGBT) get no entry.
+Entries cover resistance, voltage and current source values, the gains of all four controlled sources (VCVS, VCCS, CCVS, CCCS), and device-model parameters: a diode's IS, N and RS, a BJT's BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA. A device has an entry per parameter; `sens.get_parameter("D1", SensParameter::SaturationCurrent)` picks one. Each is the total derivative, the operating point moving with the parameter. Capacitors, inductors and the other devices (LED, Schottky, photodiode, JFET, IGBT) get no entry. A zener, and a MOSFET's body diode (`<id>.body`), are solved as diodes and get a diode's IS, N and RS.
 
 `.sens v(out) ac dec 10 1 1meg` is the AC form: at each frequency, the derivative of the output phasor with respect to R, C, L, the controlled-source gains, the stimulus's AC magnitude and the same device parameters, plus a diode's CJO and TT. One adjoint solve per frequency. As in ngspice, the DC operating point is held fixed: a device parameter's entry is its effect on that device's small-signal conductances and capacitances, not through a shift of the bias, so a source's DC value has no AC entry.
 
@@ -765,7 +767,7 @@ for (source, total) in noise.sources.iter().zip(&noise.source_totals) {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C. Sources, controlled sources, op-amps, comparators, regulators and a diode's series resistance are noiseless.
+Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C, except a thermistor's, which is at its own temperature. Sources, controlled sources, op-amps, comparators, regulators, switches, fuses, IGBTs and a diode's series resistance are noiseless.
 
 ## Pole-zero
 
@@ -785,7 +787,7 @@ println!("stable: {}", pz.is_stable());
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Roots are in rad/s, finite ones only, sorted by magnitude. They are the generalised eigenvalues of the linearised `G + sC` pencil (and of its bordered form for the zeros): sindr deflates the infinite ones exactly, by orthogonal reductions, then runs QZ, so a well-separated root is accurate to about 1e-12 relative and a repeated one to about √ε. `with_find(PzFind::Poles)` or `PzFind::Zeros` skips the other half. A transimpedance into a pair a voltage source shorts has no response, and is an error.
+Roots are in rad/s, finite ones only, sorted by magnitude. They are the generalised eigenvalues of the linearised `G + sC` pencil (and of its bordered form for the zeros): sindr deflates the infinite ones exactly, by orthogonal reductions, then runs QZ, so a well-separated root is accurate to about 1e-12 relative a double one to about √ε (~1e-8), and one of multiplicity k to about ε^(1/k). `with_find(PzFind::Poles)` or `PzFind::Zeros` skips the other half. A transimpedance into a pair a voltage source shorts has no response, and is an error.
 
 ## Loop gain and stability margins
 
@@ -844,7 +846,7 @@ A parsed `.dc` card gives its axes with `analysis.dc_axes()`.
 
 ## Temperature sweep
 
-Solve a circuit at a series of junction temperatures and collect operating points. Useful for BJT Ic vs. temperature curves and thermal characterisation.
+Solve a circuit at a series of junction temperatures and collect `solve_circuit`'s result at each: for a circuit with capacitors, inductors or waveforms that's a transient's end state, not the DC operating point. Useful for BJT Ic vs. temperature curves and thermal characterisation.
 
 ```rust,no_run
 # use sindr::*;
@@ -871,7 +873,7 @@ pub struct TempSweepResult {
 
 pub struct TempSweepPoint {
     pub temperature: f64,              // K
-    pub result:      SimulationResult, // the full operating point at this temperature
+    pub result:      SimulationResult, // solve_circuit's result at this temperature
 }
 ```
 
@@ -1201,7 +1203,7 @@ With the default `serde` feature, `Circuit` and `SimulationResult` (and all nest
 }
 ```
 
-Fields with defaults (`bf`, `temperature`, `k`, `coil_resistance`, `position`, `v_pos`, `v_neg`, `parasitic_caps`) can be omitted from JSON and will take their defaults.
+Fields with defaults (`bf`, `temperature`, `k`, `coil_resistance`, an SPDT switch's `position`, `v_pos`, `v_neg`, `parasitic_caps`) can be omitted from JSON and will take their defaults. A potentiometer's `position` is required.
 
 ### JSON Schema
 

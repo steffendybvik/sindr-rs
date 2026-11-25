@@ -207,10 +207,12 @@ impl SensResult {
 /// each; [`SensResult::get_parameter`] picks one out). The derivative is the
 /// total one: the operating point moves with the parameter. Other
 /// components stay in the linearised circuit but get no entry: other
-/// devices (LED, Zener, Schottky, photodiode, JFET, IGBT), a diode's
+/// devices (LED, Schottky, photodiode, JFET, IGBT), a diode's
 /// breakdown `BV`/`IBV`, capacitors and inductors, which have no effect at
 /// DC apart from the 1 TΩ leak a capacitor is given. A self-heated device
-/// is held at the junction temperature its bias balanced at.
+/// is held at the junction temperature its bias balanced at. A zener, and a
+/// MOSFET's body diode (`<id>.body`), are solved as diodes and get a
+/// diode's IS, N and RS.
 ///
 /// # Errors
 ///
