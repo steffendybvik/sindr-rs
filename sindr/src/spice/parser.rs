@@ -98,13 +98,13 @@ fn ident(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
         .parse_next(input)
 }
 
-/// Node name: SPICE allows nodes that are pure digits (`0`, `12`) or
-/// identifiers, plus `.` for hierarchical names that subckt instances may
-/// reference. Letters and digits may be any Unicode ones (`å`, `µ`), as
-/// ngspice reads them.
+/// Node name: as in ngspice, any run of characters up to a separator
+/// (whitespace, `=`, `(`, `)` or `,`), so schematic exporters' `/in` and
+/// `Net-_R1-Pad2_` are names, and so are `0`, `12`, `x1.out` and `å`.
+/// Braces and quotes end one too: they open expressions.
 fn node_name(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
     take_while(1.., |c: char| {
-        c.is_alphanumeric() || c == '_' || c == '.' || c == '#'
+        !c.is_whitespace() && !matches!(c, '=' | '(' | ')' | ',' | '{' | '}' | '\'' | '"')
     })
     .with_span()
     .map(|(s, span): (&str, Range<usize>)| (s.to_string(), span))
@@ -863,6 +863,8 @@ fn parse_subckt_instance(input: &mut Input<'_>) -> ModalResult<RawElement> {
         input.reset(&cp);
         // Otherwise consume one bare token.
         match node_name(input) {
+            // ngspice's `params:` before the overrides.
+            Ok((tok, _)) if tok == "params:" => {}
             Ok((tok, _)) => tokens.push(tok),
             Err(_) => break,
         }
@@ -917,6 +919,8 @@ fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
         }
         input.reset(&cp);
         match node_name(input) {
+            // ngspice's `params:` before the defaults.
+            Ok((p, _)) if p == "params:" => {}
             Ok((p, _)) => ports.push(p),
             Err(_) => break,
         }

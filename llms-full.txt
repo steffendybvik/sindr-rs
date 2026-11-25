@@ -11140,6 +11140,12 @@ inside every instance instead of taking its prefix.
 [`ParsedNetlist::options`]; [`ParsedNetlist::solver`] runs the deck's
 analyses with them.
 
+A node name runs to the next separator (whitespace, `=`, `(`, `)` or
+`,`), as in ngspice, so a schematic exporter's `/in` and
+`Net-_R1-Pad2_` read as written. A comment is a `*` line, or runs from
+`;`, or from a `$` at the start of a line or after whitespace or a
+comma, to the end of the line.
+
 The module is the `spice` feature, on by default like every feature.
 A build that turns the defaults off (`default-features = false`) keeps
 it by listing it: `features = ["spice"]`.
