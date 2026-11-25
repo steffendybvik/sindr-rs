@@ -39,6 +39,7 @@ largest deviation over every quantity and point the case checks;
 | `dc_diode_breakdown` | DC sweep | 4e-5 | 1e-4 |
 | `dc_diode_iv` | DC sweep | 8e-6 | 1e-5 |
 | `dc_exported_digital_pin` | DC sweep | 4e-6 | 1e-5 |
+| `dc_fet_reverse` | DC sweep | 5e-7 | 1e-6 |
 | `dc_mosfet_body_diode` | DC sweep | 5e-6 | 1e-4 |
 | `dc_power_mosfet_body` | DC sweep | 6e-6 | 1e-4 |
 | `dc_power_mosfet_subckt` | DC sweep | 4e-9 | 1e-4 |

@@ -32,7 +32,7 @@ included. sindr reads `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`
 (the goldens parse in strict mode), so a card here can't quietly lose one.
 `dc_diode_1n4148` and `op_bjt_card` use non-default values. The MOSFET
 and JFET decks are read by sindr's parser too (`op_fet_decks_parse`,
-`ac_fet_decks_parse`, `ac_mosfet_card`, `ac_jfet_caps`, `op_pjf`, and the vendor-style
+`ac_fet_decks_parse`, `ac_mosfet_card`, `ac_jfet_caps`, `op_pjf`, `dc_fet_reverse`, and the vendor-style
 subcircuit `dc_power_mosfet_subckt` / `dc_power_mosfet_body`, whose
 `.model` cards sit inside the `.subckt`). LED, Schottky and photodiode
 have no SPICE card in sindr, so those tests, and the Rust-built twins of

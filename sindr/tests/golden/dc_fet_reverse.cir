@@ -1,0 +1,14 @@
+dc: FETs wired with drain and source swapped, so each conducts in reverse mode: NMOS and PMOS pass gates and an N-channel JFET against a swept rail
+VR rail 0 0
+VG g 0 3.3
+VGP gp 0 -3.3
+RN rail n 10k
+M1 0 g n n nmos1 W=1 L=1
+RP p 0 10k
+M2 rail gp p p pmos1 W=1 L=1
+RJ rail j 470
+J1 0 0 j jmod
+.model nmos1 NMOS(LEVEL=1 KP=2e-4 VTO=0.7 LAMBDA=0.02 GAMMA=0.4 PHI=0.6 IS=0)
+.model pmos1 PMOS(LEVEL=1 KP=1e-4 VTO=-0.7 LAMBDA=0.02 GAMMA=0.4 PHI=0.6 IS=0)
+.model jmod NJF(VTO=-2 BETA=2.5e-3 IS=0)
+.end

@@ -319,6 +319,8 @@ CircuitElement::Jfet(Jfet {
 
 A JFET's `parasitic_caps` are SPICE's gate junctions: CGS and CGD at zero bias, each `C0/(1 − v/PB)^M` at its junction voltage and continued linearly above `FC·PB`, with SPICE's defaults `PB = 1`, `M = 0.5`, `FC = 0.5`. Transient integrates their charge; AC and noise take the capacitance at the bias point.
 
+A FET's channel is symmetric. When the drain is pulled past the source (below it for NMOS and N-channel JFETs, above it for PMOS and P-channel), the device is solved in reverse mode, as SPICE does: the lower end of the channel acts as the source, so a pass gate conducts whichever end is labelled the drain, and its drain current comes out negative. A MOSFET's region is then the swapped device's, and its body, tied to the labelled source, is forward-biased against the end acting as the source, which lowers its threshold through `gamma`.
+
 A MOSFET's `body_diode` is a SPICE diode card (`DiodeModel`) from source to drain for NMOS, drain to source for PMOS. It conducts when a bridge or inductive load pulls the drain past the source with the channel off. Every analysis solves it as a `Diode` named `<id>.body`, which is where its current shows in the results; `bv` on it sets the part's avalanche voltage.
 
 `BjtKind`, `BjtRegion`, `MosfetKind`, `MosfetRegion`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.

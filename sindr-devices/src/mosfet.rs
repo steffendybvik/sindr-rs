@@ -2,10 +2,13 @@
 //!
 //! Implements NMOS and PMOS transistors with three operating regions:
 //! cutoff, triode (linear), and saturation. The companion model linearizes
-//! the device at each NR iteration for MNA stamping.
+//! the device at each NR iteration for MNA stamping. With the drain below
+//! the source the channel runs in reverse mode, drain and source swapped,
+//! as in SPICE (see [`mosfet_companion`]).
 //!
 //! `sindr` treats every MOSFET as a three-terminal part with its body tied
-//! to its source (Vbs = 0), so the body effect never applies there; the
+//! to its source (Vbs = 0), so the body effect applies there only in
+//! reverse mode, where the body is forward-biased against the drain; the
 //! model keeps it for callers that drive the body separately.
 
 use crate::datasheet::{positive, DatasheetError, MosfetDatasheet};
@@ -261,7 +264,8 @@ pub struct MosfetCompanion {
     /// Output conductance ∂Id/∂Vds (S).
     pub gds: f64,
     /// Body transconductance ∂Id/∂Vbs (S), from the body effect. Zero when
-    /// Vbs >= PHI, where the threshold stops depending on Vbs.
+    /// Vbs >= 2·PHI, where the threshold stops depending on Vbs (see
+    /// [`threshold_voltage`]).
     pub gmb: f64,
     /// Operating region.
     pub region: MosfetRegion,
@@ -273,21 +277,40 @@ pub struct MosfetCompanion {
 ///
 /// Vth = VTO + GAMMA * (sqrt(PHI - Vbs) - sqrt(PHI))
 ///
-/// For NMOS with Vbs <= 0: Vth increases (harder to turn on). Once the body
-/// is forward-biased past PHI (Vbs >= PHI) the sqrt term is clamped to 0
-/// and Vth no longer depends on Vbs.
+/// For NMOS with Vbs <= 0: Vth increases (harder to turn on). With the body
+/// forward-biased (Vbs > 0) the sqrt is continued along its tangent at
+/// Vbs = 0, `sqrt(PHI) − Vbs/(2·sqrt(PHI))`, floored at 0 (from Vbs = 2·PHI
+/// on), as SPICE's Level 1 does; Vth then no longer depends on Vbs.
 /// For PMOS, caller passes sign-adjusted Vbs and
 /// [`MosfetParams::in_nmos_frame`] parameters. With the body tied to the
-/// source, as in sindr, Vbs = 0 and Vth = VTO.
+/// source, as in sindr, Vbs = 0 and Vth = VTO, except in reverse mode (see
+/// [`mosfet_companion`]), where the body sits at the higher end of the
+/// channel and is forward-biased against the end acting as the source.
 pub fn threshold_voltage(vbs: f64, params: &MosfetParams) -> f64 {
-    let phi_minus_vbs = params.phi - vbs;
-    // Clamp to prevent sqrt of negative (shouldn't happen physically)
-    let sqrt_term = if phi_minus_vbs > 0.0 {
-        phi_minus_vbs.sqrt()
+    params.vto + params.gamma * (body_sqrt(vbs, params) - params.phi.sqrt())
+}
+
+/// The square-root term of [`threshold_voltage`].
+fn body_sqrt(vbs: f64, params: &MosfetParams) -> f64 {
+    if vbs <= 0.0 {
+        (params.phi - vbs).max(0.0).sqrt()
     } else {
+        let sphi = params.phi.sqrt();
+        (sphi - vbs / (2.0 * sphi)).max(0.0)
+    }
+}
+
+/// Body effect factor dVth/dVbs of [`threshold_voltage`]. Zero once the
+/// body is forward-biased to 2·PHI, where the square-root term is floored
+/// and Vth stops depending on Vbs.
+fn threshold_slope(vbs: f64, params: &MosfetParams) -> f64 {
+    if params.gamma <= 0.0 || body_sqrt(vbs, params) <= 0.0 {
         0.0
-    };
-    params.vto + params.gamma * (sqrt_term - params.phi.sqrt())
+    } else if vbs <= 0.0 {
+        -params.gamma / (2.0 * (params.phi - vbs).sqrt())
+    } else {
+        -params.gamma / (2.0 * params.phi.sqrt())
+    }
 }
 
 /// Evaluate the Level 1 MOSFET model at a given operating point.
@@ -297,9 +320,35 @@ pub fn threshold_voltage(vbs: f64, params: &MosfetParams) -> f64 {
 /// [`MosfetKind::nmos_frame`]) and [`MosfetParams::in_nmos_frame`]
 /// parameters, so the equations work identically.
 ///
-/// `gmb` is zero once the body is forward-biased past PHI, matching
+/// `gmb` is zero once the body is forward-biased to 2·PHI, matching
 /// [`threshold_voltage`].
+///
+/// The channel is symmetric. With `vds < 0` the drain is the lower end of
+/// the channel and acts as the source, so the model is evaluated as SPICE
+/// does in reverse mode: with drain and source swapped (`vgd`, `−vds`,
+/// `vbd`) and the result mapped back to the terminals as labelled. `id` is
+/// then negative, `gm`, `gds` and `gmb` stay the partial derivatives with
+/// respect to the labelled `vgs`, `vds` and `vbs` (so `gm` is negative and
+/// `gds` takes in the swapped frame's transconductance), and `region` and
+/// `vth` are the swapped frame's, its threshold against `vgd`.
 pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> MosfetCompanion {
+    if vds < 0.0 {
+        // Id(vgs, vds, vbs) = −F(vgs − vds, −vds, vbs − vds).
+        let r = forward_companion(vgs - vds, -vds, vbs - vds, params);
+        return MosfetCompanion {
+            id: -r.id,
+            gm: -r.gm,
+            gds: r.gm + r.gds + r.gmb,
+            gmb: -r.gmb,
+            region: r.region,
+            vth: r.vth,
+        };
+    }
+    forward_companion(vgs, vds, vbs, params)
+}
+
+/// [`mosfet_companion`] with `vds >= 0`.
+fn forward_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> MosfetCompanion {
     let vth = threshold_voltage(vbs, params);
     let vov = vgs - vth; // overdrive voltage
 
@@ -315,15 +364,7 @@ pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> 
         };
     }
 
-    // Body effect transconductance factor: dVth/dVbs. Zero once the body is
-    // forward-biased past PHI, where `threshold_voltage` clamps the sqrt term
-    // and Vth stops depending on Vbs.
-    let phi_minus_vbs = params.phi - vbs;
-    let dvth_dvbs = if params.gamma > 0.0 && phi_minus_vbs > 0.0 {
-        -params.gamma / (2.0 * phi_minus_vbs.sqrt())
-    } else {
-        0.0
-    };
+    let dvth_dvbs = threshold_slope(vbs, params);
 
     if vds < vov {
         // Triode region: Id = KP * [(Vgs-Vth)*Vds - Vds^2/2] * (1 + LAMBDA*Vds)
@@ -393,13 +434,35 @@ pub struct MosfetDerivatives {
 
 /// The exact derivatives of [`mosfet_companion`]'s `id`, `gm` and `gds` at
 /// `vgs`, `vds`, `vbs` (V, N-channel frame) with respect to `kp`, `vto` and
-/// `lambda`, for sensitivity analysis. All zero in cutoff.
+/// `lambda`, for sensitivity analysis. All zero in cutoff. With `vds < 0`
+/// they are those of the reverse-mode companion, drain and source swapped.
 pub fn mosfet_derivatives(
     vgs: f64,
     vds: f64,
     vbs: f64,
     params: &MosfetParams,
 ) -> MosfetDerivatives {
+    if vds < 0.0 {
+        // id = −F, gm = −F_g, gds = F_g + F_d + F_b with F_b = −F_g·dVth/dVbs
+        // in the swapped frame, whose slope doesn't depend on KP, VTO or λ.
+        let slope = threshold_slope(vbs - vds, params);
+        let r = forward_derivatives(vgs - vds, -vds, vbs - vds, params);
+        let back = |d: MosfetDerivative| MosfetDerivative {
+            id: -d.id,
+            gm: -d.gm,
+            gds: d.gm + d.gds - d.gm * slope,
+        };
+        return MosfetDerivatives {
+            kp: back(r.kp),
+            vto: back(r.vto),
+            lambda: back(r.lambda),
+        };
+    }
+    forward_derivatives(vgs, vds, vbs, params)
+}
+
+/// [`mosfet_derivatives`] with `vds >= 0`.
+fn forward_derivatives(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> MosfetDerivatives {
     let vov = vgs - threshold_voltage(vbs, params);
     let (kp, lambda) = (params.kp, params.lambda);
     let clm = 1.0 + lambda * vds;
@@ -448,7 +511,9 @@ pub fn mosfet_derivatives(
     }
 }
 
-/// Detect MOSFET operating region from terminal voltages.
+/// Detect MOSFET operating region from terminal voltages, with `vds >= 0`.
+/// With `vds < 0` the device is in reverse mode: pass `vgd`, `−vds` and the
+/// threshold at `vbd`, as [`mosfet_companion`] does.
 pub fn detect_region(vgs: f64, vds: f64, vth: f64) -> MosfetRegion {
     let vov = vgs - vth;
     if vov <= 0.0 {
@@ -585,8 +650,8 @@ mod tests {
     }
 
     /// gm, gds and gmb must be the derivatives of the drain current the
-    /// companion returns, including with the body forward-biased past PHI
-    /// (a PMOS with its body at ground and source at VDD sits there).
+    /// companion returns, including with the body forward-biased, on the
+    /// tangent and past 2·PHI, and in reverse mode.
     #[test]
     fn companion_conductances_match_finite_difference() {
         let params = MosfetParams {
@@ -596,7 +661,17 @@ mod tests {
         let id = |vgs: f64, vds: f64, vbs: f64| mosfet_companion(vgs, vds, vbs, &params).id;
         let h = 1e-6;
         for vbs in [-3.0, -0.5, 0.0, 0.3, 2.0, 5.0] {
-            for (vgs, vds) in [(0.3, 2.0), (3.0, 0.5), (3.0, 5.0), (1.5, 0.2), (2.0, 4.0)] {
+            for (vgs, vds) in [
+                (0.3, 2.0),
+                (3.0, 0.5),
+                (3.0, 5.0),
+                (1.5, 0.2),
+                (2.0, 4.0),
+                // Reverse mode: triode, saturation, and on only through vgd.
+                (3.0, -0.5),
+                (1.0, -3.0),
+                (0.3, -2.0),
+            ] {
                 let c = mosfet_companion(vgs, vds, vbs, &params);
                 let fd_gm = (id(vgs + h, vds, vbs) - id(vgs - h, vds, vbs)) / (2.0 * h);
                 let fd_gds = (id(vgs, vds + h, vbs) - id(vgs, vds - h, vbs)) / (2.0 * h);
@@ -631,8 +706,16 @@ mod tests {
             (|p, x| p.vto = x, |d| d.vto, params.vto),
             (|p, x| p.lambda = x, |d| d.lambda, params.lambda),
         ];
-        // Saturation, triode, and cutoff.
-        for (vgs, vds) in [(2.0, 3.0), (2.5, 0.4), (0.5, 2.0)] {
+        // Saturation, triode and cutoff, forward and reverse.
+        let biases = [
+            (2.0, 3.0),
+            (2.5, 0.4),
+            (0.5, 2.0),
+            (2.5, -0.4),
+            (0.5, -2.5),
+            (-2.0, -0.5),
+        ];
+        for (vgs, vds) in biases {
             let d = mosfet_derivatives(vgs, vds, 0.0, &params);
             for (set, pick, x) in cases {
                 let h = x * 1e-6;
@@ -650,6 +733,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Swapping drain and source negates the drain current: the channel is
+    /// symmetric, the lower end acting as the source. With the gate on only
+    /// against the drain (`vgs` below threshold, `vgd` above) the device
+    /// conducts rather than sitting in cutoff.
+    #[test]
+    fn reverse_mode_mirrors_forward_mode() {
+        let params = MosfetParams::default_nmos();
+        for (vgs, vds, vbs) in [(3.0, 0.5, 0.0), (3.0, 4.0, -1.0), (1.0, 2.0, 0.3)] {
+            let fwd = mosfet_companion(vgs, vds, vbs, &params);
+            let rev = mosfet_companion(vgs - vds, -vds, vbs - vds, &params);
+            assert_eq!(rev.id, -fwd.id);
+            assert_eq!(rev.region, fwd.region);
+            assert_eq!(rev.vth, fwd.vth);
+        }
+        let on_through_drain = mosfet_companion(0.0, -3.3, 0.0, &params);
+        assert_eq!(on_through_drain.region, MosfetRegion::Saturation);
+        assert!(on_through_drain.id < 0.0);
+        assert!(on_through_drain.gds > 0.0);
+        assert!(on_through_drain.gm < 0.0);
     }
 
     /// The fitted part reproduces both datasheet figures to 1e-6 relative.

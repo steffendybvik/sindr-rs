@@ -89,7 +89,7 @@ Each analysis but `.tf` is checked against [ngspice](https://ngspice.sourceforge
 | Analysis | Cases | Worst relative error | Worst other |
 |---|---|---|---|
 | Operating point | 22 | 7e-6 | — |
-| DC sweep | 9 | 4e-5 | — |
+| DC sweep | 10 | 4e-5 | — |
 | Temperature sweep | 4 | 8e-7 | — |
 | AC | 15 | 3e-6 | 1e-4° phase |
 | Diode charge (AC) | 2 | 2e-4 | — |
@@ -531,6 +531,8 @@ CircuitElement::Jfet(Jfet {
 ```
 
 A JFET's `parasitic_caps` are SPICE's gate junctions: CGS and CGD at zero bias, each `C0/(1 − v/PB)^M` at its junction voltage and continued linearly above `FC·PB`, with SPICE's defaults `PB = 1`, `M = 0.5`, `FC = 0.5`. Transient integrates their charge; AC and noise take the capacitance at the bias point.
+
+A FET's channel is symmetric. When the drain is pulled past the source (below it for NMOS and N-channel JFETs, above it for PMOS and P-channel), the device is solved in reverse mode, as SPICE does: the lower end of the channel acts as the source, so a pass gate conducts whichever end is labelled the drain, and its drain current comes out negative. A MOSFET's region is then the swapped device's, and its body, tied to the labelled source, is forward-biased against the end acting as the source, which lowers its threshold through `gamma`.
 
 A MOSFET's `body_diode` is a SPICE diode card (`DiodeModel`) from source to drain for NMOS, drain to source for PMOS. It conducts when a bridge or inductive load pulls the drain past the source with the channel off. Every analysis solves it as a `Diode` named `<id>.body`, which is where its current shows in the results; `bv` on it sets the part's avalanche voltage.
 
@@ -1655,7 +1657,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, positive or negative (a negative `voltage` mirrors the characteristic, for a 79xx), but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. It has no control loop either, so its output capacitor's value and ESR don't affect stability (an LDO that oscillates without its output capacitor on a real board is stable here) and don't change the load-step response; capacitors on a regulator show up only as inrush and hold-up. Its temperature doesn't feed back: self-heating reports its junction temperature, but its output doesn't drift with it. No references or adjustable regulators (LM317 with its divider).
 - **Switching converters are averaged.** `SwitchingRegulator` (buck, boost) is its average over a switching period: no output ripple (only a `ripple_current` estimate), no control loop or compensation, so no load-step ringing or loop stability, no soft start, discontinuous-conduction mode, foldback or thermal shutdown. In a transient it reaches each operating point at once. Its efficiency is what you give it, not derived from switch and inductor losses. No buck-boost, flyback or inverting topologies; the switched circuit, built from switches, diodes and an inductor, covers those.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
-- **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
+- **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) applies only in reverse mode, when the drain is pulled past the source and the body sits forward-biased against the end acting as the source, as in SPICE. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
 - **JFET gate capacitances are depletion charge only, at 27 °C.** `parasitic_caps` gives CGS and CGD as SPICE's graded junctions (`PB`, `M`, `FC`), but the gate junction conducts no current, and `PB` and the capacitances don't follow temperature. ngspice's JFET grades at `M = 0.5` whatever the card says, so a deck with another `M` solves differently there.
 - **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
@@ -8836,11 +8838,13 @@ pub struct MosfetResult {
     /// Drain–source voltage (V).
     pub vds: f64,
     /// Drain current (A), into the drain: positive for a conducting NMOS,
-    /// negative for a PMOS.
+    /// negative for a PMOS, and the other way round in reverse mode (the
+    /// drain pulled past the source).
     pub id_current: f64,
     /// Total dissipation (W).
     pub power: f64,
-    /// Operating region. Serialises as `"cutoff"`, `"triode"` or
+    /// Operating region; in reverse mode, that of the device with drain and
+    /// source swapped. Serialises as `"cutoff"`, `"triode"` or
     /// `"saturation"`, as the string it replaced did.
     pub region: MosfetRegion,
 }
@@ -13616,8 +13620,12 @@ pub struct JfetCompanion {
 /// N-channel: Vp < 0 (typically -2 to -6 V), Idss > 0 (A). `vgs`, `vds` and
 /// `vp` are in V.
 ///
-/// In the ohmic region `gm = 2·Idss·Vds/Vp²` keeps its sign, so it is
-/// negative when the drain is below the source.
+/// The channel is symmetric: with the drain below the source (`vds < 0` in
+/// the N-channel frame) the drain acts as the source, and the model is
+/// evaluated with the two swapped (`vgd`, `−vds`), as SPICE does in reverse
+/// mode. `gm` and `gds` stay the partial derivatives with respect to the
+/// labelled `vgs` and `vds`, so in the ohmic region `gm = 2·Idss·Vds/Vp²`
+/// keeps its sign and is negative when the drain is below the source.
 ///
 /// P-channel is evaluated in the mirrored N-channel frame (`-vgs`, `-vds`,
 /// `-|vp|`): `gm` and `gds` carry over to the physical device unchanged, but
@@ -13824,10 +13832,13 @@ MOSFET Level 1 (Shichman-Hodges) model with body effect.
 
 Implements NMOS and PMOS transistors with three operating regions:
 cutoff, triode (linear), and saturation. The companion model linearizes
-the device at each NR iteration for MNA stamping.
+the device at each NR iteration for MNA stamping. With the drain below
+the source the channel runs in reverse mode, drain and source swapped,
+as in SPICE (see [`mosfet_companion`]).
 
 `sindr` treats every MOSFET as a three-terminal part with its body tied
-to its source (Vbs = 0), so the body effect never applies there; the
+to its source (Vbs = 0), so the body effect applies there only in
+reverse mode, where the body is forward-biased against the drain; the
 model keeps it for callers that drive the body separately.
 
 ```rust
@@ -13944,7 +13955,8 @@ pub struct MosfetCompanion {
     /// Output conductance ∂Id/∂Vds (S).
     pub gds: f64,
     /// Body transconductance ∂Id/∂Vbs (S), from the body effect. Zero when
-    /// Vbs >= PHI, where the threshold stops depending on Vbs.
+    /// Vbs >= 2·PHI, where the threshold stops depending on Vbs (see
+    /// [`threshold_voltage`]).
     pub gmb: f64,
     /// Operating region.
     pub region: MosfetRegion,
@@ -13956,12 +13968,15 @@ pub struct MosfetCompanion {
 ///
 /// Vth = VTO + GAMMA * (sqrt(PHI - Vbs) - sqrt(PHI))
 ///
-/// For NMOS with Vbs <= 0: Vth increases (harder to turn on). Once the body
-/// is forward-biased past PHI (Vbs >= PHI) the sqrt term is clamped to 0
-/// and Vth no longer depends on Vbs.
+/// For NMOS with Vbs <= 0: Vth increases (harder to turn on). With the body
+/// forward-biased (Vbs > 0) the sqrt is continued along its tangent at
+/// Vbs = 0, `sqrt(PHI) − Vbs/(2·sqrt(PHI))`, floored at 0 (from Vbs = 2·PHI
+/// on), as SPICE's Level 1 does; Vth then no longer depends on Vbs.
 /// For PMOS, caller passes sign-adjusted Vbs and
 /// [`MosfetParams::in_nmos_frame`] parameters. With the body tied to the
-/// source, as in sindr, Vbs = 0 and Vth = VTO.
+/// source, as in sindr, Vbs = 0 and Vth = VTO, except in reverse mode (see
+/// [`mosfet_companion`]), where the body sits at the higher end of the
+/// channel and is forward-biased against the end acting as the source.
 pub fn threshold_voltage(vbs: f64, params: &MosfetParams) -> f64 { … }
 
 /// Evaluate the Level 1 MOSFET model at a given operating point.
@@ -13971,8 +13986,17 @@ pub fn threshold_voltage(vbs: f64, params: &MosfetParams) -> f64 { … }
 /// [`MosfetKind::nmos_frame`]) and [`MosfetParams::in_nmos_frame`]
 /// parameters, so the equations work identically.
 ///
-/// `gmb` is zero once the body is forward-biased past PHI, matching
+/// `gmb` is zero once the body is forward-biased to 2·PHI, matching
 /// [`threshold_voltage`].
+///
+/// The channel is symmetric. With `vds < 0` the drain is the lower end of
+/// the channel and acts as the source, so the model is evaluated as SPICE
+/// does in reverse mode: with drain and source swapped (`vgd`, `−vds`,
+/// `vbd`) and the result mapped back to the terminals as labelled. `id` is
+/// then negative, `gm`, `gds` and `gmb` stay the partial derivatives with
+/// respect to the labelled `vgs`, `vds` and `vbs` (so `gm` is negative and
+/// `gds` takes in the swapped frame's transconductance), and `region` and
+/// `vth` are the swapped frame's, its threshold against `vgd`.
 pub fn mosfet_companion(vgs: f64, vds: f64, vbs: f64, params: &MosfetParams) -> MosfetCompanion { … }
 
 /// The derivatives of a MOSFET's drain current, transconductance and output
@@ -14001,7 +14025,8 @@ pub struct MosfetDerivatives {
 
 /// The exact derivatives of [`mosfet_companion`]'s `id`, `gm` and `gds` at
 /// `vgs`, `vds`, `vbs` (V, N-channel frame) with respect to `kp`, `vto` and
-/// `lambda`, for sensitivity analysis. All zero in cutoff.
+/// `lambda`, for sensitivity analysis. All zero in cutoff. With `vds < 0`
+/// they are those of the reverse-mode companion, drain and source swapped.
 pub fn mosfet_derivatives(
     vgs: f64,
     vds: f64,
@@ -14009,7 +14034,9 @@ pub fn mosfet_derivatives(
     params: &MosfetParams,
 ) -> MosfetDerivatives { … }
 
-/// Detect MOSFET operating region from terminal voltages.
+/// Detect MOSFET operating region from terminal voltages, with `vds >= 0`.
+/// With `vds < 0` the device is in reverse mode: pass `vgd`, `−vds` and the
+/// threshold at `vbd`, as [`mosfet_companion`] does.
 pub fn detect_region(vgs: f64, vds: f64, vth: f64) -> MosfetRegion { … }
 ```
 
