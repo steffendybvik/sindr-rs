@@ -223,6 +223,24 @@
 //! non-zero step that moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
 //! `fstart > 0` for `dec`/`oct`.
 //!
+//! # Instance parameters
+//!
+//! R, L and C lines take ngspice's `m` (parallel copies: R and L divided
+//! by it, C multiplied), `scale`, and `tc1` and `tc2`, which scale the
+//! value by `1 + tc1·ΔT + tc2·ΔT²` at the line's `temp` (°C, ΔT from
+//! 27 °C) or `dtemp` (ΔT itself; ignored beside `temp`). The value is fixed
+//! when the deck is read, so a resistor's noise stays at 27 °C. `IC=` on a
+//! C or L line sets where a `uic` transient starts
+//! ([`ParsedNetlist::uic_voltages`], [`ParsedNetlist::uic_currents`]); a
+//! capacitor's needs one end at ground, and a coupled `L` takes none.
+//!
+//! A D line's area (`D1 a k dmod 2`, or `area=`) and `m` multiply `IS`,
+//! `CJO` and `IBV` and divide `RS`, and its `temp` or `dtemp` sets the
+//! junction temperature. `pj` only scales sidewall parameters sindr's
+//! diode doesn't have, so it's dropped. `OFF`, a diode's `IC=` and any
+//! other instance parameter or flag on these lines are errors in strict
+//! mode and warnings in lenient mode, naming them.
+//!
 //! # Strictness and warnings
 //!
 //! By default the parser runs in **strict** mode: any unsupported card,
@@ -346,6 +364,16 @@ pub struct ParsedNetlist {
     /// those inside `.subckt` bodies included under their flattened ids.
     /// [`Self::ac_config`] drives `.ac` from them.
     pub ac_stimuli: Vec<AcStimulus>,
+    /// `IC=` on `C` lines with one end at ground, as the voltage (V) of
+    /// the other end, keyed by flattened node name. ngspice applies them
+    /// only with `uic`, and so does [`Self::transient_config`], over the
+    /// deck's `.ic` values.
+    pub uic_voltages: HashMap<String, f64>,
+    /// `IC=` on `L` lines (A), keyed by flattened inductor id, flowing from
+    /// the line's first node to its second. Like [`Self::uic_voltages`],
+    /// [`Self::transient_config`] applies them only with `uic`, as
+    /// [`initial_currents`](crate::TransientConfig::initial_currents).
+    pub uic_currents: HashMap<String, f64>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
     /// [`ParseOptions::strict`] is `true`.
     pub warnings: Vec<ParseWarning>,
@@ -378,9 +406,10 @@ impl ParsedNetlist {
     /// `.tran`, with its `.ic` cards as
     /// [`initial_voltages`](crate::TransientConfig::initial_voltages), so
     /// the run starts as ngspice's does: from the operating point with the
-    /// `.ic` nodes held, or with `uic` from the `.ic` values alone. `None`
-    /// without a `.tran`. See [`AnalysisRequest::transient_config`] for the
-    /// rest of the card.
+    /// `.ic` nodes held, or with `uic` from the `.ic` values alone. With
+    /// `uic`, `IC=` on C and L lines ([`Self::uic_voltages`],
+    /// [`Self::uic_currents`]) applies too. `None` without a `.tran`. See
+    /// [`AnalysisRequest::transient_config`] for the rest of the card.
     ///
     /// ```
     /// use sindr::spice::parse_str;
@@ -400,7 +429,14 @@ impl ParsedNetlist {
         self.analyses
             .iter()
             .find_map(AnalysisRequest::transient_config)
-            .map(|config| config.with_initial_voltages(self.initial_conditions.clone()))
+            .map(|mut config| {
+                let mut voltages = self.initial_conditions.clone();
+                if config.start == crate::TransientStart::InitialConditions {
+                    voltages.extend(self.uic_voltages.clone());
+                    config.initial_currents.clone_from(&self.uic_currents);
+                }
+                config.with_initial_voltages(voltages)
+            })
     }
 
     /// The [`AcConfig`](crate::ac_analysis::AcConfig) for the deck's first

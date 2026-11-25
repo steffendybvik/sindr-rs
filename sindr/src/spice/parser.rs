@@ -512,7 +512,8 @@ fn parse_poly(input: &mut Input<'_>) -> ModalResult<RawElement> {
     Ok(element_line(id, prefix, id_span, nodes, body, end))
 }
 
-/// Parse `R / L / C` passive: `<id> n+ n- <value>`.
+/// Parse `R / L / C` passive: `<id> n+ n- <value> [name=val ...] [flag ...]`.
+/// Which instance parameters mean something is the lowering pass's call.
 fn parse_passive(input: &mut Input<'_>) -> ModalResult<RawElement> {
     let (id, prefix, id_span) = element_id(input)?;
     ws(input)?;
@@ -521,16 +522,16 @@ fn parse_passive(input: &mut Input<'_>) -> ModalResult<RawElement> {
     let (n_neg, _) = node_name(input)?;
     ws(input)?;
     let (value, val_span) = value_expr(input)?;
-    ws(input)?;
-    // Strict mode: any trailing tokens are an error.
-    if !input.is_empty() {
-        return Err(ErrMode::from_input(input));
-    }
+    let (params, flags) = word_tail(input)?;
     Ok(RawElement {
         id,
         prefix,
         nodes: vec![n_pos, n_neg],
-        body: RawElementBody::Passive { value },
+        body: RawElementBody::Passive {
+            value,
+            params,
+            flags,
+        },
         span: Span {
             start: id_span.start,
             end: val_span.end,
@@ -686,7 +687,8 @@ fn parse_source(input: &mut Input<'_>, kind: SourceKind) -> ModalResult<RawEleme
     })
 }
 
-/// Parse `D` diode: `<id> n_anode n_cathode <model>`.
+/// Parse `D` diode: `<id> n_anode n_cathode <model> [area] [name=val ...]
+/// [flag ...]`.
 fn parse_diode(input: &mut Input<'_>) -> ModalResult<RawElement> {
     let (id, prefix, id_span) = element_id(input)?;
     ws(input)?;
@@ -696,14 +698,18 @@ fn parse_diode(input: &mut Input<'_>) -> ModalResult<RawElement> {
     ws(input)?;
     let (model, _) = ident(input)?;
     ws(input)?;
-    if !input.is_empty() {
-        return Err(ErrMode::from_input(input));
-    }
+    let area = opt(value_expr).parse_next(input)?.map(|(e, _)| e);
+    let (params, flags) = word_tail(input)?;
     Ok(RawElement {
         id,
         prefix,
         nodes: vec![n_a, n_k],
-        body: RawElementBody::Diode { model },
+        body: RawElementBody::Diode {
+            model,
+            area,
+            params,
+            flags,
+        },
         span: Span {
             start: id_span.start,
             end: id_span.end,
@@ -817,6 +823,20 @@ fn parse_jfet(input: &mut Input<'_>) -> ModalResult<RawElement> {
             src: Arc::default(),
         },
     })
+}
+
+/// [`instance_tail`] where every flag is a word: a stray number after an
+/// R, L or C value or a diode's area is a syntax error, not a flag.
+#[allow(clippy::type_complexity)]
+fn word_tail(input: &mut Input<'_>) -> ModalResult<(Vec<(String, ParamExpr)>, Vec<String>)> {
+    let (params, flags) = instance_tail(input)?;
+    if flags
+        .iter()
+        .any(|f| !f.starts_with(|c: char| c.is_alphabetic()))
+    {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok((params, flags))
 }
 
 /// The rest of a device line after its model name: `name=val` pairs and
@@ -2116,7 +2136,7 @@ mod tests {
         assert_eq!(el.prefix, 'r');
         assert_eq!(el.nodes, vec!["a".to_string(), "b".to_string()]);
         match el.body {
-            RawElementBody::Passive { value } => {
+            RawElementBody::Passive { value, .. } => {
                 assert!((must_num(&value) - 1000.0).abs() < 1e-9);
             }
             _ => panic!(),
@@ -2129,7 +2149,7 @@ mod tests {
         let RawCard::Element(el) = card else { panic!() };
         assert_eq!(el.prefix, 'c');
         match el.body {
-            RawElementBody::Passive { value } => {
+            RawElementBody::Passive { value, .. } => {
                 assert!((must_num(&value) - 4.7e-6).abs() < 1e-12);
             }
             _ => panic!(),
@@ -2230,7 +2250,7 @@ mod tests {
         assert_eq!(el.prefix, 'd');
         assert_eq!(el.nodes, vec!["a".to_string(), "k".to_string()]);
         match el.body {
-            RawElementBody::Diode { model } => assert_eq!(model, "dmod"),
+            RawElementBody::Diode { model, .. } => assert_eq!(model, "dmod"),
             _ => panic!(),
         }
     }
