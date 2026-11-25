@@ -355,6 +355,57 @@ fn identical_instances_share_one_block() {
 }
 
 #[test]
+fn numbered_blocks_skip_a_subckt_of_that_name() {
+    let src = "* names\n\
+               X1 a 0 s v=1\n\
+               X2 b 0 s_2\n\
+               X3 c 0 s v=2\n\
+               X4 d 0 s v=3\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               R4 d 0 1k\n\
+               .subckt s p q v=1\n\
+               V1 p q {v}\n\
+               .ends\n\
+               .subckt s_2 p q\n\
+               R1 p q 1k\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let placed: Vec<&str> = nl
+        .circuit
+        .instances
+        .iter()
+        .map(|i| i.block.as_str())
+        .collect();
+    assert_eq!(placed, ["s", "s_2", "s_3", "s_4"]);
+}
+
+#[test]
+fn zero_and_minus_zero_bodies_share_one_block() {
+    let src = "* signed zero\n\
+               X1 a 0 src v=0\n\
+               X2 b 0 src v=-0\n\
+               X3 c 0 src v=1\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               .subckt src p q v=1\n\
+               V1 p q {v}\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let placed: Vec<&str> = nl
+        .circuit
+        .instances
+        .iter()
+        .map(|i| i.block.as_str())
+        .collect();
+    assert_eq!(placed, ["src", "src", "src_2"]);
+}
+
+#[test]
 fn nested_subckts_keep_their_nesting() {
     let src = "* nested\n\
                V1 in 0 1\n\
