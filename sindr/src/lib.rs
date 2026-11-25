@@ -406,7 +406,7 @@ pub use transient::{
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
 
-/// This crate's version, as in its `Cargo.toml` (`"0.3.0"`). Record it
+/// This crate's version, as in its `Cargo.toml`, such as `"0.3.1"`. Record it
 /// next to saved results, so a rerun can tell a change in the design from a
 /// change in the engine. [`devices::VERSION`] is the device crate's.
 ///
