@@ -539,8 +539,8 @@ Every accessor returns `None` for a name the result doesn't have. Names are exac
 |--------|---------|
 | `TimestepSnapshot` | `voltage(node)`, `current(id)`, `component(id)` |
 | `TransientData` | `node_voltage_curve(node)` and `component_current_curve(id)` as `(t, value)`; `voltage_at(node, t)`, `current_at(id, t)`, interpolated |
-| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, source_magnitude)` |
-| `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°) as `(Hz, value)` |
+| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, source_magnitude)`, `branch_current(id)` (complex) |
+| `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°), `branch_current_curve(id)` (complex) as `(Hz, value)` |
 | `DcSweepResult`, `TempSweepResult` | `node_voltage_curve(node)`, `component_current_curve(id)` as `(sweep value, value)`; each point's `result` has the accessors above |
 
 The fields behind them stay public:

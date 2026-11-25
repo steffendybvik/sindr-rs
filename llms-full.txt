@@ -752,8 +752,8 @@ Every accessor returns `None` for a name the result doesn't have. Names are exac
 |--------|---------|
 | `TimestepSnapshot` | `voltage(node)`, `current(id)`, `component(id)` |
 | `TransientData` | `node_voltage_curve(node)` and `component_current_curve(id)` as `(t, value)`; `voltage_at(node, t)`, `current_at(id, t)`, interpolated |
-| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, source_magnitude)` |
-| `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°) as `(Hz, value)` |
+| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, source_magnitude)`, `branch_current(id)` (complex) |
+| `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°), `branch_current_curve(id)` (complex) as `(Hz, value)` |
 | `DcSweepResult`, `TempSweepResult` | `node_voltage_curve(node)`, `component_current_curve(id)` as `(sweep value, value)`; each point's `result` has the accessors above |
 
 The fields behind them stay public:
@@ -1816,6 +1816,16 @@ pub struct AcPoint {
     /// node (always 0).
     #[cfg_attr(feature = "schemars", schemars(with = "HashMap<String, [f64; 2]>"))]
     pub node_voltages: HashMap<String, Complex64>,
+    /// Complex branch currents (A) of the components that introduce a
+    /// current unknown (voltage sources, controlled voltage sources,
+    /// op-amps, regulators), keyed by component id: the small-signal
+    /// counterpart of [`SimulationResult::branch_currents`], with its sign
+    /// convention. A source delivering power reads negative.
+    ///
+    /// [`SimulationResult::branch_currents`]: crate::SimulationResult::branch_currents
+    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "schemars", schemars(with = "HashMap<String, [f64; 2]>"))]
+    pub branch_currents: HashMap<String, Complex64>,
 }
 
 impl AcPoint {
@@ -1831,6 +1841,12 @@ impl AcPoint {
     /// [`AcConfig::ac_magnitude`]. `None` when the node isn't in the
     /// circuit.
     pub fn gain_db(&self, node: impl AsRef<str>, source_magnitude: f64) -> Option<f64> { … }
+
+    /// The complex branch current of component `id` (A), with the sign
+    /// convention of [`AcPoint::branch_currents`]. `None` when `id` has no
+    /// branch current (resistors, capacitors, inductors and other parts
+    /// without a current unknown) or isn't in the circuit.
+    pub fn branch_current(&self, id: impl AsRef<str>) -> Option<Complex64> { … }
 
     /// Phase of a node's voltage in degrees, in (−180°, 180°]: relative to
     /// the source when [`AcConfig::ac_phase_deg`] is 0, absolute otherwise,
@@ -1874,6 +1890,33 @@ impl AcResult {
     /// ```
     ///
     pub fn node_voltage_curve(&self, node: impl AsRef<str>) -> Vec<(f64, Complex64)> { … }
+
+    /// A component's complex branch current as `(frequency in Hz, I)` pairs,
+    /// one per point; see [`AcPoint::branch_current`]. Empty when `id` has
+    /// no branch current.
+    ///
+    /// ```
+    /// use sindr::{solve_ac, AcConfig, Circuit, CircuitElement};
+    /// use sindr::element::{Capacitor, Resistor, VoltageSource};
+    ///
+    /// // The input current of an RC low-pass: −V/(R + 1/(jωC)), negative
+    /// // because V1 delivers it.
+    /// let circuit = Circuit::new("0", vec![
+    ///     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None }),
+    ///     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 }),
+    ///     CircuitElement::Capacitor(Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 }),
+    /// ]);
+    /// let ac = solve_ac(&circuit, &AcConfig::new("V1", 1.0, 1e5, 51))?;
+    ///
+    /// // Far above the corner, C is a short: −1 V / 1 kΩ.
+    /// let (f, i) = *ac.branch_current_curve("V1").last().unwrap();
+    /// assert_eq!(f, 1e5);
+    /// assert!((i.re + 1e-3).abs() < 1e-6 && i.im.abs() < 2e-6);
+    /// assert!(ac.branch_current_curve("R1").is_empty());
+    /// # Ok::<(), sindr::SimError>(())
+    /// ```
+    ///
+    pub fn branch_current_curve(&self, id: impl AsRef<str>) -> Vec<(f64, Complex64)> { … }
 
     /// A node's voltage magnitude as `(frequency in Hz, |V| in V)` pairs,
     /// one per point; [`AcResult::gain_curve`] has it in dB.
