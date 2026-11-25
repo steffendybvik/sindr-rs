@@ -8,6 +8,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use sindr_devices::diode::{DiodeParams, T_NOM};
 use thiserror::Error;
 
+/// 0 °C in kelvin, as a D line's `temp=` is read.
+pub(crate) const KELVIN_AT_0C: f64 = 273.15;
+
 use crate::circuit::{BjtModel, DiodeModel};
 use crate::design::{Block, DesignError, Instance};
 use crate::handle::NodeId;
@@ -79,7 +82,10 @@ pub enum ExportError {
 /// | `DcMotor` | the armature `R`, `L`, a 0 V `V` sensing its current and the back-EMF `E`; the shaft as `F` (`kt·i`), `C` (J), `R` (1/B) and `I` (the load) on a node whose voltage over `b` is the speed |
 /// | `Potentiometer` | two `R`, top–wiper and wiper–bottom |
 /// | `Photoresistor`, `Thermistor` | `R` at their resistance |
-/// | `Led`, `SchottkyDiode` | `D` with their Shockley parameters |
+/// | `Led`, `SchottkyDiode` | `D` with their Shockley parameters (and an LED's `EG` away from 27 °C) |
+///
+/// A diode, LED or Schottky away from 27 °C has `temp=` (°C) on its `D`
+/// line.
 ///
 /// A source's waveform and its static value are written as one waveform:
 /// SPICE ignores a `DC` value during a transient, where sindr adds it.
@@ -101,8 +107,8 @@ pub enum ExportError {
 /// [`ExportError::Unsupported`] for an element with no SPICE equivalent:
 /// a MOSFET with flicker noise, a JFET with a pinch-off SPICE can't write,
 /// IGBT, zener, op-amp, comparator, relay, photodiode,
-/// varactor, voltage regulator, a BJT with parasitic capacitances, a junction
-/// away from 27 °C (sindr reads no temperature from a deck), or a phased sine
+/// varactor, voltage regulator, a BJT with parasitic capacitances or away
+/// from 27 °C (sindr reads no temperature from a Q line), or a phased sine
 /// of zero frequency. [`ExportError::BadName`] for a name holding whitespace
 /// or SPICE punctuation, a node other than ground named `0` or `gnd`, two
 /// names that differ only in case, or an F/H source whose controlling source
@@ -488,9 +494,11 @@ impl<'a> Deck<'a> {
                 CircuitElement::CurrentSource(CurrentSource { current, .. }) => {
                     format!("DC {}", num(id, "current", *current)?)
                 }
-                CircuitElement::Diode(Diode { model, .. }) => {
+                CircuitElement::Diode(Diode {
+                    model, temperature, ..
+                }) => {
                     let model = model.unwrap_or_default();
-                    self.diode(id, &part_name, &nodes, model)?;
+                    self.diode(id, &part_name, &nodes, model, *temperature)?;
                     continue;
                 }
                 CircuitElement::Behavioural(b) => {
@@ -513,6 +521,7 @@ impl<'a> Deck<'a> {
         name: &str,
         nodes: &[NodeId; 2],
         model: DiodeModel,
+        temperature: f64,
     ) -> Result<(), ExportError> {
         let model_name = match self.diode_models.iter().find(|(m, _)| *m == model) {
             Some((_, n)) => n.clone(),
@@ -551,7 +560,12 @@ impl<'a> Deck<'a> {
                 n
             }
         };
-        self.two_terminal(name, nodes, model_name)
+        let value = if (temperature - T_NOM).abs() > 1e-6 {
+            format!("{model_name} temp={}", celsius(id, temperature)?)
+        } else {
+            model_name
+        };
+        self.two_terminal(name, nodes, value)
     }
 
     pub(crate) fn bjt_model(
@@ -677,16 +691,28 @@ fn check_token(what: &'static str, name: &str) -> Result<(), ExportError> {
     })
 }
 
+/// Refuses a BJT away from 27 °C: sindr reads no temperature from a Q line.
 pub(crate) fn nominal(id: &str, temperature: f64) -> Result<(), ExportError> {
     if (temperature - T_NOM).abs() > 1e-6 {
         return Err(ExportError::Unsupported {
             id: id.to_string(),
             reason: format!(
-                "its junction is at {temperature} K, and sindr reads no temperature from a deck"
+                "its junction is at {temperature} K, and sindr reads no temperature from a Q line"
             ),
         });
     }
     Ok(())
+}
+
+/// `temperature` (K) in °C, written so a D line's `temp=` reads back as the
+/// same kelvin: the shortest decimal that does, else the nearest.
+fn celsius(id: &str, temperature: f64) -> Result<String, ExportError> {
+    let exact = temperature - KELVIN_AT_0C;
+    let shortest = (0..17)
+        .filter_map(|digits| format!("{exact:.digits$e}").parse::<f64>().ok())
+        .find(|c| c + KELVIN_AT_0C == temperature)
+        .unwrap_or(exact);
+    num(id, "temperature", shortest)
 }
 
 /// ` EG=… XTI=…` for a BJT card whose `IS` follows temperature other than

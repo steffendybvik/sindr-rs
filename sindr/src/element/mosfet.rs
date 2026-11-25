@@ -259,7 +259,13 @@ impl Device for Mosfet {
                 MosfetKind::Nmos => (s, d),
                 MosfetKind::Pmos => (d, s),
             };
-            deck.diode(id, &diode_name, &[anode, cathode], diode)?;
+            deck.diode(
+                id,
+                &diode_name,
+                &[anode, cathode],
+                diode,
+                sindr_devices::diode::T_NOM,
+            )?;
         }
         Ok(())
     }

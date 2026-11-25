@@ -464,16 +464,20 @@ fn names_spice_cannot_hold_are_rejected() {
 
 #[test]
 fn what_spice_cannot_express_is_reported() {
+    // sindr reads no temperature from a Q line.
     let mut hot = one_resistor("R1", "a", "0");
-    hot.components.push(CircuitElement::Diode(Diode {
-        id: "D1".into(),
-        nodes: ["a".into(), "0".into()],
+    hot.components.push(CircuitElement::Bjt(Bjt {
+        id: "Q1".into(),
+        nodes: three("a", "a", "0"),
+        kind: BjtKind::Npn,
+        bf: 100.0,
         temperature: 350.0,
+        parasitic_caps: None,
         model: None,
     }));
     let err = to_netlist(&hot, "t").unwrap_err();
     assert!(
-        matches!(&err, ExportError::Unsupported { id, .. } if id == "D1"),
+        matches!(&err, ExportError::Unsupported { id, reason } if id == "Q1" && reason.contains("Q line")),
         "{err}"
     );
 
@@ -919,6 +923,109 @@ fn equivalent_parts_round_trip_to_the_same_operating_point() {
     assert_same_solution("parts", &circuit, &a, &b);
     // The LED and the Schottky get different cards.
     assert_eq!(deck.matches(".model dmod").count(), 2, "{deck}");
+}
+
+/// A junction away from 27 °C is written with `temp=` (°C) on its D line, so
+/// a parsed `temp=`/`dtemp=` diode exports, reads back as the same circuit
+/// and solves the same.
+#[test]
+fn a_hot_diode_round_trips_through_temp() {
+    let deck = "* hot\nV1 a 0 1\nR1 a b 1k\nD1 b 0 dmod temp=60\n\
+                R2 a c 1k\nD2 c 0 dmod dtemp=33\nR3 a d 1k\nD3 d 0 dmod\n\
+                .model dmod d(is=1e-14 n=1.2 rs=5)\n.op\n.end\n";
+    let parsed = parse_str(deck).unwrap();
+    let kelvin = |c: &Circuit, id: &str| match c.components.iter().find(|e| e.id() == id) {
+        Some(CircuitElement::Diode(d)) => d.temperature,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(kelvin(&parsed.circuit, "d1"), 333.15);
+    let exported = to_netlist(&parsed.circuit, "hot").unwrap();
+    assert!(exported.contains("dmod1 temp=60\n"), "{exported}");
+    assert_eq!(exported.matches("temp=").count(), 2, "{exported}");
+    let again = parse_str(&exported).unwrap();
+    assert_eq!(again.circuit.components, parsed.circuit.components);
+    let a = sindr::solve_op(&parsed.circuit).unwrap();
+    let b = sindr::solve_op(&again.circuit).unwrap();
+    assert_same_solution("hot", &parsed.circuit, &a, &b);
+
+    // Any kelvin reads back exactly, even one with no short °C.
+    for temperature in [250.0, 301.234_567_891, 333.15, 410.0, 1000.0 / 3.0] {
+        let mut circuit = one_resistor("R1", "a", "0");
+        circuit.components.push(CircuitElement::Diode(Diode {
+            id: "D1".into(),
+            nodes: two("a", "0"),
+            temperature,
+            model: None,
+        }));
+        let deck = to_netlist(&circuit, "t").unwrap();
+        assert_eq!(
+            kelvin(&parse_str(&deck).unwrap().circuit, "d1"),
+            temperature,
+            "{deck}"
+        );
+    }
+}
+
+/// An LED or Schottky away from 27 °C is written as a hot diode whose
+/// card scales IS as the part does, so the round trip solves the same.
+#[test]
+fn hot_led_and_schottky_round_trip_to_the_same_operating_point() {
+    let feed = |id: &str, to: &str| {
+        CircuitElement::Resistor(Resistor {
+            id: id.into(),
+            nodes: two("vcc", to),
+            resistance: 1e3,
+        })
+    };
+    let circuit = Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            CircuitElement::VoltageSource(VoltageSource {
+                id: "V1".into(),
+                nodes: two("vcc", "0"),
+                voltage: 5.0,
+                waveform: None,
+            }),
+            feed("R1", "led"),
+            CircuitElement::Led(Led {
+                id: "D1".into(),
+                nodes: two("led", "0"),
+                color: "red".into(),
+                temperature: 350.0,
+            }),
+            feed("R2", "sch"),
+            CircuitElement::SchottkyDiode(SchottkyDiode {
+                id: "D2".into(),
+                nodes: two("sch", "0"),
+                temperature: 260.0,
+            }),
+        ],
+        ..Default::default()
+    };
+    let deck = to_netlist(&circuit, "hot parts").unwrap();
+    assert!(deck.contains(" EG="), "{deck}");
+    let parsed = parse_str(&deck).unwrap_or_else(|e| panic!("{e}\n{deck}"));
+    let a = sindr::solve_op(&circuit).unwrap();
+    let b = sindr::solve_op(&parsed.circuit).unwrap();
+    assert_same_solution("hot parts", &circuit, &a, &b);
+    let nominal = sindr::solve_op(&Circuit {
+        components: circuit
+            .components
+            .iter()
+            .cloned()
+            .map(|mut c| {
+                match &mut c {
+                    CircuitElement::Led(l) => l.temperature = 300.15,
+                    CircuitElement::SchottkyDiode(s) => s.temperature = 300.15,
+                    _ => {}
+                }
+                c
+            })
+            .collect(),
+        ..circuit.clone()
+    })
+    .unwrap();
+    assert!((a.node_voltages["led"] - nominal.node_voltages["led"]).abs() > 1e-3);
 }
 
 /// Identical BJTs share one `.model` card; a different polarity gets its own.

@@ -12,7 +12,7 @@ use crate::ratings::{RatingKind, RatingProbe};
 use num_complex::Complex64;
 
 #[cfg(feature = "spice")]
-use crate::spice::export::{nominal, Deck, ExportError};
+use crate::spice::export::{Deck, ExportError};
 
 /// Diode (Shockley model, silicon unless `model` says otherwise).
 /// `nodes: [anode, cathode]`. Forward current flows from anode → cathode;
@@ -192,8 +192,7 @@ impl Device for Diode {
 
     #[cfg(feature = "spice")]
     fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
-        nominal(&self.id, self.temperature)?;
         let model = self.model.unwrap_or_default();
-        deck.diode(&self.id, name, &self.nodes, model)
+        deck.diode(&self.id, name, &self.nodes, model, self.temperature)
     }
 }
