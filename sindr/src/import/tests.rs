@@ -3982,6 +3982,132 @@ Rb vref 0 1k
         assert!((by_hand.1 - 6.0).abs() < 1e-6, "{by_hand:?}");
     }
 
+    /// A `.subckt` line continued on `+` lines declares every port on them.
+    #[test]
+    fn a_header_continued_on_plus_lines_counts_every_port() {
+        let text = OPAMP.replace(
+            ".subckt OPX inp inn out vcc vee",
+            ".subckt OPX inp inn\n+ out vcc\n+ vee",
+        );
+        let model = SubcktModel::new(text, "opx", ["+", "-", "OUT", "V+", "V-"]);
+        let out = op(&inverting_amp(model), &amp_bench()).node_voltages["out"];
+        assert!((out + 5.0).abs() < 1e-2, "{out}");
+    }
+
+    #[test]
+    fn a_model_with_no_subckt_says_it_has_none() {
+        let model = SubcktModel::new("R1 a b 1k\n", "OPX", ["+", "-", "OUT", "V+", "V-"]);
+        let e = inverting_amp(model).to_circuit(&amp_bench()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("has no .subckt \"OPX\" (it has none)"),
+            "{e}"
+        );
+    }
+
+    /// What the model can't place is a warning on the part: elements
+    /// outside the `.subckt`, cards the parser skipped, and a terminal on
+    /// a net that the pin map leaves out.
+    #[test]
+    fn what_a_model_leaves_out_is_a_warning_on_the_part() {
+        let text = format!("{OPAMP}\nR9 stray 0 1k\nR8 stray 0 1k\n.probe v(out)\n");
+        let mut n = inverting_amp(SubcktModel::new(text, "opx", ["+", "-", "OUT", "V+", "V-"]));
+        for net in &mut n.nets {
+            if net.id == "in" {
+                net.pins.push(Pin::new("U1", "NC"));
+            }
+        }
+        let imported = n.to_circuit(&amp_bench()).expect("imports");
+        let messages: Vec<&str> = imported
+            .warnings
+            .iter()
+            .filter(|w| w.component == "U1")
+            .map(|w| w.message.as_str())
+            .collect();
+        assert!(
+            messages.contains(&"subcircuit model: 2 elements outside any .subckt ignored"),
+            "{messages:?}"
+        );
+        assert!(
+            messages.contains(
+                &"terminal \"NC\" is on a net but not in the subcircuit's pin map, so nothing \
+                  connects to it"
+            ),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.starts_with("subcircuit model: ") && m.contains(".probe")),
+            "{messages:?}"
+        );
+    }
+
+    /// A model built from its own subcircuits keeps them under the part's
+    /// name, and a behavioural source reading a current inside it still
+    /// finds its source.
+    #[test]
+    fn a_model_of_nested_subcircuits_solves() {
+        const DIVIDER: &str = "
+.subckt half a b
+R1 a b 1k
+.ends
+.subckt div in out gnd
+X1 in mid half
+Vm mid out 0
+X2 out gnd half
+B1 tap gnd V = I(Vm) * 1k
+Rt tap gnd 1meg
+.ends
+";
+        let netlist = Netlist {
+            components: vec![Component::new("U2", ComponentKind::BlackBox).with_model(
+                Model::Subckt(SubcktModel::new(DIVIDER, "div", ["1", "2", "3"])),
+            )],
+            nets: vec![
+                Net::new("vin", [("U2", "1")]),
+                Net::new("vout", [("U2", "2")]),
+                Net::new("gnd", [("U2", "3")]),
+            ],
+        };
+        let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "vin", 4.0));
+        let imported = netlist.to_circuit(&bench).expect("imports");
+        assert!(
+            imported.circuit.blocks.keys().any(|k| k == "U2:half"),
+            "{:?}",
+            imported.circuit.blocks.keys()
+        );
+        let r = op(&netlist, &bench);
+        assert!((r.node_voltages["vout"] - 2.0).abs() < 1e-6);
+        // 2 mA through Vm, read as 2 V.
+        assert!((r.node_voltages["U2.tap"].abs() - 2.0).abs() < 1e-6);
+    }
+
+    /// When `<net>_local` is taken in the model too, the renamed node
+    /// counts up until it is free.
+    #[test]
+    fn a_renamed_model_node_skips_a_name_the_model_uses() {
+        let on_ground_one = |text: String| {
+            let mut n = inverting_amp(SubcktModel::new(text, "opx", ["+", "-", "OUT", "V+", "V-"]));
+            for net in &mut n.nets {
+                if net.id == "gnd" {
+                    net.id = "1".into();
+                }
+            }
+            let bench = Bench::new("1")
+                .with_source(BenchSource::voltage("vin", "in", 0.5))
+                .with_source(BenchSource::voltage("vp", "vcc", 12.0))
+                .with_source(BenchSource::voltage("vn", "vee", -12.0));
+            op(&n, &bench).node_voltages["out"]
+        };
+        let colliding = on_ground_one(OPAMP.replace(" n1 ", " 1 ").replace(" n2 ", " 1_local "));
+        let by_hand = on_ground_one(OPAMP.to_string());
+        assert!(
+            (colliding - by_hand).abs() < 1e-9,
+            "{colliding} vs {by_hand}"
+        );
+    }
+
     #[cfg(feature = "serde")]
     #[test]
     fn a_subckt_model_reads_from_json() {

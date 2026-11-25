@@ -18,6 +18,7 @@ import sys
 FLOORS = {
     "sindr-devices/src/battery.rs": 96.5,  # 98.06% when set
     "sindr-devices/src/bjt.rs": 98.5,  # 100.00% when set
+    "sindr-devices/src/converter.rs": 96.5,  # 98.49% when set
     "sindr-devices/src/datasheet.rs": 89.5,  # 91.43% when set
     "sindr-devices/src/diode.rs": 98.0,  # 99.79% when set
     "sindr-devices/src/igbt.rs": 98.5,  # 100.00% when set
@@ -41,11 +42,59 @@ FLOORS = {
     "sindr/src/dc_sweep.rs": 98.5,  # 100.00% when set
     "sindr/src/design.rs": 98.0,  # 99.72% when set
     "sindr/src/device_params.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/ac_stamp.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/battery.rs": 96.0,  # 97.78% when set
+    "sindr/src/element/behavioural.rs": 91.0,  # 92.55% when set
+    "sindr/src/element/bjt.rs": 97.0,  # 98.99% when set
+    "sindr/src/element/capacitor.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/cccs.rs": 88.0,  # 89.80% when set
+    "sindr/src/element/ccvs.rs": 94.5,  # 96.49% when set
+    "sindr/src/element/comparator.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/crystal.rs": 69.0,  # 70.59% when set
+    "sindr/src/element/current_source.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/dc_motor.rs": 92.0,  # 93.67% when set
+    "sindr/src/element/dc_stamp.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/digital_pin.rs": 92.5,  # 94.44% when set
+    "sindr/src/element/diode.rs": 97.5,  # 99.14% when set
+    "sindr/src/element/ferrite_bead.rs": 62.5,  # 64.29% when set
+    "sindr/src/element/fuse.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/igbt.rs": 97.0,  # 98.84% when set
+    "sindr/src/element/inductor.rs": 97.0,  # 98.89% when set
+    "sindr/src/element/jfet.rs": 95.0,  # 96.96% when set
+    "sindr/src/element/layout.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/led.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/logic_gate.rs": 83.5,  # 85.00% when set
+    "sindr/src/element/mod.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/mosfet.rs": 97.5,  # 99.17% when set
+    "sindr/src/element/op_amp.rs": 97.0,  # 98.90% when set
+    "sindr/src/element/photodiode.rs": 89.5,  # 91.04% when set
+    "sindr/src/element/photoresistor.rs": 88.5,  # 90.32% when set
+    "sindr/src/element/potentiometer.rs": 91.5,  # 93.48% when set
+    "sindr/src/element/pushbutton.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/relay.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/report.rs": 97.5,  # 99.29% when set
+    "sindr/src/element/resistor.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/schottky_diode.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/switch.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/switch_spdt.rs": 53.0,  # 54.55% when set
+    "sindr/src/element/switching_regulator.rs": 89.5,  # 91.10% when set
+    "sindr/src/element/thermistor.rs": 90.0,  # 91.89% when set
+    "sindr/src/element/tran_stamp.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/transformer.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/varactor.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/vccs.rs": 93.5,  # 95.08% when set
+    "sindr/src/element/vcvs.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/voltage_regulator.rs": 96.5,  # 98.14% when set
+    "sindr/src/element/voltage_source.rs": 98.5,  # 100.00% when set
+    "sindr/src/element/zener_diode.rs": 95.0,  # 96.88% when set
     "sindr/src/error.rs": 97.5,  # 99.07% when set
     "sindr/src/examples.rs": 98.0,  # 99.80% when set
     "sindr/src/expression.rs": 95.5,  # 97.44% when set
+    "sindr/src/fourier.rs": 92.5,  # 94.43% when set
+    "sindr/src/handle.rs": 89.0,  # 90.56% when set
     "sindr/src/import/bench.rs": 98.5,  # 100.00% when set
     "sindr/src/import/mod.rs": 98.0,  # 99.68% when set
+    "sindr/src/import/subckt.rs": 97.0,  # 98.65% when set
     "sindr/src/import/value.rs": 97.5,  # 99.28% when set
     "sindr/src/integration.rs": 98.5,  # 100.00% when set
     "sindr/src/lib.rs": 95.5,  # 97.20% when set

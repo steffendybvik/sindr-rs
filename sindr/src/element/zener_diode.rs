@@ -5,8 +5,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::stamp_diode_companion_at;
 
-use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, Report, TranStamp};
-use crate::noise::NoiseSources;
+use super::{AcStamp, Check, DcStamp, Device, Report};
 use crate::ratings::{RatingKind, RatingProbe};
 
 #[cfg(feature = "spice")]
@@ -50,21 +49,8 @@ impl Device for ZenerDiode {
         r.port(&self.id, v, sindr_devices::diode::diode_current(v, &params));
     }
 
-    /// The same parameters as the DC stamp, including the IS scaling.
-    fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {
-        let params = device_params::zener_diode(self.vz, self.temperature);
-        let (g_d, _) = sindr_devices::diode::diode_companion(b.across(), &params);
-        b.two_terminal(g_d)
-    }
-
-    /// All of it is in [`linearise`](Device::linearise).
+    /// Nothing: AC and noise run on the diode it is lowered to.
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
-
-    fn noise(&self, n: &mut NoiseSources<'_>) {
-        let [a, b] = &self.nodes;
-        let i = n.current(&self.id);
-        n.shot(&self.id, "", [a, b], i);
-    }
 
     fn needed_ratings(&self) -> &'static [RatingKind] {
         &[RatingKind::Power]
@@ -80,11 +66,6 @@ impl Device for ZenerDiode {
             let nodes = s.nodes();
             stamp_diode_companion_at(s.system, nodes, vp, &params);
         }
-        Ok(())
-    }
-
-    /// Nothing: the transient steps the diode it is lowered to.
-    fn stamp_transient(&self, _: &mut TranStamp<'_>) -> Result<(), SimError> {
         Ok(())
     }
 

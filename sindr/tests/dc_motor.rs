@@ -6,8 +6,8 @@ use num_complex::Complex64;
 use sindr::element::{DcMotor, DcMotorParams, Resistor, VoltageSource};
 use sindr::session::Param;
 use sindr::{
-    solve_ac, solve_circuit, solve_transient, AcConfig, Circuit, CircuitElement, TransientConfig,
-    TransientSession,
+    check_ratings, solve_ac, solve_circuit, solve_op, solve_transient, AcConfig, Circuit,
+    CircuitElement, Part, RatingKind, RatingStatus, Ratings, TransientConfig, TransientSession,
 };
 
 /// A small 12 V hobby motor: 2 Ω, 1 mH, k = 0.02, J = 1e-6, B = 1e-6.
@@ -85,6 +85,42 @@ fn a_motor_held_still_draws_its_stall_current() {
     let result = solve_circuit(&motor_on(12.0, p)).unwrap();
     close(result.component("M1").unwrap().current_through, stall, 1e-9);
     assert!(result.motors["M1"].speed.abs() < 1e-9);
+}
+
+/// A motor is rated on its terminals: voltage, current and power, read off
+/// the port the lowering folds its parts back into. Unrated, all three are
+/// unverified. Checked at the operating point: `solve_circuit` would run
+/// the power-on transient, and its inrush would be the worst current.
+#[test]
+fn a_motor_is_rated_on_its_terminals() {
+    let mut circuit = motor_on(12.0, params().with_load(1e-3));
+    let result = solve_op(&circuit).unwrap();
+    let report = check_ratings(&circuit, &result).unwrap();
+    let kinds: Vec<_> = report.unverified().iter().map(|c| c.rating).collect();
+    for kind in [RatingKind::Voltage, RatingKind::Current, RatingKind::Power] {
+        assert!(kinds.contains(&kind), "{kind:?} in {kinds:?}");
+    }
+
+    let i = result.component("M1").unwrap().current_through;
+    circuit.parts.insert(
+        "M1".into(),
+        Part {
+            ratings: Ratings {
+                voltage: Some(24.0),
+                current: Some(i / 2.0),
+                power: Some(100.0),
+                ..Ratings::default()
+            },
+            ..Part::default()
+        },
+    );
+    let report = check_ratings(&circuit, &result).unwrap();
+    let get = |kind| report.for_part("M1").find(|c| c.rating == kind).unwrap();
+    assert_eq!(get(RatingKind::Voltage).status, RatingStatus::Within);
+    close(get(RatingKind::Voltage).worst.unwrap(), 12.0, 1e-12);
+    assert_eq!(get(RatingKind::Current).status, RatingStatus::Exceeded);
+    close(get(RatingKind::Current).worst.unwrap(), i, 1e-12);
+    assert_eq!(get(RatingKind::Power).status, RatingStatus::Within);
 }
 
 /// `x' = A·x + u` from rest for the 2×2 state `[i, ω]`, by the matrix

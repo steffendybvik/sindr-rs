@@ -438,3 +438,68 @@ fn sweeps_fold_every_point_of_a_hierarchical_composite() {
         assert_eq!(nodes, want_nodes);
     }
 }
+
+/// Every composite is lowered to its parts before a solve. Stamping one
+/// whole is a bug in the caller, and is refused by name rather than
+/// stamping nothing.
+#[test]
+fn a_composite_stamped_whole_is_refused() {
+    use crate::element::{
+        DcMotor, DcMotorParams, DigitalPin, GateKind, LogicGate, PinMode, PinModel, Pull,
+    };
+    use crate::stamp::stamp_circuit;
+
+    let composites = [
+        CircuitElement::SwitchSpdt(SwitchSpdt {
+            id: "x1".into(),
+            nodes: ["in".into(), "a".into(), "b".into()],
+            position: SpdtPosition::A,
+        }),
+        crystal_with(5e-12),
+        CircuitElement::FerriteBead(FerriteBead {
+            id: "x1".into(),
+            nodes: ["in".into(), "out".into()],
+            params: FerriteBeadParams {
+                r_dc: 0.5,
+                l: 1e-6,
+                r_ac: 600.0,
+                c: None,
+            },
+        }),
+        CircuitElement::DcMotor(DcMotor {
+            id: "x1".into(),
+            nodes: ["in".into(), "0".into()],
+            params: DcMotorParams::new(2.0, 0.01),
+        }),
+        CircuitElement::DigitalPin(DigitalPin {
+            id: "x1".into(),
+            nodes: ["io".into(), "in".into(), "0".into()],
+            mode: PinMode::default(),
+            level: true,
+            pull: Pull::None,
+            port: None,
+            model: PinModel::default(),
+        }),
+        CircuitElement::LogicGate(LogicGate::new(
+            "x1",
+            GateKind::Not,
+            ["a".into()],
+            ["y".into(), "in".into(), "0".into()],
+        )),
+    ];
+    for element in composites {
+        assert!(is_composite(&element), "{element:?}");
+        let id = element.id().to_string();
+        let circuit = Circuit::new("0", vec![v("v1", "in", "0", 1.0), element]);
+        let node_map = crate::node_map::NodeMap::from_circuit(&circuit);
+        let mut system =
+            crate::MnaSystem::new(node_map.num_nodes(), circuit.count_voltage_sources());
+        match stamp_circuit(&circuit, &mut system, &node_map, None) {
+            Err(SimError::InvalidComponent { id: got, reason }) => {
+                assert_eq!(got, id);
+                assert!(reason.contains("is stamped as its parts"), "{reason}");
+            }
+            other => panic!("{id}: {other:?}"),
+        }
+    }
+}

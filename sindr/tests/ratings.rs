@@ -1,8 +1,8 @@
 //! Absolute-maximum ratings checks against DC and transient results.
 
 use sindr::element::{
-    Bjt, Capacitor, Crystal, Diode, Igbt, Inductor, Mosfet, Resistor, Varactor, VoltageSource,
-    ZenerDiode,
+    Bjt, Capacitor, Crystal, Diode, Igbt, Inductor, Led, Mosfet, Resistor, SchottkyDiode, Varactor,
+    VoltageSource, ZenerDiode,
 };
 use sindr::{
     check_ratings, solve_circuit, solve_transient, BjtKind, Block, Circuit, CircuitElement,
@@ -266,6 +266,110 @@ fn diode_reverse_voltage_and_forward_current() {
 
     let exceeded: Vec<_> = report.exceeded().iter().map(|c| &c.part).collect();
     assert_eq!(exceeded, ["D1"]);
+}
+
+/// An LED, a Schottky and a zener are junctions too: reverse voltage and
+/// forward current read off their port, and an unrated LED or Schottky
+/// needs all three of its ratings. A zener needs only power, but a part
+/// may still rate the rest.
+#[test]
+fn led_schottky_and_zener_junction_ratings() {
+    let mut c = Circuit::new(
+        "0",
+        vec![
+            // LED forward through 330 Ω from 5 V.
+            vsrc("V1", "lv", "0", 5.0),
+            res("R1", "lv", "a1", 330.0),
+            CircuitElement::Led(Led {
+                id: "D1".into(),
+                nodes: ["a1".into(), "0".into()],
+                color: "red".into(),
+                temperature: 300.15,
+            }),
+            // Schottky reverse-biased by 30 V through 1 kΩ.
+            vsrc("V2", "hv", "0", 30.0),
+            res("R2", "hv", "k2", 1e3),
+            CircuitElement::SchottkyDiode(SchottkyDiode {
+                id: "D2".into(),
+                nodes: ["0".into(), "k2".into()],
+                temperature: 300.15,
+            }),
+            // Zener in breakdown from 12 V through 1 kΩ.
+            vsrc("V3", "zv", "0", 12.0),
+            res("R3", "zv", "k3", 1e3),
+            CircuitElement::ZenerDiode(ZenerDiode {
+                id: "DZ1".into(),
+                nodes: ["0".into(), "k3".into()],
+                vz: 5.1,
+                temperature: 300.15,
+            }),
+            // An unrated Schottky, forward.
+            res("R4", "lv", "a4", 1e3),
+            CircuitElement::SchottkyDiode(SchottkyDiode {
+                id: "D4".into(),
+                nodes: ["a4".into(), "0".into()],
+                temperature: 300.15,
+            }),
+        ],
+    );
+    let junction = Ratings {
+        reverse_voltage: Some(20.0),
+        forward_current: Some(20e-3),
+        power: Some(0.1),
+        ..Ratings::default()
+    };
+    for id in ["D1", "D2", "DZ1"] {
+        c.parts.insert(id.into(), rated(junction));
+    }
+    let result = solve_circuit(&c).unwrap();
+    let report = check_ratings(&c, &result).unwrap();
+    let get = |part: &str, kind| {
+        report
+            .for_part(part)
+            .find(|c| c.rating == kind)
+            .unwrap()
+            .clone()
+    };
+    let port = |id: &str| {
+        result
+            .component_results
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap()
+    };
+
+    let led_if = get("D1", RatingKind::ForwardCurrent);
+    assert_eq!(led_if.status, RatingStatus::Within);
+    assert_eq!(led_if.worst, Some(port("D1").current_through));
+    assert!((8e-3..10e-3).contains(&led_if.worst.unwrap()), "{led_if:?}");
+    assert_eq!(get("D1", RatingKind::ReverseVoltage).worst, Some(0.0));
+
+    let schottky_vr = get("D2", RatingKind::ReverseVoltage);
+    assert_eq!(schottky_vr.status, RatingStatus::Exceeded);
+    assert_eq!(schottky_vr.worst, Some(-port("D2").voltage_across));
+    assert!((schottky_vr.worst.unwrap() - 30.0).abs() < 0.1);
+    assert_eq!(get("D2", RatingKind::ForwardCurrent).worst, Some(0.0));
+
+    // Held near vz, well inside 20 V, with no forward current.
+    let zener_vr = get("DZ1", RatingKind::ReverseVoltage);
+    assert_eq!(zener_vr.status, RatingStatus::Within);
+    assert!((zener_vr.worst.unwrap() - 5.1).abs() < 0.2, "{zener_vr:?}");
+    assert_eq!(get("DZ1", RatingKind::ForwardCurrent).worst, Some(0.0));
+
+    let unverified: Vec<_> = report
+        .unverified()
+        .iter()
+        .filter(|c| c.part == "D4")
+        .map(|c| c.rating)
+        .collect();
+    assert_eq!(
+        unverified,
+        [
+            RatingKind::Power,
+            RatingKind::ReverseVoltage,
+            RatingKind::ForwardCurrent
+        ]
+    );
 }
 
 #[test]
