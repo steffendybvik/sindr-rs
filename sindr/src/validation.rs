@@ -42,6 +42,7 @@ pub(crate) fn check_sweep_points(what: ConfigKind, name: &str, n: usize) -> Resu
 ///    source values and controlled-source gains finite, a BJT's `bf`
 ///    positive and finite, and the device-model fields each check names
 /// 6. A behavioural source's `i(src)` names a voltage-defined element
+/// 7. A CCCS's or CCVS's `control_source` names a voltage-defined element
 ///
 /// # Errors
 ///
@@ -57,7 +58,8 @@ pub(crate) fn check_sweep_points(what: ConfigKind, name: &str, n: usize) -> Resu
 /// Returns [`SimError::DuplicateId`] for a repeated id, and
 /// [`SimError::InvalidComponent`] naming the component, field and value
 /// for a value out of range, such as a resistance that is zero, negative or
-/// not finite.
+/// not finite, or for a behavioural source, CCCS or CCVS that reads the
+/// current of an element that isn't in the circuit or has no branch current.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
     let flat = circuit.flattened()?;
     let circuit: &Circuit = &flat;
@@ -170,6 +172,31 @@ pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> {
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Check 7: a CCCS's or CCVS's control source has a current to read.
+    // Unchecked, the stamps skip a control they can't find and the source
+    // solves silently at zero output.
+    // ------------------------------------------------------------------
+    for comp in &circuit.components {
+        let device = comp.device();
+        let Some(source) = device.control_source() else {
+            continue;
+        };
+        if circuit.vsource_branch_index(source).is_some() {
+            continue;
+        }
+        let reason = if circuit.components.iter().any(|c| c.id() == source) {
+            format!(
+                "control_source = `{source}` has no branch current to read: it must be a \
+                 voltage-defined element (voltage source, VCVS, CCVS, op-amp, regulator or \
+                 behavioural voltage source)"
+            )
+        } else {
+            format!("control_source = `{source}` isn't in the circuit")
+        };
+        return Err(SimError::component(device.id(), reason));
     }
 
     Ok(())

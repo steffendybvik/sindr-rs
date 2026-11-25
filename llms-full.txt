@@ -618,7 +618,7 @@ CircuitElement::Behavioural(Behavioural { id, nodes: [n+, n-], output: Behaviour
 
 A behavioural source's `expr` is `Expression::parse("v(a)*v(b)")?` and the like: `v(n)`, `v(n,m)`, `i(source)` (the branch current of a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source), `time`, arithmetic, comparisons, `c ? a : b` and ngspice's functions (`exp`, `tanh`, `limit`, `min`, `u`, …). `BehaviouralOutput::Voltage` holds `V(n+) − V(n-)` at the expression; `Current` drives it from `n+` to `n-`. Newton gets the exact Jacobian by automatic differentiation; AC linearises at the bias point. In JSON the expression is its text: `{"type": "behavioural", "output": "voltage", "expr": "v(a)*v(b)", …}`.
 
-`control_source` is the `id` of the voltage source whose branch current is sensed, positive from its `+` terminal through it to `-`, as in SPICE.
+`control_source` is the `id` of the voltage source whose branch current is sensed, positive from its `+` terminal through it to `-`, as in SPICE. It must name an element with a branch current (a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source); one that isn't in the circuit, or that has no branch current such as a resistor, is refused as `SimError::InvalidComponent` before any analysis runs.
 
 The current sources follow SPICE's `G` and `F` and sindr's own `CurrentSource`: a positive `I_out` flows through the source from `out_from` to `out_to`, so it is drawn out of `out_from` and pushed into `out_to`.
 
@@ -12116,6 +12116,7 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 ///    source values and controlled-source gains finite, a BJT's `bf`
 ///    positive and finite, and the device-model fields each check names
 /// 6. A behavioural source's `i(src)` names a voltage-defined element
+/// 7. A CCCS's or CCVS's `control_source` names a voltage-defined element
 ///
 /// # Errors
 ///
@@ -12131,7 +12132,8 @@ by [`solve_circuit`](crate::solve_circuit); also exposed standalone via
 /// Returns [`SimError::DuplicateId`] for a repeated id, and
 /// [`SimError::InvalidComponent`] naming the component, field and value
 /// for a value out of range, such as a resistance that is zero, negative or
-/// not finite.
+/// not finite, or for a behavioural source, CCCS or CCVS that reads the
+/// current of an element that isn't in the circuit or has no branch current.
 pub fn validate_circuit(circuit: &Circuit) -> Result<(), SimError> { … }
 ```
 
