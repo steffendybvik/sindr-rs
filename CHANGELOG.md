@@ -40,8 +40,13 @@ additions are to non-exhaustive types.
   caller of `threshold_voltage` or `mosfet_companion` with one gets a
   slightly lower threshold than 0.3.0's `sqrt(PHI − vbs)`.
 - A SPICE deck ends at its `.end`: lines after it are ignored. ngspice
-  reads on, but its manual makes `.end` the last line. An included
-  file's `.end` doesn't end the deck.
+  reads on, but its manual makes `.end` the last line. In an included
+  file, `.end` is skipped and the rest of the file is read, as in
+  ngspice.
+- `to_netlist` writes a diode, Schottky or LED away from 27 °C with
+  `temp=` on its D line (an LED's card also carries its colour's `EG`),
+  where it used to refuse. A D line's `temp` reads back as the exact
+  kelvin, so the deck round-trips.
 - Faster, with the same results: a DC sweep about 30 % (the node map is
   reused across points), AC up to 23 % and sensitivity about 11 % (the MNA
   system is reused, and the noise and sensitivity adjoint is solved from
@@ -83,8 +88,10 @@ additions are to non-exhaustive types.
 - SIN holds `VO + VA·sin(phase)` until its delay, as SPICE does, instead
   of starting at t = 0 phase-shifted, so a transient starts from the
   right operating point.
-- `.param` binds `^` tighter than unary minus: `-2^2` is −4, as in
-  ngspice and B-source expressions.
+- `.param` binds `^` tighter than a leading unary minus, as ngspice
+  does: `-2^2` is −4. A minus after an operator still binds tighter
+  (`2*-3^2` is 18), and B sources bind every unary minus looser, as
+  ngspice's do.
 - `.include` and `.lib` paths keep their case, so `Models/Diode.lib`
   opens on case-sensitive file systems.
 - A `.lib` section that includes another section of the same file (a
