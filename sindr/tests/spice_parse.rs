@@ -163,38 +163,90 @@ fn a_param_may_refer_to_its_earlier_value() {
     assert_eq!(resistance(&parse_str(deck).unwrap(), "r1"), 2e3);
 }
 
-/// `^` (or `**`) binds tighter than unary minus, as in ngspice: ngspice
-/// 47 gives -4 for `.param x={-2^2}`, `{-2**2}` and a `B` source's
-/// `V=-2^2`, and 0.25 for `{2^-2}`. A `B` source's expression in sindr
-/// agrees.
+/// Evaluates `{expr}` through `.param` (with `x=3`) and reads it back off a
+/// source.
+fn param_value(expr: &str) -> f64 {
+    let deck = format!("* p\n.param x=3\n.param v={{{expr}}}\nV1 a 0 {{v}}\nR1 a 0 1\n.end\n");
+    let netlist = parse_str(&deck).unwrap();
+    match element(&netlist, "v1") {
+        CircuitElement::VoltageSource(VoltageSource { voltage, .. }) => *voltage,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A leading unary minus (or one right after `(`) is looser than `^`, as
+/// in ngspice 47's `.param`: `{-2^2}` is -4, `{(-3^2)}` is -9.
 #[test]
-fn power_binds_tighter_than_unary_minus() {
+fn power_binds_tighter_than_a_leading_minus() {
     for (expr, want) in [
         ("-2^2", -4.0),
         ("-2**2", -4.0),
+        ("(-3^2)", -9.0),
         ("2^-2", 0.25),
         ("-2^-2", -0.25),
         ("(-2)^2", 4.0),
-        ("2^3^2", 512.0),
         ("2*-3", -6.0),
-        ("1 - -2^2", 5.0),
-        ("--2^2", 4.0),
         ("-x^2", -9.0),
+        ("-3^2*2", -18.0),
+        ("-3^2+1", -8.0),
     ] {
-        let deck = format!("* p\n.param x=3\n.param v={{{expr}}}\nV1 a 0 {{v}}\nR1 a 0 1\n.end\n");
-        let netlist = parse_str(&deck).unwrap();
-        let v = match element(&netlist, "v1") {
-            CircuitElement::VoltageSource(VoltageSource { voltage, .. }) => *voltage,
-            other => panic!("{other:?}"),
-        };
-        assert_eq!(v, want, "{{{expr}}}");
-        if !expr.contains('x') {
-            let b = sindr::expression::Expression::parse(expr)
-                .unwrap()
-                .evaluate(&[]);
-            assert_eq!(b, want, "B source {expr}");
-        }
+        assert_eq!(param_value(expr), want, "{{{expr}}}");
     }
+}
+
+/// A minus right after a binary operator (or another unary minus) negates
+/// the operand it sits on, tighter than `^`: ngspice 47 gives these for
+/// `.param`.
+#[test]
+fn a_minus_after_an_operator_binds_tighter_than_power() {
+    for (expr, want) in [
+        ("2*-3^2", 18.0),
+        ("1+-3^2", 10.0),
+        ("1 - -3^2", -8.0),
+        ("1 - - 3^2", -8.0),
+        ("2/-2^2", 0.5),
+        ("2*- 3^2", 18.0),
+        ("2*-3**2", 18.0),
+        ("1 - -2^2", -3.0),
+        ("- -3^2", -9.0),
+        ("--2^2", -4.0),
+        ("2*- -3^2", 18.0),
+        ("2*-3*2", -12.0),
+        ("4/-2/2", -1.0),
+    ] {
+        assert_eq!(param_value(expr), want, "{{{expr}}}");
+    }
+}
+
+/// `B` sources keep every unary minus looser than `^`, as ngspice 47's do:
+/// `V=2*-3^2` is -18 there, not the 18 of `.param`.
+#[test]
+fn a_b_source_minus_is_always_looser_than_power() {
+    for (expr, want) in [
+        ("-2^2", -4.0),
+        ("2^-2", 0.25),
+        ("2*-3^2", -18.0),
+        ("1+-3^2", -8.0),
+        ("1 - -3^2", 10.0),
+        ("2/-2^2", -0.5),
+        ("2^-3^2", 2f64.powi(-9)),
+    ] {
+        let b = sindr::expression::Expression::parse(expr)
+            .unwrap()
+            .evaluate(&[]);
+        assert_eq!(b, want, "B source {expr}");
+    }
+}
+
+/// sindr's `^` is right-associative, ngspice's left (it gives 64 for
+/// `{2**3**2}` and (2^-3)^2 for `{2^-3^2}`); a minus in an exponent stays
+/// looser than the `^` after it.
+#[test]
+fn power_is_right_associative() {
+    assert_eq!(param_value("2^3^2"), 512.0);
+    assert_eq!(param_value("2**3**2"), 512.0);
+    assert_eq!(param_value("2^-3^2"), 2f64.powi(-9));
+    assert_eq!(param_value("2^-x^2"), 2f64.powi(-9));
 }
 
 // ----- Elements -------------------------------------------------------------
@@ -310,7 +362,8 @@ fn continuation_lines() {
 }
 
 /// The deck ends at its `.end`: whatever follows, cards or prose, isn't
-/// read. An included file's `.end` ends only that file.
+/// read. An included file's `.end` is skipped and the rest of that file
+/// read, as ngspice 47 does.
 #[test]
 fn nothing_after_end_is_read() {
     let deck = "* e\nV1 a 0 1\nR1 a 0 1k\n.op\n.END\nR2 a 0 1k\nthis is junk\n.end\n";
@@ -319,7 +372,7 @@ fn nothing_after_end_is_read() {
     assert_eq!(netlist.circuit.components.len(), 2);
 
     let dir = temp_dir("end");
-    std::fs::write(dir.join("part.lib"), "* part\nR2 a 0 2k\n.end\n").unwrap();
+    std::fs::write(dir.join("part.lib"), "* part\nR2 a 0 2k\n.end\nR4 a 0 4k\n").unwrap();
     std::fs::write(
         dir.join("top.cir"),
         "* top\nV1 a 0 1\n.include part.lib\nR1 a 0 1k\n.end\nR3 a 0 1k\n",
@@ -328,6 +381,7 @@ fn nothing_after_end_is_read() {
     let netlist = parse_file(dir.join("top.cir")).unwrap();
     assert_eq!(resistance(&netlist, "r1"), 1e3);
     assert_eq!(resistance(&netlist, "r2"), 2e3);
+    assert_eq!(resistance(&netlist, "r4"), 4e3);
     assert!(netlist.circuit.components.iter().all(|c| c.id() != "r3"));
 }
 

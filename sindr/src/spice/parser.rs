@@ -154,13 +154,22 @@ fn param_assign(input: &mut Input<'_>) -> ModalResult<(String, ParamExpr)> {
 // Precedence (low → high):
 //   1. add  / sub          (left-assoc)
 //   2. mul  / div          (left-assoc)
-//   3. unary minus
+//   3. leading unary minus (first in the expression or after `(`)
 //   4. pow  (`^` or `**`)  (right-assoc; its exponent may be negated)
-//   5. atom: number | ident | `(expr)`
+//   5. unary minus right after `+ - * /` or another unary minus
+//   6. atom: number | ident | `(expr)`
 //
-// `^` binds tighter than unary minus, so `-2^2` is −4 and `2^-2` is 0.25,
-// as in ngspice (checked against ngspice 47, `.param` and `B` sources
-// alike) and in sindr's behavioural expressions.
+// This is ngspice 47's `.param` grammar: a leading minus is looser than
+// `^` (`-2^2` is −4, `(-3^2)` is −9), but a minus right after an operator
+// negates the operand it sits on (`2*-3^2` is 18, `1 - -3^2` is −8). A
+// minus in an exponent stays looser than the `^` after it, so `2^-3^2` is
+// 2^−9; sindr's `^` is right-associative, ngspice's left (`2^3^2` is 512
+// here, 64 in ngspice, and ngspice's `2^-3^2` is (2^−3)^2). ngspice's tight
+// minus before a name or `(` is unreliable (`2*-x^2` with x=3 gives
+// 0.222); sindr reads it as (−x)^2.
+//
+// `B` sources differ: ngspice and sindr's behavioural expressions keep
+// every unary minus looser than `^`, so `V=2*-3^2` is −18 in both.
 
 /// Deepest nesting of `(`, unary minus and `^` an expression may have. The
 /// grammar recurses once per level, so an unbounded depth would let a long run
@@ -210,20 +219,31 @@ fn expr_atom(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     .parse_next(input)
 }
 
-/// Unary minus, looser than `^`: `-2^2` is `-(2^2)`.
+/// A leading unary minus, looser than `^`: `-2^2` is `-(2^2)`.
 fn expr_unary(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     ws(input)?;
     if opt('-').parse_next(input)?.is_some() {
-        // Only a minus nests, so only it counts towards the depth cap.
         let _depth = DepthGuard::enter(input)?;
-        return Ok(ParamExpr::Neg(Box::new(expr_unary(input)?)));
+        return Ok(ParamExpr::Neg(Box::new(expr_pow(input)?)));
     }
     expr_pow(input)
 }
 
+/// An atom with any minus signs in front of it, which bind tighter than
+/// `^`: the base of a power, and the operand after a binary operator.
+fn expr_signed_atom(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
+    ws(input)?;
+    if opt('-').parse_next(input)?.is_some() {
+        // Only a minus nests, so only it counts towards the depth cap.
+        let _depth = DepthGuard::enter(input)?;
+        return Ok(ParamExpr::Neg(Box::new(expr_signed_atom(input)?)));
+    }
+    expr_atom(input)
+}
+
 fn expr_pow(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     let _depth = DepthGuard::enter(input)?;
-    let lhs = expr_atom(input)?;
+    let lhs = expr_signed_atom(input)?;
     ws(input)?;
     if opt(alt(("**", "^"))).parse_next(input)?.is_some() {
         // Right-associative, and the exponent may be negated: `2^-2`.
@@ -235,20 +255,26 @@ fn expr_pow(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     }
 }
 
-fn expr_mul(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
-    let mut acc = expr_unary(input)?;
+/// A product; `leading` says whether it starts the expression (or a `(`),
+/// where a minus is looser than `^`, rather than following a `+` or `-`.
+fn expr_mul(input: &mut Input<'_>, leading: bool) -> ModalResult<ParamExpr> {
+    let mut acc = if leading {
+        expr_unary(input)?
+    } else {
+        expr_pow(input)?
+    };
     loop {
         ws(input)?;
         let op = opt(alt(('*', '/'))).parse_next(input)?;
         match op {
             Some('*') => {
                 ws(input)?;
-                let rhs = expr_unary(input)?;
+                let rhs = expr_pow(input)?;
                 acc = ParamExpr::BinOp(Box::new(acc), BinOp::Mul, Box::new(rhs));
             }
             Some('/') => {
                 ws(input)?;
-                let rhs = expr_unary(input)?;
+                let rhs = expr_pow(input)?;
                 acc = ParamExpr::BinOp(Box::new(acc), BinOp::Div, Box::new(rhs));
             }
             _ => return Ok(acc),
@@ -257,19 +283,19 @@ fn expr_mul(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
 }
 
 fn expr_add(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
-    let mut acc = expr_mul(input)?;
+    let mut acc = expr_mul(input, true)?;
     loop {
         ws(input)?;
         let op = opt(alt(('+', '-'))).parse_next(input)?;
         match op {
             Some('+') => {
                 ws(input)?;
-                let rhs = expr_mul(input)?;
+                let rhs = expr_mul(input, false)?;
                 acc = ParamExpr::BinOp(Box::new(acc), BinOp::Add, Box::new(rhs));
             }
             Some('-') => {
                 ws(input)?;
-                let rhs = expr_mul(input)?;
+                let rhs = expr_mul(input, false)?;
                 acc = ParamExpr::BinOp(Box::new(acc), BinOp::Sub, Box::new(rhs));
             }
             _ => return Ok(acc),
@@ -1775,7 +1801,8 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             }
             "end" => {
                 // The preprocessor stops at the deck's own `.end`, so this is
-                // an included file's, which ends only that file's text.
+                // an included file's, which is skipped: the lines after it
+                // are read on, as in ngspice.
                 return Err(LocalError::Empty);
             }
             other => {
