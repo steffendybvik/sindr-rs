@@ -1266,12 +1266,17 @@ mod tests {
         let node_map = NodeMap::from_circuit(&circuit);
         let idx = |n: &str| node_map.index(n).unwrap();
 
-        // (kind, vg, vd, vs): saturation and triode for each channel type.
+        // (kind, vg, vd, vs): saturation and triode for each channel type,
+        // forward and reverse.
         let cases = [
             (JfetKind::NChannel, 4.0, 8.0, 5.0),
             (JfetKind::NChannel, 4.0, 5.5, 5.0),
+            (JfetKind::NChannel, 4.0, 2.0, 5.0),
+            (JfetKind::NChannel, 4.0, 4.5, 5.0),
             (JfetKind::PChannel, 6.0, 2.0, 5.0),
             (JfetKind::PChannel, 6.0, 4.5, 5.0),
+            (JfetKind::PChannel, 6.0, 8.0, 5.0),
+            (JfetKind::PChannel, 6.0, 5.5, 5.0),
         ];
         for (kind, vg, vd, vs) in cases {
             let vp = match kind {
@@ -1324,8 +1329,9 @@ mod tests {
 
     /// Stamping at `v` and evaluating at `v` gives the device's terminal
     /// currents, so the stamped Jacobian columns must match a finite
-    /// difference of those currents. Covers PMOS with its source at the
-    /// supply (body at ground, so forward-biased past PHI) and NMOS.
+    /// difference of those currents. Covers PMOS and NMOS, each also in
+    /// reverse mode (drain past the source), where the body tied to the
+    /// labelled source is forward-biased against the end acting as one.
     #[test]
     fn mosfet_stamp_is_newton_consistent() {
         use sindr_devices::mosfet::{MosfetKind, MosfetParams};
@@ -1335,13 +1341,18 @@ mod tests {
             vto: 0.7,
             ..MosfetParams::default_nmos()
         };
-        // (kind, [vg, vd, vs]) across saturation and triode.
+        // (kind, [vg, vd, vs]) across saturation and triode, forward and
+        // reverse.
         let cases = [
             (MosfetKind::Pmos, [2.0, 1.0, 5.0]),
             (MosfetKind::Pmos, [0.0, 4.5, 5.0]),
             (MosfetKind::Pmos, [1.0, 0.0, 3.0]),
+            (MosfetKind::Pmos, [1.0, 3.0, 0.0]),
+            (MosfetKind::Pmos, [0.0, 3.3, 3.0]),
             (MosfetKind::Nmos, [3.0, 5.0, 0.5]),
             (MosfetKind::Nmos, [2.0, 0.2, -1.0]),
+            (MosfetKind::Nmos, [2.0, 0.0, 3.0]),
+            (MosfetKind::Nmos, [3.3, 0.0, 0.4]),
         ];
         for (kind, bias) in cases {
             let circuit = Circuit {

@@ -728,15 +728,17 @@ fn comparator_in_ac() {
 
 fn body_diode_circuit(kind: sindr::MosfetKind, drain_volts: f64) -> Circuit {
     use sindr_devices::mosfet::MosfetParams;
-    let (params, source_volts) = match kind {
-        sindr::MosfetKind::Nmos => (MosfetParams::default_nmos(), 0.0),
-        sindr::MosfetKind::Pmos => (MosfetParams::default_pmos(), 5.0),
+    // The gate held 5 V past the source keeps the channel off at either
+    // end, also in reverse mode, where the drain acts as the source.
+    let (params, source_volts, gate_volts) = match kind {
+        sindr::MosfetKind::Nmos => (MosfetParams::default_nmos(), 0.0, -5.0),
+        sindr::MosfetKind::Pmos => (MosfetParams::default_pmos(), 5.0, 5.0),
     };
     Circuit {
         ground_node: "0".into(),
         components: vec![
             vsrc("VS", "s", "0", source_volts),
-            vsrc("VG", "g", "s", 0.0),
+            vsrc("VG", "g", "s", gate_volts),
             vsrc("VD", "a", "0", drain_volts),
             resistor("R1", "a", "d", 100.0),
             CircuitElement::Mosfet(Mosfet {
