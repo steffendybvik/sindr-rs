@@ -270,6 +270,7 @@ pub(crate) mod ccvs;
 mod comparator;
 mod crystal;
 mod current_source;
+mod dc_motor;
 mod dc_stamp;
 mod digital_pin;
 pub(crate) mod diode;
@@ -312,6 +313,7 @@ pub use ccvs::Ccvs;
 pub use comparator::Comparator;
 pub use crystal::Crystal;
 pub use current_source::CurrentSource;
+pub use dc_motor::{DcMotor, DcMotorParams};
 pub(crate) use digital_pin::R_OFF;
 pub use digital_pin::{DigitalPin, LogicLevel, PinMode, PinModel, Pull};
 pub use diode::Diode;
@@ -382,6 +384,7 @@ impl CircuitElement {
             CircuitElement::FerriteBead(d) => d,
             CircuitElement::Behavioural(d) => d,
             CircuitElement::DigitalPin(d) => d,
+            CircuitElement::DcMotor(d) => d,
             CircuitElement::LogicGate(d) => d,
         }
     }
@@ -425,6 +428,7 @@ impl CircuitElement {
             CircuitElement::FerriteBead(d) => d,
             CircuitElement::Behavioural(d) => d,
             CircuitElement::DigitalPin(d) => d,
+            CircuitElement::DcMotor(d) => d,
             CircuitElement::LogicGate(d) => d,
         }
     }

@@ -2575,3 +2575,53 @@ fn pz_ladder_cur() {
         &sindr::PzConfig::transimpedance("in", "0", "out", "0"),
     );
 }
+
+/// A DC motor started from rest on 12 V against a load: sindr's motor
+/// against ngspice's R–L–E armature and F–C–R–I shaft, the deck it exports
+/// as. Speed is `v(m1_w)` there, `motors["m1"].speed` here.
+#[test]
+fn tran_exported_dc_motor() {
+    use sindr::element::{DcMotor, DcMotorParams};
+    let case = "tran_exported_dc_motor";
+    let circuit = circuit(vec![
+        vsource("v1", "in", "0", 12.0),
+        CircuitElement::DcMotor(DcMotor {
+            id: "m1".into(),
+            nodes: ["in".into(), "0".into()],
+            params: DcMotorParams::new(2.0, 0.02)
+                .with_inductance(1e-3)
+                .with_inertia(1e-6)
+                .with_friction(1e-6)
+                .with_load(2e-3),
+        }),
+    ]);
+    let circuit = exported(case, &circuit);
+    let config = sindr::TransientConfig::new(30e-3, 20e-6).with_tmax(10e-6);
+    let result = sindr::solve_transient(circuit, &config).unwrap();
+    let steps = &result.transient.unwrap().timesteps;
+    let golden = Golden::load(case);
+    let scale = golden.scale();
+    let times: Vec<f64> = steps.iter().map(|s| s.time).collect();
+    let mut check = Check::new(case);
+    let speed: Vec<f64> = steps.iter().map(|s| s.motors["m1"].speed).collect();
+    let current: Vec<f64> = steps
+        .iter()
+        .map(|s| {
+            s.component_results
+                .iter()
+                .find(|c| c.id == "v1")
+                .unwrap()
+                .current_through
+        })
+        .collect();
+    for (name, got) in [("v(m1_w)", speed), ("i(v1)", current)] {
+        let want_all = golden.column(name);
+        let full_scale = want_all.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        let want: Vec<f64> = times
+            .iter()
+            .map(|&t| interpolate(&scale, &want_all, t))
+            .collect();
+        check.series_fs(name, &times, &got, &want, 1e-3, full_scale);
+    }
+    check.finish();
+}

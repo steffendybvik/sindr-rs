@@ -246,6 +246,7 @@ fn extract_timestep_results(
         component_results: reported.components,
         junction_temperatures: HashMap::new(),
         state_of_charge: HashMap::new(),
+        motors: HashMap::new(),
     };
 
     (snapshot, reported.caps, reported.inds)
@@ -1334,6 +1335,7 @@ impl Stepper {
             convergence_aid: None,
             junction_temperatures: final_snapshot.junction_temperatures.clone(),
             state_of_charge: final_snapshot.state_of_charge.clone(),
+            motors: HashMap::new(),
             transient: Some(TransientData {
                 timesteps,
                 time_step: self.config.tstep,
