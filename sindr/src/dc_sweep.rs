@@ -804,4 +804,54 @@ mod tests {
             opts.nodeset.clone_from(&want.node_voltages);
         }
     }
+
+    /// A heated part the sweep can't model fails the sweep before any
+    /// point, with the error a per-point solve gives.
+    #[test]
+    fn a_bad_heated_part_fails_the_sweep() {
+        let circuit = |thermal: crate::Thermal| {
+            let mut c = Circuit::new(
+                "0",
+                vec![
+                    CircuitElement::VoltageSource(VoltageSource {
+                        id: "V1".into(),
+                        nodes: ["n1".into(), "0".into()],
+                        voltage: 0.0,
+                        waveform: None,
+                    }),
+                    CircuitElement::Resistor(Resistor {
+                        id: "R1".into(),
+                        nodes: ["n1".into(), "0".into()],
+                        resistance: 10.0,
+                    }),
+                ],
+            );
+            c.parts.insert(
+                "R1".into(),
+                crate::Part {
+                    thermal: Some(thermal),
+                    ..Default::default()
+                },
+            );
+            c
+        };
+        let axis = DcSweepAxis::new("V1", 0.0, 1.0, 3);
+        let no_rth = crate::Thermal {
+            rth_ja: None,
+            ..crate::Thermal::junction_to_ambient(1.0)
+        };
+        for thermal in [no_rth, crate::Thermal::junction_to_ambient(-1.0)] {
+            let c = circuit(thermal);
+            let err = dc_sweep(&c, &axis).unwrap_err();
+            assert!(
+                matches!(&err, SimError::InvalidComponent { id, .. } if id == "R1"),
+                "{err:?}"
+            );
+            let want = crate::solve_dc_heated(&crate::dc_equivalent(&c), |dc| {
+                crate::solve_dc_circuit(dc, &SolverOptions::default())
+            })
+            .unwrap_err();
+            assert_eq!(err.to_string(), want.to_string());
+        }
+    }
 }
