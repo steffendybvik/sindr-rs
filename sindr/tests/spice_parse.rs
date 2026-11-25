@@ -163,6 +163,40 @@ fn a_param_may_refer_to_its_earlier_value() {
     assert_eq!(resistance(&parse_str(deck).unwrap(), "r1"), 2e3);
 }
 
+/// `^` (or `**`) binds tighter than unary minus, as in ngspice: ngspice
+/// 47 gives -4 for `.param x={-2^2}`, `{-2**2}` and a `B` source's
+/// `V=-2^2`, and 0.25 for `{2^-2}`. A `B` source's expression in sindr
+/// agrees.
+#[test]
+fn power_binds_tighter_than_unary_minus() {
+    for (expr, want) in [
+        ("-2^2", -4.0),
+        ("-2**2", -4.0),
+        ("2^-2", 0.25),
+        ("-2^-2", -0.25),
+        ("(-2)^2", 4.0),
+        ("2^3^2", 512.0),
+        ("2*-3", -6.0),
+        ("1 - -2^2", 5.0),
+        ("--2^2", 4.0),
+        ("-x^2", -9.0),
+    ] {
+        let deck = format!("* p\n.param x=3\n.param v={{{expr}}}\nV1 a 0 {{v}}\nR1 a 0 1\n.end\n");
+        let netlist = parse_str(&deck).unwrap();
+        let v = match element(&netlist, "v1") {
+            CircuitElement::VoltageSource(VoltageSource { voltage, .. }) => *voltage,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(v, want, "{{{expr}}}");
+        if !expr.contains('x') {
+            let b = sindr::expression::Expression::parse(expr)
+                .unwrap()
+                .evaluate(&[]);
+            assert_eq!(b, want, "B source {expr}");
+        }
+    }
+}
+
 // ----- Elements -------------------------------------------------------------
 
 /// A Q line's optional substrate node is dropped with a warning (in both
