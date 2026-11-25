@@ -111,6 +111,13 @@ fn node_name(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
     .parse_next(input)
 }
 
+/// A `.model`, `.subckt` or device model name. ngspice takes any token
+/// here, so part numbers that start with a digit (`1n4148`, `2n3904`,
+/// `74hc04`) are names, not numbers.
+fn model_name(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
+    node_name(input)
+}
+
 /// Parse a numeric literal (with SI suffix) into [`ParamExpr::Number`].
 fn number_expr(input: &mut Input<'_>) -> ModalResult<(ParamExpr, Range<usize>)> {
     let start_offset = input.current_token_start();
@@ -694,7 +701,7 @@ fn parse_diode(input: &mut Input<'_>) -> ModalResult<RawElement> {
     ws(input)?;
     let (n_k, _) = node_name(input)?;
     ws(input)?;
-    let (model, _) = ident(input)?;
+    let (model, _) = model_name(input)?;
     ws(input)?;
     if !input.is_empty() {
         return Err(ErrMode::from_input(input));
@@ -902,7 +909,7 @@ fn dot_card_kind(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
 /// Parse `.subckt NAME [ports...] [param=default ...]`.
 fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
-    let (name, _) = ident(input)?;
+    let (name, _) = model_name(input)?;
     let mut ports: Vec<String> = Vec::new();
     let mut defaults: Vec<(String, ParamExpr)> = Vec::new();
     loop {
@@ -939,7 +946,7 @@ fn parse_card_ends(input: &mut Input<'_>) -> ModalResult<RawCard> {
     let name = if input.is_empty() {
         None
     } else {
-        opt(ident).parse_next(input)?.map(|(s, _)| s)
+        opt(model_name).parse_next(input)?.map(|(s, _)| s)
     };
     ws(input)?;
     Ok(RawCard::Ends(name))
@@ -948,7 +955,7 @@ fn parse_card_ends(input: &mut Input<'_>) -> ModalResult<RawCard> {
 /// Parse `.model NAME KIND [(] k=v ... [)]`. Parens are optional (vendor-tolerant).
 fn parse_card_model(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
-    let (name, name_span) = ident(input)?;
+    let (name, name_span) = model_name(input)?;
     ws(input)?;
     let (kind, _) = ident(input)?;
     ws(input)?;
