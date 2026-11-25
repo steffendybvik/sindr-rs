@@ -180,6 +180,17 @@ fn bench(c: &mut Criterion) {
     }
     group.finish();
 
+    // Sparse from 100 stages: each point solves the system and its adjoint.
+    let mut group = c.benchmark_group("noise/stages");
+    for stages in [10, 100, 1_000] {
+        let circuit = rc_ladder(stages);
+        let config = NoiseConfig::new(format!("n{stages}"), "V1", 10.0, 100e6, 100);
+        group.bench_with_input(BenchmarkId::from_parameter(stages), &stages, |b, _| {
+            b.iter(|| solve_noise(&circuit, &config).unwrap())
+        });
+    }
+    group.finish();
+
     // A transistor stage: the RC ladder in the noise bench skips Newton and
     // transistor noise sources.
     let mut group = c.benchmark_group("noise_bjt/points");
