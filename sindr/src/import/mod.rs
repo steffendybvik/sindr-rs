@@ -119,7 +119,7 @@ use crate::element::{
     VoltageSource, ZenerDiode,
 };
 use crate::handle::NodeId;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[cfg(feature = "spice")]
 mod subckt;
@@ -1633,16 +1633,20 @@ fn tie_high_impedance_nets(
             })
             .collect()
     };
+    let mut taken: HashSet<String> = circuit
+        .components
+        .iter()
+        .map(|e| e.id().to_string())
+        .collect();
     let mut tied = Vec::new();
     for (node, pins) in floating {
         let mut resistor = format!("{node}.hi_z");
         let mut k = 2;
-        while ids.contains(resistor.as_str())
-            || circuit.components.iter().any(|e| e.id() == resistor)
-        {
+        while ids.contains(resistor.as_str()) || taken.contains(&resistor) {
             resistor = format!("{node}.hi_z{k}");
             k += 1;
         }
+        taken.insert(resistor.clone());
         circuit.components.push(CircuitElement::Resistor(Resistor {
             id: resistor.clone(),
             nodes: [NodeId::from(&node), NodeId::from(&ground)],
@@ -1874,16 +1878,37 @@ impl Netlist {
         // Node by node, the pins of parts that simulate nothing (black
         // boxes, connectors, test points): what an IC pin leaves a net.
         let mut unsimulated: BTreeMap<String, Vec<Pin>> = BTreeMap::new();
+        let mut pins_by_component: HashMap<&str, Vec<(&str, &Pin)>> = HashMap::new();
+        for net in &self.nets {
+            for pin in &net.pins {
+                pins_by_component
+                    .entry(pin.component.as_str())
+                    .or_default()
+                    .push((&net.id, pin));
+            }
+        }
         let pins_of = |id: &str| -> Vec<(String, Pin)> {
-            self.nets
-                .iter()
-                .flat_map(|net| {
-                    net.pins
-                        .iter()
-                        .filter(|p| p.component == id)
-                        .map(|p| (node(&net.id), p.clone()))
-                })
+            pins_by_component
+                .get(id)
+                .into_iter()
+                .flatten()
+                .map(|&(net, pin)| (node(net), pin.clone()))
                 .collect()
+        };
+        // `pin_net` sorts by component first, so each one's slots are a run.
+        let mut slots_by_component: HashMap<&str, Vec<(&Slot, &str)>> = HashMap::new();
+        for ((c, slot), net) in &pin_net {
+            slots_by_component.entry(c).or_default().push((slot, net));
+        }
+        let named_slots = |id: &str| {
+            slots_by_component
+                .get(id)
+                .into_iter()
+                .flatten()
+                .filter_map(|&(slot, net)| match slot {
+                    Slot::Named(t) => Some((t.clone(), net)),
+                    Slot::Index(_) => None,
+                })
         };
         let mut models = BTreeMap::new();
         let mut warnings = Vec::new();
@@ -1918,7 +1943,10 @@ impl Netlist {
                 });
                 true
             };
+        // Warnings for `id` come only from its own component, so a repeat
+        // can only be among those since `from`.
         let record = |warnings: &mut Vec<ImportWarning>,
+                      from: usize,
                       models: &mut BTreeMap<String, ModelSource>,
                       id: &str,
                       built: &Built| {
@@ -1930,7 +1958,7 @@ impl Netlist {
                     component: id.to_string(),
                     message: message.clone(),
                 };
-                if !warnings.contains(&warning) {
+                if !warnings[from..].contains(&warning) {
                     warnings.push(warning);
                 }
             }
@@ -1938,19 +1966,15 @@ impl Netlist {
         #[cfg(feature = "spice")]
         let mut placed_models: Vec<subckt::Placed> = Vec::new();
         for component in &self.components {
+            let from = warnings.len();
             if let Some(part) = &component.part {
                 circuit.parts.insert(component.id.clone(), part.clone());
             }
             if options.black_box(component)? {
                 #[cfg(feature = "spice")]
                 if let Some(Model::Subckt(model)) = &component.model {
-                    let terminals: BTreeMap<String, String> = pin_net
-                        .iter()
-                        .filter(|((c, _), _)| *c == component.id)
-                        .filter_map(|((_, slot), net)| match slot {
-                            Slot::Named(t) => Some((t.clone(), node(net))),
-                            Slot::Index(_) => None,
-                        })
+                    let terminals: BTreeMap<String, String> = named_slots(&component.id)
+                        .map(|(t, net)| (t, node(net)))
                         .collect();
                     let mut placed = subckt::place(component, model, &terminals, options)?;
                     if !placed.unconnected.is_empty() {
@@ -1976,13 +2000,8 @@ impl Netlist {
                     placed_models.push(placed);
                     continue;
                 }
-                let terminals = pin_net
-                    .iter()
-                    .filter(|((c, _), _)| *c == component.id)
-                    .filter_map(|((_, slot), net)| match slot {
-                        Slot::Named(t) => Some((t.clone(), net.to_string())),
-                        Slot::Index(_) => None,
-                    })
+                let terminals = named_slots(&component.id)
+                    .map(|(t, net)| (t, net.to_string()))
                     .collect();
                 black_boxes.push(BlackBoxPart {
                     component: component.id.clone(),
@@ -2009,7 +2028,7 @@ impl Netlist {
                     continue;
                 }
                 let built = build_element(component, nodes_of, &supply)?;
-                record(&mut warnings, &mut models, &component.id, &built);
+                record(&mut warnings, from, &mut models, &component.id, &built);
                 if built.element.is_none() {
                     for (n, pin) in pins_of(&component.id) {
                         unsimulated.entry(n).or_default().push(pin);
@@ -2048,7 +2067,7 @@ impl Netlist {
                     continue;
                 }
                 let built = build_element(&unit, |i| nodes_of(slot(i)), &supply)?;
-                record(&mut warnings, &mut models, &component.id, &built);
+                record(&mut warnings, from, &mut models, &component.id, &built);
                 circuit.components.extend(built.element);
             }
         }

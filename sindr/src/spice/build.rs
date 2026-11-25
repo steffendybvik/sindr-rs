@@ -33,7 +33,10 @@ use crate::element::{
     Resistor, Transformer, Vccs, Vcvs, VoltageSource,
 };
 use crate::handle::{ComponentId, NodeId};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
 
 use crate::circuit::{
     BjtModel, BjtParasiticCaps, DiodeModel, JfetParasiticCaps, MosfetParasiticCaps,
@@ -1175,15 +1178,23 @@ fn assemble(
     // Instances refer to their block by class index until pass 2.
     let mut class_of: Vec<usize> = vec![0; records.len()];
     let mut classes: Vec<(&str, Block)> = Vec::new();
+    // Class indices by body hash, in the order the classes were made.
+    let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut children_of: HashMap<&[String], Vec<usize>> = HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        if let Some((_, parent)) = r.path.split_last() {
+            children_of.entry(parent).or_default().push(i);
+        }
+    }
     let children = |path: &[String], class_of: &[usize]| -> Vec<Instance> {
-        records
-            .iter()
-            .zip(class_of)
-            .filter(|(r, _)| r.path.len() == path.len() + 1 && r.path.starts_with(path))
-            .map(|(r, class)| Instance {
-                id: r.path.last().cloned().unwrap_or_default(),
-                block: class.to_string(),
-                nodes: r.local_nodes.clone(),
+        children_of
+            .get(path)
+            .into_iter()
+            .flatten()
+            .map(|&i| Instance {
+                id: records[i].path.last().cloned().unwrap_or_default(),
+                block: class_of[i].to_string(),
+                nodes: records[i].local_nodes.clone(),
                 variant: None,
             })
             .collect()
@@ -1195,13 +1206,17 @@ fn assemble(
             instances: children(&record.path, &class_of),
             ..Block::default()
         };
-        class_of[i] = match classes
-            .iter()
-            .position(|(name, b)| *name == record.subckt && *b == block)
-        {
+        let bucket = buckets
+            .entry(body_hash(&record.subckt, &block))
+            .or_default();
+        class_of[i] = match bucket.iter().copied().find(|&c| {
+            let (name, b) = &classes[c];
+            *name == record.subckt && *b == block
+        }) {
             Some(class) => class,
             None => {
                 classes.push((&record.subckt, block));
+                bucket.push(classes.len() - 1);
                 classes.len() - 1
             }
         };
@@ -1211,15 +1226,23 @@ fn assemble(
     let subckt_names: HashSet<&str> = records.iter().map(|r| r.subckt.as_str()).collect();
     let mut names: Vec<Option<String>> = vec![None; classes.len()];
     let mut taken: HashSet<String> = HashSet::new();
+    // The suffix each subckt's last class took. Only its own classes take
+    // `name_k` names (a subckt called that is skipped by name), so every
+    // suffix below it is taken.
+    let mut last_k: HashMap<&str, usize> = HashMap::new();
     for &class in &class_of {
         if names[class].is_some() {
             continue;
         }
         let subckt = classes[class].0;
-        let mut name = subckt.to_string();
-        let mut k = 1;
-        while taken.contains(&name) || (k > 1 && subckt_names.contains(name.as_str())) {
-            k += 1;
+        let k = last_k.entry(subckt).or_insert(1);
+        let mut name = if *k == 1 {
+            subckt.to_string()
+        } else {
+            format!("{subckt}_{k}")
+        };
+        while taken.contains(&name) || (*k > 1 && subckt_names.contains(name.as_str())) {
+            *k += 1;
             name = format!("{subckt}_{k}");
         }
         taken.insert(name.clone());
@@ -1255,6 +1278,25 @@ fn assemble(
         blocks,
         ..Circuit::default()
     }
+}
+
+/// A hash of a subckt name and body that equal pairs share. It reads the
+/// body's `Debug` text without its `-` signs: equal values print alike but
+/// for the sign of a zero.
+fn body_hash(subckt: &str, block: &Block) -> u64 {
+    struct Unsigned(DefaultHasher);
+    impl std::fmt::Write for Unsigned {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            for part in s.split('-') {
+                self.0.write(part.as_bytes());
+            }
+            Ok(())
+        }
+    }
+    let mut h = Unsigned(DefaultHasher::new());
+    subckt.hash(&mut h.0);
+    let _ = write!(h, "{block:?}");
+    h.0.finish()
 }
 
 /// The [`SolverOptions`](crate::SolverOptions) the deck's `.options`

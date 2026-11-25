@@ -8,7 +8,10 @@ use sindr::variation::{
     corners, monte_carlo, ratings_over, Corner, Corners, MonteCarloConfig, Parameter, Sampling,
     Tolerance,
 };
-use sindr::{solve_op, Circuit, CircuitElement, Part, RatingKind, RatingStatus, Ratings, SimError};
+use sindr::{
+    check_ratings, solve_op, Circuit, CircuitElement, Part, RatingKind, RatingStatus, Ratings,
+    SimError,
+};
 
 /// 10 V across r1 over r2, both 10 kΩ; r2 rated for 2.6 mW (it takes
 /// 2.5 mW at nominal).
@@ -175,6 +178,63 @@ fn ratings_over_corners_find_the_worst_part_and_its_condition() {
         .iter()
         .filter(|c| c.part == "r1")
         .all(|c| c.status == RatingStatus::Unverified));
+}
+
+/// The same run twice merges into one entry per part and rating, in the
+/// order and with the values one check of that run gives.
+#[test]
+fn repeated_runs_merge_into_one_check_each() {
+    let mut c = divider();
+    let rated = Part {
+        ratings: Ratings {
+            power: Some(2e-3),
+            voltage: Some(50.0),
+            current: Some(1e-3),
+            ..Ratings::default()
+        },
+        ..Part::default()
+    };
+    for id in ["v1", "r1", "r2"] {
+        c.parts.insert(id.into(), rated.clone());
+    }
+    let nominal = vec![Corner::Nominal, Corner::Nominal];
+    let sampling = Sampling::Corners {
+        tolerances: tolerances(),
+        which: Corners::List(vec![nominal.clone(), nominal]),
+    };
+    let spread = ratings_over(&c, &sampling, solve_op).unwrap();
+    let once = check_ratings(&c, &solve_op(&c).unwrap()).unwrap();
+    assert!(once.checks.len() > 3);
+    let merged: Vec<_> = spread
+        .checks
+        .iter()
+        .map(|w| {
+            (
+                w.part.as_str(),
+                w.rating,
+                w.worst,
+                w.status,
+                w.exceeded_runs,
+                w.run,
+            )
+        })
+        .collect();
+    let expected: Vec<_> = once
+        .checks
+        .iter()
+        .map(|r| {
+            let exceeded = usize::from(r.status == RatingStatus::Exceeded) * 2;
+            (
+                r.part.as_str(),
+                r.rating,
+                r.worst,
+                r.status,
+                exceeded,
+                r.worst.map(|_| 0),
+            )
+        })
+        .collect();
+    assert_eq!(merged, expected);
 }
 
 #[test]

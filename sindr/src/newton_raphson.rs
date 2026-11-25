@@ -327,8 +327,10 @@ fn nr_inner(
     let mut overflow: Option<SimError> = None;
     let mut recent: Option<SimError> = None;
     let mut halvings = 0;
+    // One system, cleared for each iteration: no matrix to allocate.
+    let mut system = MnaSystem::new(num_nodes, num_vsources);
     for _iteration in 0..opts.max_iterations {
-        let mut system = MnaSystem::new(num_nodes, num_vsources);
+        system.clear();
         let stamped = if v_base.is_none() {
             stamp_first(
                 circuit,
@@ -336,7 +338,6 @@ fn nr_inner(
                 node_map,
                 (&layout, &terminals),
                 &v_prev,
-                (num_nodes, num_vsources),
             )
         } else {
             stamp::stamp_circuit_with(
@@ -443,7 +444,6 @@ fn stamp_first(
     node_map: &NodeMap,
     (layout, terminals): (&Layout, &Terminals),
     v: &DVector<f64>,
-    (num_nodes, num_vsources): (usize, usize),
 ) -> Result<(), SimError> {
     let mut off: Option<Circuit> = None;
     loop {
@@ -459,7 +459,7 @@ fn stamp_first(
             Err(SimError::NotFinite { component, .. })
                 if switch_off(off.get_or_insert_with(|| circuit.clone()), &component) =>
             {
-                *system = MnaSystem::new(num_nodes, num_vsources);
+                system.clear();
             }
             other => return other,
         }
