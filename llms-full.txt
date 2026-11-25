@@ -1061,7 +1061,7 @@ A parsed `.dc` card gives its axes with `analysis.dc_axes()`.
 
 ### Temperature sweep
 
-Solve a circuit at a series of junction temperatures and collect `solve_circuit`'s result at each: for a circuit with capacitors, inductors or waveforms that's a transient's end state, not the DC operating point. Useful for BJT Ic vs. temperature curves and thermal characterisation.
+Solve the DC operating point at a series of junction temperatures, as `solve_op` solves it (capacitors open, inductors shorted, waveform sources at their t = 0 value), each point's Newton–Raphson starting from the previous point's solution as in `dc_sweep`. Useful for BJT Ic vs. temperature curves and thermal characterisation.
 
 ```rust,no_run
 # use sindr::*;
@@ -1088,7 +1088,7 @@ pub struct TempSweepResult {
 
 pub struct TempSweepPoint {
     pub temperature: f64,              // K
-    pub result:      SimulationResult, // solve_circuit's result at this temperature
+    pub result:      SimulationResult, // the operating point at this temperature (transient: None)
 }
 ```
 
@@ -1637,7 +1637,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` keeps the result from there on |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
-| Temperature sweep (`temperature_sweep`) | ✅ | each junction device's `temperature`; no `.temp` card |
+| Temperature sweep (`temperature_sweep`) | ✅ | each junction device's `temperature`; each point an operating point, as `.op`; no `.temp` card |
 | `.noise` (noise analysis) | ✅ | thermal, shot and flicker (`solve_noise`), at 27 °C. Op-amps, regulators, controlled sources and a diode's `RS` are noiseless; no BJT base-resistance noise |
 | `.disto` / harmonic distortion | ❌ | |
 | `.pz` (pole-zero) | ✅ | poles and zeros of a voltage gain or transimpedance between node pairs (`solve_pz`). A repeated root is only accurate to about √ε; a root more than ~1e13 times the circuit's own frequency scale counts as infinite |
@@ -11807,19 +11807,24 @@ impl HierarchyPath {
 
 Temperature sweep analysis.
 
-Varies junction temperature across a range and solves the circuit at each
-temperature point. IS is re-scaled using the SPICE formula at each step,
-and the thermal voltage follows the temperature.
+Varies junction temperature across a range and solves the operating
+point at each temperature. IS is re-scaled using the SPICE formula at
+each step, and the thermal voltage follows the temperature.
 
-Mirrors the dc_sweep.rs pattern exactly: clones the circuit, mutates the
-temperature field on all IS-bearing components, and calls solve_circuit.
+Follows dc_sweep.rs: each point is solved on the circuit's DC equivalent
+(capacitors open, inductors shorted, sources at t = 0) with the
+temperature field of every IS-bearing component set, and Newton–Raphson
+starts from the previous point's node voltages.
 
 ```rust
 /// One temperature sweep data point.
 pub struct TempSweepPoint {
     /// Temperature for this point (Kelvin).
     pub temperature: f64,
-    /// Simulation result at this temperature.
+    /// The operating point at this temperature, as [`solve_op`] gives it.
+    /// Its `transient` is always `None`.
+    ///
+    /// [`solve_op`]: crate::solve_op
     pub result: SimulationResult,
 }
 
@@ -11874,13 +11879,25 @@ impl TempSweepConfig {
     pub fn new(start: f64, stop: f64, num_points: usize) -> Self { … }
 }
 
-/// Sweeps junction temperature across a range and solves the circuit at
-/// each step.
+/// Sweeps junction temperature across a range and solves the operating
+/// point at each step.
 ///
 /// At each temperature, the saturation current `IS` of every IS-bearing
 /// component (BJT, diode, LED, Zener, Schottky, photodiode) is rescaled
 /// using the SPICE temperature formula, and its thermal voltage set to kT/q,
 /// before solving. The base circuit is not modified.
+///
+/// Each point is the DC operating point, as [`solve_op`] solves it and
+/// SPICE's `.temp` with `.op` or `.dc` does: capacitors open, inductors
+/// shorted and every waveform source at its t = 0 value. Earlier versions
+/// ran a circuit with a capacitor, inductor or waveform as a transient from
+/// uncharged capacitors at each point, as [`solve_circuit`] does, and
+/// reported its end state. Each point's Newton–Raphson starts from the
+/// previous point's node voltages, as [`dc_sweep`] does.
+///
+/// [`solve_op`]: crate::solve_op
+/// [`solve_circuit`]: crate::solve_circuit
+/// [`dc_sweep`]: fn@crate::dc_sweep
 ///
 /// `temperature` here is junction temperature — the thermistor's own
 /// temperature input is independent.
@@ -11895,8 +11912,8 @@ impl TempSweepConfig {
 ///
 /// - [`SimError::InvalidConfig`] if `num_points < 2` or above 10⁷, or either endpoint
 ///   is not finite or not above 0 K
-/// - Any [`SimError`] from solving at one of the temperatures (propagated
-///   immediately)
+/// - Any [`SimError`] from validating the circuit, or from solving at one
+///   of the temperatures (propagated immediately)
 ///
 /// # Example
 ///

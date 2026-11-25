@@ -848,7 +848,7 @@ A parsed `.dc` card gives its axes with `analysis.dc_axes()`.
 
 ## Temperature sweep
 
-Solve a circuit at a series of junction temperatures and collect `solve_circuit`'s result at each: for a circuit with capacitors, inductors or waveforms that's a transient's end state, not the DC operating point. Useful for BJT Ic vs. temperature curves and thermal characterisation.
+Solve the DC operating point at a series of junction temperatures, as `solve_op` solves it (capacitors open, inductors shorted, waveform sources at their t = 0 value), each point's Newton–Raphson starting from the previous point's solution as in `dc_sweep`. Useful for BJT Ic vs. temperature curves and thermal characterisation.
 
 ```rust,no_run
 # use sindr::*;
@@ -875,7 +875,7 @@ pub struct TempSweepResult {
 
 pub struct TempSweepPoint {
     pub temperature: f64,              // K
-    pub result:      SimulationResult, // solve_circuit's result at this temperature
+    pub result:      SimulationResult, // the operating point at this temperature (transient: None)
 }
 ```
 

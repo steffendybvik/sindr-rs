@@ -304,7 +304,9 @@ fn temperature_sweep_sets_every_junction_temperature() {
             let t = point.temperature;
             let direct = solve_circuit(&circuit(devices(t).swap_remove(k))).unwrap();
             let v = point.result.node_voltages["n2"];
-            assert_eq!(v, direct.node_voltages["n2"], "{name} at {t} K");
+            // To Newton's tolerance: each point starts from the last.
+            let want = direct.node_voltages["n2"];
+            assert!((v - want).abs() < 1e-6, "{name} at {t} K: {v} vs {want}");
             seen.push(v);
         }
         assert!(seen.windows(2).all(|w| w[0] != w[1]), "{name}: {seen:?}");
