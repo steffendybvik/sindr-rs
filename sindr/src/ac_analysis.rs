@@ -13,6 +13,7 @@ use crate::element::{
 };
 use crate::handle::ComponentId;
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use nalgebra::{DMatrix, DVector};
@@ -20,7 +21,7 @@ use num_complex::Complex64;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::{ConfigKind, SimError};
-use crate::mna::MnaMatrix;
+use crate::mna::{Factor, MnaMatrix};
 use crate::node_map::{NodeMap, Terminals};
 
 /// Frequency sweep spacing.
@@ -487,6 +488,9 @@ pub(crate) struct SmallSignalSystem {
     a: MnaMatrix<Complex64>,
     /// Branch row of each independent voltage source, by id.
     vsource_branches: HashMap<String, usize>,
+    /// `a` factorised on the first solve, for every later one (an adjoint
+    /// included) to reuse.
+    lu: OnceCell<Factor<'static, Complex64>>,
 }
 
 impl SmallSignalSystem {
@@ -502,15 +506,23 @@ impl SmallSignalSystem {
 
     /// Solves `A x = b` for the given excitation.
     pub(crate) fn solve(&self, b: &DVector<Complex64>) -> Result<DVector<Complex64>, SimError> {
-        self.a.solve(b)
+        self.factor()?.solve(b)
     }
 
-    /// Solves `Aᵀ x = b`: the adjoint system.
+    /// Solves `Aᵀ x = b`: the adjoint system, from the same factor.
     pub(crate) fn solve_transpose(
         &self,
         b: &DVector<Complex64>,
     ) -> Result<DVector<Complex64>, SimError> {
-        self.a.transpose().solve(b)
+        self.factor()?.solve_transpose(b)
+    }
+
+    fn factor(&self) -> Result<&Factor<'static, Complex64>, SimError> {
+        if let Some(lu) = self.lu.get() {
+            return Ok(lu);
+        }
+        let lu = self.a.factor()?.into_owned();
+        Ok(self.lu.get_or_init(|| lu))
     }
 }
 
@@ -642,6 +654,7 @@ fn build_small_signal(
     SmallSignalSystem {
         a,
         vsource_branches,
+        lu: OnceCell::new(),
     }
 }
 
