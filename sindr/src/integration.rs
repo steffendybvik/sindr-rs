@@ -93,7 +93,10 @@ impl Integrator {
                     a2: w * w / (h * (1.0 + w)),
                     b1: 0.0,
                     order: 2,
-                    error_constant: 2.0 / 9.0,
+                    // The quadratic through the last three points has its
+                    // slope at t_n off by x'''·h(h + h_prev)/6; over a0 that
+                    // is the step's error. 2/9 at w = 1.
+                    error_constant: (1.0 + w) * (1.0 + w) / (6.0 * w * (1.0 + 2.0 * w)),
                 }
             }
         }
@@ -295,6 +298,26 @@ mod tests {
         assert!((g - 1e-3).abs() < 1e-18 && (i + 2e-3).abs() < 1e-15);
         let (g, i) = be.inductor(1e-2, &h);
         assert!((g - 0.1).abs() < 1e-15 && (i - 2.0).abs() < 1e-12);
+    }
+
+    /// Gear-2's error constant is its error on a cubic, whose third
+    /// derivative is 6, at any step ratio: 2/9 for equal steps.
+    #[test]
+    fn gear2_error_constant_is_its_error_on_a_cubic() {
+        for (h_prev, h) in [(0.2, 0.2), (0.3, 0.2), (0.1, 0.2), (0.4, 0.05)] {
+            let (t2, t1, t0) = (0.0, h_prev, h_prev + h);
+            let i = Integrator::for_step(IntegrationMethod::Gear2, h, Some(h_prev));
+            let q = |t: f64| t * t * t;
+            let slope_error = i.a0 * q(t0) + i.a1 * q(t1) + i.a2 * q(t2) - 3.0 * t0 * t0;
+            let lte = (slope_error / i.a0).abs();
+            let want = i.error_constant * h.powi(3) * 6.0;
+            assert!(
+                (lte - want).abs() < 1e-12 * want,
+                "{h_prev}, {h}: {lte} vs {want}"
+            );
+        }
+        let equal = Integrator::for_step(IntegrationMethod::Gear2, 1.0, Some(1.0));
+        assert!((equal.error_constant - 2.0 / 9.0).abs() < 1e-15);
     }
 
     #[test]

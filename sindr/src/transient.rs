@@ -827,6 +827,11 @@ const FLOOR_STEP_LIMIT: usize = 10_000;
 /// fast circuit sampled with a coarse `tstep`, and it gets somewhere.
 const NEAR_FLOOR: f64 = 10.0;
 
+/// Largest ratio of a Gear-2 step to the one before it. Variable-step BDF2
+/// is zero-stable below 1 + √2; this is the twofold growth SPICE allows,
+/// which the truncation-error control never exceeds on its own.
+const GEAR2_MAX_RATIO: f64 = 2.0;
+
 /// The stepper behind [`solve_transient`] and the transient path of
 /// [`solve_circuit`](crate::solve_circuit), for a validated circuit and
 /// config: from 0 to `tstop`, recording from `tstart`.
@@ -1317,7 +1322,21 @@ impl Stepper {
         } else {
             (base * 2.0).min(h_max)
         };
-        if on_bp || jumped {
+        // Variable-step Gear-2 is zero-stable only while each step is less
+        // than 1 + √2 times the one before. A landing step can be far
+        // shorter than the step wanted, so the next grows from it by at most
+        // GEAR2_MAX_RATIO, as SPICE grows a step at most twofold. A landing
+        // too short for that to clear the floor restarts with backward Euler.
+        let restart = on_bp || jumped;
+        let mut ratio_held = true;
+        if config.method == IntegrationMethod::Gear2 && !restart && s.h > GEAR2_MAX_RATIO * dt {
+            if GEAR2_MAX_RATIO * dt >= h_min {
+                s.h = GEAR2_MAX_RATIO * dt;
+            } else {
+                ratio_held = false;
+            }
+        }
+        if restart {
             // A corner in a source, or a jump over an edge: the history
             // before it doesn't predict what follows, so restart with a
             // short backward-Euler step.
@@ -1327,7 +1346,7 @@ impl Stepper {
                 s.h = s.h.min(h_max / RESTART_FRACTION);
             }
         } else {
-            s.h_prev = Some(dt);
+            s.h_prev = ratio_held.then_some(dt);
         }
         s.recent
             .push((t_next, next.rows(0, self.num_nodes).into_owned()));
@@ -2239,6 +2258,47 @@ mod tests {
     use crate::solve_circuit;
     use crate::waveform::Waveform;
     use approx::assert_relative_eq;
+
+    /// Gear-2 never takes a step more than twice the one before, landing
+    /// on the tstep grid included: an RC charge whose steps grow toward
+    /// tstep lands on grid points short, and the step after used to be
+    /// sized from the step wanted, 12.6 times the landing step here, far
+    /// past the 1 + √2 that variable-step BDF2 is zero-stable to.
+    #[test]
+    fn gear2_steps_grow_at_most_twofold() {
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::VoltageSource(VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["in".into(), "0".into()],
+                    voltage: 1.0,
+                    waveform: None,
+                }),
+                CircuitElement::Resistor(Resistor {
+                    id: "R1".into(),
+                    nodes: ["in".into(), "out".into()],
+                    resistance: 1e3,
+                }),
+                CircuitElement::Capacitor(Capacitor {
+                    id: "C1".into(),
+                    nodes: ["out".into(), "0".into()],
+                    capacitance: 1e-6,
+                }),
+            ],
+        );
+        let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 1e-3)).unwrap();
+        let steps = result.transient.unwrap().timesteps;
+        let times: Vec<f64> = steps.iter().map(|s| s.time).collect();
+        let worst = times
+            .windows(3)
+            .map(|t| (t[2] - t[1]) / (t[1] - t[0]))
+            .fold(0.0, f64::max);
+        assert!(worst <= GEAR2_MAX_RATIO * (1.0 + 1e-9), "{worst}");
+        // The charge is still followed to the solver's tolerance.
+        let out = steps.last().unwrap().node_voltages["out"];
+        assert!((out - (1.0 - (-10.0f64).exp())).abs() < 1e-3, "{out}");
+    }
 
     /// Test 4: Auto-duration calculation for known RC circuit.
     #[test]
