@@ -230,6 +230,12 @@ fn preprocess_inner(
         }
         skipping = false;
 
+        // The deck ends at its `.end`; an included file's `.end` doesn't
+        // end the deck that includes it.
+        if is_top_level && folded.split_whitespace().next() == Some(".end") {
+            break;
+        }
+
         // Detect include / lib directives. Paths keep their case: file
         // systems other than macOS's and Windows' tell `Models/` from
         // `models/`.
