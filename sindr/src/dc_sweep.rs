@@ -628,7 +628,14 @@ mod tests {
         };
 
         let result = dc_sweep(&circuit, &DcSweepAxis::new("V_nonexistent", 0.0, 10.0, 11));
-        assert!(result.is_err());
+        assert!(matches!(result, Err(SimError::UnknownComponent(id)) if id == "V_nonexistent"));
+
+        let err = dc_sweep(&circuit, &DcSweepAxis::new("R1", 0.0, 10.0, 11)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'R1' is not a voltage or current source"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -844,10 +851,9 @@ mod tests {
                 matches!(&err, SimError::InvalidComponent { id, .. } if id == "R1"),
                 "{err:?}"
             );
-            let want = crate::solve_dc_heated(&crate::dc_equivalent(&c), |dc| {
-                crate::solve_dc_circuit(dc, &SolverOptions::default())
-            })
-            .unwrap_err();
+            // The heated parts fail to build, so the solve is never reached.
+            let solve = |dc: &Circuit| crate::solve_dc_circuit(dc, &SolverOptions::default());
+            let want = crate::solve_dc_heated(&crate::dc_equivalent(&c), solve).unwrap_err();
             assert_eq!(err.to_string(), want.to_string());
         }
     }
