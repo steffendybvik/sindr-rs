@@ -10,7 +10,8 @@ use sindr::element::{Bjt, Capacitor, Diode, Resistor, VoltageSource};
 use sindr::noise::{solve_noise, NoiseConfig};
 use sindr::{
     check_ratings, dc_sweep, solve_circuit, solve_sensitivity, solve_tf, temperature_sweep,
-    BjtKind, Circuit, CircuitElement, Part, Ratings, SensConfig, TfConfig, TfOutput,
+    BjtKind, Block, Circuit, CircuitElement, Instance, Part, Ratings, SensConfig, TfConfig,
+    TfOutput,
 };
 use sindr::{DcSweepAxis, TempSweepConfig};
 
@@ -48,6 +49,33 @@ fn rc_ladder(n: usize) -> Circuit {
         }));
     }
     Circuit::new("0", components)
+}
+
+/// [`rc_ladder`] with each RC stage an instance of one block, so every
+/// analysis flattens it first.
+fn rc_ladder_blocks(n: usize) -> Circuit {
+    let stage = Block {
+        ports: vec!["a".into(), "b".into()],
+        components: vec![
+            r("R".into(), "a".into(), "b".into(), 100.0),
+            CircuitElement::Capacitor(Capacitor {
+                id: "C".into(),
+                nodes: ["b".into(), "0".into()],
+                capacitance: 1e-9,
+            }),
+        ],
+        ..Default::default()
+    };
+    let mut c = Circuit::new("0", vec![source("V1", "n0", 1.0)]);
+    c.blocks.insert("stage".into(), stage);
+    for i in 1..=n {
+        c.instances.push(Instance::new(
+            format!("X{i}"),
+            "stage",
+            [format!("n{}", i - 1), format!("n{i}")],
+        ));
+    }
+    c
 }
 
 /// `n` diode–resistor stages from `V1`, every part rated for power.
@@ -124,6 +152,16 @@ fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("ac/points");
     let ladder = rc_ladder(100);
     for points in [10, 100, 1_000] {
+        let config = ac_config(points);
+        group.bench_with_input(BenchmarkId::from_parameter(points), &points, |b, _| {
+            b.iter(|| solve_ac(&ladder, &config).unwrap())
+        });
+    }
+    group.finish();
+
+    let mut group = c.benchmark_group("ac_hierarchical/points");
+    let ladder = rc_ladder_blocks(400);
+    for points in [100, 1_000] {
         let config = ac_config(points);
         group.bench_with_input(BenchmarkId::from_parameter(points), &points, |b, _| {
             b.iter(|| solve_ac(&ladder, &config).unwrap())

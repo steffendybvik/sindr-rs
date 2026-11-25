@@ -240,7 +240,7 @@ pub(crate) fn temperature_sweep_with(
             thermal.ambient = t;
         }
 
-        let result = crate::solve_circuit_with(&sweep_circuit, opts)
+        let result = crate::solve_circuit_parts(&sweep_circuit, opts)
             .map_err(|e| e.at(crate::SolvePoint::Temperature { kelvin: t }))?;
         points.push(TempSweepPoint {
             temperature: t,
@@ -248,9 +248,7 @@ pub(crate) fn temperature_sweep_with(
         });
     }
 
-    for point in &mut points {
-        crate::composite::fold(original, &mut point.result);
-    }
+    crate::composite::fold_all(original, points.iter_mut().map(|p| &mut p.result));
     Ok(TempSweepResult {
         start: temp_start,
         stop: temp_end,
