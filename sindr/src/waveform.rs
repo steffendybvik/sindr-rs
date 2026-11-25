@@ -47,7 +47,8 @@ pub enum Waveform {
         rise_time: f64, // rise time (s)
         /// Fall time from `v2` back to `v1` (s).
         fall_time: f64, // fall time (s)
-        /// Width of the high portion of the pulse (s).
+        /// Width of the high portion of the pulse (s). Infinite means the
+        /// pulse doesn't fall.
         pulse_width: f64, // pulse width (s)
         /// Repetition period (s). Zero, negative or non-finite means a
         /// single pulse, as SPICE reads a zero period.

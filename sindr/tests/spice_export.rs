@@ -796,6 +796,33 @@ fn waveforms_without_a_spice_form_are_unsupported() {
     }
 }
 
+/// A single pulse that never falls is written with its width and period
+/// left out, which SPICE defaults to TSTOP.
+#[test]
+fn endless_pulse_leaves_its_width_to_spice() {
+    let wave = Waveform::Pulse {
+        v1: 0.0,
+        v2: 1.0,
+        delay: 1e-4,
+        rise_time: 1e-6,
+        fall_time: 1e-6,
+        pulse_width: f64::INFINITY,
+        period: 0.0,
+    };
+    let circuit = source_with(wave, 0.5);
+    let deck = to_netlist(&circuit, "t").unwrap();
+    assert!(
+        deck.contains("V1 a 0 PULSE(0.5 1.5 1e-4 1e-6 1e-6)\n"),
+        "{deck}"
+    );
+    let back = parse_str(&deck.replace(".end", ".tran 1u 1\n.end"))
+        .unwrap()
+        .circuit;
+    for t in [0.0, 5e-5, 1e-4 + 5e-7, 2e-4, 0.9] {
+        assert_eq!(source_value(&back, t), source_value(&circuit, t), "t = {t}");
+    }
+}
+
 /// A PWL with no points is the source's static value, written as a
 /// one-point PWL that parses back to the same constant.
 #[test]

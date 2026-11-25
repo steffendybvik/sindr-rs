@@ -10644,9 +10644,11 @@ Per-element mapping rules:
   and emit the matching `CircuitElement`.
 * **V / I** — evaluate the optional DC term and translate the optional
   `RawWaveform` (PULSE / SIN / PWL) into `crate::Waveform`. SPICE's
-  `td/tr/tf/pw/period` for PULSE map directly. SIN becomes a
-  `Waveform::Sine`, or a `Waveform::DampedSine` when it has a delay `td`
-  or a damping `theta`; its phase is in degrees, as in ngspice.
+  `td/tr/tf/pw/period` for PULSE map directly, missing ones defaulting
+  as in ngspice (`td` 0, `tr`/`tf` the `.tran` TSTEP, `pw`/`per` its
+  TSTOP). SIN becomes a `Waveform::Sine`, or a `Waveform::DampedSine`
+  when it has a delay `td` or a damping `theta`; its phase is in degrees,
+  as in ngspice.
 * **D** — look up `.model`; kind must be `D`. Other kinds raise
   `UnsupportedModelType`. `IS`, `N`, `RS`, `CJO` (alias `CJ0`, `CJ`),
   `VJ` (alias `PB`), `M` (alias `MJ`), `FC`, `TT`, `BV` and `IBV` fill a
@@ -12499,7 +12501,8 @@ pub enum Waveform {
         rise_time: f64, // rise time (s)
         /// Fall time from `v2` back to `v1` (s).
         fall_time: f64, // fall time (s)
-        /// Width of the high portion of the pulse (s).
+        /// Width of the high portion of the pulse (s). Infinite means the
+        /// pulse doesn't fall.
         pulse_width: f64, // pulse width (s)
         /// Repetition period (s). Zero, negative or non-finite means a
         /// single pulse, as SPICE reads a zero period.

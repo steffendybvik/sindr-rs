@@ -818,6 +818,18 @@ pub(crate) fn waveform_card(id: &str, waveform: &Waveform, dc: f64) -> Result<St
             pulse_width,
             period,
         } => {
+            // A single pulse that never falls is SPICE's with its width and
+            // period left to default to TSTOP.
+            if *pulse_width == f64::INFINITY && !(*period > 0.0 && period.is_finite()) {
+                return Ok(format!(
+                    "PULSE({} {} {} {} {})",
+                    n("v1", v1 + dc)?,
+                    n("v2", v2 + dc)?,
+                    n("delay", *delay)?,
+                    n("rise_time", *rise_time)?,
+                    n("fall_time", *fall_time)?
+                ));
+            }
             // sindr and SPICE both read a non-positive period as one pulse.
             let period = if *period > 0.0 && period.is_finite() {
                 *period
