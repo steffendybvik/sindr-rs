@@ -98,7 +98,7 @@ FLOORS = {
     "sindr/src/import/value.rs": 97.5,  # 99.28% when set
     "sindr/src/integration.rs": 98.5,  # 100.00% when set
     "sindr/src/lib.rs": 95.5,  # 97.20% when set
-    "sindr/src/loop_gain.rs": 88.5,  # 90.45% when set
+    "sindr/src/loop_gain.rs": 94.0,  # 95.67% when set
     "sindr/src/measure.rs": 97.5,  # 99.17% when set
     "sindr/src/mna.rs": 97.0,  # 98.78% when set
     "sindr/src/newton_raphson.rs": 96.5,  # 98.17% when set

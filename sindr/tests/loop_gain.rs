@@ -1,6 +1,6 @@
 //! Loop gain and stability margins against closed-form op-amp loops.
 
-use sindr::element::{Capacitor, OpAmp, Resistor, VoltageSource};
+use sindr::element::{Capacitor, OpAmp, Resistor, Vcvs, VoltageSource};
 use std::f64::consts::PI;
 
 use num_complex::Complex64;
@@ -174,6 +174,57 @@ fn three_pole_loop_margins_through_a_loaded_output() {
     // Stable, with margins in the range this loop is designed for.
     assert!(pm > 10.0 && pm < 60.0, "{pm}");
     assert!(gm > 0.0, "{gm}");
+}
+
+/// A follower whose feedback runs through eight buffered RC sections at
+/// 1 kHz: nine poles, so at the gain crossover (about 2 kHz) the phase is
+/// past −540°. The margin is that phase plus 180° wrapped into one turn,
+/// about −50° (unstable), not the −410° it read before it was wrapped.
+#[test]
+fn phase_margin_past_minus_540_degrees_wraps_into_one_turn() {
+    const SECTIONS: usize = 8;
+    let rc = 1.0 / (2.0 * PI * 1e3);
+    let mut parts = vec![opamp(0.0), probe("x", "out")];
+    let mut from = "x".to_string();
+    for k in 1..=SECTIONS {
+        let (a, b) = (format!("a{k}"), format!("b{k}"));
+        let to = if k == SECTIONS { "fb".to_string() } else { b };
+        parts.push(r(&format!("R{k}"), &from, &a, 1e3));
+        parts.push(c(&format!("C{k}"), &a, "0", rc / 1e3));
+        parts.push(CircuitElement::Vcvs(Vcvs {
+            id: format!("E{k}"),
+            nodes: [to.as_str().into(), "0".into()],
+            control_nodes: [a.as_str().into(), "0".into()],
+            gain: 1.0,
+        }));
+        from = to;
+    }
+    let lg = solve_loop_gain(
+        &circuit(parts),
+        &LoopGainConfig::new("Vprobe", 1.0, 1e5, 401),
+    )
+    .unwrap();
+
+    let t = |f: f64| {
+        let w = 2.0 * PI * f;
+        A0 / Complex64::new(1.0, w * tau()) / Complex64::new(1.0, w * rc).powi(SECTIONS as i32)
+    };
+    let phase = |f: f64| {
+        let w = 2.0 * PI * f;
+        -(w * tau()).atan().to_degrees() - SECTIONS as f64 * (w * rc).atan().to_degrees()
+    };
+    let fc = root(1e2, 1e5, |f| t(f).norm().ln());
+    assert_eq!(lg.gain_crossovers.len(), 1);
+    assert!(((lg.gain_crossovers[0] - fc) / fc).abs() < 1e-9);
+    assert!(phase(fc) < -540.0, "{}", phase(fc));
+
+    let pm = 180.0 + phase(fc) + 360.0;
+    assert!(pm > -180.0 && pm < 0.0, "{pm}");
+    let got = lg.phase_margin_deg.unwrap();
+    assert!((got - pm).abs() < 1e-6, "{got} vs {pm}");
+    // The phase passes −180° and −540° below the crossover, where |T| > 1.
+    assert_eq!(lg.phase_crossovers.len(), 2);
+    assert!(lg.gain_margin_db.unwrap() < 0.0);
 }
 
 #[test]

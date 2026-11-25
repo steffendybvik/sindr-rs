@@ -805,7 +805,7 @@ println!("phase margin {:?}°, gain margin {:?} dB", lg.phase_margin_deg, lg.gai
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`T` is the return ratio, positive at low frequency for negative feedback. Each point has `gain` (complex), `gain_db()` and the phase unwrapped along the sweep, so the sweep must be dense enough that the phase moves less than 180° between points. Crossovers are refined by bisection on `T` itself, so the margins don't depend on the grid. The phase margin is the smallest over every 0 dB crossing, the gain margin the smallest over every −180° crossing; each is `None` when there is no crossing in the sweep.
+`T` is the return ratio, positive at low frequency for negative feedback. Each point has `gain` (complex), `gain_db()` and the phase unwrapped along the sweep, so the sweep must be dense enough that the phase moves less than 180° between points. Crossovers are refined by bisection on `T` itself, so the margins don't depend on the grid. The phase margin is `180° + ∠T` wrapped into (−180°, 180°], the smallest over every 0 dB crossing, the gain margin the smallest over every −180° crossing; each is `None` when there is no crossing in the sweep.
 
 ## DC sweep
 
