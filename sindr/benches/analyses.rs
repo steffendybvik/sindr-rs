@@ -8,6 +8,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::element::{Bjt, Capacitor, Diode, Resistor, VoltageSource};
 use sindr::noise::{solve_noise, NoiseConfig};
+use sindr::variation::{ratings_over, MonteCarloConfig, Parameter, Sampling, Tolerance};
 use sindr::{
     check_ratings, dc_sweep, solve_circuit, solve_sensitivity, solve_tf, temperature_sweep,
     BjtKind, Circuit, CircuitElement, Part, Ratings, SensConfig, TfConfig, TfOutput,
@@ -198,6 +199,22 @@ fn bench(c: &mut Criterion) {
         let op = solve_circuit(&circuit).unwrap();
         group.bench_with_input(BenchmarkId::from_parameter(stages), &stages, |b, _| {
             b.iter(|| check_ratings(&circuit, &op).unwrap())
+        });
+    }
+    group.finish();
+
+    // Every part checked on each of 20 Monte Carlo runs, and the checks
+    // merged into each one's worst.
+    let mut group = c.benchmark_group("ratings_over/stages");
+    group.sample_size(10);
+    for stages in [100, 1_000] {
+        let circuit = diode_chain(stages);
+        let sampling = Sampling::MonteCarlo(MonteCarloConfig::new(
+            vec![Tolerance::new("R1", Parameter::Resistance, 0.05)],
+            20,
+        ));
+        group.bench_with_input(BenchmarkId::from_parameter(stages), &stages, |b, _| {
+            b.iter(|| ratings_over(&circuit, &sampling, solve_circuit).unwrap())
         });
     }
     group.finish();
