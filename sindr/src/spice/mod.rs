@@ -271,6 +271,13 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! A `.control` … `.endc` block is ngspice's script, not netlist, so it's
+//! skipped in either mode (with one warning in lenient mode): run the
+//! deck's [`analyses`](ParsedNetlist::analyses) instead. The deck ends at
+//! its `.end`, as the ngspice manual has it; nothing after it is read
+//! (ngspice 47 itself reads on). An included file's `.end` ends only that
+//! file.
+//!
 //! # Diagnostics
 //!
 //! [`SpiceParseError`] implements [`miette::Diagnostic`] and embeds the

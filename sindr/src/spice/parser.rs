@@ -1774,7 +1774,8 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
                 });
             }
             "end" => {
-                // Top-level `.end` terminates the deck — caller may treat as EOF.
+                // The preprocessor stops at the deck's own `.end`, so this is
+                // an included file's, which ends only that file's text.
                 return Err(LocalError::Empty);
             }
             other => {
@@ -1944,11 +1945,18 @@ pub(crate) fn parse(pre: &Preprocessed) -> Result<Vec<RawCard>, SpiceParseError>
     parse_with_options(pre, true, &mut warnings)
 }
 
+/// The lenient-mode warning for a deck's `.control` blocks, given once.
+const CONTROL_SKIPPED: &str =
+    "`.control` … `.endc` skipped: sindr doesn't run ngspice's control scripts; \
+     run the deck's analyses from `ParsedNetlist::analyses`";
+
 /// Parse a [`Preprocessed`] netlist into a flat `Vec<RawCard>`.
 ///
 /// In strict mode (default), `UnknownDevice`, `UnsupportedDevice`, and
 /// `UnknownCard` are fatal. In lenient mode they downgrade to
 /// [`crate::spice::error::ParseWarning`]s and the offending card is dropped.
+/// `.control` … `.endc` blocks are skipped in both, with one warning in
+/// lenient mode.
 pub(crate) fn parse_with_options(
     pre: &Preprocessed,
     strict: bool,
@@ -1957,8 +1965,26 @@ pub(crate) fn parse_with_options(
     let mut top: Vec<RawCard> = Vec::new();
     // Stack of in-progress subckts and their declaring line (for diagnostics).
     let mut stack: Vec<(RawSubckt, LogicalLine)> = Vec::new();
+    // Inside a `.control` … `.endc` block: ngspice's script, not netlist.
+    let mut in_control = false;
 
     for line in &pre.lines {
+        let first = line.text.split_whitespace().next();
+        if in_control {
+            in_control = first != Some(".endc");
+            continue;
+        }
+        if first == Some(".control") {
+            in_control = true;
+            if !strict && !warnings.iter().any(|w| w.message == CONTROL_SKIPPED) {
+                warnings.push(crate::spice::error::ParseWarning {
+                    message: CONTROL_SKIPPED.to_string(),
+                    span: Some((line.byte_range.start, line.byte_range.len()).into()),
+                    file: Some(line.file.to_string()),
+                });
+            }
+            continue;
+        }
         let card = match parse_one_card_local(&line.text) {
             Ok(c) => anchor_to_line(c, line),
             Err(LocalError::Empty) => continue,

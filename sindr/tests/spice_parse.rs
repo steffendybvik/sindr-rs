@@ -309,6 +309,51 @@ fn continuation_lines() {
     );
 }
 
+/// The deck ends at its `.end`: whatever follows, cards or prose, isn't
+/// read. An included file's `.end` ends only that file.
+#[test]
+fn nothing_after_end_is_read() {
+    let deck = "* e\nV1 a 0 1\nR1 a 0 1k\n.op\n.END\nR2 a 0 1k\nthis is junk\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert!(netlist.circuit.components.iter().all(|c| c.id() != "r2"));
+    assert_eq!(netlist.circuit.components.len(), 2);
+
+    let dir = temp_dir("end");
+    std::fs::write(dir.join("part.lib"), "* part\nR2 a 0 2k\n.end\n").unwrap();
+    std::fs::write(
+        dir.join("top.cir"),
+        "* top\nV1 a 0 1\n.include part.lib\nR1 a 0 1k\n.end\nR3 a 0 1k\n",
+    )
+    .unwrap();
+    let netlist = parse_file(dir.join("top.cir")).unwrap();
+    assert_eq!(resistance(&netlist, "r1"), 1e3);
+    assert_eq!(resistance(&netlist, "r2"), 2e3);
+    assert!(netlist.circuit.components.iter().all(|c| c.id() != "r3"));
+}
+
+/// A `.control` … `.endc` block is ngspice's script, not netlist: it's
+/// skipped in strict mode too, and named once in a lenient warning.
+#[test]
+fn control_blocks_are_skipped() {
+    let deck = "* c\nV1 a 0 1\nR1 a 0 1k\n.control\nrun\ntran 1u 1m\n\
+                let x = v(a) * 2\nprint x\n.endc\nR2 a 0 2k\n\
+                .control\nquit\n.endc\n.op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert_eq!(resistance(&netlist, "r2"), 2e3);
+    assert_eq!(netlist.analyses.len(), 1);
+    assert!(netlist.warnings.is_empty());
+
+    let netlist = parse_str_with_options(deck, lenient()).unwrap();
+    assert_eq!(netlist.circuit.components.len(), 3);
+    let warned = warnings(&netlist);
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(warned[0].contains("`.control`"), "{warned:?}");
+
+    // An unclosed block runs to the end of the deck.
+    let deck = "* c\nV1 a 0 1\nR1 a 0 1k\n.control\nrun\n.end\n";
+    assert_eq!(parse_str(deck).unwrap().circuit.components.len(), 2);
+}
+
 /// sindr reads `.subckt` only at the top level. One inside a `.subckt`
 /// is named in a warning; a `.model` there is read (next test).
 #[test]
