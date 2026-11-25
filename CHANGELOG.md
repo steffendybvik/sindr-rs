@@ -30,9 +30,18 @@ additions are to non-exhaustive types.
   temperature (capacitors open, inductors shorted, sources at t = 0),
   started from the previous point, as `.dc` does.
   `TempSweepPoint::result.transient` is always `None`: it held a
-  power-on transient, not the bias point.
-- `threshold_voltage` follows SPICE Level 1's tangent for a forward-
-  biased body (`vbs > 0`), which a FET in reverse mode now reaches.
+  power-on transient, not the bias point. A circuit with no DC operating
+  point, such as a voltage source straight across an inductor or a
+  transformer winding (the bundled `transformer-stepdown` example), now
+  fails with `SingularMatrix`, as `solve_op` and SPICE's `.op` do.
+- `sindr_devices::mosfet::threshold_voltage` follows SPICE Level 1's
+  tangent for a forward-biased body (`0 < vbs`), which a FET in reverse
+  mode now reaches. The simulator passed no such `vbs` before, but a
+  caller of `threshold_voltage` or `mosfet_companion` with one gets a
+  slightly lower threshold than 0.3.0's `sqrt(PHI − vbs)`.
+- A SPICE deck ends at its `.end`: lines after it are ignored. ngspice
+  reads on, but its manual makes `.end` the last line. An included
+  file's `.end` doesn't end the deck.
 - Faster, with the same results: a DC sweep about 30 % (the node map is
   reused across points), AC up to 23 % and sensitivity about 11 % (the MNA
   system is reused, and the noise and sensitivity adjoint is solved from
@@ -57,15 +66,15 @@ additions are to non-exhaustive types.
 - A temperature sweep of a circuit with a capacitor, an inductor or a
   waveform source reported the end of a power-on transient, up to 1.7 %
   off the bias point.
-- The loop-gain phase margin is wrapped into (−180°, 180°].
+- The loop-gain phase margin of a crossover past −540° of unwrapped
+  phase is a few degrees either side of zero, not one below −360°.
 - SPICE decks that ngspice reads and sindr refused now parse:
   - model and subcircuit names that start with a digit (`1n4148`,
     `2n3904`);
   - `m`, `scale`, `tc1`/`tc2`, `temp`/`dtemp` and `IC=` on R, L and C
     lines, and a diode's area, `m` and `temp`; what sindr can't model is
     an error in strict mode and a warning in lenient mode;
-  - `.control … .endc` blocks, which are skipped, and anything after the
-    deck's `.end`;
+  - `.control … .endc` blocks, which are skipped;
   - node names with `-`, `/`, `+` and other characters up to a
     separator, `$` inline comments and `params:` on `.subckt` and X
     lines;
