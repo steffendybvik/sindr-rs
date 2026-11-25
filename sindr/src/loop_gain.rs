@@ -138,8 +138,10 @@ pub struct LoopGainResult {
     /// Frequencies (Hz) where the unwrapped phase of `T` crosses −180°
     /// (or −540°, …), lowest first.
     pub phase_crossovers: Vec<f64>,
-    /// Phase margin (degrees): `180° + ∠T` at the gain crossover, the
-    /// smallest over all of them. `None` when `|T|` never crosses 1 in the
+    /// Phase margin (degrees): `180° + ∠T` at the gain crossover, wrapped
+    /// into (−180°, 180°], the smallest over all of them. A crossover past
+    /// −540° of unwrapped phase is a margin of a few degrees either side of
+    /// zero, not one below −360°. `None` when `|T|` never crosses 1 in the
     /// sweep.
     pub phase_margin_deg: Option<f64>,
     /// Gain margin (dB): `−20·log₁₀|T|` at the phase crossover, the
@@ -303,7 +305,7 @@ pub(crate) fn solve_loop_gain_with(
                 Ok(probe.at(f)?.norm().ln())
             })?;
             let phase = unwrap_near(probe.at(f)?, lo.phase_deg);
-            let pm = 180.0 + phase;
+            let pm = wrap_degrees(180.0 + phase);
             phase_margin_deg = Some(phase_margin_deg.map_or(pm, |m| m.min(pm)));
             gain_crossovers.push(f);
         }
@@ -372,6 +374,11 @@ impl Probe<'_> {
     }
 }
 
+/// `deg` moved by whole turns into (−180°, 180°].
+fn wrap_degrees(deg: f64) -> f64 {
+    deg - ((deg - 180.0) / 360.0).ceil() * 360.0
+}
+
 /// The phase of `z` (degrees), the one of its branches nearest `near`.
 fn unwrap_near(z: Complex64, near: f64) -> f64 {
     let phase = z.arg().to_degrees();
@@ -412,4 +419,27 @@ fn bisect(
     } else {
         0.5 * (lo + hi)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_degrees;
+
+    #[test]
+    fn wrap_degrees_lands_in_the_half_open_turn() {
+        for (deg, want) in [
+            (0.0, 0.0),
+            (180.0, 180.0),
+            (-180.0, 180.0),
+            (-20.0, -20.0),
+            // 180° + a crossover phase of −560°.
+            (-380.0, -20.0),
+            (-560.0 + 180.0 - 360.0, -20.0),
+            (540.0, 180.0),
+            (190.0, -170.0),
+        ] {
+            let got = wrap_degrees(deg);
+            assert!((got - want).abs() < 1e-12, "{deg}: {got} vs {want}");
+        }
+    }
 }
