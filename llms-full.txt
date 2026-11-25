@@ -11341,8 +11341,10 @@ a `.subckt` it reads that body's own nodes and `V` lines.
 Numbers take SPICE's case-insensitive suffixes: `t` (1e12), `g` (1e9),
 `meg` (1e6), `k` (1e3), `m` (1e-3), `mil` (25.4e-6), `u` (1e-6),
 `n` (1e-9), `p` (1e-12), `f` (1e-15) and `a` (1e-18). Letters after the
-suffix are ignored, so `4.7uF` is 4.7e-6. `{…}` expressions may nest
-at most 256 levels deep. A value that evaluates to NaN or ±∞ (`1e400`,
+suffix are ignored, so `4.7uF` is 4.7e-6. In a `{…}` expression `^`
+(or `**`) binds tighter than unary minus and to the right, so `{-2^2}`
+is −4 and `{2^-2}` is 0.25, as in ngspice and in `B` sources.
+Expressions may nest at most 256 levels deep. A value that evaluates to NaN or ±∞ (`1e400`,
 `{1/0}`) is an error at its line.
 
 Analysis cards are checked as they are read: a `.dc` must sweep one or

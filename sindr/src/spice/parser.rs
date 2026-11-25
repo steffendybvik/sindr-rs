@@ -154,9 +154,13 @@ fn param_assign(input: &mut Input<'_>) -> ModalResult<(String, ParamExpr)> {
 // Precedence (low → high):
 //   1. add  / sub          (left-assoc)
 //   2. mul  / div          (left-assoc)
-//   3. pow  (`^`)          (right-assoc)
-//   4. unary minus
+//   3. unary minus
+//   4. pow  (`^` or `**`)  (right-assoc; its exponent may be negated)
 //   5. atom: number | ident | `(expr)`
+//
+// `^` binds tighter than unary minus, so `-2^2` is −4 and `2^-2` is 0.25,
+// as in ngspice (checked against ngspice 47, `.param` and `B` sources
+// alike) and in sindr's behavioural expressions.
 
 /// Deepest nesting of `(`, unary minus and `^` an expression may have. The
 /// grammar recurses once per level, so an unbounded depth would let a long run
@@ -198,8 +202,6 @@ fn expr_atom(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     alt((
         // `(expr)`
         delimited(('(', ws), expr_add.map(|e| e), (ws, ')')),
-        // unary minus
-        preceded(('-', ws), expr_atom).map(|e| ParamExpr::Neg(Box::new(e))),
         // numeric literal
         number_expr.map(|(e, _)| e),
         // identifier reference
@@ -208,14 +210,25 @@ fn expr_atom(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     .parse_next(input)
 }
 
+/// Unary minus, looser than `^`: `-2^2` is `-(2^2)`.
+fn expr_unary(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
+    ws(input)?;
+    if opt('-').parse_next(input)?.is_some() {
+        // Only a minus nests, so only it counts towards the depth cap.
+        let _depth = DepthGuard::enter(input)?;
+        return Ok(ParamExpr::Neg(Box::new(expr_unary(input)?)));
+    }
+    expr_pow(input)
+}
+
 fn expr_pow(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     let _depth = DepthGuard::enter(input)?;
     let lhs = expr_atom(input)?;
     ws(input)?;
-    if opt('^').parse_next(input)?.is_some() {
-        // Right-associative recursion.
+    if opt(alt(("**", "^"))).parse_next(input)?.is_some() {
+        // Right-associative, and the exponent may be negated: `2^-2`.
         ws(input)?;
-        let rhs = expr_pow(input)?;
+        let rhs = expr_unary(input)?;
         Ok(ParamExpr::Pow(Box::new(lhs), Box::new(rhs)))
     } else {
         Ok(lhs)
@@ -223,19 +236,19 @@ fn expr_pow(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
 }
 
 fn expr_mul(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
-    let mut acc = expr_pow(input)?;
+    let mut acc = expr_unary(input)?;
     loop {
         ws(input)?;
         let op = opt(alt(('*', '/'))).parse_next(input)?;
         match op {
             Some('*') => {
                 ws(input)?;
-                let rhs = expr_pow(input)?;
+                let rhs = expr_unary(input)?;
                 acc = ParamExpr::BinOp(Box::new(acc), BinOp::Mul, Box::new(rhs));
             }
             Some('/') => {
                 ws(input)?;
-                let rhs = expr_pow(input)?;
+                let rhs = expr_unary(input)?;
                 acc = ParamExpr::BinOp(Box::new(acc), BinOp::Div, Box::new(rhs));
             }
             _ => return Ok(acc),
