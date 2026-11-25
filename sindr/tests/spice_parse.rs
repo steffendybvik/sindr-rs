@@ -354,6 +354,32 @@ fn control_blocks_are_skipped() {
     assert_eq!(parse_str(deck).unwrap().circuit.components.len(), 2);
 }
 
+/// A `$` comment set off by a comma takes the comma with it: ngspice 47
+/// solves each of these decks to v(y) = 0.5.
+#[test]
+fn a_dollar_comment_after_a_comma_drops_the_comma() {
+    for line in [
+        "R3 in y 1k,$ hi",
+        "R3 in y 1k, $ hi",
+        "R3 in y 1k,,$ hi",
+        "R3 in y,$ hi\n+ 1k",
+    ] {
+        let deck = format!("* c\nV1 in 0 1\n{line}\nR4 y 0 1k\n.op\n.end\n");
+        for options in [ParseOptions::default(), lenient()] {
+            let netlist =
+                parse_str_with_options(&deck, options).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(resistance(&netlist, "r3"), 1e3, "{line}");
+            assert!(
+                netlist.warnings.is_empty(),
+                "{line}: {:?}",
+                warnings(&netlist)
+            );
+            let op = sindr::solve_op(&netlist.circuit).unwrap();
+            assert!((op.voltage("y").unwrap() - 0.5).abs() < 1e-9, "{line}");
+        }
+    }
+}
+
 /// sindr reads `.subckt` only at the top level. One inside a `.subckt`
 /// is named in a warning; a `.model` there is read (next test).
 #[test]

@@ -338,7 +338,8 @@ fn collect_physical_lines(src: &str) -> Vec<PhysicalLine> {
 
 /// Drop full-line `*` comments, trailing `;` comments and ngspice's `$`
 /// comments: a `$` at the start of the line or after a space, tab or
-/// comma, outside quotes (`n$1` is a node name).
+/// comma, outside quotes (`n$1` is a node name). The spaces and commas
+/// before the `$` go too.
 fn strip_comments(line: &str) -> String {
     let leading_ws = leading_ws_len(line);
     if line.as_bytes().get(leading_ws).copied() == Some(b'*') {
@@ -353,7 +354,9 @@ fn strip_comments(line: &str) -> String {
             (Some(_), _) => {}
             (None, '"' | '\'') => quote = Some(c),
             (None, '$') if matches!(prev, None | Some(' ' | '\t' | ',')) => {
-                return line[..idx].to_string();
+                // The comma that set the comment off goes with it, as in
+                // ngspice: `R1 a b 1k,$ note` is `R1 a b 1k`.
+                return line[..idx].trim_end_matches([' ', '\t', ',']).to_string();
             }
             _ => {}
         }
@@ -635,7 +638,9 @@ mod tests {
         let text = |line: &str| strip_comments(line).trim_end().to_string();
         assert_eq!(text("R1 a b 1k $ note"), "R1 a b 1k");
         assert_eq!(text("R1 a b 1k\t$note"), "R1 a b 1k");
-        assert_eq!(text("R1 a b 1k,$note"), "R1 a b 1k,");
+        assert_eq!(text("R1 a b 1k,$note"), "R1 a b 1k");
+        assert_eq!(text("R1 a b 1k, $note"), "R1 a b 1k");
+        assert_eq!(text("R1 a b 1k,,$note"), "R1 a b 1k");
         assert_eq!(text("$ whole line"), "");
         assert_eq!(text("R1 n$1 b 1k$x"), "R1 n$1 b 1k$x");
         assert_eq!(text(".include \"a $b.lib\" $ c"), ".include \"a $b.lib\"");
