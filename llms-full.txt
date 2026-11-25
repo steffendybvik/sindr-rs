@@ -883,7 +883,7 @@ let hit = sim.run_until(10.0, &[Event::crosses("int0", 2.5, Edge::Rising)])?;
 
 #### Which engine produced a result
 
-`sindr::VERSION` (and `sindr::devices::VERSION`) is the crate's version as a string, such as `"0.3.0"`. Store it with saved results, so a rerun can tell a change in the design from a change in the engine.
+`sindr::VERSION` (and `sindr::devices::VERSION`) is the crate's version as a string, such as `"0.3.1"`. Store it with saved results, so a rerun can tell a change in the design from a change in the engine.
 
 ### AC analysis
 
