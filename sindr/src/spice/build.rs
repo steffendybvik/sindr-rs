@@ -1048,7 +1048,12 @@ fn diode_instance(
     };
     let area = positive_factor(raw, "area", area)?;
     let m = positive_factor(raw, "m", values.get("m").copied().unwrap_or(1.0))?;
-    let temperature = 300.15 + instance_delta_t(&values);
+    // `temp` is °C; reading it as `temp + 273.15` lets the exporter write a
+    // temperature that reads back as the same kelvin.
+    let temperature = match values.get("temp") {
+        Some(temp) => temp + crate::spice::export::KELVIN_AT_0C,
+        None => 300.15 + instance_delta_t(&values),
+    };
     if !(temperature > 0.0 && temperature.is_finite()) {
         return Err(card_error(format!(
             "`{}`: the junction temperature must be above absolute zero, not {temperature} K",

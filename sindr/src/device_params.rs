@@ -85,11 +85,14 @@ pub(crate) fn diode_charge(model: Option<&DiodeModel>) -> Option<JunctionCharge>
 /// does.
 pub(crate) fn led(color: &str, temperature: f64) -> DiodeParams {
     let mut params = led_params_from_str(color);
-    let vf = forward_voltage_of(color).unwrap_or(LedColor::Red.forward_voltage());
-    let eg = led_eg(vf);
-    params.is = scale_is_eg(params.is, temperature, params.n, eg);
+    params.is = scale_is_eg(params.is, temperature, params.n, led_color_eg(color));
     params.temperature = temperature;
     params
+}
+
+/// The EG (eV) the IS of an LED of colour `color` scales with.
+pub(crate) fn led_color_eg(color: &str) -> f64 {
+    led_eg(forward_voltage_of(color).unwrap_or(LedColor::Red.forward_voltage()))
 }
 
 /// Schottky diode at `temperature` (K), as the Shockley diode it is stamped as.
