@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0]
+## [0.3.0] - 2026-11-25
 
 A typed API (element structs, node and component handles, error causes,
 sweep configs, result enums), one file per device, a sparse solver that
