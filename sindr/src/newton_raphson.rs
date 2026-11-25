@@ -7,7 +7,7 @@
 
 use crate::element::{
     Behavioural, Bjt, Comparator, CurrentSource, Diode, Igbt, Led, Mosfet, OpAmp, Photodiode,
-    Resistor, SchottkyDiode, VoltageRegulator, VoltageSource, ZenerDiode,
+    Resistor, SchottkyDiode, SwitchingRegulator, VoltageRegulator, VoltageSource, ZenerDiode,
 };
 use nalgebra::DVector;
 
@@ -179,7 +179,8 @@ fn scale_sources(circuit: &Circuit, factor: f64) -> Circuit {
     for component in &mut scaled.components {
         match component {
             CircuitElement::VoltageSource(VoltageSource { voltage, .. })
-            | CircuitElement::VoltageRegulator(VoltageRegulator { voltage, .. }) => {
+            | CircuitElement::VoltageRegulator(VoltageRegulator { voltage, .. })
+            | CircuitElement::SwitchingRegulator(SwitchingRegulator { voltage, .. }) => {
                 *voltage *= factor
             }
             CircuitElement::CurrentSource(CurrentSource { current, .. }) => *current *= factor,

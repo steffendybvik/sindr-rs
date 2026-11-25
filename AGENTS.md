@@ -53,7 +53,7 @@ sindr-rs/
 │   └── tests/                  # integration tests (+ spice fixtures/)
 ├── sindr-devices/      # device physics (no solver dep)
 │   └── src/{diode,bjt,mosfet,igbt,jfet,varactor,schottky,zener,led,
-│            photodiode,photoresistor,thermistor,battery,inductor,regulator}.rs
+│            photodiode,photoresistor,thermistor,battery,inductor,regulator,converter}.rs
 ├── docs/RELEASING.md    # where capabilities are documented + release checklist
 ├── scripts/gen_llms_full.py  # regenerates llms-full.txt
 ├── llms.txt            # short index for LLMs (llmstxt.org)
@@ -141,7 +141,7 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Junction `temperature` fields are kelvin** (300.15 K = 27 °C, the nominal). IS and the thermal voltage kT/q both follow it.
 - **PMOS `vto` is SPICE-signed:** negative for an enhancement PMOS, as `MosfetParams::default_pmos()` has it.
 - **The default integrator is Gear-2:** second order, no ringing, slightly dissipative over many periods. For ringing amplitude in a resonant tank use `IntegrationMethod::Trapezoidal`, but not on circuits with time constants far below the step, where it rings. `IntegrationMethod::BackwardEuler` reproduces results from before 0.1.0-alpha.7.
-- **Voltage regulators drop out.** `VoltageRegulator { model: Some(RegulatorParams::lm7805()), .. }` needs about 2 V of headroom and draws its output plus 4.3 mA from the input; check `voltage_across` (`Vin − Vout`) and `power` on its result. `model: None` is ideal but can't boost.
+- **Voltage regulators drop out.** `VoltageRegulator { model: Some(RegulatorParams::lm7805()), .. }` needs about 2 V of headroom and draws its output plus 4.3 mA from the input; check `voltage_across` (`Vin − Vout`) and `power` on its result. `model: None` is ideal but can't boost. For a switching supply use `SwitchingRegulator` (averaged buck or boost): its input draws by power balance, `Vout·Iout/(η·Vin)`, so it's a negative resistance to its source.
 - **Self-heating is opt-in per part:** set `Part::thermal` (`Thermal::junction_to_ambient(rθja)` or `Thermal::on_heatsink(rθjc, rθca)`). Then the element's `temperature` field is ignored, and `SimError::ThermalRunaway` means the design has no thermal balance (add degeneration or a heatsink, don't retry). Only junction devices and thermistors feel the heat; MOSFET/IGBT models don't.
 - **Model a microcontroller pin as a `DigitalPin`, not a voltage source.** `nodes: [pad, vdd, gnd]`: it drives through `r_high`/`r_low` from the rails, clamps past them, and reads its input against `vil`/`vih`. A `TransientSession` changes `Param::PinMode`, `Level` and `Pull` and reads `logic_level(id)`. Its `current_through` is into the pin, so a sourcing pin is negative.
 - **Check ratings before calling a design done.** `check_ratings(&circuit, &result)` compares every part with the `Ratings` on its `Part`; for anything with switching or start-up, run it on a transient, since the DC operating point misses the peaks. `report.is_safe()` is false while any needed rating is missing, so fill them in rather than ignoring unverified checks.

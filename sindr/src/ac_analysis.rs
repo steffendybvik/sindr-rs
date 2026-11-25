@@ -8,7 +8,8 @@
 
 use crate::element::layout::Layout;
 use crate::element::{
-    AcBias, AcStamp, Conductance, Inductor, Transformer, VoltageRegulator, VoltageSource,
+    AcBias, AcStamp, Conductance, Inductor, SwitchingRegulator, Transformer, VoltageRegulator,
+    VoltageSource,
 };
 use crate::handle::ComponentId;
 use std::borrow::Cow;
@@ -463,9 +464,11 @@ pub(crate) fn bias_point_with_result(
             dc_solution[i] = v;
         }
     }
-    // A regulator's piece depends on its output current, its branch row.
+    // A regulator's piece (linear or switching) depends on its output current, its branch row.
     for element in &circuit.components {
-        if let CircuitElement::VoltageRegulator(VoltageRegulator { id, .. }) = element {
+        if let CircuitElement::VoltageRegulator(VoltageRegulator { id, .. })
+        | CircuitElement::SwitchingRegulator(SwitchingRegulator { id, .. }) = element
+        {
             if let (Some(k), Some(&i)) = (
                 circuit.vsource_branch_index(id),
                 dc_result.branch_currents.get(id),

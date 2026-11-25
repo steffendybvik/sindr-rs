@@ -433,7 +433,9 @@ The pole and slew limit act in transient and AC runs. An op-amp doesn't count as
 ### Sensors / misc
 
 ```rust,ignore
-use sindr::element::{Fuse, Photoresistor, Potentiometer, Relay, Thermistor, VoltageRegulator};
+use sindr::element::{
+    Fuse, Photoresistor, Potentiometer, Relay, SwitchingRegulator, Thermistor, VoltageRegulator,
+};
 CircuitElement::Photoresistor(Photoresistor { id, nodes: [NodeId; 2], light_level: f64 }) // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
 CircuitElement::Thermistor(Thermistor { id, nodes: [NodeId; 2], temperature: f64 }) // Kelvin, default 298.15 K (25 °C)
 CircuitElement::Potentiometer(Potentiometer { id, nodes: [top, wiper, bottom], resistance: f64, position: f64 }) // position 0.0–1.0
@@ -446,11 +448,20 @@ CircuitElement::Relay(Relay {
 })
 CircuitElement::Fuse(Fuse { id, nodes: [NodeId; 2], rating: f64, blown: bool }) // 1 mΩ intact, 1 GΩ blown; rating is display-only
 CircuitElement::VoltageRegulator(VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> })
+CircuitElement::SwitchingRegulator(SwitchingRegulator {
+    id,
+    nodes: [input, output, gnd],
+    topology: ConverterTopology, // Buck (default) or Boost
+    voltage: f64,                // set output (V), positive
+    model: ConverterParams,      // default ideal
+})
 ```
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
 
 `VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin (a negative `voltage` is a negative regulator such as a 7905: the same characteristic mirrored, with the input below ground and the output current flowing in at the output pin); without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
+
+`SwitchingRegulator` is an averaged buck or boost converter: its behaviour over a switching period, with no switching edges, so a "5 V buck module" solves as fast as a linear regulator. It holds `voltage` above its ground pin and draws what power balance asks from the input, `Iin = Vout·Iout / (η·Vin)` plus `quiescent_current`. A buck out of headroom follows its input down by `dropout` (plus `dropout_resistance`·Iout). A boost whose input is above its set point passes the input through, less the same drop. Past `current_limit` the output falls, so the current stays within 1 % of the limit. Below `uvlo` it's off: output open and nothing drawn. `ConverterParams` sets `efficiency` (constant) or `efficiency_curve` (`[output current, efficiency]` points, interpolated), and `switching_frequency` and `inductance` only for `ripple_current`, the inductor's peak-to-peak ripple estimate. `converter::feedback_voltage(vref, r_top, r_bottom)` gives the set voltage from a feedback divider. Its result is the output: `voltage_across` is `Vout`, `current_through` the output current, and `power` the loss `Vin·Iin − Vout·Iout`, which the ratings checks and self-heating use. Its voltage rating is checked against the input. In AC it rejects input ripple while regulating, and its input is the negative resistance `−Pin/Vin²` of a constant-power load. There's no output ripple, control loop or soft start, and it has no SPICE export.
 
 ## Hierarchy and part data
 

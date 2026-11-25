@@ -413,6 +413,9 @@ pub use sindr_devices as devices;
 /// Battery equivalent circuits and presets, for [`CircuitElement::Battery`].
 pub use sindr_devices::battery;
 pub use sindr_devices::bjt::{BjtKind, BjtRegion};
+/// Averaged switching-converter parameters, for [`CircuitElement::SwitchingRegulator`]'s `model`.
+pub use sindr_devices::converter;
+pub use sindr_devices::converter::{ConverterParams, ConverterTopology};
 pub use sindr_devices::igbt::IgbtParams;
 pub use sindr_devices::jfet::JfetKind;
 pub use sindr_devices::mosfet::{MosfetKind, MosfetRegion};

@@ -76,6 +76,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod battery;
 pub mod bjt;
+pub mod converter;
 pub mod datasheet;
 pub mod diode;
 pub mod igbt;

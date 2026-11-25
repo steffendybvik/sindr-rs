@@ -293,6 +293,7 @@ mod resistor;
 mod schottky_diode;
 mod switch;
 mod switch_spdt;
+pub(crate) mod switching_regulator;
 mod thermistor;
 mod tran_stamp;
 pub(crate) mod transformer;
@@ -334,6 +335,7 @@ pub use resistor::Resistor;
 pub use schottky_diode::SchottkyDiode;
 pub use switch::Switch;
 pub use switch_spdt::SwitchSpdt;
+pub use switching_regulator::SwitchingRegulator;
 pub use thermistor::Thermistor;
 pub use transformer::Transformer;
 pub use varactor::Varactor;
@@ -385,6 +387,7 @@ impl CircuitElement {
             CircuitElement::DigitalPin(d) => d,
             CircuitElement::DcMotor(d) => d,
             CircuitElement::LogicGate(d) => d,
+            CircuitElement::SwitchingRegulator(d) => d,
         }
     }
 
@@ -429,6 +432,7 @@ impl CircuitElement {
             CircuitElement::DigitalPin(d) => d,
             CircuitElement::DcMotor(d) => d,
             CircuitElement::LogicGate(d) => d,
+            CircuitElement::SwitchingRegulator(d) => d,
         }
     }
 }
