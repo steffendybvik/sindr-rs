@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::stamp_resistor_at;
 
-use super::{AcStamp, Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device, Report};
 use crate::noise::NoiseSources;
 use crate::ratings::RatingKind;
 
@@ -30,6 +30,12 @@ pub struct Potentiometer {
 
 impl Device for Potentiometer {
     device_identity!();
+
+    /// The voltage across the whole track, end to end; no current.
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[2]);
+        r.component(&self.id, v, 0.0, 0.0);
+    }
 
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let pos = self.position.clamp(0.001, 0.999);

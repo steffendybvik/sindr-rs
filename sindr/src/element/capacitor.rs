@@ -5,7 +5,7 @@ use crate::handle::NodeId;
 
 use crate::stamp::stamp_companion_at;
 
-use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
 use crate::ratings::{RatingKind, RatingProbe};
 
 #[cfg(feature = "spice")]
@@ -27,6 +27,20 @@ pub struct Capacitor {
 
 impl Device for Capacitor {
     device_identity!();
+
+    /// Open at DC, where it reports nothing across or through it.
+    fn report(&self, r: &mut Report<'_>) {
+        let Some(step) = r.step() else {
+            r.component(&self.id, 0.0, 0.0, 0.0);
+            return;
+        };
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let history = r.capacitor(0);
+        let (g, i_hist) = step.integ.capacitor(self.capacitance, &history);
+        let i = g * v + i_hist;
+        r.set_capacitor(0, history.push(v, i));
+        r.port(&self.id, v, i);
+    }
 
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let y = s.s * self.capacitance;

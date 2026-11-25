@@ -8,7 +8,8 @@ use crate::handle::NodeId;
 use crate::op_amp::{OpAmpStamp, Pins, OP_AMP_STAGE};
 use crate::stamp::stamp_vcvs_at;
 
-use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
+use crate::results::OpAmpResult;
 use num_complex::Complex64;
 
 #[cfg(feature = "spice")]
@@ -48,6 +49,24 @@ pub struct OpAmp {
 
 impl Device for OpAmp {
     device_identity!();
+
+    /// Its output: `Vout` and the output current, and after a DC solve
+    /// its input pins.
+    fn report(&self, r: &mut Report<'_>) {
+        let v_in_plus = r.v(&self.nodes[0]);
+        let v_in_minus = r.v(&self.nodes[1]);
+        let v_out = r.v(&self.nodes[2]);
+        let i = r.branch_current(0);
+        r.branch_current_of(&self.id, i);
+        r.port(&self.id, v_out, i);
+        r.op_amp(|| OpAmpResult {
+            id: self.id.clone(),
+            v_in_plus,
+            v_in_minus,
+            v_differential: v_in_plus - v_in_minus,
+            v_out,
+        });
+    }
 
     /// A modelled op-amp linearised at the bias point (see
     /// [`OpAmpStamp::stamp_ac`]); without a model, a VCVS of gain 10⁵.

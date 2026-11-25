@@ -128,10 +128,6 @@ impl Layout {
     }
 
     /// Branch rows in the whole circuit.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the transient doesn't use it yet")
-    )]
     pub(crate) fn branches(&self) -> usize {
         self.totals().branch
     }

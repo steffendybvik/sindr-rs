@@ -10,7 +10,7 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::node_map::{NodeMap, Terminals};
 
-use super::{AcStamp, Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device, Report};
 use crate::ratings::{RatingKind, RatingProbe};
 use num_complex::Complex64;
 
@@ -53,6 +53,19 @@ pub struct VoltageRegulator {
 
 impl Device for VoltageRegulator {
     device_identity!();
+
+    /// Its pass element, input to output: `Vin − Vout`, the output
+    /// current, and the power it dissipates, quiescent included.
+    fn report(&self, r: &mut Report<'_>) {
+        let (vin, vout, iout) =
+            regulator_state(r.node_map, &self.nodes, r.branch, Some(r.solution))
+                .unwrap_or_default();
+        let params = self.model.unwrap_or_default();
+        let power =
+            sindr_devices::regulator::regulator_dissipation(&params, self.voltage, vin, vout, iout);
+        r.branch_current_of(&self.id, r.branch_current(0));
+        r.component(&self.id, vin - vout, iout, power);
+    }
 
     /// The piece of its characteristic the bias point is on: input ripple
     /// reaches the output through line regulation (or all of it in

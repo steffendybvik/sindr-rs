@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at};
 
-use super::{AcStamp, DcStamp, Device, TranStamp};
+use super::{AcStamp, DcStamp, Device, Report, TranStamp};
 use crate::ratings::{RatingKind, RatingProbe};
 
 #[cfg(feature = "spice")]
@@ -29,6 +29,22 @@ pub struct Varactor {
 
 impl Device for Varactor {
     device_identity!();
+
+    /// Open at DC. Over a step its current is the companion the step was
+    /// solved with, at the junction capacitance of the step's start.
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let Some(step) = r.step() else {
+            r.component(&self.id, v, 0.0, 0.0);
+            return;
+        };
+        let history = r.capacitor(0);
+        let cj = sindr_devices::varactor::junction_capacitance(history.x1, &self.params);
+        let (g, i_hist) = step.integ.capacitor(cj, &history);
+        let i = g * v + i_hist;
+        r.set_capacitor(0, history.push(v, i));
+        r.port(&self.id, v, i);
+    }
 
     /// Its capacitance at the DC bias.
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {

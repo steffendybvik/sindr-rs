@@ -5,7 +5,7 @@ use crate::circuit::FerriteBeadParams;
 use crate::error::SimError;
 use crate::handle::NodeId;
 
-use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
+use super::{stamped_as_parts, AcStamp, DcStamp, Device, Report, TranStamp};
 use crate::ratings::RatingKind;
 
 #[cfg(feature = "spice")]
@@ -28,6 +28,9 @@ pub struct FerriteBead {
 
 impl Device for FerriteBead {
     device_identity!();
+
+    /// Lowered to its parts before any solve, and they report.
+    fn report(&self, _: &mut Report<'_>) {}
 
     /// Split into its parts by `solver_circuit` first.
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}

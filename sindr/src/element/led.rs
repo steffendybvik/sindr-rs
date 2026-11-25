@@ -5,7 +5,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::stamp_diode_companion_at;
 
-use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, Report};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
@@ -38,6 +38,12 @@ pub struct Led {
 
 impl Device for Led {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let params = crate::device_params::led(&self.color, self.temperature);
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, sindr_devices::diode::diode_current(v, &params));
+    }
 
     fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {
         let params = device_params::led(&self.color, self.temperature);

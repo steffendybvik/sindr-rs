@@ -6,7 +6,7 @@ use nalgebra::DVector;
 use crate::error::SimError;
 use crate::mna::MnaSystem;
 
-use super::{AcBias, AcStamp, Conductance, DcStamp, Device};
+use super::{AcBias, AcStamp, Conductance, DcStamp, Device, Report};
 use crate::ratings::{RatingKind, RatingProbe};
 
 #[cfg(feature = "spice")]
@@ -30,6 +30,16 @@ pub struct Igbt {
 
 impl Device for Igbt {
     device_identity!();
+
+    /// Its collector: `Vce`, `Ic` and the dissipation.
+    fn report(&self, r: &mut Report<'_>) {
+        let vg = r.v(&self.nodes[0]);
+        let vc = r.v(&self.nodes[1]);
+        let ve = r.v(&self.nodes[2]);
+        let vce = vc - ve;
+        let comp = sindr_devices::igbt::igbt_companion(vg - ve, vce, &self.params);
+        r.component(&self.id, vce, comp.ids, (comp.ids * vce).abs());
+    }
 
     /// gm and g_ce of the same companion as the DC stamp.
     fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {

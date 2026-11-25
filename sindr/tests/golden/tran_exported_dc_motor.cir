@@ -1,0 +1,11 @@
+tran_exported_dc_motor: written by sindr::spice::to_netlist
+v1 in 0 DC 12
+Rm1_r in m1_m1 2
+Lm1_l m1_m1 m1_m2 0.001
+Vm1_sense m1_m2 m1_m3 DC 0
+Em1_emf m1_m3 0 m1_w 0 0.02
+Fm1_kt 0 m1_w Vm1_sense 0.02
+Cm1_j m1_w 0 1e-6
+Rm1_b m1_w 0 1e6
+Im1_load m1_w 0 DC 0.002
+.end

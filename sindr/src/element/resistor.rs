@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::stamp_resistor_at;
 
-use super::{AcStamp, DcStamp, Device};
+use super::{AcStamp, DcStamp, Device, Report};
 use crate::noise::NoiseSources;
 use crate::ratings::RatingKind;
 
@@ -26,6 +26,11 @@ pub struct Resistor {
 
 impl Device for Resistor {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, v / self.resistance);
+    }
 
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let nodes = s.nodes();

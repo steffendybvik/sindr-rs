@@ -443,6 +443,22 @@ A gate as a CMOS part behaves electrically, not digital simulation: `GateKind::B
 
 It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp diodes, `#c`, `#leak`), and `to_netlist` writes them, so ngspice can run the same pin.
 
+#### DC motor
+
+```rust,ignore
+use sindr::element::{DcMotor, DcMotorParams};
+CircuitElement::DcMotor(DcMotor { id, nodes: [a, b], params: DcMotorParams })
+```
+
+A brushed DC motor: `V = R·i + L·di/dt + ke·ω` across its terminals, and `J·dω/dt = kt·i − B·ω − T_load` on its shaft, in SI units (ω in rad/s). Current into `a` turns it forwards.
+
+- **`DcMotorParams`:** `resistance`, `inductance`, `ke`, `kt`, `inertia`, `friction` and `load_torque`. `DcMotorParams::new(r, k)` takes `ke = kt = k`, and `with_inductance`, `with_inertia`, `with_friction` and `with_load` add the rest. `DcMotorParams::from_datasheet(volts, no_load_rpm, no_load_current, stall_torque, stall_current)` fits `R`, `ke`, `kt` and `B` so the motor runs at exactly the no-load speed and current, and stalls at exactly the stall torque and current; set `inductance` and `inertia` when you know them. `steady_state(volts)` is the closed-form speed and current.
+- **Results:** its `ComponentResult` is the electrical side: `current_through` the armature current, `power` the `V·I` it draws. `SimulationResult::motors` and each step's `motors` hold the shaft, by id: `speed` (rad/s, `rpm()`), `torque` (`kt·i`) and `mechanical_power` (`torque · speed`). A transient from rest shows the start-up surge; a load above `kt·V/R` stalls it.
+- **In a session:** `Param::LoadTorque` changes the load from the time reached on.
+- **Ratings:** `Ratings::voltage`, `current` and `power`.
+
+It's solved as its parts: the armature `#r`, `#l`, a 0 V `#sense` and the back-EMF `#emf`, and the shaft as an analogue circuit whose node `#w`, over terminal `b`, is the speed: `#kt` (a CCCS), `#j` (a capacitor of `J` farads), `#b` (a conductance of `B` siemens) and `#load` (a current source). `to_netlist` writes those, so ngspice can run the same motor. AC sees the armature plus the shaft reflected through it, `R + sL + ke·kt/(sJ + B)`.
+
 #### Diodes
 
 ```rust,ignore
@@ -834,7 +850,7 @@ let hit = sim.run_until(10.0, &[Event::crosses("int0", 2.5, Edge::Rising)])?;
 ```
 
 - **A change is a breakpoint.** The step that reached the time saw the old value, the next sees the new, and the integration restarts there with a short backward-Euler step, as at a waveform's corner. Writing a value a source already has changes nothing.
-- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, the temperature of a thermistor or a junction device that isn't self-heated, and a digital pin's mode, level and pull (`Param::PinMode`, `Level`, `Pull`).
+- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, the temperature of a thermistor or a junction device that isn't self-heated, a digital pin's mode, level and pull (`Param::PinMode`, `Level`, `Pull`), and a DC motor's load torque (`Param::LoadTorque`).
 - **Pins read back:** `logic_level(id)` is what a digital pin's input reads at the time reached, `LogicLevel::High` or `Low` against its `vil` and `vih` with hysteresis. It's taken after each step, so to catch an edge, `run_until` an event at the threshold.
 - **Events** are a node crossing a level (`Edge::Rising`, `Falling`, `Either`). The session steps back and re-steps until the crossing is inside the event's tolerance (`Event::within`, default 10⁻⁴ of `tstep`), and stops just after it with the node past the level. Steps tried and undone along the way aren't kept.
 - **State survives between calls:** the flat circuit, node map, matrix layout and histories are set up once. Each step still assembles and factors its matrix.
@@ -1608,7 +1624,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Crystals and ferrite beads are linear networks.** A crystal is the Butterworth–Van Dyke model: no overtones, spurious modes, drive-level dependence or aging. A ferrite bead is R + L ∥ R (∥ C) with no DC-bias derating, so its impedance doesn't fall with current as a real bead's does.
 - **Magnetics: saturating cores, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), and so can a `Transformer`'s magnetising branch, which carries the shared core flux behind each winding's leakage. There's no hysteresis, remanence, core loss or temperature dependence, a transformer has two windings, and SPICE export refuses a saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
-- **No piezo / MEMS / electro-mechanical coupling.**
+- **DC motors are linear and brushed.** `DcMotor` has armature R and L, back-EMF, inertia, viscous friction and a load torque. There's no Coulomb or static friction (a stalled motor starts at any current), no brush drop, no armature reaction or magnetic saturation, no winding heating, and no commutation ripple. No brushless, stepper or servo motors.
+- **No piezo / MEMS electro-mechanical coupling.** The DC motor is the one electromechanical element.
 - **No switched-capacitor primitives** (sample-and-hold, charge-redistribution).
 
 #### Solver & numerics
@@ -2372,6 +2389,11 @@ pub enum CircuitElement {
     #[cfg_attr(feature = "serde", serde(rename = "digital_pin"))]
     DigitalPin(DigitalPin),
 
+    /// Brushed DC motor ([`DcMotorParams`](crate::element::DcMotorParams)):
+    /// armature R, L and back-EMF, driving a shaft with inertia, friction
+    /// and a load torque.
+    #[cfg_attr(feature = "serde", serde(rename = "dc_motor"))]
+    DcMotor(DcMotor),
     /// Logic gate ([`LogicGate`]) at the analog
     /// level: input thresholds, a pin's output stage and a propagation
     /// delay.
@@ -3620,6 +3642,98 @@ pub struct CurrentSource {
 }
 ```
 
+## `sindr/src/element/dc_motor.rs`
+
+A brushed DC motor. The analyses replace it with its equivalent
+circuit before solving: the armature as R, L and a back-EMF source, and
+the shaft as an analogue network whose node voltage is its speed.
+
+```rust
+/// A brushed DC motor's electrical and mechanical constants, in SI units.
+///
+/// The armature: `V = R·i + L·di/dt + ke·ω`. The shaft:
+/// `J·dω/dt = kt·i − B·ω − load_torque`. Speed `ω` is in rad/s.
+pub struct DcMotorParams {
+    /// Armature resistance `R` (Ω), positive.
+    pub resistance: f64,
+    /// Armature inductance `L` (H), zero or positive. Zero leaves it out.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub inductance: f64,
+    /// Back-EMF constant `ke` (V·s/rad), positive.
+    pub ke: f64,
+    /// Torque constant `kt` (N·m/A), positive. Equal to `ke` for an ideal
+    /// motor in SI units.
+    pub kt: f64,
+    /// Rotor and load inertia `J` (kg·m²), zero or positive. Zero leaves the
+    /// shaft without inertia: its speed follows the current at once.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub inertia: f64,
+    /// Viscous friction `B` (N·m·s/rad), zero or positive.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub friction: f64,
+    /// Load torque on the shaft (N·m), opposing rotation when positive. A
+    /// [`TransientSession`](crate::TransientSession) changes it with
+    /// [`Param::LoadTorque`](crate::session::Param::LoadTorque).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub load_torque: f64,
+}
+
+impl DcMotorParams {
+    /// Constants from the armature and the motor constant, with `kt = ke =
+    /// k`, no inductance, inertia, friction or load.
+    pub fn new(resistance: f64, k: f64) -> Self { … }
+
+    /// Constants from a datasheet's figures at `rated_voltage` (V): the
+    /// no-load speed (rpm) and current (A), and the stall torque (N·m) and
+    /// current (A).
+    ///
+    /// `R = V/I_stall`, `kt = T_stall/I_stall`, `ke = (V − R·I_0)/ω_0` and
+    /// `B = kt·I_0/ω_0`, so the motor runs at exactly the no-load speed and
+    /// current with no load, and stalls at exactly the stall current and
+    /// torque. Inductance and inertia aren't on most datasheets: set them
+    /// after.
+    pub fn from_datasheet(
+        rated_voltage: f64,
+        no_load_rpm: f64,
+        no_load_current: f64,
+        stall_torque: f64,
+        stall_current: f64,
+    ) -> Self { … }
+
+    /// This, with armature inductance `l` (H).
+    pub fn with_inductance(mut self, l: f64) -> Self { … }
+
+    /// This, with inertia `j` (kg·m²).
+    pub fn with_inertia(mut self, j: f64) -> Self { … }
+
+    /// This, with viscous friction `b` (N·m·s/rad).
+    pub fn with_friction(mut self, b: f64) -> Self { … }
+
+    /// This, with load torque `t` (N·m).
+    pub fn with_load(mut self, t: f64) -> Self { … }
+
+    /// The steady speed (rad/s) and armature current (A) at `voltage` (V):
+    /// the closed form the solver's DC answer matches.
+    pub fn steady_state(&self, voltage: f64) -> (f64, f64) { … }
+}
+
+/// Brushed DC motor ([`DcMotorParams`]). `nodes: [a, b]`: current into `a`
+/// turns it forwards.
+///
+/// Its result's `power` is the electrical power it takes, `V·I`. Its
+/// speed, torque and shaft power are in
+/// [`SimulationResult::motors`](crate::SimulationResult::motors) and each
+/// transient step's [`motors`](crate::TimestepSnapshot::motors).
+pub struct DcMotor {
+    /// Unique component identifier.
+    pub id: String,
+    /// Terminals `[a, b]`.
+    pub nodes: [NodeId; 2],
+    /// Electrical and mechanical constants.
+    pub params: DcMotorParams,
+}
+```
+
 ## `sindr/src/element/dc_stamp.rs`
 
 What an element's DC stamp writes into and reads from.
@@ -4121,6 +4235,8 @@ pub use crystal::Crystal;
 
 pub use current_source::CurrentSource;
 
+pub use dc_motor::{DcMotor, DcMotorParams};
+
 pub use digital_pin::{DigitalPin, LogicLevel, PinMode, PinModel, Pull};
 
 pub use diode::Diode;
@@ -4359,6 +4475,11 @@ pub struct Relay {
     pub inductance: f64,
 }
 ```
+
+## `sindr/src/element/report.rs`
+
+What an element reports at a solution: its results after a DC solve or
+a transient step.
 
 ## `sindr/src/element/resistor.rs`
 
@@ -7051,6 +7172,7 @@ periodic steady state, S-parameters, variable-order integration.
 | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
 | Crystal | Butterworth–Van Dyke: `Rm`–`Lm`–`Cm` beside `C0` ([`CrystalParams`]) |
 | Ferrite bead | `R_dc` into `L ∥ R_ac` (∥ `C`) ([`FerriteBeadParams`]) |
+| DC motor | Brushed: armature `R`, `L` and back-EMF `ke·ω`; shaft with torque `kt·i`, inertia, viscous friction and a load torque ([`element::DcMotorParams`]) |
 
 Parameters are Rust structs, not SPICE `.model` cards.
 
@@ -8463,7 +8585,7 @@ appear in the circuit.
 /// transformer its primary, and a voltage regulator its pass element
 /// (`Vin − Vout`, the output current, and its dissipation).
 pub struct ComponentResult {
-    /// Component id (matches the id on the source [`CircuitElement`]).
+    /// Component id (matches the id on the source [`CircuitElement`](crate::CircuitElement)).
     pub id: String,
     /// Voltage from `nodes[0]` to `nodes[1]` (V).
     pub voltage_across: f64,
@@ -8541,6 +8663,25 @@ pub struct RelayResult {
     pub contact_closed: bool,
 }
 
+/// A DC motor's shaft, from its [`DcMotor`](crate::element::DcMotor)
+/// element. Its electrical side is its [`ComponentResult`].
+pub struct MotorResult {
+    /// Shaft speed ω (rad/s), positive turning forwards.
+    pub speed: f64,
+    /// Electromagnetic torque `kt·i` (N·m), before friction, inertia and
+    /// load take their share.
+    pub torque: f64,
+    /// Power converted from electrical to mechanical, `torque · speed` (W):
+    /// the electrical power in, less the armature's `i²R` (and, in a
+    /// transient, the energy its inductance stores).
+    pub mechanical_power: f64,
+}
+
+impl MotorResult {
+    /// Shaft speed in revolutions per minute.
+    pub fn rpm(&self) -> f64 { … }
+}
+
 /// One timestep of a transient simulation: time, node voltages, per-component
 /// state at that instant.
 pub struct TimestepSnapshot {
@@ -8566,6 +8707,12 @@ pub struct TimestepSnapshot {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub state_of_charge: HashMap<String, f64>,
+    /// Each DC motor's shaft at this instant, by component id.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub motors: HashMap<String, MotorResult>,
 }
 
 /// Time-series data from a transient simulation.
@@ -8690,6 +8837,13 @@ pub struct SimulationResult {
         serde(skip_serializing_if = "HashMap::is_empty", default)
     )]
     pub state_of_charge: HashMap<String, f64>,
+    /// Each DC motor's shaft, by component id: its steady state at DC, the
+    /// last step's after a transient.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "HashMap::is_empty", default)
+    )]
+    pub motors: HashMap<String, MotorResult>,
 }
 
 /// A convergence fallback for nonlinear DC, tried in this order when plain
@@ -9431,6 +9585,8 @@ pub enum Param {
     Level(bool),
     /// A digital pin's weak pull resistor.
     Pull(Pull),
+    /// A DC motor's load torque (N·m), opposing rotation when positive.
+    LoadTorque(f64),
 }
 
 /// Which way a signal must cross an [`Event`]'s level.
@@ -10648,6 +10804,7 @@ pub enum ExportError {
 /// | `SwitchSpdt` | two `R`, common to each throw |
 /// | `Crystal` | `R`, `L`, `C` in series (the motional arm) beside `C` (C0) |
 /// | `FerriteBead` | `R` (DC) into `L` ∥ `R` (∥ `C`) |
+/// | `DcMotor` | the armature `R`, `L`, a 0 V `V` sensing its current and the back-EMF `E`; the shaft as `F` (`kt·i`), `C` (J), `R` (1/B) and `I` (the load) on a node whose voltage over `b` is the speed |
 /// | `Potentiometer` | two `R`, top–wiper and wiper–bottom |
 /// | `Photoresistor`, `Thermistor` | `R` at their resistance |
 /// | `Led`, `SchottkyDiode` | `D` with their Shockley parameters |

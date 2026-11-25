@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::{stamp_resistor_at, SWITCH_R_OPEN};
 
-use super::{AcStamp, Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device, Report};
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{num, Deck, ExportError};
@@ -51,6 +51,11 @@ impl Fuse {
 
 impl Device for Fuse {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, v / self.resistance());
+    }
 
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let r = if self.blown { 1e9_f64 } else { 0.001_f64 };

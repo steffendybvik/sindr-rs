@@ -80,7 +80,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **Crystals and ferrite beads are linear networks.** A crystal is the Butterworth–Van Dyke model: no overtones, spurious modes, drive-level dependence or aging. A ferrite bead is R + L ∥ R (∥ C) with no DC-bias derating, so its impedance doesn't fall with current as a real bead's does.
 - **Magnetics: saturating cores, no more.** `Inductor` can saturate along a smooth single-valued curve (`InductorSaturation`), and so can a `Transformer`'s magnetising branch, which carries the shared core flux behind each winding's leakage. There's no hysteresis, remanence, core loss or temperature dependence, a transformer has two windings, and SPICE export refuses a saturating core.
 - **No transmission lines** (lossless or lossy / W-element).
-- **No piezo / MEMS / electro-mechanical coupling.**
+- **DC motors are linear and brushed.** `DcMotor` has armature R and L, back-EMF, inertia, viscous friction and a load torque. There's no Coulomb or static friction (a stalled motor starts at any current), no brush drop, no armature reaction or magnetic saturation, no winding heating, and no commutation ripple. No brushless, stepper or servo motors.
+- **No piezo / MEMS electro-mechanical coupling.** The DC motor is the one electromechanical element.
 - **No switched-capacitor primitives** (sample-and-hold, charge-redistribution).
 
 ### Solver & numerics

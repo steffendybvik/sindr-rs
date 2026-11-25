@@ -6,7 +6,8 @@ use nalgebra::DVector;
 use crate::error::SimError;
 use crate::stamp::{stamp_companion_at, stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
-use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
+use crate::results::RelayResult;
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{unsupported, Deck, ExportError};
@@ -36,6 +37,32 @@ pub struct Relay {
 
 impl Device for Relay {
     device_identity!();
+
+    /// Its coil's voltage and current, and after a DC solve whether the
+    /// contact has picked up. With inductance, the coil current over a
+    /// step is the inductor's, and the inductor sees the coil voltage less
+    /// the resistive drop.
+    fn report(&self, r: &mut Report<'_>) {
+        let coil_voltage = r.across(&self.nodes[0], &self.nodes[1]);
+        let coil_current = match r.step() {
+            Some(step) if self.inductance > 0.0 => {
+                let history = r.inductor(0);
+                let (g, i_hist) = step.integ.inductor(self.inductance, &history);
+                let (g_s, i_s) = series_resistance(g, i_hist, self.coil_resistance);
+                let current = g_s * coil_voltage + i_s;
+                let v_inductor = coil_voltage - self.coil_resistance * current;
+                r.set_inductor(0, history.push(current, v_inductor));
+                current
+            }
+            _ => coil_voltage / self.coil_resistance,
+        };
+        r.port(&self.id, coil_voltage, coil_current);
+        r.relay(|| RelayResult {
+            id: self.id.clone(),
+            coil_voltage,
+            contact_closed: coil_voltage.abs() >= self.pickup_voltage,
+        });
+    }
 
     /// The coil's resistance, and the contact open or closed as at the DC
     /// bias point.

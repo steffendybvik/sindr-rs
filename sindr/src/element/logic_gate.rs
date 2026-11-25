@@ -6,7 +6,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 
 use super::digital_pin::{validate_model, PinModel};
-use super::{stamped_as_parts, AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{stamped_as_parts, AcStamp, Check, DcStamp, Device, Report, TranStamp};
 #[cfg(feature = "spice")]
 use crate::spice::export::{Deck, ExportError};
 
@@ -216,6 +216,9 @@ impl Device for LogicGate {
         let [out, vdd, gnd] = self.outputs();
         vec![[out, vdd], [out, gnd]]
     }
+
+    /// Lowered to its parts before any solve, and they report.
+    fn report(&self, _: &mut Report<'_>) {}
 
     /// Nothing: AC analysis stamps its parts.
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}

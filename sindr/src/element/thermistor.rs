@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::stamp_resistor_at;
 
-use super::{AcStamp, Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device, Report};
 use crate::noise::NoiseSources;
 use crate::ratings::RatingKind;
 
@@ -28,6 +28,15 @@ pub struct Thermistor {
 
 impl Device for Thermistor {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(
+            &self.id,
+            v,
+            v / crate::device_params::thermistor_resistance(self.temperature),
+        );
+    }
 
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let r = crate::device_params::thermistor_resistance(self.temperature);

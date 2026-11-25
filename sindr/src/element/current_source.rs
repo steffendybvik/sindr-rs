@@ -5,7 +5,7 @@ use crate::handle::NodeId;
 use crate::stamp::stamp_current_source_at;
 use crate::waveform::Waveform;
 
-use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{Deck, ExportError};
@@ -33,6 +33,22 @@ pub struct CurrentSource {
 
 impl Device for CurrentSource {
     device_identity!();
+
+    /// At a transient step the current includes the waveform's value.
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let i = match r.step() {
+            Some(step) => {
+                self.current
+                    + self
+                        .waveform
+                        .as_ref()
+                        .map_or(0.0, |w| w.evaluate(step.source_time))
+            }
+            None => self.current,
+        };
+        r.port(&self.id, v, i);
+    }
 
     /// Zero in AC: open.
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
