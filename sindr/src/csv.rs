@@ -11,7 +11,7 @@
 //! from a row is an empty field. Names that need it are quoted as RFC 4180
 //! has it. Lines end in `\n`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write as _;
 
 use crate::ac_analysis::AcResult;
@@ -109,10 +109,11 @@ fn real_table<'a>(
         .clone()
         .flat_map(|(_, v, _)| v.keys().map(String::as_str))
         .collect();
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut ids: Vec<&str> = Vec::new();
     for (_, _, components) in rows.clone() {
         for c in components {
-            if !ids.contains(&c.id.as_str()) {
+            if seen.insert(&c.id) {
                 ids.push(&c.id);
             }
         }
@@ -121,31 +122,50 @@ fn real_table<'a>(
         .chain(nodes.iter().map(|n| format!("v({n})")))
         .chain(ids.iter().map(|id| format!("i({id})")))
         .collect();
-    let rows = rows.map(|(x, voltages, components)| {
-        std::iter::once(Some(x))
-            .chain(nodes.iter().map(|n| voltages.get(*n).copied()))
-            .chain(ids.iter().map(|id| {
-                components
-                    .iter()
-                    .find(|c| c.id == *id)
-                    .map(|c| c.current_through)
-            }))
-            .collect::<Vec<_>>()
+    let mut first: HashMap<&str, usize> = HashMap::new();
+    let rows = rows.map(move |(x, voltages, components)| {
+        let mut row = Vec::with_capacity(1 + nodes.len() + ids.len());
+        row.push(Some(x));
+        row.extend(nodes.iter().map(|n| voltages.get(*n).copied()));
+        // Results usually list every component once, in circuit order: read
+        // them by position then, and through a first-match index otherwise.
+        let in_order =
+            components.len() == ids.len() && components.iter().zip(&ids).all(|(c, id)| c.id == *id);
+        if in_order {
+            row.extend(components.iter().map(|c| Some(c.current_through)));
+        } else {
+            first.clear();
+            for (k, c) in components.iter().enumerate() {
+                first.entry(c.id.as_str()).or_insert(k);
+            }
+            row.extend(
+                ids.iter()
+                    .map(|id| first.get(id).map(|&k| components[k].current_through)),
+            );
+        }
+        row
     });
     render(&header, rows)
 }
 
 fn render(header: &[String], rows: impl Iterator<Item = Vec<Option<f64>>>) -> String {
     let mut out = String::new();
-    let fields: Vec<String> = header.iter().map(|h| quote(h)).collect();
-    out.push_str(&fields.join(","));
+    for (k, h) in header.iter().enumerate() {
+        if k > 0 {
+            out.push(',');
+        }
+        out.push_str(&quote(h));
+    }
     out.push('\n');
     for row in rows {
-        let fields: Vec<String> = row
-            .into_iter()
-            .map(|v| v.map_or_else(String::new, number))
-            .collect();
-        out.push_str(&fields.join(","));
+        for (k, v) in row.into_iter().enumerate() {
+            if k > 0 {
+                out.push(',');
+            }
+            if let Some(v) = v {
+                write_number(&mut out, v);
+            }
+        }
         out.push('\n');
     }
     out
@@ -162,21 +182,26 @@ fn quote(name: &str) -> String {
 }
 
 /// `value` in the shortest form that reads back as the same `f64`: plain
-/// decimals in a readable range, exponent notation outside it.
-fn number(value: f64) -> String {
+/// decimals in a readable range, exponent notation outside it, appended to
+/// `out`.
+fn write_number(out: &mut String, value: f64) {
     let magnitude = value.abs();
-    let mut s = String::new();
     if value == 0.0 || !value.is_finite() || (1e-4..1e15).contains(&magnitude) {
-        let _ = write!(s, "{value}");
+        let _ = write!(out, "{value}");
     } else {
-        let _ = write!(s, "{value:e}");
+        let _ = write!(out, "{value:e}");
     }
-    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn number(value: f64) -> String {
+        let mut s = String::new();
+        write_number(&mut s, value);
+        s
+    }
 
     #[test]
     fn numbers_read_back_exactly() {
@@ -199,6 +224,32 @@ mod tests {
         }
         assert_eq!(number(1e-14), "1e-14");
         assert_eq!(number(0.5), "0.5");
+    }
+
+    #[test]
+    fn currents_line_up_with_their_columns_in_any_order() {
+        let c = |id: &str, i: f64| ComponentResult {
+            id: id.into(),
+            voltage_across: 0.0,
+            current_through: i,
+            power: 0.0,
+        };
+        let v = HashMap::from([("a".to_string(), 1.0)]);
+        let rows = [
+            vec![c("R1", 1.0), c("R2", 2.0)],
+            vec![c("R2", 4.0), c("R1", 3.0), c("R3", 5.0)],
+            vec![c("R3", 6.0), c("R3", 7.0)],
+        ];
+        let csv = real_table(
+            "t",
+            rows.iter()
+                .enumerate()
+                .map(|(k, r)| (k as f64, &v, r.as_slice())),
+        );
+        assert_eq!(
+            csv,
+            "t,v(a),i(R1),i(R2),i(R3)\n0,1,1,2,\n1,1,3,4,5\n2,1,,,6\n"
+        );
     }
 
     #[test]
