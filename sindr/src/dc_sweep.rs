@@ -380,9 +380,7 @@ pub(crate) fn dc_sweep_with(
     axis.check(circuit)?;
     crate::validation::validate_circuit(circuit)?;
     let mut sweep = sweep_curve(circuit, axis, None, opts)?;
-    for point in &mut sweep.points {
-        crate::composite::fold(original, &mut point.result);
-    }
+    crate::composite::fold_all(original, sweep.points.iter_mut().map(|p| &mut p.result));
     Ok(sweep)
 }
 
@@ -517,9 +515,8 @@ pub(crate) fn dc_sweep_nested_with(
         let sweep = sweep_curve(&work, inner, seed.as_ref(), opts)?;
         curves.push(NestedDcSweepCurve { outer_value, sweep });
     }
-    for point in curves.iter_mut().flat_map(|c| &mut c.sweep.points) {
-        crate::composite::fold(original, &mut point.result);
-    }
+    let points = curves.iter_mut().flat_map(|c| &mut c.sweep.points);
+    crate::composite::fold_all(original, points.map(|p| &mut p.result));
     Ok(NestedDcSweepResult {
         outer_source_id: outer.source_id.clone(),
         curves,

@@ -55,6 +55,8 @@
 //! ```
 //!
 
+use std::collections::HashMap;
+
 use crate::element::{Capacitor, CurrentSource, Inductor, Resistor, VoltageSource};
 use crate::measure::{Measurable, Measurement, Spec, SpecStatus};
 use crate::ratings::{check_ratings, RatingKind, RatingStatus};
@@ -686,6 +688,8 @@ where
 
     let mut failed_runs = Vec::new();
     let mut checks: Vec<WorstRating> = Vec::new();
+    // Each part's ratings and where they sit in `checks`.
+    let mut slots: HashMap<String, Vec<(RatingKind, usize)>> = HashMap::new();
     for (index, (values, report)) in reports.into_iter().enumerate() {
         let report = match report {
             Ok(report) => report,
@@ -695,12 +699,19 @@ where
             }
         };
         for check in report.checks {
-            let slot = match checks
-                .iter()
-                .position(|c| c.part == check.part && c.rating == check.rating)
-            {
+            let found = slots.get(check.part.as_str()).and_then(|ratings| {
+                ratings
+                    .iter()
+                    .find(|(rating, _)| *rating == check.rating)
+                    .map(|&(_, slot)| slot)
+            });
+            let slot = match found {
                 Some(slot) => slot,
                 None => {
+                    slots
+                        .entry(check.part.clone())
+                        .or_default()
+                        .push((check.rating, checks.len()));
                     checks.push(WorstRating {
                         part: check.part.clone(),
                         rating: check.rating,
