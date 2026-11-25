@@ -227,6 +227,9 @@ fn reads_with_hysteresis_between_vil_and_vih() {
     assert_eq!(p.reads(1.5, Some(LogicLevel::Low)), LogicLevel::Low);
     assert_eq!(p.reads(1.7, None), LogicLevel::High);
     assert_eq!(p.reads(1.6, None), LogicLevel::Low);
+    // A level is the bool firmware reads.
+    assert!(bool::from(p.reads(2.31, None)));
+    assert!(!bool::from(p.reads(0.99, None)));
 }
 
 #[test]

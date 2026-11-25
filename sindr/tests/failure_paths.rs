@@ -404,6 +404,31 @@ fn zener_without_a_breakdown_voltage_is_rejected() {
     }
 }
 
+/// A zener's temperature is checked on the zener itself, when the circuit
+/// is validated, and on the diode it is lowered to, when it is solved:
+/// both name the zener.
+#[test]
+fn zener_temperature_that_is_not_positive() {
+    for temperature in [0.0, -10.0, f64::NAN] {
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                v("V1", "in", "0", 12.0),
+                r("R1", "in", "k", 1e3),
+                CircuitElement::ZenerDiode(ZenerDiode {
+                    id: "DZ1".into(),
+                    nodes: ["0".into(), "k".into()],
+                    vz: 5.1,
+                    temperature,
+                }),
+            ],
+        );
+        let check = expect_invalid_component("DZ1", "temperature");
+        check("validate", validate_circuit(&circuit).unwrap_err());
+        every_analysis_fails(&circuit, &check);
+    }
+}
+
 /// A modelled op-amp's rails must leave room between them.
 #[test]
 fn op_amp_rails_must_not_cross() {
