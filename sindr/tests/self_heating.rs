@@ -222,7 +222,7 @@ fn thermal_without_a_resistance_is_rejected() {
     );
     assert!(matches!(
         solve_circuit(&c),
-        Err(SimError::InvalidComponent(msg)) if msg.contains("D1")
+        Err(SimError::InvalidComponent { id, .. }) if id == "D1"
     ));
 }
 
@@ -479,10 +479,13 @@ fn nonpositive_thermal_values_are_rejected_by_name() {
         let mut c = led_circuit();
         c.parts.insert("D1".into(), heated(thermal));
         match solve_circuit(&c) {
-            Err(SimError::InvalidComponent(msg)) => assert_eq!(
-                msg,
-                format!("part `D1`: {what} must be positive and finite (got {got})")
-            ),
+            Err(SimError::InvalidComponent { id, reason }) => {
+                assert_eq!(id, "D1");
+                assert_eq!(
+                    reason,
+                    format!("{what} must be positive and finite (got {got})")
+                );
+            }
             other => panic!("{what}: expected InvalidComponent, got {other:?}"),
         }
     }

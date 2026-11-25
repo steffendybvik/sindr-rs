@@ -251,8 +251,8 @@ fn bad_parameters_name_the_part() {
         params.l = 0.0;
     }
     match solve_circuit(&circuit) {
-        Err(SimError::InvalidComponent(msg)) => {
-            assert!(msg.contains("fb1") && msg.contains("l (H)"))
+        Err(SimError::InvalidComponent { id, reason }) => {
+            assert!(id == "fb1" && reason.contains("l (H)"))
         }
         other => panic!("{other:?}"),
     }
@@ -284,8 +284,8 @@ fn crystal_without_c0_is_its_motional_arm_alone() {
 fn negative_or_nan_c0_is_refused() {
     for c0 in [-1e-12, f64::NAN] {
         match lower(&crystal_with(c0)) {
-            Err(SimError::InvalidComponent(msg)) => {
-                assert!(msg.contains("y1") && msg.contains("c0"), "{msg}")
+            Err(SimError::InvalidComponent { id, reason }) => {
+                assert!(id == "y1" && reason.contains("c0"), "{reason}")
             }
             other => panic!("c0 = {c0}: {other:?}"),
         }
@@ -321,7 +321,7 @@ fn a_part_id_already_taken_is_refused() {
     circuit.components.push(r("s1#a", "a", "0", 1e3));
     assert!(matches!(
         solve_circuit(&circuit),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::DuplicateId { lowered: true, .. })
     ));
 }
 

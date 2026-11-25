@@ -219,7 +219,7 @@ impl AnalysisRequest {
     ///
     /// # Errors
     ///
-    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// The inner `Result` is [`SimError::InvalidConfig`](crate::SimError::InvalidConfig)
     /// for an axis of more than 10⁷ points.
     #[allow(clippy::type_complexity)]
     pub fn dc_axes(

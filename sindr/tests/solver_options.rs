@@ -272,7 +272,7 @@ fn bad_options_are_rejected() {
         f(&mut o);
         let err = Solver::new(o).circuit(&c).unwrap_err();
         assert!(
-            matches!(&err, SimError::InvalidComponent(m) if m.contains(what)),
+            matches!(&err, SimError::InvalidConfig { config: sindr::ConfigKind::SolverOptions, reason } if reason.contains(what)),
             "{what}: {err}"
         );
     }
@@ -488,7 +488,7 @@ fn every_analysis_rejects_bad_options() {
     o.reltol = -1.0;
     for (name, result) in every_analysis(&Solver::new(o), &two_source_diode_circuit()) {
         assert!(
-            matches!(&result, Err(SimError::InvalidComponent(m)) if m.contains("reltol")),
+            matches!(&result, Err(SimError::InvalidConfig { config: sindr::ConfigKind::SolverOptions, reason }) if reason.contains("reltol")),
             "{name}: {result:?}"
         );
     }

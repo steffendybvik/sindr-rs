@@ -177,7 +177,10 @@ fn the_axes_are_checked() {
         dc_sweep_nested(&c, inner, outer).unwrap_err().to_string()
     };
     assert!(err(&vds, &vds).contains("both"));
-    assert!(err(&vds, &DcSweepAxis::new("nope", 0.0, 1.0, 3)).contains("not found"));
+    assert!(matches!(
+        dc_sweep_nested(&c, &vds, &DcSweepAxis::new("nope", 0.0, 1.0, 3)),
+        Err(sindr::SimError::UnknownComponent(id)) if id == "nope"
+    ));
     assert!(err(&vds, &DcSweepAxis::new("VGS", 0.0, 1.0, 1)).contains("at least 2"));
     // Each axis is within the limit, but not the two together.
     assert!(err(
@@ -215,7 +218,9 @@ fn from_step_reads_spice_steps() {
         (0.0, 1.0, f64::NAN),
     ] {
         match DcSweepAxis::from_step("V1", start, stop, step) {
-            Err(sindr::SimError::InvalidComponent(m)) => assert!(m.contains("finite"), "{m}"),
+            Err(sindr::SimError::InvalidConfig { reason, .. }) => {
+                assert!(reason.contains("finite"), "{reason}")
+            }
             other => panic!("{start}, {stop}, {step}: {other:?}"),
         }
     }

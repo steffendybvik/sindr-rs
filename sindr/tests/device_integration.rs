@@ -642,7 +642,7 @@ fn comparator_rails_must_be_ordered() {
     };
     assert!(matches!(
         solve_circuit(&circuit),
-        Err(SimError::InvalidComponent(msg)) if msg.contains("v_pos")
+        Err(SimError::InvalidComponent { reason, .. }) if reason.contains("v_pos")
     ));
 }
 
@@ -782,7 +782,7 @@ fn body_diode_id_must_be_free() {
     let mut circuit = body_diode_circuit(sindr::MosfetKind::Nmos, -3.0);
     circuit.components.push(resistor("M1.body", "a", "0", 1e3));
     match solve_circuit(&circuit) {
-        Err(SimError::InvalidComponent(m)) => assert!(m.contains("M1.body"), "{m}"),
-        other => panic!("expected InvalidComponent, got {other:?}"),
+        Err(SimError::DuplicateId { id, lowered: true }) => assert_eq!(id, "M1.body"),
+        other => panic!("expected DuplicateId, got {other:?}"),
     }
 }

@@ -668,7 +668,7 @@ let phase = result.phase_curve("n_out"); // (Hz, degrees)
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidComponent`.
+`num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidConfig`.
 
 ## Transfer function
 
@@ -1091,8 +1091,11 @@ pub enum SimError {
     FloatingNode(String),
     SingularMatrix,
     InvalidSolution,
-    InvalidComponent(String),
-    InvalidResistance(String),
+    InvalidComponent { id: String, reason: String },
+    InvalidConfig { config: ConfigKind, reason: String },
+    DuplicateId { id: String, lowered: bool },
+    UnknownNode { node: String, component: Option<String> },
+    UnknownComponent(String),
     ConvergenceFailed {
         iterations: usize,
         max_step_volts: f64,
@@ -1101,9 +1104,15 @@ pub enum SimError {
         at: SolvePoint,
     },
     ThermalRunaway { part: String, temperature: f64 },
+    TimestepTooSmall { time: f64, step: f64 },
+    Cancelled { time: f64 },
     Measurement { name: String, reason: String },
+    Spectrum { reason: String },
+    NotFinite { component: String, expression: String, inputs: String },
 }
 ```
+
+A definition the solver refuses carries its cause as fields, so match on the variant, not the message. `InvalidComponent` is a component's value out of range (a zero resistance, a `bf` that isn't positive), with the component's `id` and a `reason` naming the field. `InvalidConfig` is an analysis setting it can't use, and `config` says which settings: `ConfigKind::Ac`, `Transient`, `DcSweep`, `SolverOptions` and so on. `DuplicateId` is two components with one id, `UnknownNode` a net nothing in the circuit has, and `UnknownComponent` an id nothing has, such as a sweep's source or a tolerance's component.
 
 `ConvergenceFailed` means Newton-Raphson did not converge — usually caused by a nonlinear circuit with no DC path to ground, or component values far outside typical operating ranges. The `max_step_volts` field gives the largest per-node Newton step (V) on the final iteration, useful for distinguishing slow convergence from genuine divergence. `node` is the node that took it, `components` the parts on that node, and `at` where the analysis failed (`SolvePoint::OperatingPoint`, `DcSweep`, `Temperature` or `Transient { time }`), so the message points at the part to fix. (Note: this is a step magnitude `max_i |V_new[i] − V_prev[i]|`, not a KCL residual `|F(x)|`.)
 

@@ -36,7 +36,7 @@ use crate::ac_analysis::{
     validate_config, AcConfig, FrequencySpacing,
 };
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::handle::{ComponentId, NodeId};
 use crate::node_map::NodeMap;
 use crate::results::SimulationResult;
@@ -219,9 +219,11 @@ struct Generator {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the input isn't an independent
-///   voltage or current source, the output or reference node isn't in the
-///   circuit, or the frequencies are invalid (`f_start` must be above 0)
+/// - [`SimError::UnknownNode`] if the output or reference node isn't in
+///   the circuit
+/// - [`SimError::InvalidConfig`] if the input isn't an independent voltage
+///   or current source, or the frequencies are invalid (`f_start` must be
+///   above 0)
 /// - Any [`SimError`] from the DC operating point
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -256,7 +258,7 @@ pub(crate) fn solve_noise_with(
 ) -> Result<NoiseResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    let invalid = |msg: String| SimError::InvalidComponent(format!("noise: {msg}"));
+    let invalid = |msg: String| SimError::config(ConfigKind::Noise, msg);
 
     let ac = AcConfig::new(
         config.input_source.clone(),
@@ -273,19 +275,12 @@ pub(crate) fn solve_noise_with(
         )));
     }
     let node_map = NodeMap::from_circuit(circuit);
-    let node = |role: &str, name: &str| match node_map.index(name) {
-        None if name != circuit.ground_node => Err(invalid(format!(
-            "{role} node `{name}` is not in the circuit"
-        ))),
+    let node = |name: &str| match node_map.index(name) {
+        None if name != circuit.ground_node => Err(SimError::unknown_node(name)),
         index => Ok(index),
     };
-    let out = node("output", &config.output)?;
-    let reference = config
-        .reference
-        .as_deref()
-        .map(|name| node("reference", name))
-        .transpose()?
-        .flatten();
+    let out = node(&config.output)?;
+    let reference = config.reference.as_deref().map(node).transpose()?.flatten();
     let is_input = circuit.components.iter().any(|c| {
         matches!(c, CircuitElement::VoltageSource(VoltageSource { id, .. }) | CircuitElement::CurrentSource(CurrentSource { id, .. }) if *id == config.input_source)
     });

@@ -66,9 +66,10 @@ fn positive(id: &str, what: &str, value: f64) -> Result<f64, SimError> {
     if value.is_finite() && value > 0.0 {
         Ok(value)
     } else {
-        Err(SimError::InvalidComponent(format!(
-            "part `{id}`: thermal {what} must be positive and finite (got {value})"
-        )))
+        Err(SimError::component(
+            id,
+            format!("thermal {what} must be positive and finite (got {value})"),
+        ))
     }
 }
 
@@ -93,11 +94,9 @@ impl Heated {
         thermal: &Thermal,
         element: &CircuitElement,
     ) -> Result<Entry, SimError> {
-        let rth = thermal.resistance().ok_or_else(|| {
-            SimError::InvalidComponent(format!(
-                "part `{id}`: thermal needs rth_ja, or rth_jc and rth_ca"
-            ))
-        })?;
+        let rth = thermal
+            .resistance()
+            .ok_or_else(|| SimError::component(id, "thermal needs rth_ja, or rth_jc and rth_ca"))?;
         Ok(Entry {
             index,
             id: id.to_string(),

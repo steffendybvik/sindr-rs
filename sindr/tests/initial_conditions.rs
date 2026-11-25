@@ -249,8 +249,13 @@ fn impossible_initial_conditions_are_rejected() {
     };
     let base = TransientConfig::new(1e-3, 1e-5);
     let rejected = |config: TransientConfig| match solve_transient(&circuit, &config) {
-        Err(sindr::SimError::InvalidComponent(msg)) => msg,
-        other => panic!("expected InvalidComponent, got {other:?}"),
+        Err(
+            e @ sindr::SimError::InvalidConfig {
+                config: sindr::ConfigKind::Transient,
+                ..
+            },
+        ) => e.to_string(),
+        other => panic!("expected InvalidConfig, got {other:?}"),
     };
     let ics = |pairs: &[(&str, f64)]| {
         pairs

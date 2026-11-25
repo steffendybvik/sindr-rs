@@ -239,7 +239,7 @@ fn rejects_crossed_thresholds_and_bad_resistances() {
     ]);
     let err = solve_circuit(&circuit).unwrap_err();
     assert!(
-        matches!(&err, SimError::InvalidComponent(m) if m.contains("A0") && m.contains("vih")),
+        matches!(&err, SimError::InvalidComponent { id, reason } if id == "A0" && reason.contains("vih")),
         "{err}"
     );
     assert!(validate_circuit(&circuit).is_err());
@@ -247,7 +247,7 @@ fn rejects_crossed_thresholds_and_bad_resistances() {
     let mut p = pin("A1", "pad", PinMode::Input, false);
     p.model.r_high = 0.0;
     let err = solve_circuit(&powered(vec![CircuitElement::DigitalPin(p)])).unwrap_err();
-    assert!(matches!(&err, SimError::InvalidComponent(m) if m.contains("r_high")));
+    assert!(matches!(&err, SimError::InvalidComponent { reason, .. } if reason.contains("r_high")));
 }
 
 /// Firmware toggling a pin into an RC through a session: the mode and the
@@ -320,9 +320,9 @@ fn session_drives_a_pin_and_reads_another() {
     assert!((sim.voltage("rc").unwrap() - expected).abs() < 1e-3);
 
     let err = sim.set_param("OUT", Param::Resistance(1.0)).unwrap_err();
-    assert!(matches!(err, SimError::InvalidComponent(_)));
+    assert!(matches!(err, SimError::InvalidConfig { .. }));
     let err = sim.set_param("R1", Param::Level(true)).unwrap_err();
-    assert!(matches!(err, SimError::InvalidComponent(_)));
+    assert!(matches!(err, SimError::InvalidConfig { .. }));
 }
 
 /// A pin past its current rating, and a port past the sum its pins may

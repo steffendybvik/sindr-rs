@@ -22,7 +22,7 @@ use crate::element::layout::Layout;
 use crate::element::mosfet::mosfet_parasitics;
 use crate::element::transformer::transformer_flux;
 use crate::element::{parasitic_history, Reported, Step, TranStamp};
-use crate::error::{SimError, SolvePoint};
+use crate::error::{ConfigKind, SimError, SolvePoint};
 pub use crate::integration::IntegrationMethod;
 use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
@@ -452,7 +452,7 @@ impl TransientConfig {
     /// as [`initial_currents`](Self::initial_currents) says.
     /// An id that isn't an inductor or a relay with coil inductance (a
     /// transformer, for now) makes the run fail with
-    /// [`SimError::InvalidComponent`].
+    /// [`SimError::InvalidConfig`].
     pub fn with_initial_current(mut self, id: impl Into<String>, amps: f64) -> Self {
         self.initial_currents.insert(id.into(), amps);
         self
@@ -547,7 +547,7 @@ impl TransientConfig {
 
     pub(crate) fn validate(&self, max_steps: u64) -> Result<(), SimError> {
         let max_steps = max_steps as f64;
-        let invalid = |msg: String| Err(SimError::InvalidComponent(format!("transient: {msg}")));
+        let invalid = |msg: String| Err(SimError::config(ConfigKind::Transient, msg));
         for (name, value) in [
             ("tstop", Some(self.tstop)),
             ("tstep", Some(self.tstep)),
@@ -597,7 +597,7 @@ impl TransientConfig {
 ///
 /// # Errors
 ///
-/// [`SimError::InvalidComponent`] for an invalid config (a non-finite or
+/// [`SimError::InvalidConfig`] for an invalid config (a non-finite or
 /// non-positive time, `tstep > tstop`, or more than 10⁷ steps counting one
 /// for each waveform breakpoint), a source with more than
 /// [`MAX_BREAKPOINTS`](crate::waveform::MAX_BREAKPOINTS) breakpoints before
@@ -832,11 +832,14 @@ pub(crate) fn run_transient(
     let steps = (tstop / h_max).ceil() + breakpoints.len() as f64;
     let max_steps = opts.max_transient_steps as f64;
     if steps > max_steps {
-        return Err(SimError::InvalidComponent(format!(
-            "transient: {:.3e} grid steps plus {} waveform breakpoints is more than the {max_steps:e} steps allowed",
-            (tstop / h_max).ceil(),
-            breakpoints.len()
-        )));
+        return Err(SimError::config(
+            ConfigKind::Transient,
+            format!(
+                "{:.3e} grid steps plus {} waveform breakpoints is more than the {max_steps:e} steps allowed",
+                (tstop / h_max).ceil(),
+                breakpoints.len()
+            ),
+        ));
     }
     stepper.breakpoints = breakpoints;
 
@@ -1556,12 +1559,7 @@ fn operating_point_start(
     // The `.ic` values seed Newton too, over any nodeset.
     let mut op_opts = opts.clone();
     op_opts.nodeset.extend(config.initial_voltages.clone());
-    let op = crate::solve_dc_circuit(&dc, &op_opts).map_err(|e| match e {
-        SimError::InvalidComponent(msg) => {
-            SimError::InvalidComponent(format!("transient operating point: {msg}"))
-        }
-        other => other,
-    })?;
+    let op = crate::solve_dc_circuit(&dc, &op_opts)?;
 
     let mut currents = HashMap::new();
     for component in &circuit.components {
@@ -1635,7 +1633,7 @@ fn check_initial_conditions(
     node_map: &NodeMap,
     config: &TransientConfig,
 ) -> Result<(), SimError> {
-    let invalid = |msg: String| Err(SimError::InvalidComponent(format!("transient: {msg}")));
+    let invalid = |msg: String| Err(SimError::config(ConfigKind::Transient, msg));
     let mut voltages: Vec<_> = config.initial_voltages.iter().collect();
     voltages.sort_by(|a, b| a.0.cmp(b.0));
     for (node, v) in voltages {
@@ -1730,10 +1728,13 @@ pub(crate) fn waveform_breakpoints(
         };
         let (bps, capped) = w.breakpoints_between(from, tstop);
         if capped {
-            return Err(SimError::InvalidComponent(format!(
-                "transient: source '{id}' has more than {} waveform breakpoints before {tstop} s",
-                crate::waveform::MAX_BREAKPOINTS
-            )));
+            return Err(SimError::config(
+                ConfigKind::Transient,
+                format!(
+                    "source '{id}' has more than {} waveform breakpoints before {tstop} s",
+                    crate::waveform::MAX_BREAKPOINTS
+                ),
+            ));
         }
         all.extend(bps);
     }

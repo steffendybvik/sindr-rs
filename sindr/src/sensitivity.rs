@@ -214,8 +214,9 @@ impl SensResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the output node is not in the circuit,
-///   or a current output does not name an independent voltage source
+/// - [`SimError::UnknownNode`] if the output node is not in the circuit
+/// - [`SimError::InvalidConfig`] if a current output does not name an
+///   independent voltage source
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///

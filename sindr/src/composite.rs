@@ -41,9 +41,10 @@ fn positive(id: &str, what: &str, v: f64) -> Result<f64, SimError> {
     if v.is_finite() && v > 0.0 {
         Ok(v)
     } else {
-        Err(SimError::InvalidComponent(format!(
-            "`{id}`: {what} {v} must be a positive, finite number"
-        )))
+        Err(SimError::component(
+            id,
+            format!("{what} {v} must be a positive, finite number"),
+        ))
     }
 }
 
@@ -97,10 +98,10 @@ fn crystal(
     let esr = positive(id, "esr (Ω)", p.esr)?;
     let cm = positive(id, "cm (F)", p.cm)?;
     if !(p.c0.is_finite() && p.c0 >= 0.0) {
-        return Err(SimError::InvalidComponent(format!(
-            "`{id}`: c0 {} F must be zero or positive",
-            p.c0
-        )));
+        return Err(SimError::component(
+            id,
+            format!("c0 {} F must be zero or positive", p.c0),
+        ));
     }
     let lm = positive(id, "motional inductance (H)", p.lm())?;
     let [a, b] = nodes.clone();

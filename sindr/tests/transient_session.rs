@@ -369,7 +369,12 @@ fn a_value_it_already_has_doesnt_restart_the_integration() {
 fn bad_changes_are_refused_and_change_nothing() {
     let config = TransientConfig::new(1e-3, 10e-6);
     let mut sim = TransientSession::new(&rc(None), &config).unwrap();
-    let invalid = |r: Result<(), SimError>| matches!(r, Err(SimError::InvalidComponent(_)));
+    let invalid = |r: Result<(), SimError>| {
+        matches!(
+            r,
+            Err(SimError::InvalidConfig { .. } | SimError::UnknownComponent(_))
+        )
+    };
     assert!(invalid(sim.set_source("R1", 1.0)));
     assert!(invalid(sim.set_source("NOPE", 1.0)));
     assert!(invalid(sim.set_source("PIN", f64::NAN)));
@@ -377,7 +382,7 @@ fn bad_changes_are_refused_and_change_nothing() {
     // The part's own check, as `validate_circuit` would give.
     assert!(matches!(
         sim.set_param("R1", Param::Resistance(-1.0)),
-        Err(SimError::InvalidResistance(id)) if id == "R1"
+        Err(SimError::InvalidComponent { id, .. }) if id == "R1"
     ));
     assert!(invalid(sim.set_param("R1", Param::Throw(SpdtPosition::A))));
     assert!(invalid(
@@ -396,26 +401,26 @@ fn a_session_only_goes_forward_and_ends_at_tstop() {
     sim.advance_to(0.5e-3).unwrap();
     assert!(matches!(
         sim.advance_to(0.4e-3),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig { .. })
     ));
     assert!(matches!(
         sim.advance_to(2e-3),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig { .. })
     ));
     assert!(matches!(
         sim.advance_to(f64::NAN),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig { .. })
     ));
     assert!(matches!(
         sim.run_until(1e-3, &[Event::crosses("nowhere", 1.0, Edge::Rising)]),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::UnknownNode { .. })
     ));
     assert!(matches!(
         sim.run_until(
             1e-3,
             &[Event::crosses("out", 1.0, Edge::Rising).within(0.0)]
         ),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig { .. })
     ));
     assert_eq!(sim.voltage("nowhere"), None);
     assert_eq!(sim.voltage("0"), Some(0.0));
@@ -495,7 +500,7 @@ fn a_failed_session_refuses_to_go_on() {
     assert!(matches!(e, SimError::TimestepTooSmall { .. }), "{e:?}");
     assert!(matches!(
         sim.advance_to(4e-6),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig { .. })
     ));
 }
 
@@ -590,11 +595,11 @@ fn current_sources_sensors_and_temperatures_take_their_new_values() {
     // Self-heating sets the LED's junction; a resistor has none.
     assert!(matches!(
         sim.set_param("D1", Param::Temperature(350.0)),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig { .. })
     ));
     assert!(matches!(
         sim.set_param("RT", Param::Temperature(350.0)),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig { .. })
     ));
     sim.advance_to(2e-6).unwrap();
     assert!((sim.voltage("i").unwrap() - 2.0).abs() < 1e-6);
@@ -620,7 +625,7 @@ fn of_two_events_crossed_in_one_step_the_earlier_wins() {
     assert!((1.0..1.001).contains(&v), "{v}");
     assert!(matches!(
         sim.run_until(5e-3, &[Event::crosses("out", f64::NAN, Edge::Rising)]),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig { .. })
     ));
 }
 

@@ -9,7 +9,7 @@
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::element::{Bjt, Diode, Led, Photodiode, SchottkyDiode, ZenerDiode};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::results::SimulationResult;
 
 /// One temperature sweep data point.
@@ -124,7 +124,7 @@ impl TempSweepConfig {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_points < 2` or above 10⁷, or either endpoint
+/// - [`SimError::InvalidConfig`] if `num_points < 2` or above 10⁷, or either endpoint
 ///   is not finite or not above 0 K
 /// - Any [`SimError`] from solving at one of the temperatures (propagated
 ///   immediately)
@@ -182,16 +182,18 @@ pub(crate) fn temperature_sweep_with(
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
     if num_steps < 2 {
-        return Err(SimError::InvalidComponent(
-            "temperature_sweep: num_points must be >= 2".into(),
+        return Err(SimError::config(
+            ConfigKind::TemperatureSweep,
+            "num_points must be >= 2",
         ));
     }
-    crate::validation::check_sweep_points("temperature_sweep", "num_points", num_steps)?;
+    crate::validation::check_sweep_points(ConfigKind::TemperatureSweep, "num_points", num_steps)?;
     for t in [temp_start, temp_end] {
         if !t.is_finite() || t <= 0.0 {
-            return Err(SimError::InvalidComponent(format!(
-                "temperature_sweep: temperatures must be finite and > 0 K (got {t})"
-            )));
+            return Err(SimError::config(
+                ConfigKind::TemperatureSweep,
+                format!("temperatures must be finite and > 0 K (got {t})"),
+            ));
         }
     }
 

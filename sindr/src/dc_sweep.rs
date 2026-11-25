@@ -10,7 +10,7 @@ use crate::handle::ComponentId;
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::results::SimulationResult;
 use crate::solver::SolverOptions;
 
@@ -124,7 +124,7 @@ impl DcSweepAxis {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] for a value that isn't finite, a step
+    /// [`SimError::InvalidConfig`] for a value that isn't finite, a step
     /// that is zero (with `start != stop`) or points away from `stop`, or
     /// more than 10⁷ points.
     pub fn from_step(
@@ -134,7 +134,7 @@ impl DcSweepAxis {
         step: f64,
     ) -> Result<Self, SimError> {
         let source_id = source_id.into();
-        let invalid = |msg: String| Err(SimError::InvalidComponent(format!("DC sweep: {msg}")));
+        let invalid = |msg: String| Err(SimError::config(ConfigKind::DcSweep, msg));
         if !(start.is_finite() && stop.is_finite() && step.is_finite()) {
             return invalid(format!(
                 "{source_id} from {start} to {stop} in steps of {step} must be finite"
@@ -181,16 +181,20 @@ impl DcSweepAxis {
     /// finite, or a source that isn't in `circuit`.
     fn check(&self, circuit: &Circuit) -> Result<(), SimError> {
         if self.num_points < 2 && !(self.num_points == 1 && self.start == self.stop) {
-            return Err(SimError::InvalidComponent(
-                "DC sweep requires at least 2 points, or 1 when start equals stop".to_string(),
+            return Err(SimError::config(
+                ConfigKind::DcSweep,
+                "requires at least 2 points, or 1 when start equals stop",
             ));
         }
-        crate::validation::check_sweep_points("DC sweep", "num_points", self.num_points)?;
+        crate::validation::check_sweep_points(ConfigKind::DcSweep, "num_points", self.num_points)?;
         if !self.start.is_finite() || !self.stop.is_finite() {
-            return Err(SimError::InvalidComponent(format!(
-                "DC sweep endpoints must be finite (got {} to {})",
-                self.start, self.stop
-            )));
+            return Err(SimError::config(
+                ConfigKind::DcSweep,
+                format!(
+                    "endpoints must be finite (got {} to {})",
+                    self.start, self.stop
+                ),
+            ));
         }
         let found = circuit.components.iter().any(|c| match c {
             CircuitElement::VoltageSource(VoltageSource { id, .. })
@@ -198,10 +202,17 @@ impl DcSweepAxis {
             _ => false,
         });
         if !found {
-            return Err(SimError::InvalidComponent(format!(
-                "Voltage or current source '{}' not found in circuit",
-                self.source_id
-            )));
+            if !circuit
+                .components
+                .iter()
+                .any(|c| c.id() == self.source_id.as_str())
+            {
+                return Err(SimError::UnknownComponent(self.source_id.to_string()));
+            }
+            return Err(SimError::config(
+                ConfigKind::DcSweep,
+                format!("'{}' is not a voltage or current source", self.source_id),
+            ));
         }
         Ok(())
     }
@@ -306,9 +317,10 @@ fn sweep_curve(
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `num_points < 2` (1 is allowed when
+/// - [`SimError::UnknownComponent`] if no component has `source_id`
+/// - [`SimError::InvalidConfig`] if `num_points < 2` (1 is allowed when
 ///   `start == stop`) or above 10⁷, `start` or `stop` is not finite, or
-///   `source_id` doesn't match any voltage or current source in the circuit
+///   `source_id` isn't a voltage or current source
 /// - Any [`SimError`] returned by [`solve_circuit`](crate::solve_circuit)
 ///   at one of the sweep points (propagated immediately)
 ///
@@ -406,7 +418,8 @@ pub struct NestedDcSweepCurve {
 ///
 /// # Errors
 ///
-/// [`SimError::InvalidComponent`] for an axis with fewer than 2 points (1 is
+/// [`SimError::UnknownComponent`] for a source id no component has;
+/// [`SimError::InvalidConfig`] for an axis with fewer than 2 points (1 is
 /// allowed when its `start` and `stop` are equal), values that aren't
 /// finite, a source that isn't a voltage or current source in the circuit,
 /// both axes on the same source, or more than 10⁷ points in all; and any
@@ -474,13 +487,16 @@ pub(crate) fn dc_sweep_nested_with(
     inner.check(circuit)?;
     outer.check(circuit)?;
     if inner.source_id == outer.source_id {
-        return Err(SimError::InvalidComponent(format!(
-            "DC sweep: '{}' can't be both the inner and the outer source",
-            inner.source_id
-        )));
+        return Err(SimError::config(
+            ConfigKind::DcSweep,
+            format!(
+                "'{}' can't be both the inner and the outer source",
+                inner.source_id
+            ),
+        ));
     }
     let total = inner.num_points.saturating_mul(outer.num_points);
-    crate::validation::check_sweep_points("DC sweep", "inner × outer points", total)?;
+    crate::validation::check_sweep_points(ConfigKind::DcSweep, "inner × outer points", total)?;
     crate::validation::validate_circuit(circuit)?;
 
     let mut work = circuit.clone();

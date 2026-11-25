@@ -156,10 +156,10 @@ impl AcSensResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `config.ac` is invalid (as for
-///   [`solve_ac`](crate::ac_analysis::solve_ac)), if the output node is not
-///   in the circuit, or a current output does not name an independent
-///   voltage source
+/// - [`SimError::UnknownNode`] if the output node is not in the circuit
+/// - [`SimError::InvalidConfig`] if `config.ac` is invalid (as for
+///   [`solve_ac`](crate::ac_analysis::solve_ac)), or a current output does
+///   not name an independent voltage source
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the small-signal system is singular at
 ///   any frequency

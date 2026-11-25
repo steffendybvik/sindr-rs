@@ -209,7 +209,7 @@ fn reading_what_isnt_there_is_an_error() {
     ]))
     .unwrap_err();
     assert!(
-        matches!(&err, SimError::InvalidComponent(m) if m.contains("i(r1)")),
+        matches!(&err, SimError::InvalidComponent { reason, .. } if reason.contains("i(r1)")),
         "{err}"
     );
     // A node nothing else touches floats.

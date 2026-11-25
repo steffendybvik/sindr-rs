@@ -229,7 +229,9 @@ fn a_saturating_core_is_validated() {
             ],
         );
         match sindr::validate_circuit(&circuit) {
-            Err(SimError::InvalidComponent(m)) => assert!(m.contains(field), "{m}"),
+            Err(SimError::InvalidComponent { reason, .. }) => {
+                assert!(reason.contains(field), "{reason}")
+            }
             other => panic!("{field}: {other:?}"),
         }
     };

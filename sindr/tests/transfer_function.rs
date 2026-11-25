@@ -291,7 +291,13 @@ fn bad_input_or_output_is_an_error() {
             "V1",
         ),
     ] {
-        assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                Err(SimError::UnknownNode { .. } | SimError::InvalidConfig { .. })
+            ),
+            "{err:?}"
+        );
     }
     // An inductor is a 0 V source in the DC system, but not a source to name.
     let mut with_l = divider();
@@ -312,7 +318,13 @@ fn bad_input_or_output_is_an_error() {
         ),
     ] {
         let err = solve_tf(&with_l, &TfConfig::new(output, input));
-        assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                Err(SimError::UnknownNode { .. } | SimError::InvalidConfig { .. })
+            ),
+            "{err:?}"
+        );
     }
 
     // Ground is a valid output node: the gain to it is zero.
@@ -368,7 +380,13 @@ fn bad_port_is_reported_before_the_dc_solve() {
         ),
     ] {
         let err = solve_tf(&c, &TfConfig::new(output, input));
-        assert!(matches!(err, Err(SimError::InvalidComponent(_))), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                Err(SimError::UnknownNode { .. } | SimError::InvalidConfig { .. })
+            ),
+            "{err:?}"
+        );
     }
 }
 

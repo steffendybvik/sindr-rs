@@ -231,8 +231,7 @@ pub(crate) trait Device {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidResistance`] for a resistor's resistance,
-    /// otherwise [`SimError::InvalidComponent`].
+    /// [`SimError::InvalidComponent`] naming the field and its value.
     fn validate(&self) -> Result<(), SimError> {
         Ok(())
     }
@@ -448,7 +447,7 @@ impl<'a> Check<'a> {
 
     /// An error naming the component, then `message`.
     fn fail(&self, message: impl Display) -> SimError {
-        SimError::InvalidComponent(format!("`{}`: {message}", self.id))
+        SimError::component(self.id, message.to_string())
     }
 
     /// `value` (in `unit`) is positive and finite.

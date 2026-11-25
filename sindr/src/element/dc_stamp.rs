@@ -75,8 +75,9 @@ impl<'a> DcStamp<'a> {
 /// The error from stamping an element the analyses lower to simpler
 /// ones first (an SPDT switch, a crystal, a ferrite bead).
 pub(super) fn stamped_as_parts(id: &str) -> SimError {
-    SimError::InvalidComponent(format!(
-        "`{id}` is stamped as its parts: pass the circuit through an analysis \
-         entry point (solve_circuit, solve_transient, …), not stamp_circuit"
-    ))
+    SimError::component(
+        id,
+        "is stamped as its parts: pass the circuit through an analysis \
+         entry point (solve_circuit, solve_transient, …), not stamp_circuit",
+    )
 }

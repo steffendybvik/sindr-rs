@@ -37,8 +37,8 @@ fn ac_config(f_start: f64, f_stop: f64, num_points: usize, spacing: FrequencySpa
 
 fn assert_invalid<T: std::fmt::Debug>(result: Result<T, SimError>, case: &str) {
     match result {
-        Err(SimError::InvalidComponent(_)) => {}
-        other => panic!("{case}: expected InvalidComponent, got {other:?}"),
+        Err(SimError::InvalidConfig { .. }) => {}
+        other => panic!("{case}: expected InvalidConfig, got {other:?}"),
     }
 }
 

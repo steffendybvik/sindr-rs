@@ -265,13 +265,16 @@ fn bad_ports_are_rejected() {
         PzConfig::voltage_gain("in", "0", "b", "b"),
     ] {
         assert!(
-            matches!(solve_pz(&rlc, &config), Err(SimError::InvalidComponent(_))),
+            matches!(
+                solve_pz(&rlc, &config),
+                Err(SimError::UnknownNode { .. } | SimError::InvalidConfig { .. })
+            ),
             "{config:?}"
         );
     }
     // A current into a node V1 holds at 0 V never reaches the output.
     let err = solve_pz(&rlc, &PzConfig::transimpedance("in", "0", "b", "0")).unwrap_err();
-    assert!(matches!(err, SimError::InvalidComponent(_)), "{err:?}");
+    assert!(matches!(err, SimError::InvalidConfig { .. }), "{err:?}");
 }
 
 #[cfg(feature = "spice")]

@@ -24,6 +24,19 @@ pub struct Resistor {
     pub resistance: f64,
 }
 
+impl Resistor {
+    /// The error for a resistance that is zero, negative or not finite.
+    fn bad_resistance(&self) -> SimError {
+        SimError::component(
+            &self.id,
+            format!(
+                "resistance {} Ω must be a positive, finite number",
+                self.resistance
+            ),
+        )
+    }
+}
+
 impl Device for Resistor {
     device_identity!();
 
@@ -48,7 +61,7 @@ impl Device for Resistor {
 
     fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
         if self.resistance <= 0.0 {
-            return Err(SimError::InvalidResistance(self.id.clone()));
+            return Err(self.bad_resistance());
         }
         let nodes = s.nodes();
         stamp_resistor_at(s.system, nodes, self.resistance);
@@ -59,7 +72,7 @@ impl Device for Resistor {
         if self.resistance.is_finite() && self.resistance > 0.0 {
             Ok(())
         } else {
-            Err(SimError::InvalidResistance(self.id.clone()))
+            Err(self.bad_resistance())
         }
     }
 

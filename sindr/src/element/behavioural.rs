@@ -329,11 +329,14 @@ pub(crate) fn behavioural_linearisation(
                     Variable::Current { source } => source.as_str(),
                     _ => "",
                 };
-                return Err(SimError::InvalidComponent(format!(
-                    "`{id}` reads i({source}), but `{source}` isn't a voltage-defined \
-                     element (voltage source, VCVS, CCVS, op-amp, regulator or \
-                     behavioural voltage source)"
-                )));
+                return Err(SimError::component(
+                    id,
+                    format!(
+                        "reads i({source}), but `{source}` isn't a voltage-defined \
+                         element (voltage source, VCVS, CCVS, op-amp, regulator or \
+                         behavioural voltage source)"
+                    ),
+                ));
             }
             Sensed::Time => (Vec::new(), t),
         };
