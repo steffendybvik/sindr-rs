@@ -345,7 +345,7 @@ CircuitElement::CurrentSource(CurrentSource { id, nodes: [NodeId; 2], current: f
 
 `nodes[0]` is the positive terminal for voltage sources. A current source's current flows through it from `nodes[0]` to `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`, as SPICE's `I` does.
 
-A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
+A `Waveform` (sine, damped sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
 
 #### Battery
 
@@ -10640,9 +10640,9 @@ Per-element mapping rules:
   and emit the matching `CircuitElement`.
 * **V / I** — evaluate the optional DC term and translate the optional
   `RawWaveform` (PULSE / SIN / PWL) into `crate::Waveform`. SPICE's
-  `td/tr/tf/pw/period` for PULSE map directly; SIN's `theta` (damping)
-  is dropped with a warning in lenient mode and an error in strict mode
-  when non-zero.
+  `td/tr/tf/pw/period` for PULSE map directly. SIN becomes a
+  `Waveform::Sine`, or a `Waveform::DampedSine` when it has a delay `td`
+  or a damping `theta`; its phase is in degrees, as in ngspice.
 * **D** — look up `.model`; kind must be `D`. Other kinds raise
   `UnsupportedModelType`. `IS`, `N`, `RS`, `CJO` (alias `CJ0`, `CJ`),
   `VJ` (alias `PB`), `M` (alias `MJ`), `FC`, `TT`, `BV` and `IBV` fill a
@@ -11024,7 +11024,7 @@ pub enum ExportError {
 /// A source's waveform and its static value are written as one waveform:
 /// SPICE ignores a `DC` value during a transient, where sindr adds it.
 /// Square, triangle and PWM waves become the `PULSE` that traces the same
-/// wave; a sine's phase becomes `SIN`'s delay.
+/// wave; a sine's phase becomes `SIN`'s phase, in degrees.
 ///
 /// sindr's parser reads every line written here back.
 ///
@@ -12553,6 +12553,30 @@ pub enum Waveform {
         /// value is V or A, matching the source it drives.
         points: Vec<(f64, f64)>,
     },
+
+    /// SPICE's `SIN(vo va freq td theta phase)`: a sine that starts at
+    /// `delay` and decays at `damping`. Until `delay` it holds
+    /// `offset + amplitude·sin(phase)`; from then on it is
+    /// `offset + amplitude·e^(−damping·(t − delay))·sin(2π·frequency·(t − delay) + phase)`.
+    #[cfg_attr(feature = "serde", serde(rename = "damped_sine"))]
+    DampedSine {
+        /// Peak amplitude at `delay` (V or A).
+        amplitude: f64,
+        /// Frequency (Hz).
+        frequency: f64,
+        /// DC offset added to the sine (V or A). Default 0.
+        #[cfg_attr(feature = "serde", serde(default))]
+        offset: f64,
+        /// Time the sine starts (s). Default 0.
+        #[cfg_attr(feature = "serde", serde(default))]
+        delay: f64,
+        /// Decay rate of the amplitude (1/s), SPICE's `theta`. Default 0.
+        #[cfg_attr(feature = "serde", serde(default))]
+        damping: f64,
+        /// Phase at `delay` (radians). Default 0.
+        #[cfg_attr(feature = "serde", serde(default))]
+        phase: f64,
+    },
 }
 
 /// Most breakpoints [`Waveform::breakpoints`] returns.
@@ -12564,8 +12588,8 @@ impl Waveform {
     pub fn evaluate(&self, t: f64) -> f64 { … }
 
     /// Times in `(0, t_end)` (s) where this waveform has a corner or a jump:
-    /// pulse edges, square/PWM transitions, triangle peaks, PWL points. A sine
-    /// has none. Sorted; at most [`MAX_BREAKPOINTS`] of them.
+    /// pulse edges, square/PWM transitions, triangle peaks, PWL points, a
+    /// damped sine's start. A plain sine has none. Sorted; at most [`MAX_BREAKPOINTS`] of them.
     ///
     /// The transient stepper lands a step exactly on each one, so a fast
     /// edge between two steps isn't stepped over.

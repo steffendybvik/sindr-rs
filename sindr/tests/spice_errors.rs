@@ -391,7 +391,7 @@ fn malformed_lines_are_syntax_errors_over_the_line() {
         // Waveform argument counts SPICE3 defines.
         ("V2 b 0 PULSE(0 1 0)", "malformed `v` element"),
         ("V2 b 0 SIN(0 1)", "malformed `v` element"),
-        ("V2 b 0 SIN(0 1 1k 0 0 7)", "malformed `v` element"),
+        ("V2 b 0 SIN(0 1 1k 0 0 7 1)", "malformed `v` element"),
         ("V2 b 0 PWL(0 1 1m)", "malformed `v` element"),
         // Directives.
         (".tran 1u", "malformed `.tran` directive"),

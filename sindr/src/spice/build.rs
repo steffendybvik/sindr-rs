@@ -7,9 +7,9 @@
 //!   and emit the matching `CircuitElement`.
 //! * **V / I** — evaluate the optional DC term and translate the optional
 //!   `RawWaveform` (PULSE / SIN / PWL) into `crate::Waveform`. SPICE's
-//!   `td/tr/tf/pw/period` for PULSE map directly; SIN's `theta` (damping)
-//!   is dropped with a warning in lenient mode and an error in strict mode
-//!   when non-zero.
+//!   `td/tr/tf/pw/period` for PULSE map directly. SIN becomes a
+//!   `Waveform::Sine`, or a `Waveform::DampedSine` when it has a delay `td`
+//!   or a damping `theta`; its phase is in degrees, as in ngspice.
 //! * **D** — look up `.model`; kind must be `D`. Other kinds raise
 //!   `UnsupportedModelType`. `IS`, `N`, `RS`, `CJO` (alias `CJ0`, `CJ`),
 //!   `VJ` (alias `PB`), `M` (alias `MJ`), `FC`, `TT`, `BV` and `IBV` fill a
@@ -348,7 +348,7 @@ fn build_element(
                 None => 0.0,
             };
             let waveform = match waveform {
-                Some(rw) => Some(translate_waveform(rw, &scope, strict, warnings)?),
+                Some(rw) => Some(translate_waveform(rw, &scope)?),
                 None => None,
             };
             // If a waveform is present, the static `voltage`/`current`
@@ -617,12 +617,7 @@ fn build_element(
     }
 }
 
-fn translate_waveform(
-    rw: &RawWaveform,
-    scope: &ParamScope,
-    strict: bool,
-    warnings: &mut Vec<ParseWarning>,
-) -> Result<Waveform, SpiceParseError> {
+fn translate_waveform(rw: &RawWaveform, scope: &ParamScope) -> Result<Waveform, SpiceParseError> {
     match rw {
         RawWaveform::Pulse(args) => {
             // SPICE PULSE: v1 v2 td tr tf pw per
@@ -650,11 +645,11 @@ fn translate_waveform(
             })
         }
         RawWaveform::Sin(args) => {
-            // SPICE SIN: vo va freq [td] [theta]
-            if !(3..=5).contains(&args.len()) {
+            // SPICE SIN: vo va freq [td [theta [phase]]], phase in degrees.
+            if !(3..=6).contains(&args.len()) {
                 return Err(SpiceParseError::ArityMismatch {
                     card: "SIN".to_string(),
-                    expected: "3..=5 args (vo va freq [td] [theta])".to_string(),
+                    expected: "3..=6 args (vo va freq [td] [theta] [phase])".to_string(),
                     got: args.len(),
                     src: NamedSource::new("<build>", String::new()),
                     bad_span: (0, 0).into(),
@@ -664,37 +659,25 @@ fn translate_waveform(
                 .iter()
                 .map(|e| eval_or_lift(e, scope))
                 .collect::<Result<Vec<_>, _>>()?;
-            let offset = evals[0];
-            let amplitude = evals[1];
-            let frequency = evals[2];
-            // td (delay) is dropped today — crate::Waveform::Sine has no
-            // delay field. Phase carries radians, td would need to be
-            // converted to phase = -2*pi*f*td. Do that conversion so we
-            // do not silently lose the value.
-            let phase = if evals.len() >= 4 {
-                -2.0 * std::f64::consts::PI * frequency * evals[3]
-            } else {
-                0.0
-            };
-            if evals.len() == 5 && evals[4] != 0.0 {
-                if strict {
-                    return Err(SpiceParseError::Syntax {
-                        message: "SIN damping factor (theta) is not supported".to_string(),
-                        src: NamedSource::new("<build>", String::new()),
-                        bad_span: (0, 0).into(),
-                    });
+            let arg = |i: usize| evals.get(i).copied().unwrap_or(0.0);
+            let (offset, amplitude, frequency) = (evals[0], evals[1], evals[2]);
+            let (delay, damping, phase) = (arg(3), arg(4), arg(5).to_radians());
+            Ok(if delay == 0.0 && damping == 0.0 {
+                Waveform::Sine {
+                    amplitude,
+                    frequency,
+                    offset,
+                    phase,
                 }
-                warnings.push(ParseWarning {
-                    message: "SIN damping factor (theta) ignored".to_string(),
-                    span: None,
-                    file: None,
-                });
-            }
-            Ok(Waveform::Sine {
-                amplitude,
-                frequency,
-                offset,
-                phase,
+            } else {
+                Waveform::DampedSine {
+                    amplitude,
+                    frequency,
+                    offset,
+                    delay,
+                    damping,
+                    phase,
+                }
             })
         }
         RawWaveform::Pwl(pairs) => {

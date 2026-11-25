@@ -314,6 +314,49 @@ fn one_shot_pulse_fires_in_a_parsed_transient() {
     assert_eq!(v_at(45e-6), 0.0);
 }
 
+/// A delayed SIN holds `vo + va·sin(phase)` until its delay, so the
+/// transient starts from that operating point, and then runs as ngspice's
+/// `vo + va·e^(−θ(t−td))·sin(2πf(t−td) + phase)`.
+#[test]
+fn delayed_sin_starts_at_its_delay_in_a_parsed_transient() {
+    let src = "* delayed sin\n\
+               V1 in 0 SIN(0.5 1 1k 0.25m 200 30)\n\
+               V2 b 0 SIN(0 1 1k 0.25m)\n\
+               R1 in 0 1k\n\
+               R2 b 0 1k\n\
+               R3 in c 1k\n\
+               C1 c 0 1u\n\
+               .tran 1u 1m\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let config = nl.analyses[0].transient_config().expect(".tran config");
+    let tran = sindr::solve_transient(&nl.circuit, &config)
+        .expect("solve")
+        .transient
+        .expect("transient data");
+    let v_at = |node: &str, t: f64| {
+        let step = tran
+            .timesteps
+            .iter()
+            .min_by(|a, b| (a.time - t).abs().total_cmp(&(b.time - t).abs()))
+            .unwrap();
+        assert!((step.time - t).abs() < 1e-9, "no step at {t}");
+        step.node_voltages[node]
+    };
+    // Before the delay: 0.5 + sin(30°) and 0. The capacitor starts
+    // charged to that, so it doesn't move until the delay.
+    for t in [tran.timesteps[0].time, 0.1e-3, 0.2e-3] {
+        assert_relative_eq!(v_at("in", t), 1.0, epsilon = 1e-9);
+        assert_relative_eq!(v_at("c", t), 1.0, epsilon = 1e-9);
+        assert_relative_eq!(v_at("b", t), 0.0, epsilon = 1e-12);
+    }
+    // Values ngspice 47 reports for the same deck.
+    assert_relative_eq!(v_at("in", 0.5e-3), 1.32379, epsilon = 1e-5);
+    assert_relative_eq!(v_at("in", 0.8e-3), -0.165732, epsilon = 1e-5);
+    // A quarter period after the delay, the undamped sine peaks.
+    assert_relative_eq!(v_at("b", 0.5e-3), 1.0, epsilon = 1e-9);
+}
+
 #[test]
 fn subckt_structure_survives_parsing() {
     let nl = parse_file(fixture_path("subckt_filter.cir")).expect("parse subckt_filter");

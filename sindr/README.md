@@ -132,7 +132,7 @@ CircuitElement::CurrentSource(CurrentSource { id, nodes: [NodeId; 2], current: f
 
 `nodes[0]` is the positive terminal for voltage sources. A current source's current flows through it from `nodes[0]` to `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`, as SPICE's `I` does.
 
-A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
+A `Waveform` (sine, damped sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
 
 ### Battery
 

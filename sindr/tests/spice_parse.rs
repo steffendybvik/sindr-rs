@@ -189,46 +189,49 @@ fn bjt_substrate_node_is_dropped_with_a_warning() {
     }
 }
 
-/// `SIN(vo va f td theta)`: the delay becomes a phase of −2π·f·td; a
-/// damping factor sindr can't model is an error in strict mode and dropped
-/// with a warning in lenient mode.
+/// `SIN(vo va f td theta phase)`: held at `vo + va·sin(phase)` until
+/// `td`, then a sine starting there and decaying at `theta`; the phase is
+/// in degrees, as in ngspice.
 #[test]
-fn sin_delay_becomes_phase_and_damping_is_refused() {
-    let deck = "* s\nV1 a 0 SIN(0.5 2 1k 0.25m 3)\nR1 a 0 1k\n.end\n";
-    let err = parse_str(deck).unwrap_err();
-    match &err {
-        SpiceParseError::Syntax { message, .. } => {
-            assert_eq!(message, "SIN damping factor (theta) is not supported")
-        }
-        other => panic!("{other:?}"),
-    }
-
-    let netlist = parse_str_with_options(deck, lenient()).unwrap();
-    assert_eq!(warnings(&netlist), ["SIN damping factor (theta) ignored"]);
+fn sin_reads_delay_damping_and_phase() {
+    let deck = "* s\nV1 a 0 SIN(0.5 2 1k 0.25m 3 30)\nR1 a 0 1k\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert!(netlist.warnings.is_empty());
     match element(&netlist, "v1") {
         CircuitElement::VoltageSource(VoltageSource {
             waveform:
-                Some(Waveform::Sine {
+                Some(Waveform::DampedSine {
                     amplitude,
                     frequency,
                     offset,
+                    delay,
+                    damping,
                     phase,
                 }),
             ..
         }) => {
             assert_eq!((*amplitude, *frequency, *offset), (2.0, 1e3, 0.5));
-            // A quarter period late is −π/2.
+            assert_eq!((*delay, *damping), (0.25e-3, 3.0));
             assert!(
-                (phase + std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+                (phase - std::f64::consts::PI / 6.0).abs() < 1e-15,
                 "{phase}"
             );
         }
         other => panic!("{other:?}"),
     }
 
-    // A zero damping factor is no damping: nothing to refuse.
-    let undamped = "* s\nV1 a 0 SIN(0 1 1k 0 0)\nR1 a 0 1k\n.end\n";
-    assert!(parse_str(undamped).unwrap().warnings.is_empty());
+    // No delay and no damping is a plain sine, its phase in radians.
+    let plain = "* s\nV1 a 0 SIN(0 1 1k 0 0 90)\nR1 a 0 1k\n.end\n";
+    match element(&parse_str(plain).unwrap(), "v1") {
+        CircuitElement::VoltageSource(VoltageSource {
+            waveform: Some(Waveform::Sine { phase, .. }),
+            ..
+        }) => assert_eq!(*phase, std::f64::consts::FRAC_PI_2),
+        other => panic!("{other:?}"),
+    }
+
+    let seven = "* s\nV1 a 0 SIN(0 1 1k 0 0 0 1)\nR1 a 0 1k\n.end\n";
+    assert!(parse_str(seven).is_err());
 }
 
 /// `.noise` reads all three sweep kinds, and an optional points-per-summary

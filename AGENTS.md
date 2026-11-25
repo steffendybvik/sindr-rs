@@ -18,7 +18,7 @@ sindr-rs/
 │   │   ├── element/            # one file per CircuitElement variant (its struct and Device impl), plus the Device trait and its
 │   │   │                       #   stamp contexts: layout.rs, dc_stamp.rs, tran_stamp.rs, ac_stamp.rs, report.rs
 │   │   ├── design.rs           # hierarchy: Block, Instance, Part, flatten
-│   │   ├── waveform.rs         # sine, pulse, square, triangle, PWM, PWL
+│   │   ├── waveform.rs         # sine, damped sine, pulse, square, triangle, PWM, PWL
 │   │   ├── mna.rs              # MNA matrix: dense below 100 unknowns, sparse above (fixed layout replayed per solve, faer LU)
 │   │   ├── stamp.rs            # stamp dispatch and the stamps several elements share
 │   │   ├── op_amp.rs           # op-amp / comparator macromodel stamps

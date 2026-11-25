@@ -4,7 +4,6 @@ use crate::element::{
     Capacitor, Cccs, CurrentSource, Diode, Inductor, Resistor, Switch, Vcvs, VoltageSource,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::f64::consts::PI;
 
 use sindr_devices::diode::{DiodeParams, T_NOM};
 use thiserror::Error;
@@ -85,7 +84,7 @@ pub enum ExportError {
 /// A source's waveform and its static value are written as one waveform:
 /// SPICE ignores a `DC` value during a transient, where sindr adds it.
 /// Square, triangle and PWM waves become the `PULSE` that traces the same
-/// wave; a sine's phase becomes `SIN`'s delay.
+/// wave; a sine's phase becomes `SIN`'s phase, in degrees.
 ///
 /// sindr's parser reads every line written here back.
 ///
@@ -763,6 +762,28 @@ pub(crate) fn waveform_card(id: &str, waveform: &Waveform, dc: f64) -> Result<St
             n("period", per)?
         ))
     };
+    // SPICE's SIN: trailing zero arguments are left out, and the phase is
+    // in degrees.
+    let sin = |vo: f64, va: f64, freq: f64, td: f64, theta: f64, phase: f64| {
+        if freq == 0.0 && (phase != 0.0 || td != 0.0 || theta != 0.0) {
+            return Err(ExportError::Unsupported {
+                id: id.to_string(),
+                reason: "SPICE reads a zero SIN frequency as 1/TSTOP".to_string(),
+            });
+        }
+        let mut args = vec![
+            n("offset", vo + dc)?,
+            n("amplitude", va)?,
+            n("frequency", freq)?,
+            n("delay", td)?,
+            n("damping", theta)?,
+            n("phase", phase.to_degrees())?,
+        ];
+        while args.len() > 3 && args.last().is_some_and(|a| a == "0") {
+            args.pop();
+        }
+        Ok(format!("SIN({})", args.join(" ")))
+    };
     let period = |frequency: f64| {
         if frequency > 0.0 && frequency.is_finite() {
             Ok(1.0 / frequency)
@@ -779,26 +800,15 @@ pub(crate) fn waveform_card(id: &str, waveform: &Waveform, dc: f64) -> Result<St
             frequency,
             offset,
             phase,
-        } => {
-            let head = format!(
-                "SIN({} {} {}",
-                n("offset", offset + dc)?,
-                n("amplitude", *amplitude)?,
-                n("frequency", *frequency)?
-            );
-            if *phase == 0.0 {
-                return Ok(format!("{head})"));
-            }
-            if *frequency == 0.0 {
-                return Err(ExportError::Unsupported {
-                    id: id.to_string(),
-                    reason: "a phased sine of zero frequency has no SIN delay".to_string(),
-                });
-            }
-            // sindr's parser reads the delay back as phase = −2π·f·td.
-            let td = -phase / (2.0 * PI * frequency);
-            Ok(format!("{head} {})", n("phase", td)?))
-        }
+        } => sin(*offset, *amplitude, *frequency, 0.0, 0.0, *phase),
+        Waveform::DampedSine {
+            amplitude,
+            frequency,
+            offset,
+            delay,
+            damping,
+            phase,
+        } => sin(*offset, *amplitude, *frequency, *delay, *damping, *phase),
         Waveform::Pulse {
             v1,
             v2,

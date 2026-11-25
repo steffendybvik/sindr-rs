@@ -567,7 +567,7 @@ fn parse_waveform(input: &mut Input<'_>) -> ModalResult<Option<RawWaveform>> {
     if keyword("sin").parse_next(input).is_ok() {
         ws(input)?;
         let args = paren_value_list(input)?;
-        if !(3..=5).contains(&args.len()) {
+        if !(3..=6).contains(&args.len()) {
             return Err(ErrMode::from_input(input));
         }
         return Ok(Some(RawWaveform::Sin(args)));

@@ -139,6 +139,22 @@ fn waveforms_round_trip_to_the_same_function_of_time() {
             offset: 0.0,
             phase: 1.2,
         },
+        Waveform::DampedSine {
+            amplitude: 1.5,
+            frequency: 2e3,
+            offset: -0.2,
+            delay: 2e-4,
+            damping: 500.0,
+            phase: -0.7,
+        },
+        Waveform::DampedSine {
+            amplitude: 1.0,
+            frequency: 1e3,
+            offset: 0.0,
+            delay: 0.0,
+            damping: 300.0,
+            phase: 0.0,
+        },
         Waveform::Pulse {
             v1: 0.0,
             v2: 5.0,
@@ -742,8 +758,7 @@ fn every_element_without_a_spice_primitive_is_unsupported() {
 }
 
 /// Waveforms with no SPICE form: a periodic wave of zero frequency has no
-/// PULSE period, and a sine of zero frequency can't carry its phase as a
-/// delay.
+/// PULSE period, and SPICE reads a zero SIN frequency as 1/TSTOP.
 #[test]
 fn waveforms_without_a_spice_form_are_unsupported() {
     for wave in [
@@ -763,6 +778,14 @@ fn waveforms_without_a_spice_form_are_unsupported() {
             frequency: 0.0,
             offset: 0.0,
             phase: 0.3,
+        },
+        Waveform::DampedSine {
+            amplitude: 1.0,
+            frequency: 0.0,
+            offset: 0.0,
+            delay: 1e-3,
+            damping: 0.0,
+            phase: 0.0,
         },
     ] {
         let err = to_netlist(&source_with(wave.clone(), 0.0), "t").unwrap_err();
