@@ -28,6 +28,11 @@
 //! * **X** — should not appear in `flat.elements` (the flattener already
 //!   expanded them). Hitting one here is an internal bug.
 
+use crate::element::{
+    Behavioural, Bjt, Capacitor, Cccs, Ccvs, CurrentSource, Diode, Inductor, Jfet, Mosfet,
+    Resistor, Transformer, Vccs, Vcvs, VoltageSource,
+};
+use crate::handle::{ComponentId, NodeId};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::circuit::{
@@ -38,7 +43,9 @@ use crate::devices::mosfet::MosfetParams;
 use crate::{BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind, Waveform};
 use miette::NamedSource;
 
-use crate::spice::analysis::{AcStimulus, AcSweep, AnalysisRequest, MeasureRequest};
+use crate::spice::analysis::{
+    AcStimulus, AcSweep, AnalysisRequest, FourierRequest, MeasureRequest,
+};
 use crate::spice::ast::{
     AcSweepKind, NodeValueKind, ParamExpr, PolyControls, RawAnalysis, RawCrossing, RawElementBody,
     RawMeasure, RawMeasureKind, RawModel, RawWaveform, SourceKind,
@@ -169,6 +176,23 @@ pub(crate) fn build_netlist(
         .map(|(raw, span)| build_measure(raw, &top_scope).map_err(|e| e.locate(span)))
         .collect::<Result<Vec<_>, _>>()?;
 
+    let mut fourier = Vec::new();
+    for (f0, signals, span) in &flat.fours {
+        let f0 = eval_or_lift(f0, &top_scope).map_err(|e| e.locate(span))?;
+        if !(f0.is_finite() && f0 > 0.0) {
+            return Err(SpiceParseError::Syntax {
+                message: format!("`.four`: the fundamental must be a positive frequency, not {f0}"),
+                src: NamedSource::new("<build>", String::new()),
+                bad_span: (0, 0).into(),
+            }
+            .locate(span));
+        }
+        fourier.extend(signals.iter().map(|signal| FourierRequest {
+            signal: signal.clone(),
+            fourier: crate::fourier::Fourier::new(f0),
+        }));
+    }
+
     Ok(ParsedNetlist {
         circuit,
         analyses,
@@ -176,6 +200,7 @@ pub(crate) fn build_netlist(
         nodesets,
         options,
         measurements,
+        fourier,
         ac_stimuli,
         warnings: warnings.clone(),
         source_map: flat.source_map,
@@ -219,12 +244,12 @@ fn couple(
             .iter()
             .enumerate()
             .find_map(|(i, e)| match e {
-                CircuitElement::Inductor {
+                CircuitElement::Inductor(Inductor {
                     id,
                     nodes,
                     inductance,
                     ..
-                } if id == name => Some((i, nodes.clone(), *inductance)),
+                }) if id == name => Some((i, nodes.clone(), *inductance)),
                 _ => None,
             })
             .ok_or_else(|| {
@@ -236,14 +261,14 @@ fn couple(
     };
     let (i1, [p1, q1], l1) = find(l1)?;
     let (i2, [p2, q2], l2) = find(l2)?;
-    let transformer = CircuitElement::Transformer {
+    let transformer = CircuitElement::Transformer(Transformer {
         id,
         nodes: [p1, q1, p2, q2],
         l1,
         l2,
         k,
         saturation: None,
-    };
+    });
     let (first, last) = (i1.min(i2), i1.max(i2));
     elements.remove(last);
     elements[first] = transformer;
@@ -262,7 +287,7 @@ fn check_control_source(
         .is_some_and(|elements| {
             elements
                 .iter()
-                .any(|e| matches!(e, CircuitElement::VoltageSource { id, .. } if id == source))
+                .any(|e| matches!(e, CircuitElement::VoltageSource(VoltageSource { id, .. }) if id == source))
         });
     if found {
         return Ok(());
@@ -287,22 +312,22 @@ fn build_element(
             let v = eval_or_lift(value, &scope)?;
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
             match raw.prefix {
-                'r' => Ok(CircuitElement::Resistor {
+                'r' => Ok(CircuitElement::Resistor(Resistor {
                     id: raw.id.clone(),
                     nodes,
                     resistance: v,
-                }),
-                'l' => Ok(CircuitElement::Inductor {
+                })),
+                'l' => Ok(CircuitElement::Inductor(Inductor {
                     id: raw.id.clone(),
                     nodes,
                     inductance: v,
                     saturation: None,
-                }),
-                'c' => Ok(CircuitElement::Capacitor {
+                })),
+                'c' => Ok(CircuitElement::Capacitor(Capacitor {
                     id: raw.id.clone(),
                     nodes,
                     capacitance: v,
-                }),
+                })),
                 other => Err(SpiceParseError::Syntax {
                     message: format!("internal: unexpected passive prefix `{other}`"),
                     src: NamedSource::new("<build>", String::new()),
@@ -327,18 +352,18 @@ fn build_element(
             // field is the DC offset (added to waveform.evaluate(t) by
             // the solver). With no waveform, it is just the DC value.
             match kind {
-                SourceKind::Voltage => Ok(CircuitElement::VoltageSource {
+                SourceKind::Voltage => Ok(CircuitElement::VoltageSource(VoltageSource {
                     id: raw.id.clone(),
                     nodes,
                     voltage: dc_value,
                     waveform,
-                }),
-                SourceKind::Current => Ok(CircuitElement::CurrentSource {
+                })),
+                SourceKind::Current => Ok(CircuitElement::CurrentSource(CurrentSource {
                     id: raw.id.clone(),
                     nodes,
                     current: dc_value,
                     waveform,
-                }),
+                })),
             }
         }
 
@@ -377,12 +402,12 @@ fn build_element(
                 }
                 model
             });
-            Ok(CircuitElement::Diode {
+            Ok(CircuitElement::Diode(Diode {
                 id: raw.id.clone(),
                 nodes,
                 temperature: 300.15,
                 model,
-            })
+            }))
         }
 
         RawElementBody::Bjt { model, substrate } => {
@@ -422,9 +447,9 @@ fn build_element(
                 });
             }
             let nodes = [
-                /* base */ raw.nodes[1].clone(),
-                /* collector */ raw.nodes[0].clone(),
-                /* emitter */ raw.nodes[2].clone(),
+                /* base */ NodeId::from(&raw.nodes[1]),
+                /* collector */ NodeId::from(&raw.nodes[0]),
+                /* emitter */ NodeId::from(&raw.nodes[2]),
             ];
             let params = model_params(m, BJT_KEYS, JUNCTION_NEUTRAL, &scope, strict, warnings)?;
             let mut bf = 100.0;
@@ -447,7 +472,7 @@ fn build_element(
                     _ => model.vaf = value,
                 }
             }
-            Ok(CircuitElement::Bjt {
+            Ok(CircuitElement::Bjt(Bjt {
                 id: raw.id.clone(),
                 nodes,
                 kind: bjt_kind,
@@ -455,7 +480,7 @@ fn build_element(
                 temperature: 300.15,
                 parasitic_caps: None::<BjtParasiticCaps>,
                 model,
-            })
+            }))
         }
 
         RawElementBody::Mosfet {
@@ -495,7 +520,7 @@ fn build_element(
             let text = poly_text(&variables, &coefficients);
             let expr = crate::expression::Expression::parse(&text)
                 .map_err(|e| card_error(format!("`{}`: {e}", raw.id)))?;
-            Ok(CircuitElement::Behavioural {
+            Ok(CircuitElement::Behavioural(Behavioural {
                 id: raw.id.clone(),
                 nodes: two_nodes(&raw.nodes, &raw.id)?,
                 output: if *current {
@@ -504,13 +529,13 @@ fn build_element(
                     crate::BehaviouralOutput::Voltage
                 },
                 expr,
-            })
+            }))
         }
 
         RawElementBody::Behavioural { current, text } => {
             let expr = crate::expression::Expression::parse_with(text, &|name| scope.get(name))
                 .map_err(|e| card_error(format!("`{}`: {e}", raw.id)))?;
-            Ok(CircuitElement::Behavioural {
+            Ok(CircuitElement::Behavioural(Behavioural {
                 id: raw.id.clone(),
                 nodes: two_nodes(&raw.nodes, &raw.id)?,
                 output: if *current {
@@ -519,7 +544,7 @@ fn build_element(
                     crate::BehaviouralOutput::Voltage
                 },
                 expr,
-            })
+            }))
         }
 
         // sindr's controlled sources take SPICE's node order and current
@@ -530,42 +555,46 @@ fn build_element(
                 raw.nodes.clone().try_into().map_err(|_| {
                     card_error(format!("`{}` needs four nodes: n+ n- nc+ nc-", raw.id))
                 })?;
-            let (id, nodes, control_nodes) = (raw.id.clone(), [p, n], [cp, cn]);
+            let (id, nodes, control_nodes) = (
+                raw.id.clone(),
+                [p, n].map(NodeId::from),
+                [cp, cn].map(NodeId::from),
+            );
             Ok(if raw.prefix == 'e' {
-                CircuitElement::Vcvs {
+                CircuitElement::Vcvs(Vcvs {
                     id,
                     nodes,
                     control_nodes,
                     gain: v,
-                }
+                })
             } else {
-                CircuitElement::Vccs {
+                CircuitElement::Vccs(Vccs {
                     id,
                     nodes,
                     control_nodes,
                     gm: v,
-                }
+                })
             })
         }
 
         RawElementBody::CurrentControlled { source, value } => {
             let v = eval_or_lift(value, &scope)?;
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
-            let (id, control_source) = (raw.id.clone(), source.clone());
+            let (id, control_source) = (raw.id.clone(), ComponentId::from(source));
             Ok(if raw.prefix == 'h' {
-                CircuitElement::Ccvs {
+                CircuitElement::Ccvs(Ccvs {
                     id,
                     nodes,
                     control_source,
                     rm: v,
-                }
+                })
             } else {
-                CircuitElement::Cccs {
+                CircuitElement::Cccs(Cccs {
                     id,
                     nodes,
                     control_source,
                     alpha: v,
-                }
+                })
             })
         }
 
@@ -985,9 +1014,9 @@ fn build_mosfet(
         fc: get("fc", 0.5),
         ..DiodeModel::default()
     });
-    Ok(CircuitElement::Mosfet {
+    Ok(CircuitElement::Mosfet(Mosfet {
         id: raw.id.clone(),
-        nodes: [g, d, s],
+        nodes: [g, d, s].map(NodeId::from),
         kind: if pmos {
             MosfetKind::Pmos
         } else {
@@ -996,7 +1025,7 @@ fn build_mosfet(
         params,
         parasitic_caps,
         body_diode,
-    })
+    }))
 }
 
 /// Lower a `J` line onto sindr's JFET: `idss = BETA·VTO²·area`, and the
@@ -1045,9 +1074,9 @@ fn build_jfet(
         m: get("m", defaults.m),
         fc: get("fc", defaults.fc),
     };
-    Ok(CircuitElement::Jfet {
+    Ok(CircuitElement::Jfet(Jfet {
         id: raw.id.clone(),
-        nodes: [g, d, s],
+        nodes: [g, d, s].map(NodeId::from),
         kind: if pjf {
             JfetKind::PChannel
         } else {
@@ -1056,7 +1085,7 @@ fn build_jfet(
         idss: beta * vto * vto * area,
         vp: if pjf { -vto } else { vto },
         parasitic_caps: caps.stores_charge().then_some(caps),
-    })
+    }))
 }
 
 /// `.model` parameters that describe the part rather than its behaviour
@@ -1155,6 +1184,7 @@ fn assemble(
                 id: r.path.last().cloned().unwrap_or_default(),
                 block: class.to_string(),
                 nodes: r.local_nodes.clone(),
+                variant: None,
             })
             .collect()
     };
@@ -1307,7 +1337,8 @@ fn check_sweep_source(
             let found = components.iter().any(|c| {
                 matches!(
                     c,
-                    CircuitElement::VoltageSource { .. } | CircuitElement::CurrentSource { .. }
+                    CircuitElement::VoltageSource(VoltageSource { .. })
+                        | CircuitElement::CurrentSource(CurrentSource { .. })
                 ) && c.id().eq_ignore_ascii_case(source)
             });
             if !found {
@@ -1598,7 +1629,7 @@ fn lookup_model<'a>(
         })
 }
 
-fn two_nodes(nodes: &[String], id: &str) -> Result<[String; 2], SpiceParseError> {
+fn two_nodes(nodes: &[String], id: &str) -> Result<[NodeId; 2], SpiceParseError> {
     if nodes.len() != 2 {
         return Err(SpiceParseError::ArityMismatch {
             card: id.to_string(),
@@ -1608,7 +1639,7 @@ fn two_nodes(nodes: &[String], id: &str) -> Result<[String; 2], SpiceParseError>
             bad_span: (0, 0).into(),
         });
     }
-    Ok([nodes[0].clone(), nodes[1].clone()])
+    Ok([NodeId::from(&nodes[0]), NodeId::from(&nodes[1])])
 }
 
 fn span_of(raw: &crate::spice::ast::RawElement) -> miette::SourceSpan {
@@ -1703,11 +1734,11 @@ mod tests {
         let netlist = build_from_cards(cards).unwrap();
         assert_eq!(netlist.circuit.components.len(), 1);
         match &netlist.circuit.components[0] {
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id,
                 nodes,
                 resistance,
-            } => {
+            }) => {
                 assert_eq!(id, "R1");
                 assert_eq!(nodes, &["a".to_string(), "0".to_string()]);
                 assert_eq!(*resistance, 1000.0);
@@ -1740,9 +1771,9 @@ mod tests {
         ];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 nodes, bf, kind, ..
-            } => {
+            }) => {
                 // The transposition: SPICE [c, b, e] -> sindr [b, c, e]
                 assert_eq!(nodes[0], "b", "sindr nodes[0] must be base");
                 assert_eq!(nodes[1], "c", "sindr nodes[1] must be collector");
@@ -1813,7 +1844,7 @@ mod tests {
         })];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::VoltageSource { waveform, .. } => match waveform {
+            CircuitElement::VoltageSource(VoltageSource { waveform, .. }) => match waveform {
                 Some(Waveform::Pwl { points }) => {
                     assert_eq!(points.len(), 2);
                     assert_eq!(points[0], (0.0, 0.0));
@@ -2001,7 +2032,9 @@ mod tests {
         ];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::Resistor { resistance, .. } => assert_eq!(*resistance, 2000.0),
+            CircuitElement::Resistor(Resistor { resistance, .. }) => {
+                assert_eq!(*resistance, 2000.0)
+            }
             other => panic!("expected Resistor, got {other:?}"),
         }
     }
@@ -2103,7 +2136,7 @@ mod tests {
         })];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::VoltageSource { waveform, .. } => match waveform {
+            CircuitElement::VoltageSource(VoltageSource { waveform, .. }) => match waveform {
                 Some(Waveform::Pulse {
                     v1,
                     v2,
@@ -2147,7 +2180,7 @@ mod tests {
         })];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::VoltageSource { waveform, .. } => match waveform {
+            CircuitElement::VoltageSource(VoltageSource { waveform, .. }) => match waveform {
                 Some(Waveform::Sine {
                     amplitude,
                     frequency,
@@ -2182,9 +2215,9 @@ mod tests {
         })];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 voltage, waveform, ..
-            } => {
+            }) => {
                 assert_eq!(*voltage, 12.0);
                 assert!(waveform.is_none());
             }
@@ -2210,7 +2243,9 @@ mod tests {
         })];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::Resistor { resistance, .. } => assert_eq!(*resistance, 1500.0),
+            CircuitElement::Resistor(Resistor { resistance, .. }) => {
+                assert_eq!(*resistance, 1500.0)
+            }
             other => panic!("expected Resistor, got {other:?}"),
         }
     }
@@ -2271,7 +2306,7 @@ mod tests {
         ];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::Diode { model, .. } => assert_eq!(
+            CircuitElement::Diode(Diode { model, .. }) => assert_eq!(
                 *model,
                 Some(DiodeModel {
                     is: 2.52e-9,
@@ -2304,7 +2339,7 @@ mod tests {
         ];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::Diode { model, .. } => assert_eq!(
+            CircuitElement::Diode(Diode { model, .. }) => assert_eq!(
                 *model,
                 Some(DiodeModel {
                     cjo: 4e-12,
@@ -2327,7 +2362,7 @@ mod tests {
         let netlist = build_from_cards(cards).unwrap();
         assert!(matches!(
             &netlist.circuit.components[0],
-            CircuitElement::Diode { model: None, .. }
+            CircuitElement::Diode(Diode { model: None, .. })
         ));
     }
 
@@ -2350,9 +2385,9 @@ mod tests {
         ];
         let netlist = build_from_cards(cards).unwrap();
         match &netlist.circuit.components[0] {
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 bf, kind, model, ..
-            } => {
+            }) => {
                 assert_eq!(*bf, 250.0);
                 assert!(matches!(kind, BjtKind::Pnp));
                 assert_eq!(
@@ -2377,7 +2412,7 @@ mod tests {
         let netlist = build_from_cards(cards).unwrap();
         assert!(matches!(
             &netlist.circuit.components[0],
-            CircuitElement::Bjt { bf, model: None, .. } if *bf == 50.0
+            CircuitElement::Bjt(Bjt { bf, model: None, .. }) if *bf == 50.0
         ));
     }
 
@@ -2416,7 +2451,7 @@ mod tests {
         // What is used still applies.
         assert!(matches!(
             &netlist.circuit.components[1],
-            CircuitElement::Diode { model: Some(m), .. } if m.is == 1e-12
+            CircuitElement::Diode(Diode { model: Some(m), .. }) if m.is == 1e-12
         ));
     }
 

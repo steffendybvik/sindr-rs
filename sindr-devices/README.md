@@ -21,8 +21,10 @@ Pure electronics device physics companion models for MNA circuit simulation.
 | `inductor` | Saturating inductor core | `λ(i) = L_sat·i + (L₀ − L_sat)·I_sat·tanh(i/I_sat)` |
 | `thermistor` | NTC thermistor | Beta model R(T) = R₀·exp(β·(1/T − 1/T₀)) |
 | `regulator` | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation; LM7805 and AMS1117 presets |
+| `converter` | Switching regulator (buck, boost) | Averaged over a switching period: dropout or pass-through, current limit, UVLO, input current from power balance with constant or load-dependent efficiency; inductor ripple estimate and feedback-divider set point |
 | `photodiode` | Photodiode | Diode + photocurrent offset |
 | `photoresistor` | Photoresistor (LDR) | Light-level-dependent resistance |
+| `datasheet` | Datasheet figures | Min/typ/max figures at test conditions that `from_datasheet` constructors fit models to |
 
 ## Usage
 
@@ -30,7 +32,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sindr-devices = "0.2"
+sindr-devices = "0.3"
 ```
 
 Two-terminal companions return `(g_eq, i_eq)`: the linearised conductance (S)
@@ -52,7 +54,7 @@ assert!(is_at_125c > 1e-14);
 ```
 
 `DiodeParams` fields: `is` (A), `n` (ideality), `rs` (series resistance, Ω),
-`temperature` (K).
+`temperature` (K), `breakdown` (optional `Breakdown { bv, ibv }`).
 
 ### BJT
 
@@ -65,8 +67,8 @@ let c = bjt_companion(0.65, -5.0, &params); // Vbe, Vbc
 assert!(c.ic > 0.0);
 ```
 
-`BjtParams` fields: `is`, `bf`, `nf`, `br`, `nr`, `vaf` / `var` (Early
-voltages, V; 0.0 = infinite), `temperature` (K).
+`BjtParams` fields: `is`, `bf`, `nf`, `br`, `nr`, `vaf` (forward Early
+voltage, V; 0.0 = infinite), `var` (kept but unused: no reverse Early effect), `temperature` (K).
 
 ### MOSFET
 
@@ -128,7 +130,7 @@ let (g, i) = schottky_companion(0.3, &SchottkyParams::default()); // IS=1e-8, N=
 let (g, i) = zener_companion(-5.5, &ZenerParams::new(5.1)); // Vz = 5.1 V
 let (g, i) = photodiode_companion(-1.0, 0.1, &PhotodiodeParams::default()); // 0.1 W irradiance
 
-let r_85c = thermistor_resistance(358.15, &ThermistorParams::ntc_10k()); // ~2.5 kΩ
+let r_85c = thermistor_resistance(358.15, &ThermistorParams::ntc_10k()); // ~1.1 kΩ
 let r_dim = ldr_resistance(0.5, &PhotoresistorParams::default()); // 0.0 dark – 1.0 bright
 assert!(r_85c < 10_000.0 && r_dim > 1_000.0);
 ```
@@ -138,8 +140,9 @@ assert!(r_85c < 10_000.0 && r_dim > 1_000.0);
 | Feature | Enables |
 |---------|---------|
 | `serde` *(default)* | `Serialize`/`Deserialize` on all param structs |
+| `schemars` *(default)* | `JsonSchema` on every serde type; turns on `serde` |
 
 ```toml
-# Without serde:
-sindr-devices = { version = "0.2", default-features = false }
+# Without serde or JSON Schema:
+sindr-devices = { version = "0.3", default-features = false }
 ```

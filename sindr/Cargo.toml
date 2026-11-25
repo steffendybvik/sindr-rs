@@ -1,6 +1,6 @@
 [package]
 name = "sindr"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 rust-version = "1.89"
 description = "Embeddable circuit simulator checked against ngspice: operating point, transient, AC, noise, DC and temperature sweeps, .tf, .sens, ratings and spec checks, SPICE import and export. Native and wasm32."
@@ -22,21 +22,26 @@ nalgebra = "0.35"
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }
 num-complex = "0.4"
 serde = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 # SPICE netlist parser deps — only pulled in by the `spice` feature.
 winnow = { version = "1.0", optional = true }
 miette = { version = "7", optional = true }
 
 [features]
-default = ["serde"]
+# Everything but `internals` is on by default. Turn them off with
+# `default-features = false` and pick the ones you want back.
+default = ["serde", "schemars", "spice", "examples", "parallel"]
+# JSON Schema for every serde type (`schemars::JsonSchema`), for apps that
+# describe sindr's inputs and outputs to other tools.
+schemars = ["serde", "dep:schemars", "sindr-devices/schemars"]
 serde = ["dep:serde", "sindr-devices/serde", "num-complex/serde"]
 # The named example circuits with ids and descriptions (`get_examples`).
 examples = []
-# SPICE3 netlist parsing (`sindr::spice`). Off by default to keep the
-# baseline dependency tree lean.
+# SPICE3 netlist parsing and export (`sindr::spice`).
 spice = ["dep:winnow", "dep:miette"]
-# Monte Carlo and corner runs across threads (`sindr::variation`). Off by
-# default: wasm32 has no threads.
+# Monte Carlo and corner runs across threads (`sindr::variation`). Serial
+# where there are no threads (wasm32).
 parallel = []
 # Unstable, not covered by semver: exposes the MNA matrix for sindr's own
 # `mna_solve` bench.
@@ -51,11 +56,15 @@ serde_json = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { version = "0.8", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }
+# Validates JSON against the schemas the `schemars` feature generates.
+jsonschema = { version = "0.63", default-features = false }
 # Fancy diagnostic rendering used by the SPICE end-to-end tests.
 miette = { version = "7", features = ["fancy"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+# A clock for tests/wasm_speed.rs: std::time::Instant traps on wasm32.
+js-sys = "0.3"
 
 [[example]]
 name = "list_examples"
@@ -71,6 +80,10 @@ required-features = ["spice"]
 
 [[example]]
 name = "vs_ngspice"
+required-features = ["spice"]
+
+[[example]]
+name = "fourier"
 required-features = ["spice"]
 
 [[bench]]

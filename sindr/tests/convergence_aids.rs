@@ -1,30 +1,31 @@
 //! Convergence fallbacks for nonlinear DC: which one a circuit needs, and
 //! that the answer it gives is a real operating point.
 
+use sindr::element::{Bjt, CurrentSource, Diode, Resistor, VoltageSource};
 use sindr::{
     solve_circuit, BjtKind, Circuit, CircuitElement, ConvergenceAid, SimError, SimulationResult,
     Solver, SolverOptions,
 };
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn npn(id: &str, b: &str, c: &str, e: &str) -> CircuitElement {
-    CircuitElement::Bjt {
+    CircuitElement::Bjt(Bjt {
         id: id.into(),
         nodes: [b.into(), c.into(), e.into()],
         kind: BjtKind::Npn,
@@ -32,7 +33,7 @@ fn npn(id: &str, b: &str, c: &str, e: &str) -> CircuitElement {
         temperature: 300.15,
         parasitic_caps: None,
         model: None,
-    }
+    })
 }
 
 fn bjt<'a>(result: &'a SimulationResult, id: &str) -> &'a sindr::BjtResult {
@@ -92,12 +93,12 @@ fn easy_circuit_reports_no_aid() {
         components: vec![
             vsource("V1", "in", "0", 5.0),
             resistor("R1", "in", "a", 1e3),
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -105,12 +106,12 @@ fn easy_circuit_reports_no_aid() {
 }
 
 fn diode(id: &str, anode: &str, cathode: &str) -> CircuitElement {
-    CircuitElement::Diode {
+    CircuitElement::Diode(Diode {
         id: id.into(),
         nodes: [anode.into(), cathode.into()],
         temperature: 300.15,
         model: None,
-    }
+    })
 }
 
 fn current(result: &SimulationResult, id: &str) -> f64 {
@@ -187,11 +188,13 @@ fn without_fallbacks_the_plain_failure_is_returned() {
 /// same but its load can only take IL, so it saturates.
 #[test]
 fn source_stepping_ramps_current_sources() {
-    let isrc = |id: &str, to: &str, amps: f64| CircuitElement::CurrentSource {
-        id: id.into(),
-        nodes: ["0".into(), to.into()],
-        current: amps,
-        waveform: None,
+    let isrc = |id: &str, to: &str, amps: f64| {
+        CircuitElement::CurrentSource(CurrentSource {
+            id: id.into(),
+            nodes: ["0".into(), to.into()],
+            current: amps,
+            waveform: None,
+        })
     };
     let mirror = Circuit::new(
         "0",

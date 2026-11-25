@@ -20,17 +20,23 @@
 //! A comparator is the same stamp with [`COMPARATOR`]: gain 1e5 and no pole,
 //! so its output follows the clamped gain stage instantly.
 
+use crate::element::{Comparator, OpAmp};
+use crate::handle::NodeId;
 use nalgebra::DVector;
 
 use crate::circuit::{CircuitElement, OpAmpModel};
 use crate::integration::{History, Integrator};
 use crate::mna::MnaSystem;
-use crate::node_map::NodeMap;
-use crate::stamp::stamp_current_source;
+use crate::stamp::stamp_current_source_at;
 
 /// Width of the clamp's knee (V): within a few of these of a rail the
 /// output bends over smoothly instead of with a kink Newton can't follow.
 const KNEE: f64 = 0.01;
+
+/// Key suffix, in the transient's per-element history map, of a modelled
+/// op-amp's or a comparator's gain stage. It starts from rest (0 V) like
+/// the capacitors.
+pub(crate) const OP_AMP_STAGE: &str = "stage";
 
 /// A comparator's model: the unmodelled op-amp's gain of 1e5 with no pole,
 /// slew limit, output resistance, offset or bias, so it differs from that
@@ -48,13 +54,17 @@ pub(crate) const COMPARATOR: OpAmpModel = OpAmpModel {
 pub(crate) struct OpAmpStamp<'a> {
     pub model: &'a OpAmpModel,
     /// `[in_plus, in_minus, out]`.
-    pub nodes: &'a [String; 3],
-    pub ground: &'a str,
+    pub nodes: &'a [NodeId; 3],
     pub v_pos: f64,
     pub v_neg: f64,
     /// Row/column of the output current; the stage voltage is the next one.
     pub branch: usize,
 }
+
+/// An op-amp's or comparator's terminals `[in_plus, in_minus, out]` as
+/// matrix indices (`None` is ground). The output is referred to the
+/// circuit's ground, which has no row.
+pub(crate) type Pins = [Option<usize>; 3];
 
 /// `w · ln(1 + e^(z/w))` without overflow, and its derivative.
 fn softplus(z: f64) -> (f64, f64) {
@@ -75,31 +85,35 @@ impl<'a> OpAmpStamp<'a> {
     /// The stamp of an element whose output is clamped to its rails: an
     /// op-amp with a model, or a comparator. `None` for anything else.
     /// `branch` is its first MNA branch slot.
-    pub(crate) fn of(element: &'a CircuitElement, ground: &'a str, branch: usize) -> Option<Self> {
-        let (model, nodes, v_pos, v_neg) = match element {
-            CircuitElement::OpAmp {
-                nodes,
-                v_pos,
-                v_neg,
-                model: Some(model),
-                ..
-            } => (model, nodes, *v_pos, *v_neg),
-            CircuitElement::Comparator {
-                nodes,
-                v_pos,
-                v_neg,
-                ..
-            } => (&COMPARATOR, nodes, *v_pos, *v_neg),
-            _ => return None,
-        };
+    pub(crate) fn of(element: &'a CircuitElement, branch: usize) -> Option<Self> {
+        match element {
+            CircuitElement::OpAmp(op_amp) => Self::of_op_amp(op_amp, branch),
+            CircuitElement::Comparator(comparator) => Some(Self::of_comparator(comparator, branch)),
+            _ => None,
+        }
+    }
+
+    /// [`of`](Self::of) an op-amp: `None` without a model.
+    pub(crate) fn of_op_amp(op_amp: &'a OpAmp, branch: usize) -> Option<Self> {
+        let model = op_amp.model.as_ref()?;
         Some(Self {
             model,
-            nodes,
-            ground,
-            v_pos,
-            v_neg,
+            nodes: &op_amp.nodes,
+            v_pos: op_amp.v_pos,
+            v_neg: op_amp.v_neg,
             branch,
         })
+    }
+
+    /// [`of`](Self::of) a comparator.
+    pub(crate) fn of_comparator(comparator: &'a Comparator, branch: usize) -> Self {
+        Self {
+            model: &COMPARATOR,
+            nodes: &comparator.nodes,
+            v_pos: comparator.v_pos,
+            v_neg: comparator.v_neg,
+            branch,
+        }
     }
 
     fn stage(&self) -> usize {
@@ -130,9 +144,9 @@ impl<'a> OpAmpStamp<'a> {
     }
 
     /// `v₊ − v₋` at the node voltages in `v`.
-    fn vd(&self, node_map: &NodeMap, v: &DVector<f64>) -> f64 {
-        let at = |n: &String| node_map.index(n).map_or(0.0, |i| v[i]);
-        at(&self.nodes[0]) - at(&self.nodes[1])
+    fn vd_at(pins: &Pins, v: &DVector<f64>) -> f64 {
+        let at = |i: Option<usize>| i.map_or(0.0, |i| v[i]);
+        at(pins[0]) - at(pins[1])
     }
 
     /// The stage's right-hand side `F = D(u − x) + K·(sat(x) − x)` at
@@ -163,15 +177,11 @@ impl<'a> OpAmpStamp<'a> {
 
     /// The output row, the bias currents, and the KCL entries of the output
     /// current, linearised at stage voltage `x0`.
-    fn stamp_output(&self, system: &mut MnaSystem, node_map: &NodeMap, x0: f64) {
+    fn stamp_output(&self, system: &mut MnaSystem, pins: &Pins, x0: f64) {
         let br = self.branch;
-        if let Some(o) = node_map.index(&self.nodes[2]) {
+        if let Some(o) = pins[2] {
             system.a[(o, br)] += 1.0;
             system.a[(br, o)] += 1.0;
-        }
-        if let Some(g) = node_map.index(self.ground) {
-            system.a[(g, br)] -= 1.0;
-            system.a[(br, g)] -= 1.0;
         }
         // v_out − [s0 + s'·(x − x0)] − r_out·i = 0
         let (s0, ds) = self.sat(x0);
@@ -180,32 +190,20 @@ impl<'a> OpAmpStamp<'a> {
         system.b[br] += s0 - ds * x0;
         let ib = self.model.bias_current;
         if ib != 0.0 {
-            for input in &self.nodes[..2] {
-                stamp_current_source(
-                    system,
-                    node_map,
-                    &[input.clone(), self.ground.to_string()],
-                    ib,
-                );
+            for &input in &pins[..2] {
+                stamp_current_source_at(system, [input, None], ib);
             }
         }
     }
 
     /// Stage row `c_x · x − c_u · (v₊ − v₋) = rhs`.
-    fn stamp_stage(
-        &self,
-        system: &mut MnaSystem,
-        node_map: &NodeMap,
-        c_x: f64,
-        c_u: f64,
-        rhs: f64,
-    ) {
+    fn stamp_stage(&self, system: &mut MnaSystem, pins: &Pins, c_x: f64, c_u: f64, rhs: f64) {
         let x = self.stage();
         system.a[(x, x)] += c_x;
-        if let Some(p) = node_map.index(&self.nodes[0]) {
+        if let Some(p) = pins[0] {
             system.a[(x, p)] -= c_u;
         }
-        if let Some(m) = node_map.index(&self.nodes[1]) {
+        if let Some(m) = pins[1] {
             system.a[(x, m)] += c_u;
         }
         system.b[x] += rhs;
@@ -213,17 +211,17 @@ impl<'a> OpAmpStamp<'a> {
 
     /// DC: `F(x, vd) = 0` and the output row, linearised at `v_prev` (at
     /// rest when there is no iterate yet).
-    pub(crate) fn stamp_dc(
+    pub(crate) fn stamp_dc_at(
         &self,
         system: &mut MnaSystem,
-        node_map: &NodeMap,
+        pins: &Pins,
         v_prev: Option<&DVector<f64>>,
     ) {
-        let (x0, vd0) = v_prev.map_or((0.0, 0.0), |v| (v[self.stage()], self.vd(node_map, v)));
-        self.stamp_output(system, node_map, x0);
+        let (x0, vd0) = v_prev.map_or((0.0, 0.0), |v| (v[self.stage()], Self::vd_at(pins, v)));
+        self.stamp_output(system, pins, x0);
         let (f0, c_x, c_u) = self.stage_rate(x0, vd0);
         // F0 − c_x·(x − x0) + c_u·(vd − vd0) = 0
-        self.stamp_stage(system, node_map, c_x, c_u, f0 + c_x * x0 - c_u * vd0);
+        self.stamp_stage(system, pins, c_x, c_u, f0 + c_x * x0 - c_u * vd0);
     }
 
     /// One transient step: `τ·(g·x + h) = F(x, vd)`, with `(g, h)` the
@@ -232,22 +230,22 @@ impl<'a> OpAmpStamp<'a> {
     pub(crate) fn stamp_transient(
         &self,
         system: &mut MnaSystem,
-        node_map: &NodeMap,
+        pins: &Pins,
         integ: &Integrator,
         history: &History,
         v_prev: &DVector<f64>,
     ) {
         let Some(tau) = self.tau() else {
-            return self.stamp_dc(system, node_map, Some(v_prev));
+            return self.stamp_dc_at(system, pins, Some(v_prev));
         };
         let x0 = v_prev[self.stage()];
-        let vd0 = self.vd(node_map, v_prev);
-        self.stamp_output(system, node_map, x0);
+        let vd0 = Self::vd_at(pins, v_prev);
+        self.stamp_output(system, pins, x0);
         let (f0, c_x, c_u) = self.stage_rate(x0, vd0);
         let (g, h) = integ.capacitor(1.0, history);
         self.stamp_stage(
             system,
-            node_map,
+            pins,
             tau * g + c_x,
             c_u,
             -tau * h + f0 + c_x * x0 - c_u * vd0,
@@ -257,15 +255,38 @@ impl<'a> OpAmpStamp<'a> {
     /// The small-signal stage row `(jωτ + c_x)·x − c_u·vd = 0` and output
     /// row slope `sat'(x)` at the bias point whose node voltages are in `v`:
     /// `(τ, c_x, c_u, sat')`.
-    pub(crate) fn small_signal(
-        &self,
-        node_map: &NodeMap,
-        v: &DVector<f64>,
-    ) -> (f64, f64, f64, f64) {
-        let vd = self.vd(node_map, v);
+    fn small_signal(&self, pins: &Pins, v: &DVector<f64>) -> (f64, f64, f64, f64) {
+        let vd = Self::vd_at(pins, v);
         let x = self.settled_stage(vd);
         let (_, c_x, c_u) = self.stage_rate(x, vd);
         (self.tau().unwrap_or(0.0), c_x, c_u, self.sat(x).1)
+    }
+
+    /// Writes the op-amp's small-signal model, linearised at the bias
+    /// point in `s.dc_solution`: the output's branch row through R_out to
+    /// the gain stage `x`, and the stage's `τ·ẋ = c_u·(V+ − V−) − c_x·x`.
+    /// The output is referred to ground, which has no row.
+    pub(crate) fn stamp_ac(&self, s: &mut crate::element::AcStamp<'_>) {
+        use num_complex::Complex64;
+        let br = self.branch;
+        let x = br + 1;
+        let one = Complex64::new(1.0, 0.0);
+        let pins: Pins = s.nodes();
+        let [in_p, in_m, out] = pins;
+        if let Some(o) = out {
+            s.a[(o, br)] += one;
+            s.a[(br, o)] += one;
+        }
+        let (tau, c_x, c_u, slope) = self.small_signal(&pins, s.dc_solution);
+        s.a[(br, x)] -= Complex64::new(slope, 0.0);
+        s.a[(br, br)] -= Complex64::new(self.model.r_out, 0.0);
+        s.a[(x, x)] += Complex64::new(c_x, 0.0) + s.s * tau;
+        if let Some(p) = in_p {
+            s.a[(x, p)] -= Complex64::new(c_u, 0.0);
+        }
+        if let Some(m) = in_m {
+            s.a[(x, m)] += Complex64::new(c_u, 0.0);
+        }
     }
 
     /// The stage's history after a step that ended at `solution`.

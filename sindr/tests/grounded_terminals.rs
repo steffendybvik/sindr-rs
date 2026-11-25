@@ -4,6 +4,10 @@
 //! transformer's dotted end) is checked here against a closed-form answer
 //! with it on ground or with the element reversed.
 
+use sindr::element::{
+    Battery, Cccs, Ccvs, Igbt, Jfet, Mosfet, Resistor, Transformer, Vccs, Vcvs, VoltageRegulator,
+    VoltageSource,
+};
 use sindr::{
     solve_circuit, solve_transient, validate_circuit, Circuit, CircuitElement, JfetKind,
     MosfetKind, RegulatorParams, SimError, SimulationResult, Solver, SolverOptions,
@@ -13,20 +17,20 @@ use sindr_devices::igbt::IgbtParams;
 use sindr_devices::mosfet::MosfetParams;
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn v(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn current(result: &SimulationResult, id: &str) -> f64 {
@@ -46,11 +50,13 @@ fn close(got: f64, want: f64, tol: f64) {
 /// with `ctrl+` on ground sees `−V(in)`.
 #[test]
 fn vcvs_with_either_output_or_control_terminal_on_ground() {
-    let vcvs = |id: &str, nodes: [&str; 2], control: [&str; 2]| CircuitElement::Vcvs {
-        id: id.into(),
-        nodes: nodes.map(Into::into),
-        control_nodes: control.map(Into::into),
-        gain: 2.0,
+    let vcvs = |id: &str, nodes: [&str; 2], control: [&str; 2]| {
+        CircuitElement::Vcvs(Vcvs {
+            id: id.into(),
+            nodes: nodes.map(Into::into),
+            control_nodes: control.map(Into::into),
+            gain: 2.0,
+        })
     };
     let circuit = Circuit::new(
         "0",
@@ -73,11 +79,13 @@ fn vcvs_with_either_output_or_control_terminal_on_ground() {
 /// with either end on ground it sets `±gm·Vc·R` across a load.
 #[test]
 fn vccs_with_either_output_terminal_on_ground() {
-    let vccs = |id: &str, nodes: [&str; 2], control: [&str; 2]| CircuitElement::Vccs {
-        id: id.into(),
-        nodes: nodes.map(Into::into),
-        control_nodes: control.map(Into::into),
-        gm: 1e-3,
+    let vccs = |id: &str, nodes: [&str; 2], control: [&str; 2]| {
+        CircuitElement::Vccs(Vccs {
+            id: id.into(),
+            nodes: nodes.map(Into::into),
+            control_nodes: control.map(Into::into),
+            gm: 1e-3,
+        })
     };
     let circuit = Circuit::new(
         "0",
@@ -108,12 +116,12 @@ fn vccs_with_a_differential_control_between_live_nodes() {
             r("R1", "in", "half", 1e3),
             r("R2", "half", "0", 1e3),
             v("V2", "ref", "0", 1.0),
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id: "G1".into(),
                 nodes: ["ref".into(), "c".into()],
                 control_nodes: ["in".into(), "half".into()],
                 gm: 1e-3,
-            },
+            }),
             r("RC", "c", "0", 2e3),
         ],
     );
@@ -133,19 +141,19 @@ fn current_controlled_sources_with_an_output_on_ground() {
         vec![
             v("V1", "in", "0", 1.0),
             r("R1", "in", "0", 1e3),
-            CircuitElement::Ccvs {
+            CircuitElement::Ccvs(Ccvs {
                 id: "H1".into(),
                 nodes: ["0".into(), "a".into()],
                 control_source: "V1".into(),
                 rm: 2e3,
-            },
+            }),
             r("RA", "a", "0", 1e3),
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id: "F1".into(),
                 nodes: ["0".into(), "b".into()],
                 control_source: "V1".into(),
                 alpha: 3.0,
-            },
+            }),
             r("RB", "b", "0", 1e3),
         ],
     );
@@ -168,14 +176,14 @@ fn jfet_with_gate_and_source_on_ground_carries_idss() {
         vec![
             v("VDD", "vdd", "0", 20.0),
             r("RD", "vdd", "d", 1e3),
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id: "J1".into(),
                 nodes: ["0".into(), "d".into(), "0".into()],
                 kind: JfetKind::NChannel,
                 idss: 10e-3,
                 vp: -2.0,
                 parasitic_caps: None,
-            },
+            }),
         ],
     );
     let result = solve_circuit(&circuit).unwrap();
@@ -193,14 +201,14 @@ fn p_jfet_with_its_drain_on_ground_carries_idss() {
         vec![
             v("VS", "vs", "0", 10.0),
             r("RS", "vs", "s", 100.0),
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id: "J1".into(),
                 nodes: ["s".into(), "0".into(), "s".into()],
                 kind: JfetKind::PChannel,
                 idss: 10e-3,
                 vp: 2.0,
                 parasitic_caps: None,
-            },
+            }),
         ],
     );
     let result = solve_circuit(&circuit).unwrap();
@@ -214,12 +222,12 @@ fn battery_with_its_positive_terminal_on_ground() {
     let circuit = Circuit::new(
         "0",
         vec![
-            CircuitElement::Battery {
+            CircuitElement::Battery(Battery {
                 id: "B1".into(),
                 nodes: ["0".into(), "n".into()],
                 params: sindr::battery::BatteryParams::constant(3.0, 1.0, 0.1),
                 state_of_charge: 1.0,
-            },
+            }),
             r("RL", "n", "0", 1e3),
         ],
     );
@@ -237,14 +245,14 @@ fn pmos_with_its_drain_on_ground_balances_kcl() {
         vec![
             v("VDD", "vdd", "0", 5.0),
             r("RS", "vdd", "s", 1e3),
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["0".into(), "0".into(), "s".into()],
                 kind: MosfetKind::Pmos,
                 params: MosfetParams::default_pmos(),
                 parasitic_caps: None,
                 body_diode: None,
-            },
+            }),
         ],
     );
     let result = solve_circuit(&circuit).unwrap();
@@ -273,11 +281,11 @@ fn igbt_with_its_collector_on_ground_balances_kcl() {
         vec![
             v("VEE", "vee", "0", -15.0),
             r("RE", "e", "vee", 1e3),
-            CircuitElement::Igbt {
+            CircuitElement::Igbt(Igbt {
                 id: "Z1".into(),
                 nodes: ["0".into(), "0".into(), "e".into()],
                 params: IgbtParams::default(),
-            },
+            }),
         ],
     );
     let mut options = SolverOptions::default();
@@ -303,7 +311,7 @@ fn reversed_primary_inverts_the_secondary() {
         Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: 0.0,
@@ -313,16 +321,16 @@ fn reversed_primary_inverts_the_secondary() {
                         offset: 0.0,
                         phase: 0.0,
                     }),
-                },
+                }),
                 r("R1", "in", "p", 10.0),
-                CircuitElement::Transformer {
+                CircuitElement::Transformer(Transformer {
                     id: "T1".into(),
                     nodes: [primary[0].into(), primary[1].into(), "s".into(), "0".into()],
                     l1: 10e-3,
                     l2: 40e-3,
                     k: 0.99,
                     saturation: None,
-                },
+                }),
                 r("RL", "s", "0", 1e3),
             ],
         )
@@ -354,12 +362,12 @@ fn regulator_with_a_lifted_ground_pin() {
             vec![
                 v("VIN", "in", "0", 12.0),
                 v("VG", "g", "0", 1.0),
-                CircuitElement::VoltageRegulator {
+                CircuitElement::VoltageRegulator(VoltageRegulator {
                     id: "U1".into(),
                     nodes: ["in".into(), "out".into(), "g".into()],
                     voltage: 5.0,
                     model,
-                },
+                }),
                 r("RL", "out", "0", 100.0),
             ],
         )
@@ -389,12 +397,12 @@ fn regulator_with_a_floating_input_is_rejected() {
         let circuit = Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageRegulator {
+                CircuitElement::VoltageRegulator(VoltageRegulator {
                     id: "U1".into(),
                     nodes: ["vin".into(), "out".into(), "0".into()],
                     voltage: 5.0,
                     model,
-                },
+                }),
                 r("RL", "out", "0", 1e3),
             ],
         );

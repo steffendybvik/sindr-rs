@@ -3,26 +3,28 @@
 //! hanging or failing to allocate.
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{Capacitor, Resistor, VoltageSource};
 use sindr::{
     dc_sweep, solve_circuit, solve_transient, temperature_sweep, Circuit, CircuitElement, SimError,
     TransientConfig, Waveform,
 };
+use sindr::{DcSweepAxis, TempSweepConfig};
 
 fn vsource(id: &str, p: &str, n: &str, waveform: Option<Waveform>) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: 0.0,
         waveform,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn pulse(delay: f64, period: f64) -> Waveform {
@@ -39,10 +41,11 @@ fn pulse(delay: f64, period: f64) -> Waveform {
 
 fn assert_invalid(result: Result<impl std::fmt::Debug, SimError>, needle: &str) {
     match result {
-        Err(SimError::InvalidComponent(msg)) => {
+        Err(e @ SimError::InvalidConfig { .. }) => {
+            let msg = e.to_string();
             assert!(msg.contains(needle), "message {msg:?} lacks {needle:?}")
         }
-        other => panic!("expected InvalidComponent, got {other:?}"),
+        other => panic!("expected InvalidConfig, got {other:?}"),
     }
 }
 
@@ -67,11 +70,11 @@ fn solve_circuit_rejects_an_automatic_config_over_the_step_cap() {
             ),
             resistor("R1", "in", "out", 1e3),
             resistor("RL", "out", "x", 1e9),
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["x".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     };
@@ -114,12 +117,12 @@ fn divider() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 1.0,
                 waveform: None,
-            },
+            }),
             resistor("R1", "in", "out", 1e3),
             resistor("R2", "out", "0", 1e3),
         ],
@@ -132,11 +135,11 @@ fn huge_sweeps_are_errors_not_panics() {
     let ac = AcConfig::new("V1", 1.0, 1e6, usize::MAX);
     assert_invalid(solve_ac(&divider(), &ac), "num_points");
     assert_invalid(
-        dc_sweep(&divider(), "V1", 0.0, 1.0, usize::MAX),
+        dc_sweep(&divider(), &DcSweepAxis::new("V1", 0.0, 1.0, usize::MAX)),
         "num_points",
     );
     assert_invalid(
-        temperature_sweep(&divider(), 250.0, 400.0, usize::MAX),
-        "num_steps",
+        temperature_sweep(&divider(), &TempSweepConfig::new(250.0, 400.0, usize::MAX)),
+        "num_points",
     );
 }

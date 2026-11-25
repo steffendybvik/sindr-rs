@@ -8,6 +8,7 @@
 //! `.model` parameter against the Rust parameters it stands for. A
 //! parameter the card leaves out takes its SPICE default.
 
+use sindr::element::{Jfet, Led, Mosfet, Photodiode, Resistor, SchottkyDiode, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::{Circuit, CircuitElement, JfetKind, MosfetKind};
@@ -115,13 +116,13 @@ impl Deck {
             .unwrap_or_else(|| panic!("{case}: no `.model {name}`"))
     }
 
-    fn nodes(case: &str, id: &str, deck: &[String], rust: &[&String]) {
+    fn nodes(case: &str, id: &str, deck: &[String], rust: &[&sindr::NodeId]) {
         let rust: Vec<String> = rust.iter().map(|n| n.to_ascii_lowercase()).collect();
         assert_eq!(deck, &rust[..], "{case}: `{id}` nodes");
     }
 
     /// The `D` card a two-terminal junction uses, checked for IS and N.
-    fn diode(&mut self, case: &str, id: &str, nodes: &[String; 2], is: f64, n: f64) {
+    fn diode(&mut self, case: &str, id: &str, nodes: &[sindr::NodeId; 2], is: f64, n: f64) {
         let words = self.take(case, id);
         Self::nodes(case, id, &words[..2], &[&nodes[0], &nodes[1]]);
         let (kind, params) = self.model(case, &words[2]).clone();
@@ -154,11 +155,11 @@ pub fn in_deck<'a>(case: &str, deck: &str, circuit: &'a Circuit) -> &'a Circuit 
     let mut d = read(deck);
     for component in &circuit.components {
         match component {
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id,
                 nodes,
                 resistance,
-            } => {
+            }) => {
                 let words = d.take(case, id);
                 let mut want = [nodes[0].to_ascii_lowercase(), nodes[1].to_ascii_lowercase()];
                 let mut got = [words[0].clone(), words[1].clone()];
@@ -167,25 +168,25 @@ pub fn in_deck<'a>(case: &str, deck: &str, circuit: &'a Circuit) -> &'a Circuit 
                 assert_eq!(got, want, "{case}: `{id}` nodes");
                 close(case, id, number(&words[2]), *resistance);
             }
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id,
                 nodes,
                 voltage,
                 waveform: None,
-            } => {
+            }) => {
                 let words = d.take(case, id);
                 Deck::nodes(case, id, &words[..2], &[&nodes[0], &nodes[1]]);
                 let value = words.iter().skip(2).find(|w| *w != "dc").expect("a value");
                 close(case, id, number(value), *voltage);
             }
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id,
                 nodes,
                 kind,
                 params,
                 parasitic_caps: None,
                 body_diode: None,
-            } => {
+            }) => {
                 // `M d g s b model [W= L=]`; sindr's nodes are [g, d, s] and
                 // its body is the source.
                 let words = d.take(case, id);
@@ -229,14 +230,14 @@ pub fn in_deck<'a>(case: &str, deck: &str, circuit: &'a Circuit) -> &'a Circuit 
                 );
                 close(case, &format!("{id} PHI"), get("phi", 0.6), params.phi);
             }
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id,
                 nodes,
                 kind,
                 idss,
                 vp,
                 parasitic_caps,
-            } => {
+            }) => {
                 // `J d g s model`; sindr's nodes are [g, d, s].
                 let words = d.take(case, id);
                 Deck::nodes(case, id, &words[..3], &[&nodes[1], &nodes[0], &nodes[2]]);
@@ -268,31 +269,31 @@ pub fn in_deck<'a>(case: &str, deck: &str, circuit: &'a Circuit) -> &'a Circuit 
                     close(case, &format!("{id} M"), 0.5, caps.m);
                 }
             }
-            CircuitElement::Led {
+            CircuitElement::Led(Led {
                 id,
                 nodes,
                 color,
                 temperature,
-            } => {
+            }) => {
                 close(case, &format!("{id} temperature"), NOMINAL_K, *temperature);
                 let p = led_params_from_str(color);
                 d.diode(case, id, nodes, p.is, p.n);
             }
-            CircuitElement::SchottkyDiode {
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 id,
                 nodes,
                 temperature,
-            } => {
+            }) => {
                 close(case, &format!("{id} temperature"), NOMINAL_K, *temperature);
                 let p = SchottkyParams::standard();
                 d.diode(case, id, nodes, p.is, p.n);
             }
-            CircuitElement::Photodiode {
+            CircuitElement::Photodiode(Photodiode {
                 id,
                 nodes,
                 irradiance,
                 temperature,
-            } => {
+            }) => {
                 close(case, &format!("{id} temperature"), NOMINAL_K, *temperature);
                 let p = PhotodiodeParams::silicon();
                 d.diode(case, id, nodes, p.is, p.n);

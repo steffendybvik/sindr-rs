@@ -12,6 +12,7 @@ use crate::datasheet::{positive, DatasheetError, MosfetDatasheet};
 
 /// MOSFET type (NMOS or PMOS).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MosfetKind {
     /// N-channel MOSFET (electrons are majority carriers in the channel).
@@ -39,7 +40,10 @@ impl MosfetKind {
 
 /// Operating region of a MOSFET.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum MosfetRegion {
     /// Below threshold — channel off, negligible drain current.
     Cutoff,
@@ -60,11 +64,18 @@ impl MosfetRegion {
     }
 }
 
+impl std::fmt::Display for MosfetRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// MOSFET device parameters (Level 1 Shichman-Hodges).
 ///
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MosfetParams {
     /// Transconductance parameter (A/V^2). SPICE KP parameter.
@@ -453,6 +464,18 @@ pub fn detect_region(vgs: f64, vds: f64, vth: f64) -> MosfetRegion {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[test]
+    fn region_displays_as_its_label() {
+        for (region, label) in [
+            (MosfetRegion::Cutoff, "cutoff"),
+            (MosfetRegion::Triode, "triode"),
+            (MosfetRegion::Saturation, "saturation"),
+        ] {
+            assert_eq!(region.to_string(), label);
+            assert_eq!(region.as_str(), label);
+        }
+    }
 
     #[test]
     fn nmos_cutoff() {

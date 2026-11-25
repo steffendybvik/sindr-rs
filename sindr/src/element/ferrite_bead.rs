@@ -1,0 +1,56 @@
+//! A ferrite bead. The analyses replace it with its equivalent circuit
+//! before solving.
+
+use crate::circuit::FerriteBeadParams;
+use crate::error::SimError;
+use crate::handle::NodeId;
+
+use super::{stamped_as_parts, AcStamp, DcStamp, Device, Report, TranStamp};
+use crate::ratings::RatingKind;
+
+#[cfg(feature = "spice")]
+use crate::spice::export::{Deck, ExportError};
+
+/// Ferrite bead ([`FerriteBeadParams`]): its DC resistance at DC,
+/// lossy and inductive at high frequency. Its result's `power` is what
+/// its two resistances dissipate. `nodes: [a, b]`
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct FerriteBead {
+    /// Unique component identifier.
+    pub id: String,
+    /// Terminals `[a, b]`.
+    pub nodes: [NodeId; 2],
+    /// The equivalent circuit.
+    pub params: FerriteBeadParams,
+}
+
+impl Device for FerriteBead {
+    device_identity!();
+
+    /// Lowered to its parts before any solve, and they report.
+    fn report(&self, _: &mut Report<'_>) {}
+
+    /// Split into its parts by `solver_circuit` first.
+    fn stamp_ac(&self, _: &mut AcStamp<'_>) {}
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        use RatingKind::*;
+        &[Current, Power]
+    }
+
+    fn stamp_dc(&self, _: &mut DcStamp<'_>) -> Result<(), SimError> {
+        Err(stamped_as_parts(&self.id))
+    }
+
+    /// Nothing: the transient steps its parts.
+    fn stamp_transient(&self, _: &mut TranStamp<'_>) -> Result<(), SimError> {
+        Ok(())
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        deck.parts(&crate::CircuitElement::FerriteBead(self.clone()), name)
+    }
+}

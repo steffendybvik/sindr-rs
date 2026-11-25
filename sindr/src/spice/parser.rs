@@ -79,6 +79,7 @@ fn anchor_to_line(card: RawCard, line: &LogicalLine) -> RawCard {
         RawCard::Analysis(analysis, _) => RawCard::Analysis(analysis, line_span(line)),
         RawCard::NodeValues(kind, values, _) => RawCard::NodeValues(kind, values, line_span(line)),
         RawCard::Measure(measure, _) => RawCard::Measure(measure, line_span(line)),
+        RawCard::Four(f0, signals, _) => RawCard::Four(f0, signals, line_span(line)),
         RawCard::Options(options, _) => RawCard::Options(options, line_span(line)),
         other => other,
     }
@@ -1177,11 +1178,14 @@ fn output_variable(input: &mut Input<'_>) -> ModalResult<crate::TfOutput> {
             (ws, ')'),
         )
         .map(|((node, _), reference)| crate::TfOutput::Voltage {
-            node,
-            reference: reference.map(|(r, _)| r),
+            node: node.into(),
+            reference: reference.map(|(r, _)| r.into()),
         }),
-        delimited(('i', ws, '(', ws), ident, (ws, ')'))
-            .map(|(source_id, _)| crate::TfOutput::Current { source_id }),
+        delimited(('i', ws, '(', ws), ident, (ws, ')')).map(|(source_id, _)| {
+            crate::TfOutput::Current {
+                source_id: source_id.into(),
+            }
+        }),
     ))
     .parse_next(input)
 }
@@ -1286,8 +1290,8 @@ fn parse_card_noise(input: &mut Input<'_>) -> ModalResult<RawCard> {
     }
     Ok(RawCard::Analysis(
         RawAnalysis::Noise {
-            node,
-            reference,
+            node: node.into_string(),
+            reference: reference.map(crate::NodeId::into_string),
             input: source,
             sweep,
             points,
@@ -1521,6 +1525,32 @@ fn meas_crossing(
     })
 }
 
+/// Parse `.four <f0> <signal> [<signal> …]`; see
+/// [`crate::spice::FourierRequest`].
+fn parse_card_four(text: &str) -> Result<RawCard, String> {
+    use crate::measure::View;
+
+    let words = meas_words(text)?;
+    let mut it = words.iter();
+    let f0 = meas_value(it.next().ok_or("expected a fundamental frequency")?)?;
+    let signals = it
+        .map(|word| {
+            let signal = meas_signal(word)?;
+            if signal.view == View::Value {
+                Ok(signal)
+            } else {
+                Err(format!(
+                    "`{word}`: Fourier analysis reads a voltage or a current, such as `v(out)` or `i(r1)`"
+                ))
+            }
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if signals.is_empty() {
+        return Err("expected a signal such as `v(out)` after the frequency".to_string());
+    }
+    Ok(RawCard::Four(f0, signals, Span::detached()))
+}
+
 /// Parse `.meas tran|ac|dc <name> …`; see [`crate::spice::MeasureRequest`].
 fn parse_card_meas(text: &str) -> Result<RawCard, String> {
     use crate::measure::Stat;
@@ -1665,6 +1695,14 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
             "pz" => parse_card_pz(&mut input),
             "meas" | "measure" => {
                 return parse_card_meas(&trimmed[1 + kind_span.end..]).map_err(|message| {
+                    LocalError::Syntax {
+                        message: format!("`.{kind}`: {message}"),
+                        span: 0..trimmed.len(),
+                    }
+                });
+            }
+            "four" => {
+                return parse_card_four(&trimmed[1 + kind_span.end..]).map_err(|message| {
                     LocalError::Syntax {
                         message: format!("`.{kind}`: {message}"),
                         span: 0..trimmed.len(),

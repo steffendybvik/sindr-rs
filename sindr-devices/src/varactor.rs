@@ -11,6 +11,7 @@
 /// so a field added in a later release doesn't break the literal.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VaractorParams {
     /// Zero-bias junction capacitance (F). Typical: 10e-12 (10 pF).
     pub cj0: f64,

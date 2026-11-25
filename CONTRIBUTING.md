@@ -33,8 +33,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 python3 scripts/gen_llms_full.py --check
 ```
 
-- `--all-features` turns on the `spice` parser and its end-to-end tests.
-  `--no-default-features` checks the build without `serde` and `examples`.
+- Every feature but `internals` is on by default, so `--all-features` adds
+  `internals` (and the tests and benches behind it). `--no-default-features`
+  checks the build with none: no `serde`, `schemars`, `spice`, `examples` or
+  `parallel`.
 - Both crates have `#![deny(missing_docs)]`: every public item needs a doc
   comment.
 - The code blocks in `sindr/README.md` and `sindr-devices/README.md` run as
@@ -49,7 +51,7 @@ python3 scripts/gen_llms_full.py --check
 
 - Unit tests sit next to the code in `#[cfg(test)] mod tests`.
 - Cross-cutting tests are in `sindr/tests/`. SPICE fixtures live in
-  `sindr/tests/fixtures/`, and those tests need `--features spice`.
+  `sindr/tests/fixtures/`, and those tests need the `spice` feature (on by default).
 - Prefer checks against closed-form answers (a divider, an RC corner
   frequency, `1 − e^(−t/τ)`) over values copied from the current output.
 - `sindr/tests/golden.rs` checks results against ngspice. To add a case or
@@ -71,11 +73,15 @@ python3 scripts/gen_llms_full.py --check
   ```
 
   Raise a floor when coverage rises. Lower one only with a reason in the PR.
-- The SPICE parser has a fuzz target in `fuzz/` (cargo-fuzz, nightly). It
-  feeds arbitrary text to `parse_str_with_options`, and for any deck that
-  parses it validates the circuit and checks that `to_netlist`'s output
-  parses again. Nothing may panic. Run it for five minutes before changing
-  the parser:
+- `fuzz/` has three cargo-fuzz targets (nightly), and nothing they feed
+  may panic. `parse` gives arbitrary text to `parse_str_with_options`, and
+  for any deck that parses validates the circuit and checks that
+  `to_netlist`'s output parses again. `expression` gives text to the
+  behavioural-expression parser and checks it prints back to an equal
+  expression. `import` turns bytes into a netlist and bench (or reads them
+  as JSON) and runs them through `sindr::import` and a short analysis. Run
+  the one you touch for five minutes before changing the parser, the
+  expressions or the import:
 
   ```bash
   cargo install cargo-fuzz
@@ -87,15 +93,17 @@ python3 scripts/gen_llms_full.py --check
   A crash is saved under `fuzz/artifacts/parse/`. Fix it, then add the deck
   as a test in `sindr/tests/spice_errors.rs`. The seeds (one mode byte, 0
   for strict, then a deck) also run on stable in `fuzz_seed_decks_do_not_panic`,
-  and the `fuzz` workflow runs the target for ten minutes every week.
+  and the `fuzz` workflow runs it for ten minutes every week (`expression`
+  and `import` for five). The other targets work the same way, with their
+  seeds in `fuzz/seeds/`.
 - Benchmarks live in `sindr/benches/` (criterion). The `benchmarks` CI job
   runs `transient`, `newton`, `analyses` and `spice` on a PR's base and on the PR, and fails if any
   case is more than 25 % slower. To check locally before pushing:
 
   ```bash
-  cargo bench -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline base
+  cargo bench -p sindr --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline base
   # make the change
-  cargo bench -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline head
+  cargo bench -p sindr --bench transient --bench newton --bench analyses --bench spice -- --quick --save-baseline head
   python3 scripts/bench_compare.py base head
   ```
 
@@ -124,7 +132,7 @@ The two crates share one version. A bump touches:
   the root `Cargo.toml`, plus `Cargo.lock`
 - the version in status lines: `README.md`, `LIMITATIONS.md`, `AGENTS.md`;
   and, on a minor bump, the `"0.x"` requirement in the install snippets of
-  `README.md`, `sindr/README.md`, `sindr-devices/README.md`, `sindr/src/lib.rs` and `sindr/src/spice/mod.rs`
+  `README.md`, `sindr/README.md`, `sindr-devices/README.md` and `sindr/src/lib.rs`
 - `CHANGELOG.md`: move the `[Unreleased]` entries into the new section and
   update the compare links at the bottom
 

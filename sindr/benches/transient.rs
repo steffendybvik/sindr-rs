@@ -1,31 +1,35 @@
 //! Transient cost: an RC ladder at 10 to 1 000 stages over a fixed span,
-//! and a 50 Hz half-wave rectifier with a filter cap over five cycles
-//! (diode switching each cycle, so step control and Newton both work).
+//! a 50 Hz half-wave rectifier with a filter cap over five cycles
+//! (diode switching each cycle, so step control and Newton both work), and
+//! a transient session a microcontroller drives for 10 s at 1 kHz.
 //!
 //!     cargo bench -p sindr --bench transient
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig, Waveform};
+use sindr::element::{Capacitor, Diode, Resistor, VoltageSource};
+use sindr::{
+    solve_transient, Circuit, CircuitElement, TransientConfig, TransientSession, Waveform,
+};
 
 fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id,
-        nodes: [a, b],
+        nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn c(id: String, a: String, b: String, capacitance: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id,
-        nodes: [a, b],
+        nodes: [a.into(), b.into()],
         capacitance,
-    }
+    })
 }
 
 /// 1 kΩ / 1 nF stages driven by a 1 V step: τ = 1 µs per stage.
 fn rc_ladder(stages: usize) -> Circuit {
-    let mut components = vec![CircuitElement::VoltageSource {
+    let mut components = vec![CircuitElement::VoltageSource(VoltageSource {
         id: "V1".into(),
         nodes: ["n0".into(), "0".into()],
         voltage: 0.0,
@@ -38,7 +42,7 @@ fn rc_ladder(stages: usize) -> Circuit {
             pulse_width: 1.0,
             period: 2.0,
         }),
-    }];
+    })];
     for i in 1..=stages {
         components.push(r(
             format!("R{i}"),
@@ -56,7 +60,7 @@ fn rectifier() -> Circuit {
     Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["ac".into(), "0".into()],
                 voltage: 0.0,
@@ -66,14 +70,14 @@ fn rectifier() -> Circuit {
                     offset: 0.0,
                     phase: 0.0,
                 }),
-            },
+            }),
             r("Rs".into(), "ac".into(), "a".into(), 1.0),
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "out".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
             c("C1".into(), "out".into(), "0".into(), 1e-3),
             r("RL".into(), "out".into(), "0".into(), 100.0),
         ],
@@ -104,5 +108,48 @@ fn bench(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench);
+/// A pin driving 1 kΩ into 1 µF for 10 s at 1 kHz, as firmware on an
+/// emulated microcontroller would: each millisecond the pin is written (high
+/// for two, low for two) and the filtered output read, 10 000 updates.
+fn mcu_session(circuit: &Circuit, config: &TransientConfig) -> f64 {
+    let mut sim = TransientSession::new(circuit, config).unwrap();
+    sim.keep_steps(false);
+    let mut adc = 0.0;
+    for k in 1..=10_000u32 {
+        sim.advance_to(f64::from(k) * 1e-3).unwrap();
+        adc += sim.voltage("out").unwrap();
+        let level = if (k / 2) % 2 == 0 { 5.0 } else { 0.0 };
+        sim.set_source("PIN", level).unwrap();
+    }
+    adc
+}
+
+fn pin_rc() -> Circuit {
+    Circuit::new(
+        "0",
+        vec![
+            CircuitElement::VoltageSource(VoltageSource {
+                id: "PIN".into(),
+                nodes: ["pin".into(), "0".into()],
+                voltage: 0.0,
+                waveform: None,
+            }),
+            r("R1".into(), "pin".into(), "out".into(), 1e3),
+            c("C1".into(), "out".into(), "0".into(), 1e-6),
+        ],
+    )
+}
+
+fn bench_session(c: &mut Criterion) {
+    let mut group = c.benchmark_group("transient_session");
+    group.sample_size(10);
+    let circuit = pin_rc();
+    let config = TransientConfig::new(10.0, 100e-6);
+    group.bench_function("10s_1khz_updates", |b| {
+        b.iter(|| mcu_session(&circuit, &config))
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench, bench_session);
 criterion_main!(benches);

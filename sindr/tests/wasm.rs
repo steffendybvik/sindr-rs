@@ -10,7 +10,11 @@
 #![cfg(target_arch = "wasm32")]
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
-use sindr::{solve_circuit, solve_transient, Circuit, CircuitElement, TransientConfig};
+use sindr::element::{Capacitor, Diode, Resistor, VoltageSource};
+use sindr::{
+    solve_circuit, solve_transient, solve_transient_with_progress, Circuit, CircuitElement, Flow,
+    SimError, TransientConfig,
+};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 /// 5 V through 1 kΩ into a diode, with 1 µF across it.
@@ -18,28 +22,28 @@ fn circuit() -> Circuit {
     Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "a".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["a".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
     )
 }
@@ -65,4 +69,20 @@ fn spice_deck() {
     let netlist = sindr::spice::parse_str(deck).unwrap();
     let op = solve_circuit(&netlist.circuit).unwrap();
     assert!((op.node_voltages["out"] - 6.0).abs() < 1e-9);
+}
+
+#[wasm_bindgen_test]
+fn a_transient_reports_progress_and_can_be_cancelled() {
+    let mut seen = 0.0;
+    let e = solve_transient_with_progress(&circuit(), &TransientConfig::new(1e-3, 1e-5), |p| {
+        seen = p.fraction();
+        if seen < 0.5 {
+            Flow::Continue
+        } else {
+            Flow::Stop
+        }
+    })
+    .unwrap_err();
+    assert!(matches!(e, SimError::Cancelled { .. }), "{e}");
+    assert!((0.5..0.6).contains(&seen), "{seen}");
 }

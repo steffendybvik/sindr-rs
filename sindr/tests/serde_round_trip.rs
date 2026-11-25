@@ -15,6 +15,10 @@
 //! matter.
 #![cfg(feature = "serde")]
 
+use sindr::element::{
+    Battery, Capacitor, Crystal, DigitalPin, Diode, FerriteBead, Inductor, PinMode, PinModel, Pull,
+    Resistor, SwitchSpdt, Varactor, VoltageSource,
+};
 use std::path::PathBuf;
 
 use serde::de::DeserializeOwned;
@@ -29,6 +33,7 @@ use sindr::{
     solve_transient, temperature_sweep, Block, Circuit, CircuitElement, Instance, Measure,
     Measurement, Part, Ratings, SensConfig, Spec, TfConfig, TransientConfig,
 };
+use sindr::{DcSweepAxis, TempSweepConfig};
 
 /// `value` to JSON, back, and to JSON again: both JSON values must match.
 fn round_trip<T: Serialize + DeserializeOwned>(what: &str, value: &T) -> Value {
@@ -82,33 +87,33 @@ fn every_example_circuit() {
 
 /// The elements no example or `transient_matches_dc` bench uses.
 fn remaining_elements() -> Circuit {
-    let n = |a: &str, b: &str| [a.to_string(), b.to_string()];
+    let n = |a: &str, b: &str| -> [sindr::NodeId; 2] { [a.into(), b.into()] };
     Circuit::new(
         "0",
         vec![
-            CircuitElement::Battery {
+            CircuitElement::Battery(Battery {
                 id: "B1".into(),
                 nodes: n("bat", "0"),
                 params: sindr::battery::BatteryParams::lithium_ion(2.0, 0.05),
                 state_of_charge: 0.8,
-            },
-            CircuitElement::Inductor {
+            }),
+            CircuitElement::Inductor(Inductor {
                 id: "L1".into(),
                 nodes: n("bat", "sw"),
                 inductance: 10e-6,
                 saturation: Some(sindr_devices::inductor::InductorSaturation::at(2.0, 10e-6)),
-            },
-            CircuitElement::SwitchSpdt {
+            }),
+            CircuitElement::SwitchSpdt(SwitchSpdt {
                 id: "S1".into(),
                 nodes: ["sw".into(), "a".into(), "b".into()],
                 position: sindr::circuit::SpdtPosition::B,
-            },
-            CircuitElement::Varactor {
+            }),
+            CircuitElement::Varactor(Varactor {
                 id: "D1".into(),
                 nodes: n("0", "a"),
                 params: sindr::VaractorParams::default(),
-            },
-            CircuitElement::Crystal {
+            }),
+            CircuitElement::Crystal(Crystal {
                 id: "Y1".into(),
                 nodes: n("a", "b"),
                 params: sindr::circuit::CrystalParams {
@@ -117,8 +122,8 @@ fn remaining_elements() -> Circuit {
                     c0: 5e-12,
                     cm: 20e-15,
                 },
-            },
-            CircuitElement::FerriteBead {
+            }),
+            CircuitElement::FerriteBead(FerriteBead {
                 id: "FB1".into(),
                 nodes: n("b", "0"),
                 params: sindr::circuit::FerriteBeadParams {
@@ -127,7 +132,20 @@ fn remaining_elements() -> Circuit {
                     r_ac: 600.0,
                     c: Some(1e-12),
                 },
-            },
+            }),
+            CircuitElement::DigitalPin(DigitalPin {
+                id: "D13".into(),
+                nodes: ["b".into(), "b".into(), "0".into()],
+                mode: PinMode::OpenDrain,
+                level: false,
+                pull: Pull::Up,
+                port: Some("PORTB".into()),
+                model: PinModel {
+                    c_comp: 3e-12,
+                    leakage: 1e-9,
+                    ..PinModel::cmos(5.0)
+                },
+            }),
         ],
     )
 }
@@ -143,16 +161,16 @@ fn hierarchy() -> Circuit {
     let mut divider = Block {
         ports: vec!["top".into(), "mid".into(), "bot".into()],
         components: vec![
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["top".into(), "mid".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R2".into(),
                 nodes: ["mid".into(), "bot".into()],
                 resistance: 2e3,
-            },
+            }),
         ],
         ..Block::default()
     };
@@ -168,12 +186,12 @@ fn hierarchy() -> Circuit {
     );
     let mut c = Circuit::new(
         "0",
-        vec![CircuitElement::VoltageSource {
+        vec![CircuitElement::VoltageSource(VoltageSource {
             id: "V1".into(),
             nodes: ["in".into(), "0".into()],
             voltage: 9.0,
             waveform: None,
-        }],
+        })],
     );
     c.blocks.insert("divider".into(), divider);
     c.instances
@@ -199,28 +217,28 @@ fn rc_diode() -> Circuit {
     let mut c = Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "a".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["a".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
     );
     c.parts.insert(
@@ -276,9 +294,12 @@ fn every_result_type() {
     round_trip("sens config", &sens);
     round_trip("sens", &solve_sensitivity(&c, &sens).unwrap());
 
-    round_trip("dc sweep", &dc_sweep(&c, "V1", 0.0, 5.0, 6).unwrap());
+    round_trip(
+        "dc sweep",
+        &dc_sweep(&c, &DcSweepAxis::new("V1", 0.0, 5.0, 6)).unwrap(),
+    );
     round_trip(
         "temperature sweep",
-        &temperature_sweep(&c, 250.0, 350.0, 3).unwrap(),
+        &temperature_sweep(&c, &TempSweepConfig::new(250.0, 350.0, 3)).unwrap(),
     );
 }

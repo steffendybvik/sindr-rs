@@ -32,14 +32,15 @@
 //! ```
 //! use sindr::measure::{check_specs, Measure, Measurement, Signal, Spec, Stat};
 //! use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig};
+//! use sindr::element::{Capacitor, Resistor, VoltageSource};
 //!
 //! // RC low-pass, τ = 1 ms, charging towards 5 V.
 //! let circuit = Circuit::new(
 //!     "0",
 //!     vec![
-//!         CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 5.0, waveform: None },
-//!         CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
-//!         CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+//!         CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 5.0, waveform: None }),
+//!         CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 }),
+//!         CircuitElement::Capacitor(Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 }),
 //!     ],
 //! );
 //! let result = solve_transient(&circuit, &TransientConfig::new(10e-3, 10e-6))?;
@@ -56,6 +57,7 @@
 //! assert!((rise - 2.197e-3).abs() < 0.05e-3);
 //! # Ok::<(), sindr::SimError>(())
 //! ```
+//!
 
 use num_complex::Complex64;
 
@@ -72,6 +74,7 @@ use crate::temp_sweep::TempSweepResult;
 
 /// What a signal reads: a voltage or a current.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -95,6 +98,7 @@ pub enum Quantity {
 
 /// How a signal's value is read.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
@@ -112,6 +116,7 @@ pub enum View {
 
 /// A signal to measure: a [`Quantity`] read through a [`View`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Signal {
     /// Voltage or current.
@@ -320,7 +325,7 @@ impl Measurable for TempSweepResult {
         let trace = self
             .points
             .iter()
-            .map(|p| Ok((p.temperature_kelvin, op_value(&p.result, signal)?)))
+            .map(|p| Ok((p.temperature, op_value(&p.result, signal)?)))
             .collect::<Result<Vec<_>, String>>()?;
         Ok(ascending(trace))
     }
@@ -373,6 +378,7 @@ impl Measurable for AcResult {
 
 /// A statistic over a signal, within the measurement's window.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -396,6 +402,7 @@ pub enum Stat {
 
 /// Which way a signal crosses a level.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
@@ -409,6 +416,7 @@ pub enum Edge {
 
 /// Which crossing counts.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -421,6 +429,7 @@ pub enum Occurrence {
 
 /// A signal crossing a level: SPICE's `WHEN v(out)=2.5 RISE=2`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Crossing {
     /// The signal.
@@ -471,6 +480,7 @@ impl Crossing {
 
 /// What a [`Measurement`] measures. Each variant carries its own signal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -586,6 +596,7 @@ impl Measure {
 
 /// A named measurement, optionally limited to a window of x.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Measurement {
@@ -925,6 +936,7 @@ fn bandwidth(trace: &[(f64, f64)], drop_db: f64) -> Result<f64, String> {
 
 /// A measurement with limits: `V(vout)` 4.9–5.1 V, ripple under 50 mV.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spec {
     /// What is measured; its name names the spec.
@@ -1008,6 +1020,7 @@ impl Spec {
 
 /// How a spec did.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1023,6 +1036,7 @@ pub enum SpecStatus {
 
 /// One spec checked against one result.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SpecCheck {
@@ -1045,6 +1059,7 @@ pub struct SpecCheck {
 
 /// Every spec's verdict, with the ratings checks alongside when attached.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct SpecReport {
@@ -1119,8 +1134,11 @@ mod tests {
     use super::*;
     use crate::ac_analysis::{solve_ac, AcConfig};
     use crate::circuit::{Circuit, CircuitElement};
+    use crate::element::{Capacitor, CurrentSource, Diode, Resistor, VoltageSource};
     use crate::waveform::Waveform;
-    use crate::{dc_sweep, solve_circuit, solve_transient, TransientConfig};
+    use crate::{
+        dc_sweep, solve_circuit, solve_transient, DcSweepAxis, TempSweepConfig, TransientConfig,
+    };
 
     struct Points(Vec<(f64, f64)>);
 
@@ -1300,23 +1318,23 @@ mod tests {
         Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     // A waveform adds to the DC value.
                     voltage: if waveform.is_some() { 0.0 } else { 1.0 },
                     waveform,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["in".into(), "out".into()],
                     resistance: 1e3,
-                },
-                CircuitElement::Capacitor {
+                }),
+                CircuitElement::Capacitor(Capacitor {
                     id: "C1".into(),
                     nodes: ["out".into(), "0".into()],
                     capacitance: 1e-6,
-                },
+                }),
             ],
         )
     }
@@ -1359,22 +1377,22 @@ mod tests {
         let divider = Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: 10.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["in".into(), "out".into()],
                     resistance: 1e3,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R2".into(),
                     nodes: ["out".into(), "0".into()],
                     resistance: 1e3,
-                },
+                }),
             ],
         );
         let op = solve_circuit(&divider).unwrap();
@@ -1415,7 +1433,7 @@ mod tests {
         assert_eq!(report.unmeasured().len(), 1);
 
         // Swept from high to low: the trace still runs in ascending x.
-        let sweep = dc_sweep(&divider, "V1", 10.0, 0.0, 11).unwrap();
+        let sweep = dc_sweep(&divider, &DcSweepAxis::new("V1", 10.0, 0.0, 11)).unwrap();
         let half = Measurement::new(
             "half",
             Measure::When(Crossing::new(Signal::v("out"), 2.5).rising()),
@@ -1498,22 +1516,22 @@ mod tests {
         Circuit::new(
             "0",
             vec![
-                CircuitElement::VoltageSource {
+                CircuitElement::VoltageSource(VoltageSource {
                     id: "V1".into(),
                     nodes: ["in".into(), "0".into()],
                     voltage: 10.0,
                     waveform: None,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R1".into(),
                     nodes: ["in".into(), "out".into()],
                     resistance: 1e3,
-                },
-                CircuitElement::Resistor {
+                }),
+                CircuitElement::Resistor(Resistor {
                     id: "R2".into(),
                     nodes: ["out".into(), "0".into()],
                     resistance: 1e3,
-                },
+                }),
             ],
         )
     }
@@ -1543,7 +1561,7 @@ mod tests {
 
     #[test]
     fn sweeps_propagate_an_unreadable_signal() {
-        let sweep = dc_sweep(&divider(), "V1", 0.0, 1.0, 3).unwrap();
+        let sweep = dc_sweep(&divider(), &DcSweepAxis::new("V1", 0.0, 1.0, 3)).unwrap();
         let err = Measurement::new("m", Measure::stat(Signal::v("nope"), Stat::Max)).on(&sweep);
         assert_eq!(reason(err), "no node `nope` in the result");
     }
@@ -1555,21 +1573,22 @@ mod tests {
         let circuit = Circuit::new(
             "0",
             vec![
-                CircuitElement::CurrentSource {
+                CircuitElement::CurrentSource(CurrentSource {
                     id: "I1".into(),
                     nodes: ["0".into(), "a".into()],
                     current: 1e-3,
                     waveform: None,
-                },
-                CircuitElement::Diode {
+                }),
+                CircuitElement::Diode(Diode {
                     id: "D1".into(),
                     nodes: ["a".into(), "0".into()],
                     temperature: 300.15,
                     model: None,
-                },
+                }),
             ],
         );
-        let sweep = crate::temperature_sweep(&circuit, 250.0, 350.0, 5).unwrap();
+        let sweep =
+            crate::temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 350.0, 5)).unwrap();
         let coldest = Measurement::new("vmax", Measure::find(Signal::v("a"), 250.0))
             .on(&sweep)
             .unwrap();

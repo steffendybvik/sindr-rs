@@ -10,6 +10,11 @@
 //! Each circuit also goes through JSON and back unchanged, which covers
 //! serde for these elements (`serde_round_trip.rs` has the rest).
 
+use sindr::element::{
+    Bjt, Cccs, Ccvs, Comparator, Diode, Fuse, Igbt, Jfet, Led, Mosfet, OpAmp, Photodiode,
+    Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch, Thermistor,
+    Vccs, Vcvs, VoltageRegulator, VoltageSource, ZenerDiode,
+};
 use sindr::{
     solve_circuit, solve_transient, BjtKind, Circuit, CircuitElement, JfetKind, MosfetKind,
     SimulationResult, TransientConfig,
@@ -18,20 +23,20 @@ use sindr_devices::igbt::IgbtParams;
 use sindr_devices::mosfet::MosfetParams;
 
 fn r(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn v(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 /// A 5 V supply on `vcc` and 2 V on `in`, each with a load so neither node
@@ -158,48 +163,48 @@ fn controlled_sources() {
     check(
         "vcvs",
         vec![
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 id: "E1".into(),
                 nodes: ["o".into(), "0".into()],
                 control_nodes: ["in".into(), "0".into()],
                 gain: 2.0,
-            },
+            }),
             r("RL", "o", "0", 1e3),
         ],
     );
     check(
         "vccs",
         vec![
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id: "G1".into(),
                 nodes: ["o".into(), "0".into()],
                 control_nodes: ["in".into(), "0".into()],
                 gm: 1e-3,
-            },
+            }),
             r("RL", "o", "0", 1e3),
         ],
     );
     check(
         "ccvs",
         vec![
-            CircuitElement::Ccvs {
+            CircuitElement::Ccvs(Ccvs {
                 id: "H1".into(),
                 nodes: ["o".into(), "0".into()],
                 control_source: "Vin".into(),
                 rm: 100.0,
-            },
+            }),
             r("RL", "o", "0", 1e3),
         ],
     );
     check(
         "cccs",
         vec![
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id: "F1".into(),
                 nodes: ["o".into(), "0".into()],
                 control_source: "Vin".into(),
                 alpha: 3.0,
-            },
+            }),
             r("RL", "o", "0", 1e3),
         ],
     );
@@ -212,46 +217,46 @@ fn switches_and_resistive_parts() {
             &format!("switch closed={closed}"),
             vec![
                 r("R1", "vcc", "o", 1e3),
-                CircuitElement::Switch {
+                CircuitElement::Switch(Switch {
                     id: "S1".into(),
                     nodes: ["o".into(), "0".into()],
                     closed,
-                },
+                }),
             ],
         );
         check(
             &format!("pushbutton closed={closed}"),
             vec![
                 r("R1", "vcc", "o", 1e3),
-                CircuitElement::Pushbutton {
+                CircuitElement::Pushbutton(Pushbutton {
                     id: "B1".into(),
                     nodes: ["o".into(), "0".into()],
                     closed,
-                },
+                }),
             ],
         );
         check(
             &format!("fuse blown={closed}"),
             vec![
                 r("R1", "vcc", "o", 1e3),
-                CircuitElement::Fuse {
+                CircuitElement::Fuse(Fuse {
                     id: "F1".into(),
                     nodes: ["o".into(), "0".into()],
                     rating: 1.0,
                     blown: closed,
-                },
+                }),
             ],
         );
     }
     check(
         "potentiometer",
         vec![
-            CircuitElement::Potentiometer {
+            CircuitElement::Potentiometer(Potentiometer {
                 id: "P1".into(),
                 nodes: ["vcc".into(), "w".into(), "0".into()],
                 resistance: 10e3,
                 position: 0.3,
-            },
+            }),
             r("RL", "w", "0", 4.7e3),
         ],
     );
@@ -259,22 +264,22 @@ fn switches_and_resistive_parts() {
         "photoresistor",
         vec![
             r("R1", "vcc", "o", 10e3),
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 id: "LDR1".into(),
                 nodes: ["o".into(), "0".into()],
                 light_level: 0.4,
-            },
+            }),
         ],
     );
     check(
         "thermistor",
         vec![
             r("R1", "vcc", "o", 10e3),
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id: "TH1".into(),
                 nodes: ["o".into(), "0".into()],
                 temperature: 320.0,
-            },
+            }),
         ],
     );
 }
@@ -284,13 +289,13 @@ fn op_amp_and_comparator() {
     check(
         "op-amp follower",
         vec![
-            CircuitElement::OpAmp {
+            CircuitElement::OpAmp(OpAmp {
                 id: "U1".into(),
                 nodes: ["in".into(), "o".into(), "o".into()],
                 v_pos: 15.0,
                 v_neg: -15.0,
                 model: None,
-            },
+            }),
             r("RL", "o", "0", 1e3),
         ],
     );
@@ -298,12 +303,12 @@ fn op_amp_and_comparator() {
         "comparator",
         vec![
             v("Vref", "ref", "0", 2.0 - 1e-5),
-            CircuitElement::Comparator {
+            CircuitElement::Comparator(Comparator {
                 id: "U2".into(),
                 nodes: ["in".into(), "ref".into(), "o".into()],
                 v_pos: 5.0,
                 v_neg: 0.0,
-            },
+            }),
             r("RL", "o", "0", 1e3),
         ],
     );
@@ -314,53 +319,53 @@ fn junctions() {
     let to_ground = |element: CircuitElement| vec![r("R1", "vcc", "a", 1e3), element];
     check(
         "diode",
-        to_ground(CircuitElement::Diode {
+        to_ground(CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["a".into(), "0".into()],
             temperature: 300.15,
             model: None,
-        }),
+        })),
     );
     check(
         "zener in breakdown",
         vec![
             v("Vhi", "hi", "0", 12.0),
             r("R1", "hi", "k", 1e3),
-            CircuitElement::ZenerDiode {
+            CircuitElement::ZenerDiode(ZenerDiode {
                 id: "D1".into(),
                 nodes: ["0".into(), "k".into()],
                 vz: 5.1,
                 temperature: 300.15,
-            },
+            }),
         ],
     );
     check(
         "schottky",
-        to_ground(CircuitElement::SchottkyDiode {
+        to_ground(CircuitElement::SchottkyDiode(SchottkyDiode {
             id: "D1".into(),
             nodes: ["a".into(), "0".into()],
             temperature: 300.15,
-        }),
+        })),
     );
     check(
         "led",
-        to_ground(CircuitElement::Led {
+        to_ground(CircuitElement::Led(Led {
             id: "D1".into(),
             nodes: ["a".into(), "0".into()],
             color: "red".into(),
             temperature: 300.15,
-        }),
+        })),
     );
     check(
         "photodiode",
         vec![
             r("R1", "vcc", "k", 10e3),
-            CircuitElement::Photodiode {
+            CircuitElement::Photodiode(Photodiode {
                 id: "D1".into(),
                 nodes: ["0".into(), "k".into()],
                 irradiance: 1e-4,
                 temperature: 300.15,
-            },
+            }),
         ],
     );
 }
@@ -378,7 +383,7 @@ fn transistors() {
                 r("RB", "in", "b", 100e3),
                 r("RC", supply, "c", 1e3),
                 r("RE", "e", sense, 100.0),
-                CircuitElement::Bjt {
+                CircuitElement::Bjt(Bjt {
                     id: "Q1".into(),
                     nodes: ["b".into(), "c".into(), "e".into()],
                     kind,
@@ -386,7 +391,7 @@ fn transistors() {
                     temperature: 300.15,
                     parasitic_caps: None,
                     model: None,
-                },
+                }),
             ],
         );
     }
@@ -404,14 +409,14 @@ fn transistors() {
                 r("RG", gate, "g", 1e3),
                 r("RGL", "g", "0", 1e6),
                 r("RD", load, "d", 1e3),
-                CircuitElement::Mosfet {
+                CircuitElement::Mosfet(Mosfet {
                     id: "M1".into(),
                     nodes: ["g".into(), "d".into(), source.into()],
                     kind,
                     params,
                     parasitic_caps: None,
                     body_diode: None,
-                },
+                }),
             ],
         );
     }
@@ -427,14 +432,14 @@ fn transistors() {
                 r("RD", drain_supply, "d", 1e3),
                 r("RS", "s", source_return, 100.0),
                 r("RG", "g", source_return, 1e6),
-                CircuitElement::Jfet {
+                CircuitElement::Jfet(Jfet {
                     id: "J1".into(),
                     nodes: ["g".into(), "d".into(), "s".into()],
                     kind,
                     idss: 10e-3,
                     vp,
                     parasitic_caps: None,
-                },
+                }),
             ],
         );
     }
@@ -444,11 +449,11 @@ fn transistors() {
             v("Vg", "g", "0", 15.0),
             r("RG", "g", "0", 10e3),
             r("RC", "vcc", "c", 100.0),
-            CircuitElement::Igbt {
+            CircuitElement::Igbt(Igbt {
                 id: "Q1".into(),
                 nodes: ["g".into(), "c".into(), "e".into()],
                 params: IgbtParams::default(),
-            },
+            }),
             r("RE", "e", "0", 1.0),
         ],
     );
@@ -459,25 +464,25 @@ fn relay_and_regulator() {
     check(
         "relay",
         vec![
-            CircuitElement::Relay {
+            CircuitElement::Relay(Relay {
                 id: "K1".into(),
                 nodes: ["vcc".into(), "0".into(), "in".into(), "o".into()],
                 coil_resistance: 500.0,
                 pickup_voltage: 4.0,
                 inductance: 0.0,
-            },
+            }),
             r("RL", "o", "0", 1e3),
         ],
     );
     check(
         "ideal regulator",
         vec![
-            CircuitElement::VoltageRegulator {
+            CircuitElement::VoltageRegulator(VoltageRegulator {
                 id: "U1".into(),
                 nodes: ["vcc".into(), "o".into(), "0".into()],
                 voltage: 3.3,
                 model: None,
-            },
+            }),
             r("RL", "o", "0", 1e3),
         ],
     );

@@ -9,6 +9,11 @@
 //! Only compiled when the `spice` feature is enabled.
 #![cfg(feature = "spice")]
 
+use sindr::element::{
+    Bjt, Capacitor, Cccs, Ccvs, Crystal, CurrentSource, Diode, FerriteBead, Jfet, Led, Mosfet,
+    Photodiode, Potentiometer, Resistor, SchottkyDiode, Switch, SwitchSpdt, Transformer, Vccs,
+    Vcvs, VoltageSource, ZenerDiode,
+};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -20,6 +25,7 @@ use sindr::{
     dc_sweep, solve_ac_sensitivity, solve_circuit, solve_op, solve_sensitivity, temperature_sweep,
     Circuit, CircuitElement, JfetKind, MosfetKind, SensParameter, SimulationResult,
 };
+use sindr::{DcSweepAxis, TempSweepConfig};
 use sindr_devices::mosfet::MosfetParams;
 
 #[path = "support/deck_parity.rs"]
@@ -368,20 +374,20 @@ fn op_subckt_param() {
 // the ngspice deck element for element.
 
 fn vsource(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -402,14 +408,14 @@ fn op_mosfet_cs() {
                 vsource("vdd", "vdd", "0", 10.0),
                 vsource("vg", "g", "0", 3.0),
                 resistor("rd", "vdd", "d", 10e3),
-                CircuitElement::Mosfet {
+                CircuitElement::Mosfet(Mosfet {
                     id: "m1".into(),
                     nodes: ["g".into(), "d".into(), "0".into()],
                     kind: MosfetKind::Nmos,
                     params: MosfetParams::default_nmos(),
                     parasitic_caps: None,
                     body_diode: None,
-                },
+                }),
             ]),
         ),
         (OP_V, OP_I),
@@ -428,14 +434,14 @@ fn op_mosfet_follower() {
                 vsource("vdd", "vdd", "0", 10.0),
                 vsource("vg", "g", "0", 5.0),
                 resistor("rs", "s", "0", 10e3),
-                CircuitElement::Mosfet {
+                CircuitElement::Mosfet(Mosfet {
                     id: "m1".into(),
                     nodes: ["g".into(), "vdd".into(), "s".into()],
                     kind: MosfetKind::Nmos,
                     params: MosfetParams::default_nmos(),
                     parasitic_caps: None,
                     body_diode: None,
-                },
+                }),
             ]),
         ),
         (OP_V, OP_I),
@@ -453,14 +459,14 @@ fn op_pmos_highside() {
                 vsource("vdd", "vdd", "0", 10.0),
                 vsource("vg", "g", "0", 5.0),
                 resistor("rd", "d", "0", 10e3),
-                CircuitElement::Mosfet {
+                CircuitElement::Mosfet(Mosfet {
                     id: "m1".into(),
                     nodes: ["g".into(), "d".into(), "vdd".into()],
                     kind: MosfetKind::Pmos,
                     params: MosfetParams::default_pmos(),
                     parasitic_caps: None,
                     body_diode: None,
-                },
+                }),
             ]),
         ),
         (OP_V, OP_I),
@@ -478,14 +484,14 @@ fn op_jfet() {
                 resistor("rd", "vdd", "d", 1e3),
                 resistor("rs", "s", "0", 220.0),
                 resistor("rg", "g", "0", 1e6),
-                CircuitElement::Jfet {
+                CircuitElement::Jfet(Jfet {
                     id: "j1".into(),
                     nodes: ["g".into(), "d".into(), "s".into()],
                     kind: JfetKind::NChannel,
                     idss: 10e-3,
                     vp: -2.0,
                     parasitic_caps: None,
-                },
+                }),
             ]),
         ),
         JFET,
@@ -501,12 +507,12 @@ fn op_led() {
             &circuit(vec![
                 vsource("v1", "in", "0", 5.0),
                 resistor("r1", "in", "out", 150.0),
-                CircuitElement::Led {
+                CircuitElement::Led(Led {
                     id: "d1".into(),
                     nodes: ["out".into(), "0".into()],
                     color: "red".into(),
                     temperature: 300.15,
-                },
+                }),
             ]),
         ),
         (OP_V, OP_I),
@@ -522,11 +528,11 @@ fn op_schottky() {
             &circuit(vec![
                 vsource("v1", "in", "0", 5.0),
                 resistor("r1", "in", "out", 1e3),
-                CircuitElement::SchottkyDiode {
+                CircuitElement::SchottkyDiode(SchottkyDiode {
                     id: "d1".into(),
                     nodes: ["out".into(), "0".into()],
                     temperature: 300.15,
-                },
+                }),
             ]),
         ),
         (OP_V, OP_I),
@@ -542,12 +548,12 @@ fn op_photodiode() {
             &circuit(vec![
                 vsource("v1", "k", "0", 5.0),
                 resistor("r1", "k", "a", 10e3),
-                CircuitElement::Photodiode {
+                CircuitElement::Photodiode(Photodiode {
                     id: "d1".into(),
                     nodes: ["0".into(), "a".into()],
                     irradiance: 1e-4,
                     temperature: 300.15,
-                },
+                }),
             ]),
         ),
         (OP_V, OP_I),
@@ -561,7 +567,7 @@ fn op_photodiode() {
 #[test]
 fn dc_reactive() {
     let golden = Golden::load("dc_reactive");
-    let sweep = dc_sweep(&parse("dc_reactive"), "v1", 0.0, 2.0, 5).unwrap();
+    let sweep = dc_sweep(&parse("dc_reactive"), &DcSweepAxis::new("v1", 0.0, 2.0, 5)).unwrap();
     let scale = golden.scale();
     let column = |node: &str| -> Vec<f64> {
         sweep
@@ -588,7 +594,7 @@ fn dc_reactive() {
 #[test]
 fn dc_diode_iv() {
     let golden = Golden::load("dc_diode_iv");
-    let sweep = dc_sweep(&parse("dc_diode_iv"), "v1", 0.0, 1.0, 21).unwrap();
+    let sweep = dc_sweep(&parse("dc_diode_iv"), &DcSweepAxis::new("v1", 0.0, 1.0, 21)).unwrap();
     let scale = golden.scale();
     let vb: Vec<f64> = sweep
         .points
@@ -611,7 +617,11 @@ fn dc_diode_iv() {
 #[test]
 fn dc_diode_1n4148() {
     let golden = Golden::load("dc_diode_1n4148");
-    let sweep = dc_sweep(&parse("dc_diode_1n4148"), "v1", 0.0, 2.0, 21).unwrap();
+    let sweep = dc_sweep(
+        &parse("dc_diode_1n4148"),
+        &DcSweepAxis::new("v1", 0.0, 2.0, 21),
+    )
+    .unwrap();
     let scale = golden.scale();
     let vb: Vec<f64> = sweep
         .points
@@ -801,14 +811,14 @@ fn ac_bjt_caps() {
         vsource("vcc", "vcc", "0", 10.0),
         vsource("vin", "in", "0", 0.0),
         resistor("rs", "in", "s", 1e3),
-        CircuitElement::Capacitor {
+        CircuitElement::Capacitor(Capacitor {
             id: "cin".into(),
             nodes: ["s".into(), "b".into()],
             capacitance: 10e-6,
-        },
+        }),
         resistor("rb", "vcc", "b", 470e3),
         resistor("rc", "vcc", "c", 1e3),
-        CircuitElement::Bjt {
+        CircuitElement::Bjt(Bjt {
             id: "q1".into(),
             nodes: ["b".into(), "c".into(), "0".into()],
             kind: sindr::BjtKind::Npn,
@@ -819,7 +829,7 @@ fn ac_bjt_caps() {
                 cbc: 2e-12,
             }),
             model: None,
-        },
+        }),
     ]);
     check_ac("ac_bjt_caps", &circuit, "vin", "c", 5, (10.0, 1e9), OP_V);
 }
@@ -848,7 +858,7 @@ fn ac_mosfet_cs() {
         vsource("vg", "in", "0", 3.0),
         resistor("rg", "in", "g", 10e3),
         resistor("rd", "vdd", "d", 10e3),
-        CircuitElement::Mosfet {
+        CircuitElement::Mosfet(Mosfet {
             id: "m1".into(),
             nodes: ["g".into(), "d".into(), "0".into()],
             kind: MosfetKind::Nmos,
@@ -858,7 +868,7 @@ fn ac_mosfet_cs() {
                 cgd: 2e-12,
             }),
             body_diode: None,
-        },
+        }),
     ]);
     check_ac("ac_mosfet_cs", &circuit, "vg", "d", 5, (1e3, 1e9), OP_V);
 }
@@ -870,27 +880,27 @@ fn ac_jfet() {
     let circuit = circuit(vec![
         vsource("vdd", "vdd", "0", 12.0),
         vsource("vin", "in", "0", 0.0),
-        CircuitElement::Capacitor {
+        CircuitElement::Capacitor(Capacitor {
             id: "cin".into(),
             nodes: ["in".into(), "g".into()],
             capacitance: 100e-9,
-        },
+        }),
         resistor("rg", "g", "0", 1e6),
         resistor("rd", "vdd", "d", 1e3),
         resistor("rs", "s", "0", 220.0),
-        CircuitElement::Capacitor {
+        CircuitElement::Capacitor(Capacitor {
             id: "cs".into(),
             nodes: ["s".into(), "0".into()],
             capacitance: 100e-6,
-        },
-        CircuitElement::Jfet {
+        }),
+        CircuitElement::Jfet(Jfet {
             id: "j1".into(),
             nodes: ["g".into(), "d".into(), "s".into()],
             kind: JfetKind::NChannel,
             idss: 10e-3,
             vp: -2.0,
             parasitic_caps: None,
-        },
+        }),
     ]);
     check_ac("ac_jfet", &circuit, "vin", "d", 5, (0.1, 100e3), JFET.0);
 }
@@ -906,7 +916,7 @@ fn ac_jfet_caps() {
         vsource("vin", "in", "0", -1.0),
         resistor("rsig", "in", "g", 10e3),
         resistor("rd", "vdd", "d", 1e3),
-        CircuitElement::Jfet {
+        CircuitElement::Jfet(Jfet {
             id: "j1".into(),
             nodes: ["g".into(), "d".into(), "0".into()],
             kind: JfetKind::NChannel,
@@ -919,7 +929,7 @@ fn ac_jfet_caps() {
                 fc: 0.5,
                 ..Default::default()
             }),
-        },
+        }),
     ]);
     // The gate is reverse-biased, so ngspice's default gate IS adds next to
     // nothing and the case holds to the junction devices' 1e-6.
@@ -936,10 +946,10 @@ fn ac_jfet_caps() {
     let parsed = parse("ac_jfet_caps");
     assert!(matches!(
         parsed.components.iter().find(|c| c.id() == "j1"),
-        Some(CircuitElement::Jfet {
+        Some(CircuitElement::Jfet(Jfet {
             parasitic_caps: Some(_),
             ..
-        })
+        }))
     ));
     check_ac("ac_jfet_caps", &parsed, "vin", "d", 5, range, OP_V);
 }
@@ -985,12 +995,12 @@ fn ac_fet_decks_parse() {
 #[test]
 fn ac_mosfet_card() {
     let circuit = parse("ac_mosfet_card");
-    let Some(CircuitElement::Mosfet {
+    let Some(CircuitElement::Mosfet(Mosfet {
         params,
         parasitic_caps: Some(caps),
         body_diode: Some(body),
         ..
-    }) = circuit.components.iter().find(|c| c.id() == "m1")
+    })) = circuit.components.iter().find(|c| c.id() == "m1")
     else {
         panic!("ac_mosfet_card: m1 should be a MOSFET with caps and a body diode");
     };
@@ -1013,8 +1023,11 @@ fn op_pjf() {
 fn check_dc_deck(case: &'static str, source: &str, from: f64, to: f64) {
     let golden = Golden::load(case);
     let scale = golden.scale();
-    let sweep = dc_sweep(&parse(case), source, from, to, scale.len())
-        .unwrap_or_else(|e| panic!("{case}: {e}"));
+    let sweep = dc_sweep(
+        &parse(case),
+        &DcSweepAxis::new(source, from, to, scale.len()),
+    )
+    .unwrap_or_else(|e| panic!("{case}: {e}"));
     let mut check = Check::new(case);
     for name in golden.names.iter().skip(1) {
         let inner = &name[2..name.len() - 1];
@@ -1059,7 +1072,11 @@ fn dc_power_mosfet_body() {
 #[test]
 fn dc_mosfet_body_diode_deck_parses() {
     let golden = Golden::load("dc_mosfet_body_diode");
-    let sweep = dc_sweep(&parse("dc_mosfet_body_diode"), "v1", -5.0, 5.0, 41).unwrap();
+    let sweep = dc_sweep(
+        &parse("dc_mosfet_body_diode"),
+        &DcSweepAxis::new("v1", -5.0, 5.0, 41),
+    )
+    .unwrap();
     let vd: Vec<f64> = sweep
         .points
         .iter()
@@ -1226,7 +1243,7 @@ fn exported<'a>(case: &str, circuit: &'a Circuit) -> &'a Circuit {
     circuit
 }
 
-fn with_names(id: &str, nodes: [&str; 2]) -> (String, [String; 2]) {
+fn with_names(id: &str, nodes: [&str; 2]) -> (String, [sindr::NodeId; 2]) {
     (id.into(), [nodes[0].into(), nodes[1].into()])
 }
 
@@ -1245,52 +1262,52 @@ fn op_exported_controlled() {
         r("rf", "f", "0", 1e3),
         r("rx", "x", "0", 1e3),
         r("ri", "i", "0", 1e3),
-        CircuitElement::CurrentSource {
+        CircuitElement::CurrentSource(CurrentSource {
             id: "i1".into(),
             nodes: ["i".into(), "0".into()],
             current: 1e-3,
             waveform: None,
-        },
-        CircuitElement::Potentiometer {
+        }),
+        CircuitElement::Potentiometer(Potentiometer {
             id: "rpot".into(),
             nodes: ["in".into(), "w".into(), "0".into()],
             resistance: 10e3,
             position: 0.3,
-        },
-        CircuitElement::Switch {
+        }),
+        CircuitElement::Switch(Switch {
             id: "sw1".into(),
             nodes: ["w".into(), "x".into()],
             closed: true,
-        },
+        }),
     ];
     let (id, nodes) = two("e1", ["e", "0"]);
-    components.push(CircuitElement::Vcvs {
+    components.push(CircuitElement::Vcvs(Vcvs {
         id,
         nodes,
         control_nodes: ["a".into(), "0".into()],
         gain: 3.0,
-    });
+    }));
     let (id, nodes) = two("g1", ["0", "g"]);
-    components.push(CircuitElement::Vccs {
+    components.push(CircuitElement::Vccs(Vccs {
         id,
         nodes,
         control_nodes: ["a".into(), "0".into()],
         gm: 1e-3,
-    });
+    }));
     let (id, nodes) = two("h1", ["h", "0"]);
-    components.push(CircuitElement::Ccvs {
+    components.push(CircuitElement::Ccvs(Ccvs {
         id,
         nodes,
         control_source: "v1".into(),
         rm: 100.0,
-    });
+    }));
     let (id, nodes) = two("f1", ["0", "f"]);
-    components.push(CircuitElement::Cccs {
+    components.push(CircuitElement::Cccs(Cccs {
         id,
         nodes,
         control_source: "v1".into(),
         alpha: 2.0,
-    });
+    }));
     let circuit = Circuit {
         ground_node: "0".into(),
         components,
@@ -1318,14 +1335,14 @@ fn ac_exported_transformer() {
         components: vec![
             vsource("v1", "in", "0", 0.0),
             resistor("r1", "in", "p", 50.0),
-            CircuitElement::Transformer {
+            CircuitElement::Transformer(Transformer {
                 id: "t1".into(),
                 nodes: ["p".into(), "0".into(), "s".into(), "0".into()],
                 l1: 1e-3,
                 l2: 4e-3,
                 k: 0.99,
                 saturation: None,
-            },
+            }),
             resistor("rl", "s", "0", 1e3),
         ],
         ..Default::default()
@@ -1361,28 +1378,28 @@ fn exported_fets() -> Circuit {
         resistor("rjd", "vdd", "jd", 1e3),
         resistor("rjs", "js", "0", 220.0),
         resistor("rjg", "jg", "0", 1e6),
-        CircuitElement::Jfet {
+        CircuitElement::Jfet(Jfet {
             id: "j1".into(),
             nodes: ["jg".into(), "jd".into(), "js".into()],
             kind: JfetKind::NChannel,
             idss: 10e-3,
             vp: -2.0,
             parasitic_caps: None,
-        },
+        }),
         resistor("rps", "vdd", "ps", 330.0),
         resistor("rpg", "pg", "vdd", 1e6),
         resistor("rpd", "pd", "0", 1e3),
-        CircuitElement::Jfet {
+        CircuitElement::Jfet(Jfet {
             id: "j2".into(),
             nodes: ["pg".into(), "pd".into(), "ps".into()],
             kind: JfetKind::PChannel,
             idss: 12.5e-3,
             vp: 2.5,
             parasitic_caps: None,
-        },
+        }),
         vsource("vg1", "g1", "0", 3.0),
         resistor("rd1", "vdd", "d1", 10e3),
-        CircuitElement::Mosfet {
+        CircuitElement::Mosfet(Mosfet {
             id: "m1".into(),
             nodes: ["g1".into(), "d1".into(), "0".into()],
             kind: MosfetKind::Nmos,
@@ -1396,10 +1413,10 @@ fn exported_fets() -> Circuit {
                 ibv: 250e-6,
                 ..Default::default()
             }),
-        },
+        }),
         vsource("vg2", "g2", "0", 5.0),
         resistor("rd2", "d2", "0", 10e3),
-        CircuitElement::Mosfet {
+        CircuitElement::Mosfet(Mosfet {
             id: "m2".into(),
             nodes: ["g2".into(), "d2".into(), "vdd".into()],
             kind: MosfetKind::Pmos,
@@ -1414,7 +1431,7 @@ fn exported_fets() -> Circuit {
                 vj: 0.8,
                 ..Default::default()
             }),
-        },
+        }),
     ])
 }
 
@@ -1457,8 +1474,19 @@ fn compare_tran_within(
     tran: &sindr::TransientData,
     fraction: f64,
 ) {
+    compare_steps_within(case, vectors, &tran.timesteps, fraction);
+}
+
+/// As [`compare_tran_within`], for steps from anywhere: a transient
+/// session's.
+fn compare_steps_within(
+    case: &'static str,
+    vectors: &[&str],
+    steps: &[sindr::TimestepSnapshot],
+    fraction: f64,
+) {
     let golden = Golden::load(case);
-    let times: Vec<f64> = tran.timesteps.iter().map(|s| s.time).collect();
+    let times: Vec<f64> = steps.iter().map(|s| s.time).collect();
 
     let mut check = Check::new(case);
     let scale = golden.scale();
@@ -1466,8 +1494,7 @@ fn compare_tran_within(
         let want_all = golden.column(name);
         let full_scale = want_all.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
         let inner = &name[2..name.len() - 1];
-        let got: Vec<f64> = tran
-            .timesteps
+        let got: Vec<f64> = steps
             .iter()
             .map(|s| {
                 if name.starts_with("v(") {
@@ -1499,6 +1526,30 @@ fn interpolate(xs: &[f64], ys: &[f64], x: f64) -> f64 {
 #[test]
 fn tran_rc_step() {
     check_tran("tran_rc_step", &["v(out)"]);
+}
+
+/// The deck's PULSE driven from outside instead: a transient session sets
+/// the source to each level at each millisecond, the way firmware drives a
+/// pin. The 1 ns edges ngspice integrates are the only difference.
+#[test]
+fn tran_session_square() {
+    let case = "tran_session_square";
+    let mut circuit = parse(case);
+    for element in &mut circuit.components {
+        if let CircuitElement::VoltageSource(source) = element {
+            source.waveform = None;
+            source.voltage = 0.0;
+        }
+    }
+    let config = sindr::TransientConfig::new(10e-3, 10e-6);
+    let mut sim = sindr::TransientSession::new(&circuit, &config).unwrap();
+    for k in 1..=10 {
+        sim.advance_to(f64::from(k) * 1e-3).unwrap();
+        sim.set_source("v1", if k % 2 == 1 { 5.0 } else { 0.0 })
+            .unwrap();
+    }
+    let steps: Vec<_> = sim.drain_steps().collect();
+    compare_steps_within(case, &["v(out)"], &steps, 1e-3);
 }
 
 #[test]
@@ -1579,6 +1630,76 @@ fn tran_tstart() {
 #[test]
 fn tran_halfwave() {
     check_deck_tran("tran_halfwave", &["v(b)", "i(v1)"]);
+}
+
+/// `.four` on a sine clipped by antiparallel diodes, against ngspice's
+/// `fourier 1k v(out)` on the same run (THD 29.0343 %, 200-point grid,
+/// linear interpolation, one period). Two checks: `Fourier` on ngspice's
+/// own waveform reproduces ngspice's table, which pins the algorithm; and
+/// `Fourier` on sindr's waveform agrees with it, which pins the solve.
+/// The golden is the waveform; ngspice prints the table it's checked
+/// against when the `.ctl` is run, and it is copied in here.
+#[test]
+fn four_diode_clipper() {
+    use sindr::fourier::Fourier;
+    use sindr::measure::Signal;
+
+    let case = "four_diode_clipper";
+    // (harmonic, magnitude, phase in degrees) from ngspice 47.
+    let ngspice = [
+        (1, 0.814221, 0.000163373),
+        (3, 0.214814, 0.000766763),
+        (5, 0.0907753, 0.00218746),
+        (7, 0.0372933, 0.0055055),
+        (9, 0.0105286, 0.0137194),
+    ];
+    let golden = Golden::load(case);
+    let trace: Vec<(f64, f64)> = golden
+        .column("time")
+        .into_iter()
+        .zip(golden.column("v(out)"))
+        .collect();
+    let four = Fourier::new(1e3);
+
+    let from_ngspice = four.of(&trace).unwrap();
+    assert!(
+        (from_ngspice.thd_percent - 29.0343).abs() < 1e-3,
+        "{case}: THD of ngspice's waveform {} %",
+        from_ngspice.thd_percent
+    );
+    for (k, mag, phase) in ngspice {
+        let h = from_ngspice.harmonic(k).unwrap();
+        assert!(
+            (h.magnitude - mag).abs() < 1e-5 * mag.max(0.01),
+            "{case}: {h:?}"
+        );
+        assert!((h.phase - phase).abs() < 1e-3, "{case}: {h:?}");
+    }
+    for k in [2, 4, 6, 8] {
+        assert!(from_ngspice.harmonic(k).unwrap().magnitude < 1e-6);
+    }
+
+    let netlist = parse_file(case_path(case, "cir")).unwrap();
+    // The deck's `.four 1k v(out)` is the analysis built by hand above.
+    let [card] = netlist.fourier.as_slice() else {
+        panic!("{case}: one `.four` signal, got {:?}", netlist.fourier);
+    };
+    assert_eq!((&card.fourier, &card.signal), (&four, &Signal::v("out")));
+    let config = netlist.transient_config().expect(".tran in the deck");
+    let result =
+        sindr::solve_transient(&netlist.circuit, &config).unwrap_or_else(|e| panic!("{case}: {e}"));
+    // sindr reads 29.067 %: the clipped peaks differ by a fraction of a mV.
+    let from_sindr = card.fourier.on(&result, &card.signal).unwrap();
+    assert!(
+        (from_sindr.thd_percent - 29.0343).abs() < 0.05,
+        "{case}: THD of sindr's waveform {} %",
+        from_sindr.thd_percent
+    );
+    for (k, mag, _) in ngspice {
+        let h = from_sindr.harmonic(k).unwrap();
+        // 0.1 % of the fundamental, the transient goldens' full-scale bound.
+        assert!((h.magnitude - mag).abs() < 1e-3 * 0.814221, "{case}: {h:?}");
+    }
 }
 
 /// The base RC is checked to 0.1 % of full scale. The collector edge is
@@ -1699,9 +1820,7 @@ fn temp_diode() {
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
     let sweep = temperature_sweep(
         &parse("temp_diode"),
-        kelvin[0],
-        *kelvin.last().unwrap(),
-        kelvin.len(),
+        &TempSweepConfig::new(kelvin[0], *kelvin.last().unwrap(), kelvin.len()),
     )
     .unwrap();
     let got: Vec<f64> = sweep
@@ -1723,9 +1842,7 @@ fn temp_diode_card() {
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
     let sweep = temperature_sweep(
         &parse("temp_diode_card"),
-        kelvin[0],
-        *kelvin.last().unwrap(),
-        kelvin.len(),
+        &TempSweepConfig::new(kelvin[0], *kelvin.last().unwrap(), kelvin.len()),
     )
     .unwrap();
     let got: Vec<f64> = sweep
@@ -1746,9 +1863,7 @@ fn temp_schottky_card() {
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
     let sweep = temperature_sweep(
         &parse("temp_schottky_card"),
-        kelvin[0],
-        *kelvin.last().unwrap(),
-        kelvin.len(),
+        &TempSweepConfig::new(kelvin[0], *kelvin.last().unwrap(), kelvin.len()),
     )
     .unwrap();
     let got: Vec<f64> = sweep
@@ -1769,9 +1884,7 @@ fn temp_bjt_card() {
     let kelvin: Vec<f64> = golden.scale().iter().map(|c| c + 273.15).collect();
     let sweep = temperature_sweep(
         &parse("temp_bjt_card"),
-        kelvin[0],
-        *kelvin.last().unwrap(),
-        kelvin.len(),
+        &TempSweepConfig::new(kelvin[0], *kelvin.last().unwrap(), kelvin.len()),
     )
     .unwrap();
     let mut check = Check::new("temp_bjt_card");
@@ -1796,7 +1909,11 @@ fn temp_bjt_card() {
 #[test]
 fn dc_diode_breakdown() {
     let golden = Golden::load("dc_diode_breakdown");
-    let sweep = dc_sweep(&parse("dc_diode_breakdown"), "v1", 0.0, -150.0, 31).unwrap();
+    let sweep = dc_sweep(
+        &parse("dc_diode_breakdown"),
+        &DcSweepAxis::new("v1", 0.0, -150.0, 31),
+    )
+    .unwrap();
     let scale = golden.scale();
     let vb: Vec<f64> = sweep
         .points
@@ -1835,14 +1952,14 @@ fn dc_zener() {
     let circuit = circuit(vec![
         vsource("v1", "a", "0", 0.0),
         resistor("r1", "a", "b", 1e3),
-        CircuitElement::ZenerDiode {
+        CircuitElement::ZenerDiode(ZenerDiode {
             id: "d1".into(),
             nodes: ["0".into(), "b".into()],
             vz: 5.1,
             temperature: 300.15,
-        },
+        }),
     ]);
-    let sweep = dc_sweep(&circuit, "v1", -2.0, 12.0, 29).unwrap();
+    let sweep = dc_sweep(&circuit, &DcSweepAxis::new("v1", -2.0, 12.0, 29)).unwrap();
     let scale = golden.scale();
     let vb: Vec<f64> = sweep
         .points
@@ -1893,16 +2010,16 @@ fn dc_mosfet_body_diode() {
         vsource("v1", "a", "0", 0.0),
         vsource("vg", "g", "0", -5.0),
         resistor("r1", "a", "d", 10.0),
-        CircuitElement::Mosfet {
+        CircuitElement::Mosfet(Mosfet {
             id: "m1".into(),
             nodes: ["g".into(), "d".into(), "0".into()],
             kind: MosfetKind::Nmos,
             params: MosfetParams::default_nmos(),
             parasitic_caps: None,
             body_diode: Some(body),
-        },
+        }),
     ]);
-    let sweep = dc_sweep(&circuit, "v1", -5.0, 5.0, 41).unwrap();
+    let sweep = dc_sweep(&circuit, &DcSweepAxis::new("v1", -5.0, 5.0, 41)).unwrap();
     let scale = golden.scale();
     let vd: Vec<f64> = sweep
         .points
@@ -1954,7 +2071,7 @@ fn check_cv(case: &'static str) {
         .components
         .iter()
         .find_map(|c| match c {
-            CircuitElement::Diode { model: Some(m), .. } => Some(*m),
+            CircuitElement::Diode(Diode { model: Some(m), .. }) => Some(*m),
             _ => None,
         })
         .expect("a diode with a card");
@@ -1974,7 +2091,7 @@ fn check_cv(case: &'static str) {
         .map(|&v| {
             let mut circuit = base.clone();
             for c in &mut circuit.components {
-                if let CircuitElement::VoltageSource { id, voltage, .. } = c {
+                if let CircuitElement::VoltageSource(VoltageSource { id, voltage, .. }) = c {
                     if id == "v1" {
                         *voltage = v;
                     }
@@ -2092,10 +2209,12 @@ fn tran_diode_recovery() {
 #[test]
 fn op_exported_spdt() {
     use sindr::circuit::SpdtPosition;
-    let spdt = |id: &str, nodes: [&str; 3], position| CircuitElement::SwitchSpdt {
-        id: id.into(),
-        nodes: nodes.map(String::from),
-        position,
+    let spdt = |id: &str, nodes: [&str; 3], position| {
+        CircuitElement::SwitchSpdt(SwitchSpdt {
+            id: id.into(),
+            nodes: nodes.map(sindr::NodeId::from),
+            position,
+        })
     };
     let circuit = circuit(vec![
         vsource("v1", "in", "0", 5.0),
@@ -2121,7 +2240,7 @@ fn ac_exported_crystal() {
     let circuit = circuit(vec![
         vsource("v1", "in", "0", 0.0),
         resistor("rs", "in", "a", 50.0),
-        CircuitElement::Crystal {
+        CircuitElement::Crystal(Crystal {
             id: "y1".into(),
             nodes: ["a".into(), "out".into()],
             params: sindr::circuit::CrystalParams {
@@ -2130,7 +2249,7 @@ fn ac_exported_crystal() {
                 c0: 5e-12,
                 cm: 20e-15,
             },
-        },
+        }),
         resistor("rl", "out", "0", 50.0),
     ]);
     check_ac(
@@ -2151,7 +2270,7 @@ fn ac_exported_ferrite_bead() {
     let circuit = circuit(vec![
         vsource("v1", "in", "0", 0.0),
         resistor("rs", "in", "a", 50.0),
-        CircuitElement::FerriteBead {
+        CircuitElement::FerriteBead(FerriteBead {
             id: "fb1".into(),
             nodes: ["a".into(), "out".into()],
             params: sindr::circuit::FerriteBeadParams {
@@ -2160,7 +2279,7 @@ fn ac_exported_ferrite_bead() {
                 r_ac: 600.0,
                 c: Some(1e-12),
             },
-        },
+        }),
         resistor("rl", "out", "0", 50.0),
     ]);
     check_ac(
@@ -2172,6 +2291,78 @@ fn ac_exported_ferrite_bead() {
         (1e5, 1e10),
         AC_LINEAR,
     );
+}
+
+/// Three digital pins on a 3.3 V supply, each pulled by `v1` from 1.5 V
+/// below ground to 1.7 V above the supply through a resistor: a push-pull
+/// output driving high (its `r_high` against the source, then its power
+/// clamp), an input with its pull-up (both clamps), and an open-drain
+/// output pulling low. The deck is the IBIS output stage and clamps the
+/// pins export as, so this is the pin's model built from primitives
+/// against ngspice's.
+#[test]
+fn dc_exported_digital_pin() {
+    use sindr::element::{DigitalPin, PinMode, PinModel, Pull};
+    let pin = |id: &str, pad: &str, mode, level, pull| {
+        CircuitElement::DigitalPin(DigitalPin {
+            id: id.into(),
+            nodes: [pad.into(), "vdd".into(), "0".into()],
+            mode,
+            level,
+            pull,
+            port: None,
+            model: PinModel::default(),
+        })
+    };
+    let circuit = circuit(vec![
+        vsource("vdd", "vdd", "0", 3.3),
+        vsource("v1", "ext", "0", 0.0),
+        pin("p1", "a", PinMode::PushPull, true, Pull::None),
+        resistor("r1", "ext", "a", 100.0),
+        pin("p2", "b", PinMode::Input, false, Pull::Up),
+        resistor("r2", "ext", "b", 1e3),
+        pin("p3", "c", PinMode::OpenDrain, false, Pull::None),
+        resistor("r3", "ext", "c", 330.0),
+    ]);
+    let circuit = exported("dc_exported_digital_pin", &circuit);
+    let golden = Golden::load("dc_exported_digital_pin");
+    let sweep = dc_sweep(circuit, &DcSweepAxis::new("v1", -1.5, 5.0, 66)).unwrap();
+    let scale = golden.scale();
+    let node = |n: &str| -> Vec<f64> {
+        sweep
+            .points
+            .iter()
+            .map(|p| p.result.node_voltages[n])
+            .collect()
+    };
+    let current = |id: &str| -> Vec<f64> {
+        sweep
+            .points
+            .iter()
+            .map(|p| source_current(&p.result, id))
+            .collect()
+    };
+    let mut check = Check::new("dc_exported_digital_pin");
+    check.series("v-sweep", &scale, &sweep_values(&sweep), &scale, OP_V);
+    for n in ["a", "b", "c"] {
+        check.series(
+            &format!("v({n})"),
+            &scale,
+            &node(n),
+            &golden.column(&format!("v({n})")),
+            OP_V,
+        );
+    }
+    for id in ["v1", "vdd"] {
+        check.series(
+            &format!("i({id})"),
+            &scale,
+            &current(id),
+            &golden.column(&format!("i({id})")),
+            OP_I,
+        );
+    }
+    check.finish();
 }
 
 /// The golden vector for a sensitivity entry. Elements, gains and the
@@ -2383,4 +2574,136 @@ fn pz_ladder_cur() {
         "pz_ladder_cur",
         &sindr::PzConfig::transimpedance("in", "0", "out", "0"),
     );
+}
+
+/// A DC motor started from rest on 12 V against a load: sindr's motor
+/// against ngspice's R–L–E armature and F–C–R–I shaft, the deck it exports
+/// as. Speed is `v(m1_w)` there, `motors["m1"].speed` here.
+#[test]
+fn tran_exported_dc_motor() {
+    use sindr::element::{DcMotor, DcMotorParams};
+    let case = "tran_exported_dc_motor";
+    let circuit = circuit(vec![
+        vsource("v1", "in", "0", 12.0),
+        CircuitElement::DcMotor(DcMotor {
+            id: "m1".into(),
+            nodes: ["in".into(), "0".into()],
+            params: DcMotorParams::new(2.0, 0.02)
+                .with_inductance(1e-3)
+                .with_inertia(1e-6)
+                .with_friction(1e-6)
+                .with_load(2e-3),
+        }),
+    ]);
+    let circuit = exported(case, &circuit);
+    let config = sindr::TransientConfig::new(30e-3, 20e-6).with_tmax(10e-6);
+    let result = sindr::solve_transient(circuit, &config).unwrap();
+    let steps = &result.transient.unwrap().timesteps;
+    let golden = Golden::load(case);
+    let scale = golden.scale();
+    let times: Vec<f64> = steps.iter().map(|s| s.time).collect();
+    let mut check = Check::new(case);
+    let speed: Vec<f64> = steps.iter().map(|s| s.motors["m1"].speed).collect();
+    let current: Vec<f64> = steps
+        .iter()
+        .map(|s| {
+            s.component_results
+                .iter()
+                .find(|c| c.id == "v1")
+                .unwrap()
+                .current_through
+        })
+        .collect();
+    for (name, got) in [("v(m1_w)", speed), ("i(v1)", current)] {
+        let want_all = golden.column(name);
+        let full_scale = want_all.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        let want: Vec<f64> = times
+            .iter()
+            .map(|&t| interpolate(&scale, &want_all, t))
+            .collect();
+        check.series_fs(name, &times, &got, &want, 1e-3, full_scale);
+    }
+    check.finish();
+}
+
+/// The averaged buck's operating point against a switched synchronous buck
+/// in ngspice (`tran_switched_buck.cir`), averaged over its last 20
+/// periods once settled. The averaged model isn't fitted to it: its set
+/// voltage is `D·Vin` less the conduction drop, and its efficiency the
+/// conduction loss of the inductor current's RMS (DC plus the model's own
+/// ripple estimate) in the switch and inductor resistance. So this checks
+/// power balance and the ripple estimate against real switching. The
+/// switched deck has no sindr twin (sindr has no averaged-converter SPICE
+/// line), so the `.cir` is read by ngspice only.
+#[test]
+fn tran_switched_buck() {
+    use sindr::element::SwitchingRegulator;
+    use sindr::{ConverterParams, ConverterTopology};
+    let case = "tran_switched_buck";
+    let golden = Golden::load(case);
+    let (vin, duty, f, l, r_load) = (12.0, 5.0 / 12.0, 200e3, 22e-6, 5.0);
+    // Either switch's 20 mΩ plus the inductor's 30 mΩ carries the current
+    // all period.
+    let r_on = 20e-3 + 30e-3;
+    let v_set = duty * vin * r_load / (r_load + r_on);
+    let i_out = v_set / r_load;
+    let mut model = ConverterParams {
+        switching_frequency: Some(f),
+        inductance: Some(l),
+        ..Default::default()
+    };
+    let ripple = model
+        .ripple_current(ConverterTopology::Buck, vin, v_set)
+        .unwrap();
+    let p_out = v_set * i_out;
+    let loss = (i_out * i_out + ripple * ripple / 12.0) * r_on;
+    model.efficiency = p_out / (p_out + loss);
+    let c = circuit(vec![
+        vsource("vin", "in", "0", vin),
+        CircuitElement::SwitchingRegulator(SwitchingRegulator {
+            id: "u1".into(),
+            nodes: ["in".into(), "out".into(), "0".into()],
+            topology: ConverterTopology::Buck,
+            voltage: v_set,
+            model,
+        }),
+        resistor("rload", "out", "0", r_load),
+    ]);
+    let r = solve_circuit(&c).unwrap();
+    let at = |name| golden.column(name)[0];
+    // ngspice ran long enough to settle: the 20 periods before agree.
+    assert!((at("vbefore") - at("vout")).abs() < 1e-5);
+    let mut check = Check::new(case);
+    // The switched output sits 270 µV lower (5e-5): its 1 ns edges and
+    // dead time trim the duty a little.
+    check.value(
+        "v(out)",
+        r.node_voltages["out"],
+        at("vout"),
+        Tol {
+            rel: 2e-4,
+            abs: 0.0,
+        },
+    );
+    // Power balance at that efficiency gives the input current to 2e-5.
+    check.value(
+        "i(vin)",
+        r.branch_currents["vin"],
+        at("iin"),
+        Tol {
+            rel: 2e-4,
+            abs: 0.0,
+        },
+    );
+    // The ripple estimate is 0.3 % under the switched inductor's.
+    check.value(
+        "ripple",
+        ripple,
+        at("iripple"),
+        Tol {
+            rel: 0.01,
+            abs: 0.0,
+        },
+    );
+    check.finish();
 }

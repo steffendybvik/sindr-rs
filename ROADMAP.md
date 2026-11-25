@@ -1,6 +1,6 @@
 # Roadmap
 
-Where sindr is heading from 0.1.0 to 1.0. It's a plan, not a promise of
+Where sindr is heading from 0.3.0 to 1.0. It's a plan, not a promise of
 dates. For what sindr does today see [`README.md`](./README.md); for what it
 doesn't, [`LIMITATIONS.md`](./LIMITATIONS.md); for what shipped,
 [`CHANGELOG.md`](./CHANGELOG.md). Contributions are welcome: start with
@@ -16,10 +16,10 @@ and uses no `unsafe`. It answers three questions for the application around
 it:
 
 1. **What happens electrically?** Operating point, DC sweep, AC, transient,
-   noise, `.tf` and `.sens`.
+   noise, `.tf`, `.sens`, pole-zero and loop gain.
 2. **Will the parts survive?** Absolute-maximum ratings and self-heating.
 3. **Does the design meet its spec?** Measurements and pass/fail specs with
-   margins.
+   margins, at nominal or across Monte Carlo and corner runs.
 
 ngspice is the ruler, not the rival. Results are checked against ngspice
 golden files, and a model counts as done when it agrees.
@@ -43,17 +43,31 @@ Checked in CI, so no release lowers it:
 
 | | Milestone | Version | What it means |
 |---|---|---|---|
-| 1 | **Editor-ready** | 0.1.x | An editor's netlist and part data simulate without the user writing a deck or a model parameter |
-| 2 | **Where it will fail** | 0.1.x | Design verification good enough to stake a board on |
-| 3 | **Cheap devices** | 0.1.x | Adding a device touches one place in the code |
-| 4 | **Typed API** | 0.2 | Wrong circuits are hard to build, and errors are typed |
-| 5 | **Extensible models** | 0.3 | Devices from outside the crate, and the models boards need |
+| 1 | **Editor-ready** | 0.2 and 0.3 (shipped), rest after 0.3 | An editor's netlist and part data simulate without the user writing a deck or a model parameter |
+| 2 | **Cheap devices** | 0.3 (shipped) | Adding a device touches one place in the code |
+| 3 | **Typed and fast** | 0.3 (shipped), speed continues | Wrong circuits are hard to build, errors are typed, and large transients run near ngspice's speed |
+| 4 | **Where it will fail** | 0.4 | Design verification good enough to stake a board on |
+| 5 | **Extensible models** | 0.4 | Devices from outside the crate, and the models boards need |
 | 6 | **1.0** | 1.0 | Stable for the whole of 1.x |
 
-Milestones 1–3 only add to the API, so they ship as 0.1.x patches and can
-overlap.
+Additive work can land in any release; the typed API is the breaking part
+of 0.3.
 
 ### 1. Editor-ready
+
+Shipped in 0.2.0: `sindr::import` reads symbol ids and terminal names as
+editors export them, multi-unit parts, ICs as black boxes, models from
+datasheet figures with a warning for every default, and bench loads for IC
+pins (current sinks, timed switches).
+
+Shipped in 0.3.0: a half-wired schematic simulates with its loose ends
+reported (`UnconnectedTerminals::Skip`), nets that only reach an IC's pins
+are tied high-impedance, supply rails come from power-port net names
+(opt-in, with `supply_names` saying what it assumed), a vendor subcircuit
+can be a part's model, long runs report progress and can be cancelled, and
+an MCU pin's electrical side is an element (`DigitalPin`, after IBIS).
+
+Still to come:
 
 - Real boards, expressed as an editor exports them (components, values as
   text, nets) plus a test bench, simulated end to end through
@@ -63,15 +77,34 @@ overlap.
   on-resistance. Each is checked to reproduce its datasheet points.
 - Results say when a component fell back to a default model, the way a part
   with no ratings reports *Unverified*, so nothing defaults silently.
-- A way to describe what an IC pin looks like electrically (a driven level, a
-  supply current), and clear errors for what sindr can't simulate.
+- Clear errors for what sindr can't simulate.
 
 **Done when** example boards simulate from a netlist and a bench with no model
 parameter in the input, checked against ngspice or a closed form.
 
-### 2. Where it will fail
+### 2. Cheap devices (shipped in 0.3.0)
 
-- Worst case: corners and Monte Carlo over component tolerances.
+Each device's behaviour (DC, AC, transient, results, ratings, export) lives in
+its own file in `sindr::element`, internal only, with every numerical result
+unchanged. A new device is its module plus one registration line.
+
+Shipped in 0.3.0: typed node and component handles (names stay as labels,
+and `CircuitBuilder` refuses an unknown name), typed error causes, sweeps
+configured like every other analysis, a migration guide in the CHANGELOG, and
+names resolved once with the matrix stamped into a fixed sparse layout. Against
+0.2.0's published figures, an operating point of 1 000 diode stages is 2.6×
+as fast, 1 000 BJT stages on one rail 30×, and a 1 000-node RC-ladder
+transient 2.2×.
+
+Still to come: the 3× on that transient. Most of what's left is recording
+each step's results by name; then a linear transient reusing its
+factorisation.
+
+### 4. Where it will fail (0.4)
+
+Shipped in 0.2.0: worst case over corners and Monte Carlo, with specs and
+ratings judged on every run.
+
 - Derating: checking against a derated limit, not only the absolute maximum.
 - Temperature-dependent ratings, using the junction temperatures
   self-heating already computes.
@@ -83,27 +116,14 @@ parameter in the input, checked against ngspice or a closed form.
 across tolerances and temperature, each new check verified against a
 datasheet example.
 
-### 3. Cheap devices
+### 5. Extensible models (0.4)
 
-Each device's behaviour (DC, AC, transient, results, ratings, export) in one
-place, internal only, with every numerical result unchanged.
-
-### 4. Typed API (0.2)
-
-- Typed node and component handles; names stay as labels, and an unknown name
-  is an error at build time instead of a silent new node.
-- Typed error causes instead of message strings.
-- Sweeps configured the same way as every other analysis.
-
-**Done when** no public error is a bare string, and a migration guide is in
-the CHANGELOG.
-
-### 5. Extensible models (0.3)
+Shipped in 0.2.0: behavioural (`B`) sources, `M` and `J` lines with Level-1
+cards, JFET capacitances and a saturating transformer core.
 
 - A public interface for devices defined outside sindr, designed and
   prototyped before it's committed, with an external-device example crate.
-- Gummel–Poon BJTs, behavioural (`B`) sources, JFET capacitances and a
-  saturating transformer core.
+- Gummel–Poon BJTs, so vendor discrete-transistor cards load.
 
 ### 6. 1.0
 
@@ -134,5 +154,4 @@ All additive, so fine within 1.x:
 - Layout-aware physics from a board's stackup: trace impedance, thermal,
   power integrity
 - Electrical rule checks an editor can run on a schematic
-- Pole-zero and loop gain, AC sensitivity
 - Higher-level MOSFET models, if boards need them

@@ -1,14 +1,16 @@
 //! IGBT (Insulated Gate Bipolar Transistor) simplified model.
 //!
-//! An IGBT combines MOSFET gate control with BJT output characteristics.
-//! This educational model uses the MOSFET Level-1 square law for the
-//! collector current, and blocks reverse collector-emitter voltage.
+//! A real IGBT is a MOSFET driving a bipolar output stage. This model keeps
+//! only the MOSFET part: the collector current follows the Level-1 square
+//! law in the gate–emitter overdrive (triode and saturation), and a
+//! reverse collector–emitter voltage blocks. There is no bipolar output
+//! stage, so no on-state junction drop (the ~0.7 V knee before current
+//! flows), no tail current at turn-off and no output conductance in
+//! saturation.
 //!
-//! Nodes: [gate, collector, emitter] — same ordering convention as BJT.
-//! Gate controls current like a MOSFET; collector/emitter behave like BJT.
+//! Nodes: [gate, collector, emitter], the BJT's ordering.
 //!
-//! Simplified model is appropriate for educational simulation.
-//! Full IGBT models (IGBTv3) have 20+ parameters — out of scope.
+//! Full IGBT models (IGBTv3) have 20+ parameters and are out of scope.
 
 /// IGBT parameters (simplified model).
 ///
@@ -16,6 +18,7 @@
 /// so a field added in a later release doesn't break the literal.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct IgbtParams {
     /// Gate threshold voltage (V). Typical: 4.0–6.0 V.
     pub vth: f64,

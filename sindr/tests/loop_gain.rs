@@ -1,5 +1,6 @@
 //! Loop gain and stability margins against closed-form op-amp loops.
 
+use sindr::element::{Capacitor, OpAmp, Resistor, VoltageSource};
 use std::f64::consts::PI;
 
 use num_complex::Complex64;
@@ -10,7 +11,7 @@ const A0: f64 = 1e5;
 const GBW: f64 = 1e6;
 
 fn opamp(r_out: f64) -> CircuitElement {
-    CircuitElement::OpAmp {
+    CircuitElement::OpAmp(OpAmp {
         id: "U1".into(),
         nodes: ["0".into(), "fb".into(), "out".into()],
         v_pos: 15.0,
@@ -21,32 +22,32 @@ fn opamp(r_out: f64) -> CircuitElement {
             r_out,
             ..Default::default()
         }),
-    }
+    })
 }
 
 fn probe(driven: &str, driving: &str) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: "Vprobe".into(),
         nodes: [driven.into(), driving.into()],
         voltage: 0.0,
         waveform: None,
-    }
+    })
 }
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn c(id: &str, a: &str, b: &str, farads: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance: farads,
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -181,19 +182,57 @@ fn probe_must_be_a_floating_voltage_source() {
     let config = LoopGainConfig::new("RL", 1.0, 1e6, 11);
     assert!(matches!(
         solve_loop_gain(&circuit(parts.clone()), &config),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig {
+            config: sindr::ConfigKind::LoopGain,
+            ..
+        })
     ));
 
     let mut grounded = parts;
-    grounded.push(CircuitElement::VoltageSource {
+    grounded.push(CircuitElement::VoltageSource(VoltageSource {
         id: "Vg".into(),
         nodes: ["out".into(), "0".into()],
         voltage: 0.0,
         waveform: None,
-    });
+    }));
     let config = LoopGainConfig::new("Vg", 1.0, 1e6, 11);
     assert!(matches!(
         solve_loop_gain(&circuit(grounded), &config),
-        Err(SimError::InvalidComponent(_))
+        Err(SimError::InvalidConfig {
+            config: sindr::ConfigKind::LoopGain,
+            ..
+        })
     ));
+}
+
+#[test]
+fn linear_spacing_spaces_the_points_evenly_and_gain_db_reads_the_magnitude() {
+    let parts = vec![opamp(0.0), probe("fb", "out"), r("RL", "out", "0", 10e3)];
+    let config =
+        LoopGainConfig::new("Vprobe", 1e3, 11e3, 11).with_spacing(sindr::FrequencySpacing::Linear);
+    let lg = solve_loop_gain(&circuit(parts), &config).unwrap();
+
+    let f: Vec<f64> = lg.points.iter().map(|p| p.frequency).collect();
+    assert_eq!(f.len(), 11);
+    for (i, fi) in f.iter().enumerate() {
+        let want = 1e3 + 1e3 * i as f64;
+        assert!((fi - want).abs() < 1e-9 * want, "point {i}: {fi} Hz");
+    }
+    for p in &lg.points {
+        let want = A0 / Complex64::new(1.0, 2.0 * PI * p.frequency * tau());
+        assert!((p.gain_db() - 20.0 * want.norm().log10()).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn probe_with_its_driven_side_on_ground_is_an_error() {
+    // The probe's first node is the side the loop is driven into; on
+    // ground there is nothing to inject into.
+    let parts = vec![opamp(0.0), probe("0", "out"), r("RL", "out", "fb", 10e3)];
+    let err =
+        solve_loop_gain(&circuit(parts), &LoopGainConfig::new("Vprobe", 1.0, 1e3, 3)).unwrap_err();
+    assert!(
+        matches!(&err, SimError::InvalidConfig { config: sindr::ConfigKind::LoopGain, reason } if reason.contains("Vprobe")),
+        "{err:?}"
+    );
 }

@@ -219,7 +219,7 @@ impl AnalysisRequest {
     ///
     /// # Errors
     ///
-    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// The inner `Result` is [`SimError::InvalidConfig`](crate::SimError::InvalidConfig)
     /// for an axis of more than 10⁷ points.
     #[allow(clippy::type_complexity)]
     pub fn dc_axes(
@@ -410,9 +410,9 @@ impl AnalysisRequest {
         };
         let (f_stop, num_points, spacing) = sweep_grid(false, *sweep, *points, *fstart, *fstop);
         Some(crate::NoiseConfig {
-            output: node.clone(),
-            reference: reference.clone(),
-            input_source: input.clone(),
+            output: node.into(),
+            reference: reference.clone().map(Into::into),
+            input_source: input.into(),
             f_start: *fstart,
             f_stop,
             num_points,
@@ -565,6 +565,34 @@ pub struct MeasureRequest {
     pub measurement: crate::measure::Measurement,
 }
 
+/// A signal on a `.four` card and the Fourier analysis to run on it.
+///
+/// `.four 1k v(out) i(r1)` gives two, one per signal, each with ngspice's
+/// defaults at the card's fundamental: 9 harmonics above DC on a
+/// 200-point grid. Run it with
+/// [`Fourier::on`](crate::fourier::Fourier::on) on the deck's `.tran`
+/// result.
+///
+/// ```
+/// use sindr::spice::parse_str;
+///
+/// let deck = "* divider\nV1 in 0 SIN(0 1 1k)\nR1 in out 1k\nR2 out 0 1k\n\
+///             .tran 5u 2m\n.four 1k v(out)\n.end\n";
+/// let netlist = parse_str(deck)?;
+/// let four = &netlist.fourier[0];
+/// let result = sindr::solve_transient(&netlist.circuit, &netlist.transient_config().unwrap())?;
+/// let harmonics = four.fourier.on(&result, &four.signal)?;
+/// assert!((harmonics.harmonic(1).unwrap().magnitude - 0.5).abs() < 1e-3);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct FourierRequest {
+    /// The voltage or current to analyse.
+    pub signal: crate::measure::Signal,
+    /// The analysis at the card's fundamental.
+    pub fourier: crate::fourier::Fourier,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,6 +682,47 @@ mod tests {
             (".meas tran x max v(in) td=1", "`td=` isn't supported"),
             (".meas tran x deriv v(in) at=1", "aren't supported"),
             (".meas ac x max vr(in)", "real and imaginary"),
+        ] {
+            let err = meas_error(card);
+            assert!(err.contains(expect), "{card}: {err}");
+        }
+    }
+
+    #[test]
+    fn four_gives_one_request_per_signal() {
+        use crate::fourier::Fourier;
+        use crate::measure::Signal;
+        let deck = "* four\nV1 in 0 1\nR1 in out 1k\nR2 out 0 1k\n.param f=2k\n\
+                    .four 1k v(out) i(r1)\n.FOUR {f} vm(in,out)\n.end\n";
+        let four = parse_str(deck).unwrap().fourier;
+        assert_eq!(
+            four,
+            vec![
+                FourierRequest {
+                    signal: Signal::v("out"),
+                    fourier: Fourier::new(1e3)
+                },
+                FourierRequest {
+                    signal: Signal::i("r1"),
+                    fourier: Fourier::new(1e3)
+                },
+                FourierRequest {
+                    signal: Signal::v_diff("in", "out"),
+                    fourier: Fourier::new(2e3)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn four_rejects_what_it_cant_analyse() {
+        for (card, expect) in [
+            (".four", "expected a fundamental frequency"),
+            (".four 1k", "expected a signal"),
+            (".four 1k out", "expected a signal such as"),
+            (".four 1k vdb(in)", "reads a voltage or a current"),
+            (".four 0 v(in)", "positive frequency"),
+            (".four {-1k} v(in)", "positive frequency"),
         ] {
             let err = meas_error(card);
             assert!(err.contains(expect), "{card}: {err}");

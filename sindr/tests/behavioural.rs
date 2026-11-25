@@ -3,36 +3,38 @@
 //! every analysis.
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{Behavioural, Resistor, VoltageSource};
 use sindr::expression::Expression;
+use sindr::DcSweepAxis;
 use sindr::{
     dc_sweep, solve_op, solve_transient, BehaviouralOutput, Block, Circuit, CircuitElement,
     Instance, SimError, TransientConfig,
 };
 
 fn v(id: &str, p: &str, n: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn b(id: &str, p: &str, n: &str, output: BehaviouralOutput, expr: &str) -> CircuitElement {
-    CircuitElement::Behavioural {
+    CircuitElement::Behavioural(Behavioural {
         id: id.into(),
         nodes: [p.into(), n.into()],
         output,
         expr: Expression::parse(expr).unwrap(),
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -117,7 +119,7 @@ fn dc_sweep_through_a_smooth_nonlinearity() {
         b("b1", "out", "0", V, "2*tanh(v(in)/0.5)"),
         r("rl", "out", "0", 1e3),
     ]);
-    let sweep = dc_sweep(&c, "vin", -2.0, 2.0, 21).unwrap();
+    let sweep = dc_sweep(&c, &DcSweepAxis::new("vin", -2.0, 2.0, 21)).unwrap();
     for point in &sweep.points {
         let x = point.result.node_voltages["in"];
         close(
@@ -207,7 +209,7 @@ fn reading_what_isnt_there_is_an_error() {
     ]))
     .unwrap_err();
     assert!(
-        matches!(&err, SimError::InvalidComponent(m) if m.contains("i(r1)")),
+        matches!(&err, SimError::InvalidComponent { reason, .. } if reason.contains("i(r1)")),
         "{err}"
     );
     // A node nothing else touches floats.

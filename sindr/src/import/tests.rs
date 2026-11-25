@@ -1,5 +1,11 @@
 use super::*;
 use crate::ac_analysis::AcConfig;
+use crate::element::{
+    Battery, Bjt, Capacitor, Comparator, Crystal, CurrentSource, Diode, FerriteBead, Fuse, Igbt,
+    Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor, Potentiometer, Pushbutton,
+    Relay, Resistor, SchottkyDiode, Switch, Thermistor, Transformer, Varactor, VoltageRegulator,
+    VoltageSource, ZenerDiode,
+};
 use crate::waveform::Waveform;
 use crate::TransientConfig;
 
@@ -146,7 +152,7 @@ fn op_amp_rails_come_from_supplies_on_its_pins() {
         .with_source(BenchSource::voltage("vsupply", "vdd", 5.0))
         .with_source(BenchSource::voltage("vin", "src", 8.0));
     let imported = netlist.to_circuit(&bench).unwrap();
-    let Some(CircuitElement::OpAmp { v_pos, v_neg, .. }) =
+    let Some(CircuitElement::OpAmp(OpAmp { v_pos, v_neg, .. })) =
         imported.circuit.components.iter().find(|c| c.id() == "u1")
     else {
         panic!("no op-amp")
@@ -280,17 +286,55 @@ fn ac_and_dc_sweep_name_a_bench_source() {
 
     let sweep = Bench::new("gnd")
         .with_source(BenchSource::voltage("sig", "in", 0.0))
-        .with_analysis(Analysis::DcSweep {
-            source: "sig".into(),
-            start: 0.0,
-            stop: 4.0,
-            points: 5,
-        });
+        .with_analysis(Analysis::DcSweep(crate::DcSweepAxis::new(
+            "sig", 0.0, 4.0, 5,
+        )));
     let Simulation::DcSweep(r) = simulate(&netlist, &sweep).unwrap().result else {
         panic!()
     };
     let curve = r.node_voltage_curve("out");
     assert!((curve[4].1 - 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn supply_names_say_what_was_assumed_and_what_was_left() {
+    let named = |id: &str, name: &str| Net::new(id, [("r", id)]).with_name(name);
+    let netlist = Netlist {
+        nets: vec![
+            named("a", "3V3"),
+            named("b", "+5V"),
+            named("c", "VCC"),
+            named("d", "3V3_A"),
+            named("e", "GND"),
+            named("f", "AGND"),
+            named("g", "SDA"),
+            named("h", "-12V"),
+            named("i", "VBAT"),
+            named("j", "+12V_IN"),
+            named("k", "AVDD"),
+            named("l", "V+"),
+            named("m", "0V"),
+            Net::new("n", [("r", "n")]),
+        ],
+        ..Default::default()
+    };
+    let names = supply_names(&netlist);
+    let assumed: Vec<(&str, &str, f64)> = names
+        .assumed
+        .iter()
+        .map(|s| (s.net.as_str(), s.name.as_str(), s.volts))
+        .collect();
+    assert_eq!(
+        assumed,
+        [("a", "3V3", 3.3), ("b", "+5V", 5.0), ("h", "-12V", -12.0)]
+    );
+    assert_eq!(names.unresolved, ["c", "d", "i", "j", "k", "l"]);
+    assert_eq!(names.grounds, ["e", "f", "m"]);
+
+    // The bench helper adds exactly the assumed supplies.
+    let bench = Bench::new("e").with_supplies_from_net_names(&netlist);
+    let sources: Vec<&str> = bench.sources.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(sources, ["supply:a", "supply:b", "supply:h"]);
 }
 
 #[test]
@@ -563,8 +607,8 @@ fn built(component: Component, terminals: &[&str]) -> CircuitElement {
 }
 
 /// `["n0", "n1", …]`, the nodes [`build`] puts the terminals on.
-fn ns<const N: usize>() -> [String; N] {
-    std::array::from_fn(|i| format!("n{i}"))
+fn ns<const N: usize>() -> [NodeId; N] {
+    std::array::from_fn(|i| format!("n{i}").into())
 }
 
 #[test]
@@ -574,66 +618,66 @@ fn two_terminal_passives_take_their_value() {
             Component::new("c1", ComponentKind::CapacitorPolarized).with_value("10uF"),
             &["+", "NEG"]
         ),
-        CircuitElement::Capacitor {
+        CircuitElement::Capacitor(Capacitor {
             id: "c1".into(),
             nodes: ns(),
             capacitance: 10e-6,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("l1", ComponentKind::Inductor).with_value(String::from("2.2mH")),
             &["a", "b"]
         ),
-        CircuitElement::Inductor {
+        CircuitElement::Inductor(Inductor {
             id: "l1".into(),
             nodes: ns(),
             inductance: 2.2e-3,
             saturation: None,
-        }
+        })
     );
     assert_eq!(
         built(Component::new("t1", ComponentKind::Thermistor), &["1", "2"]),
-        CircuitElement::Thermistor {
+        CircuitElement::Thermistor(Thermistor {
             id: "t1".into(),
             nodes: ns(),
             temperature: 298.15,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("p1", ComponentKind::Photoresistor).with_param("light_level", 0.4),
             &["1", "2"]
         ),
-        CircuitElement::Photoresistor {
+        CircuitElement::Photoresistor(Photoresistor {
             id: "p1".into(),
             nodes: ns(),
             light_level: 0.4,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("v1", ComponentKind::VoltageSource).with_value("3V3"),
             &["pos", "n"]
         ),
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: "v1".into(),
             nodes: ns(),
             voltage: 3.3,
             waveform: None,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("i1", ComponentKind::CurrentSource).with_value("2mA"),
             &["from", "to"]
         ),
-        CircuitElement::CurrentSource {
+        CircuitElement::CurrentSource(CurrentSource {
             id: "i1".into(),
             nodes: ns(),
             current: 2e-3,
             waveform: None,
-        }
+        })
     );
 }
 
@@ -647,39 +691,39 @@ fn diodes_take_temperature_irradiance_and_breakdown() {
                 .with_model(Model::Diode(dm)),
             &["anode", "k"]
         ),
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             id: "d1".into(),
             nodes: ns(),
             temperature: 350.0,
             model: Some(dm),
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("d2", ComponentKind::SchottkyDiode),
             &["a", "c"]
         ),
-        CircuitElement::SchottkyDiode {
+        CircuitElement::SchottkyDiode(SchottkyDiode {
             id: "d2".into(),
             nodes: ns(),
             temperature: NOMINAL_K,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("d3", ComponentKind::Photodiode).with_param("irradiance", "1m"),
             &["a", "k"]
         ),
-        CircuitElement::Photodiode {
+        CircuitElement::Photodiode(Photodiode {
             id: "d3".into(),
             nodes: ns(),
             irradiance: 1e-3,
             temperature: NOMINAL_K,
-        }
+        })
     );
     // The breakdown is the value, or `vz`, which wins over it.
     let zener = |c: Component| match built(c, &["a", "k"]) {
-        CircuitElement::ZenerDiode { vz, .. } => vz,
+        CircuitElement::ZenerDiode(ZenerDiode { vz, .. }) => vz,
         other => panic!("{other:?}"),
     };
     assert_eq!(
@@ -696,12 +740,12 @@ fn diodes_take_temperature_irradiance_and_breakdown() {
     );
     assert_eq!(
         built(Component::new("led", ComponentKind::Led), &["a", "k"]),
-        CircuitElement::Led {
+        CircuitElement::Led(Led {
             id: "led".into(),
             nodes: ns(),
             color: "red".into(),
             temperature: NOMINAL_K,
-        }
+        })
     );
     let vp = VaractorParams {
         cj0: 50e-12,
@@ -712,19 +756,19 @@ fn diodes_take_temperature_irradiance_and_breakdown() {
             Component::new("cv", ComponentKind::Varactor).with_model(Model::Varactor(vp.clone())),
             &["a", "k"]
         ),
-        CircuitElement::Varactor {
+        CircuitElement::Varactor(Varactor {
             id: "cv".into(),
             nodes: ns(),
             params: vp,
-        }
+        })
     );
     assert_eq!(
         built(Component::new("cv", ComponentKind::Varactor), &["a", "k"]),
-        CircuitElement::Varactor {
+        CircuitElement::Varactor(Varactor {
             id: "cv".into(),
             nodes: ns(),
             params: VaractorParams::default(),
-        }
+        })
     );
 }
 
@@ -741,7 +785,7 @@ fn transistors_take_their_defaults_and_models() {
                 .with_model(Model::Bjt(bm)),
             &["b", "c", "e"]
         ),
-        CircuitElement::Bjt {
+        CircuitElement::Bjt(Bjt {
             id: "q1".into(),
             nodes: ns(),
             kind: BjtKind::Pnp,
@@ -749,24 +793,24 @@ fn transistors_take_their_defaults_and_models() {
             temperature: NOMINAL_K,
             parasitic_caps: None,
             model: Some(bm),
-        }
+        })
     );
     match built(Component::new("q2", ComponentKind::Npn), &["b", "c", "e"]) {
-        CircuitElement::Bjt { bf, kind, .. } => assert_eq!((bf, kind), (100.0, BjtKind::Npn)),
+        CircuitElement::Bjt(Bjt { bf, kind, .. }) => assert_eq!((bf, kind), (100.0, BjtKind::Npn)),
         other => panic!("{other:?}"),
     }
 
     // A MOSFET's body may be left off; it is tied to the source.
     assert_eq!(
         built(Component::new("m1", ComponentKind::Pmos), &["g", "d", "s"]),
-        CircuitElement::Mosfet {
+        CircuitElement::Mosfet(Mosfet {
             id: "m1".into(),
             nodes: ns(),
             kind: MosfetKind::Pmos,
             params: MosfetParams::default_pmos(),
             parasitic_caps: None,
             body_diode: None,
-        }
+        })
     );
     let mp = MosfetParams {
         vto: 1.5,
@@ -776,7 +820,7 @@ fn transistors_take_their_defaults_and_models() {
         Component::new("m2", ComponentKind::Nmos).with_model(Model::Mosfet(mp.clone())),
         &["g", "d", "s"],
     ) {
-        CircuitElement::Mosfet { params, kind, .. } => {
+        CircuitElement::Mosfet(Mosfet { params, kind, .. }) => {
             assert_eq!((params, kind), (mp, MosfetKind::Nmos))
         }
         other => panic!("{other:?}"),
@@ -785,28 +829,28 @@ fn transistors_take_their_defaults_and_models() {
     // A JFET's pinch-off defaults to the sign of its channel.
     assert_eq!(
         built(Component::new("j1", ComponentKind::Njfet), &["g", "d", "s"]),
-        CircuitElement::Jfet {
+        CircuitElement::Jfet(Jfet {
             id: "j1".into(),
             nodes: ns(),
             kind: JfetKind::NChannel,
             idss: 10e-3,
             vp: -2.0,
             parasitic_caps: None,
-        }
+        })
     );
     assert_eq!(
         built(
             Component::new("j2", ComponentKind::Pjfet).with_param("idss", "5mA"),
             &["g", "d", "s"]
         ),
-        CircuitElement::Jfet {
+        CircuitElement::Jfet(Jfet {
             id: "j2".into(),
             nodes: ns(),
             kind: JfetKind::PChannel,
             idss: 5e-3,
             vp: 2.0,
             parasitic_caps: None,
-        }
+        })
     );
     let ip = IgbtParams {
         vth: 6.0,
@@ -817,14 +861,14 @@ fn transistors_take_their_defaults_and_models() {
             Component::new("g1", ComponentKind::Igbt).with_model(Model::Igbt(ip.clone())),
             &["gate", "collector", "emitter"]
         ),
-        CircuitElement::Igbt {
+        CircuitElement::Igbt(Igbt {
             id: "g1".into(),
             nodes: ns(),
             params: ip,
-        }
+        })
     );
     match built(Component::new("g2", ComponentKind::Igbt), &["g", "c", "e"]) {
-        CircuitElement::Igbt { params, .. } => assert_eq!(params, IgbtParams::default()),
+        CircuitElement::Igbt(Igbt { params, .. }) => assert_eq!(params, IgbtParams::default()),
         other => panic!("{other:?}"),
     }
 }
@@ -837,12 +881,12 @@ fn comparator_rails_default_to_15_volts_or_take_parameters() {
             Component::new("u1", ComponentKind::Comparator),
             &["in+", "in-", "out"]
         ),
-        CircuitElement::Comparator {
+        CircuitElement::Comparator(Comparator {
             id: "u1".into(),
             nodes: ns(),
             v_pos: 15.0,
             v_neg: -15.0,
-        }
+        })
     );
     // Parameters win over any supply on the pins.
     match built(
@@ -851,12 +895,12 @@ fn comparator_rails_default_to_15_volts_or_take_parameters() {
             .with_param("v_neg", 0.0),
         &["+", "-", "out", "v+", "v-"],
     ) {
-        CircuitElement::OpAmp {
+        CircuitElement::OpAmp(OpAmp {
             v_pos,
             v_neg,
             model,
             ..
-        } => assert_eq!((v_pos, v_neg, model), (3.3, 0.0, None)),
+        }) => assert_eq!((v_pos, v_neg, model), (3.3, 0.0, None)),
         other => panic!("{other:?}"),
     }
 }
@@ -879,7 +923,7 @@ fn a_supply_not_returned_to_ground_is_no_rail() {
         .with_source(BenchSource::voltage("vs", "vdd", 5.0).with_minus("vref"))
         .with_source(BenchSource::voltage("vr", "vref", 1.0));
     let imported = netlist.to_circuit(&bench).unwrap();
-    let Some(CircuitElement::OpAmp { v_pos, v_neg, .. }) =
+    let Some(CircuitElement::OpAmp(OpAmp { v_pos, v_neg, .. })) =
         imported.circuit.components.iter().find(|c| c.id() == "u1")
     else {
         panic!("no op-amp")
@@ -901,19 +945,19 @@ fn switches_fuses_relays_and_transformers() {
             Component::new("s1", ComponentKind::Switch).with_param("closed", true),
             &["1", "2"]
         ),
-        CircuitElement::Switch {
+        CircuitElement::Switch(Switch {
             id: "s1".into(),
             nodes: ns(),
             closed: true,
-        }
+        })
     );
     assert_eq!(
         built(Component::new("s2", ComponentKind::PushButton), &["1", "2"]),
-        CircuitElement::Pushbutton {
+        CircuitElement::Pushbutton(Pushbutton {
             id: "s2".into(),
             nodes: ns(),
             closed: false,
-        }
+        })
     );
     // A fuse's rating defaults to 1 A, and a part number in its value
     // is ignored rather than refused.
@@ -924,18 +968,20 @@ fn switches_fuses_relays_and_transformers() {
                 .with_param("blown", true),
             &["1", "2"]
         ),
-        CircuitElement::Fuse {
+        CircuitElement::Fuse(Fuse {
             id: "f1".into(),
             nodes: ns(),
             rating: 1.0,
             blown: true,
-        }
+        })
     );
     match built(
         Component::new("f2", ComponentKind::Fuse).with_value("500mA"),
         &["1", "2"],
     ) {
-        CircuitElement::Fuse { rating, blown, .. } => assert_eq!((rating, blown), (0.5, false)),
+        CircuitElement::Fuse(Fuse { rating, blown, .. }) => {
+            assert_eq!((rating, blown), (0.5, false))
+        }
         other => panic!("{other:?}"),
     }
     assert_eq!(
@@ -943,13 +989,13 @@ fn switches_fuses_relays_and_transformers() {
             Component::new("k1", ComponentKind::Relay).with_param("pickup_voltage", "3V5"),
             &["a1", "a2", "com", "no"]
         ),
-        CircuitElement::Relay {
+        CircuitElement::Relay(Relay {
             id: "k1".into(),
             nodes: ns(),
             coil_resistance: 500.0,
             pickup_voltage: 3.5,
             inductance: 0.0,
-        }
+        })
     );
     assert_eq!(
         built(
@@ -958,14 +1004,14 @@ fn switches_fuses_relays_and_transformers() {
                 .with_param("l2", "1mH"),
             &["p1", "q1", "sec+", "sec-"]
         ),
-        CircuitElement::Transformer {
+        CircuitElement::Transformer(Transformer {
             id: "tr1".into(),
             nodes: ns(),
             l1: 10e-3,
             l2: 1e-3,
             k: 0.999,
             saturation: None,
-        }
+        })
     );
 }
 
@@ -980,18 +1026,18 @@ fn regulators_and_batteries() {
                 .with_model(Model::Regulator(rp)),
             &["in", "out", "gnd"]
         ),
-        CircuitElement::VoltageRegulator {
+        CircuitElement::VoltageRegulator(VoltageRegulator {
             id: "u1".into(),
             nodes: ns(),
             voltage: 5.0,
             model: Some(rp),
-        }
+        })
     );
     match built(
         Component::new("u2", ComponentKind::Regulator).with_value("3V3"),
         &["vin", "vout", "com"],
     ) {
-        CircuitElement::VoltageRegulator { voltage, model, .. } => {
+        CircuitElement::VoltageRegulator(VoltageRegulator { voltage, model, .. }) => {
             assert_eq!((voltage, model), (3.3, None))
         }
         other => panic!("{other:?}"),
@@ -1004,12 +1050,12 @@ fn regulators_and_batteries() {
                 .with_param("state_of_charge", 0.8),
             &["+", "-"]
         ),
-        CircuitElement::Battery {
+        CircuitElement::Battery(Battery {
             id: "b1".into(),
             nodes: ns(),
             params: BatteryParams::constant(9.0, 0.5, 0.1),
             state_of_charge: 0.8,
-        }
+        })
     );
     // A model stands in for the value.
     let li = BatteryParams::lithium_ion(2.0, 0.05);
@@ -1018,12 +1064,12 @@ fn regulators_and_batteries() {
             Component::new("b2", ComponentKind::Battery).with_model(Model::Battery(li.clone())),
             &["+", "-"]
         ),
-        CircuitElement::Battery {
+        CircuitElement::Battery(Battery {
             id: "b2".into(),
             nodes: ns(),
             params: li,
             state_of_charge: 1.0,
-        }
+        })
     );
 }
 
@@ -1145,20 +1191,20 @@ fn loads_become_elements_between_their_nets() {
     };
     assert_eq!(
         element("cl"),
-        CircuitElement::Capacitor {
+        CircuitElement::Capacitor(Capacitor {
             id: "cl".into(),
             nodes: ["out".into(), "gnd".into()],
             capacitance: 1e-6,
-        }
+        })
     );
     assert_eq!(
         element("ll"),
-        CircuitElement::Inductor {
+        CircuitElement::Inductor(Inductor {
             id: "ll".into(),
             nodes: ["out".into(), "gnd".into()],
             inductance: 1e-3,
             saturation: None,
-        }
+        })
     );
     assert!(op(&netlist, &reactive).node_voltages["out"].abs() < 1e-6);
 }
@@ -1875,7 +1921,7 @@ fn an_op_amp_answers_to_its_long_names() {
             "Negative supply",
         ],
     );
-    let CircuitElement::OpAmp { nodes, .. } = e else {
+    let CircuitElement::OpAmp(OpAmp { nodes, .. }) = e else {
         panic!("{e:?}")
     };
     assert_eq!(nodes, ns::<3>());
@@ -1904,7 +1950,7 @@ fn terminal_names_from_the_table_place_each_terminal() {
         &options,
     )
     .unwrap();
-    let CircuitElement::Bjt { nodes, .. } = e else {
+    let CircuitElement::Bjt(Bjt { nodes, .. }) = e else {
         panic!("{e:?}")
     };
     // Element order is base, collector, emitter.
@@ -1922,7 +1968,7 @@ fn a_terminal_name_wins_over_its_id() {
         &options,
     )
     .unwrap();
-    let CircuitElement::Potentiometer { nodes, .. } = e else {
+    let CircuitElement::Potentiometer(Potentiometer { nodes, .. }) = e else {
         panic!("{e:?}")
     };
     assert_eq!(nodes, ["n1", "n0", "n2"].map(String::from));
@@ -1970,7 +2016,7 @@ fn a_pin_number_without_a_name_still_cant_pick_a_polarity() {
     )
     .unwrap();
     assert!(
-        matches!(&e, CircuitElement::Capacitor { nodes, capacitance, .. }
+        matches!(&e, CircuitElement::Capacitor(Capacitor { nodes, capacitance, .. })
             if *nodes == ["n1", "n0"].map(String::from) && (*capacitance - 4.7e-6).abs() < 1e-18),
         "{e:?}"
     );
@@ -2003,11 +2049,11 @@ fn crystals_and_ferrite_beads_import() {
     );
     assert_eq!(
         e,
-        CircuitElement::Crystal {
+        CircuitElement::Crystal(Crystal {
             id: "y".into(),
             nodes: ns(),
             params: CrystalParams::from_datasheet(16e6, 50.0, 5e-12),
-        }
+        })
     );
     let e = built(
         Component::new("y", ComponentKind::Crystal)
@@ -2019,11 +2065,11 @@ fn crystals_and_ferrite_beads_import() {
     );
     assert_eq!(
         e,
-        CircuitElement::Crystal {
+        CircuitElement::Crystal(Crystal {
             id: "y".into(),
             nodes: ns(),
             params: CrystalParams::from_datasheet(32.768e3, 70e3, 1.3e-12),
-        }
+        })
     );
     let e = built(
         Component::new("fb", ComponentKind::from_name("ferrite-bead")).with_value("600"),
@@ -2031,11 +2077,11 @@ fn crystals_and_ferrite_beads_import() {
     );
     assert_eq!(
         e,
-        CircuitElement::FerriteBead {
+        CircuitElement::FerriteBead(FerriteBead {
             id: "fb".into(),
             nodes: ns(),
             params: FerriteBeadParams::from_datasheet(600.0, 0.1),
-        }
+        })
     );
     let e = built(
         Component::new("fb", ComponentKind::FerriteBead)
@@ -2045,11 +2091,11 @@ fn crystals_and_ferrite_beads_import() {
     );
     assert_eq!(
         e,
-        CircuitElement::FerriteBead {
+        CircuitElement::FerriteBead(FerriteBead {
             id: "fb".into(),
             nodes: ns(),
             params: FerriteBeadParams::from_datasheet(120.0, 0.05),
-        }
+        })
     );
 }
 
@@ -2196,12 +2242,12 @@ fn dual_op_amp_builds_one_element_per_unit_on_shared_supplies() {
         .with_source(BenchSource::voltage("vin", "in", 1.5));
     let imported = netlist.to_circuit_with(&bench, &options).unwrap();
     for id in ["u1.a", "u1.b"] {
-        let Some(CircuitElement::OpAmp {
+        let Some(CircuitElement::OpAmp(OpAmp {
             v_pos,
             v_neg,
             model,
             ..
-        }) = imported.circuit.components.iter().find(|c| c.id() == id)
+        })) = imported.circuit.components.iter().find(|c| c.id() == id)
         else {
             panic!("no op-amp {id}")
         };
@@ -2361,8 +2407,8 @@ fn flasher_takes_its_models_from_part_data() {
             .find(|e| e.id() == id)
             .unwrap()
     };
-    assert!(matches!(element("d1"), CircuitElement::Led { color, .. } if color == "amber"));
-    let CircuitElement::Bjt { bf, model, .. } = element("q1") else {
+    assert!(matches!(element("d1"), CircuitElement::Led(Led { color, .. }) if color == "amber"));
+    let CircuitElement::Bjt(Bjt { bf, model, .. }) = element("q1") else {
         panic!()
     };
     // hFE 100–300 is 200 nominal; BR is fitted to Vce(sat).
@@ -2443,7 +2489,7 @@ fn led_colour_from_any_case_and_from_the_value() {
         };
         let imported = netlist.to_circuit(&Bench::new("gnd")).unwrap();
         let color = match &imported.circuit.components[0] {
-            CircuitElement::Led { color, .. } => color.clone(),
+            CircuitElement::Led(Led { color, .. }) => color.clone(),
             other => panic!("{other:?}"),
         };
         (
@@ -2519,7 +2565,7 @@ fn zener_and_mosfet_from_datasheet_figures() {
     assert!(imported.warnings.is_empty(), "{:?}", imported.warnings);
     assert_eq!(imported.model_source("z"), Some(ModelSource::Datasheet));
     assert_eq!(imported.model_source("m"), Some(ModelSource::Datasheet));
-    let CircuitElement::Mosfet { params, .. } = &imported.circuit.components[1] else {
+    let CircuitElement::Mosfet(Mosfet { params, .. }) = &imported.circuit.components[1] else {
         panic!()
     };
     assert!(params.vto > 0.0 && params.vto < 2.1, "{params:?}");
@@ -2543,7 +2589,7 @@ fn quantities_carry_their_unit() {
     };
     let kelvin = |v: Value| match &netlist(v).to_circuit(&Bench::new("gnd")) {
         Ok(imported) => match &imported.circuit.components[0] {
-            CircuitElement::Diode { temperature, .. } => Ok(*temperature),
+            CircuitElement::Diode(Diode { temperature, .. }) => Ok(*temperature),
             _ => unreachable!(),
         },
         Err(e) => Err(e.clone()),
@@ -2962,7 +3008,7 @@ fn a_bare_diode_warns_it_got_the_default_model() {
         warning.to_string(),
         "component \"d\": no model data; using the built-in silicon diode (IS = 1e-14 A, N = 1)"
     );
-    let CircuitElement::Diode { model, .. } = &imported.circuit.components[0] else {
+    let CircuitElement::Diode(Diode { model, .. }) = &imported.circuit.components[0] else {
         panic!()
     };
     assert_eq!(*model, None);
@@ -2975,7 +3021,7 @@ fn a_bjt_model_without_a_gain_gets_bf_100() {
     assert_eq!(imported.model_source("q"), Some(ModelSource::Model));
     assert_eq!(imported.warnings.len(), 1);
     assert!(imported.warnings[0].message.contains("bf = 100"));
-    let CircuitElement::Bjt { bf, model, .. } = &imported.circuit.components[0] else {
+    let CircuitElement::Bjt(Bjt { bf, model, .. }) = &imported.circuit.components[0] else {
         panic!()
     };
     assert_eq!((*bf, *model), (100.0, Some(BjtModel::default())));
@@ -2995,7 +3041,7 @@ fn figures_take_min_and_max_forms_only_where_they_are_figures() {
         let imported = import(c).unwrap();
         assert_eq!(imported.model_source("d"), Some(ModelSource::Datasheet));
         match &imported.circuit.components[0] {
-            CircuitElement::Diode { model, .. } => model.unwrap(),
+            CircuitElement::Diode(Diode { model, .. }) => model.unwrap(),
             other => panic!("{other:?}"),
         }
     };
@@ -3069,4 +3115,882 @@ fn figures_that_cant_be_fitted_name_the_parameter() {
         bad(m),
         ("m".into(), "rds_on_vgs".into(), Value::Number(1.5))
     );
+}
+
+// --- nets left floating by unsimulated parts ---------------------------
+
+/// A microcontroller and a sensor as black boxes, as a board with ICs
+/// imports: an open-drain alert line and two I²C lines, each with only
+/// its pull-up as an element; an LED driven from a pin the bench drives;
+/// and a programming line that reaches only the MCU and a connector.
+fn board_with_ics() -> Netlist {
+    let bb = |id: &str| Component::new(id, ComponentKind::BlackBox);
+    let r = |id: &str, v: &str| Component::new(id, ComponentKind::Resistor).with_value(v);
+    Netlist {
+        components: vec![
+            bb("mcu"),
+            bb("sensor"),
+            Component::new("j1", ComponentKind::Connector),
+            r("r_alert", "10k"),
+            r("r_sda", "4k7"),
+            r("r_scl", "4k7"),
+            r("r_led", "1k"),
+            Component::new("d_led", ComponentKind::Led).with_param("color", "green"),
+        ],
+        nets: vec![
+            Net::new(
+                "vdd",
+                [
+                    ("mcu", "vdd"),
+                    ("sensor", "vdd"),
+                    ("r_alert", "1"),
+                    ("r_sda", "1"),
+                    ("r_scl", "1"),
+                ],
+            ),
+            Net::new("gnd", [("mcu", "gnd"), ("sensor", "gnd"), ("j1", "2")]),
+            Net::new(
+                "alert",
+                [("mcu", "pa3"), ("sensor", "alert"), ("r_alert", "2")],
+            ),
+            Net::new("sda", [("mcu", "pa1"), ("sensor", "sda"), ("r_sda", "2")]),
+            Net::new("scl", [("mcu", "pa2"), ("sensor", "scl"), ("r_scl", "2")]),
+            Net::new("led_pin", [("mcu", "pa6"), ("r_led", "1")]),
+            Net::new("led_k", [("r_led", "2"), ("d_led", "cathode")]),
+            Net::new("led_a", [("d_led", "anode")]),
+            Net::new("updi", [("mcu", "pa0"), ("j1", "1")]),
+        ],
+    }
+}
+
+#[test]
+fn nets_that_only_reach_ic_pins_are_tied_high_impedance() {
+    let netlist = board_with_ics();
+    let bench = Bench::new("gnd")
+        .with_source(BenchSource::voltage("vin", "vdd", 3.3))
+        .with_source(BenchSource::voltage("pin_low", "led_pin", 0.0))
+        .with_tie("led_a", "vdd");
+    let imported = netlist.to_circuit(&bench).unwrap();
+
+    let tied: Vec<&str> = imported
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    assert_eq!(tied, ["alert", "scl", "sda"]);
+    let alert = &imported.high_impedance[0];
+    assert_eq!(alert.resistor, "alert.hi_z");
+    assert_eq!(
+        alert.pins,
+        [Pin::new("mcu", "pa3"), Pin::new("sensor", "alert")]
+    );
+    // The tie is in the circuit as a resistor to ground.
+    let tie = imported
+        .circuit
+        .components
+        .iter()
+        .find(|e| e.id() == "alert.hi_z")
+        .unwrap();
+    assert!(matches!(
+        tie,
+        CircuitElement::Resistor(Resistor { nodes, resistance, .. })
+            if nodes == &["alert".to_string(), "gnd".to_string()] && *resistance == HIGH_IMPEDANCE_OHMS
+    ));
+
+    let r = op(&netlist, &bench);
+    // The pull-ups hold their lines at the rail: 10 kΩ into 1 TΩ is 33 pV.
+    for net in ["alert", "sda", "scl"] {
+        let v = r.voltage(net).unwrap();
+        assert!((v - 3.3).abs() < 1e-6, "{net}: {v}");
+    }
+    // The LED lights from the pin driven low: (3.3 − Vf) / 1 kΩ.
+    let i = r.current("d_led").unwrap();
+    assert!((1.0e-3..1.4e-3).contains(&i), "{i}");
+}
+
+#[test]
+fn a_net_with_two_elements_or_none_is_left_alone() {
+    let imported = board_with_ics()
+        .to_circuit(
+            &Bench::new("gnd")
+                .with_source(BenchSource::voltage("vin", "vdd", 3.3))
+                .with_load(BenchLoad::new("probe", LoadKind::Resistor(1e6), "alert")),
+        )
+        .unwrap();
+    let tied: Vec<&str> = imported
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    // `alert` has the probe as a second element, `updi` has none, and
+    // `vdd` and `gnd` have many: only the I²C lines and the undriven LED
+    // pin are tied.
+    assert_eq!(tied, ["led_pin", "scl", "sda"]);
+}
+
+#[test]
+fn a_resistor_between_two_ic_pins_is_held_to_ground() {
+    // No path to ground but through the MCU: both ends tied, and it solves
+    // at 0 V instead of failing as a disconnected island.
+    let netlist = Netlist {
+        components: vec![
+            Component::new("mcu", ComponentKind::BlackBox),
+            Component::new("r1", ComponentKind::Resistor).with_value("1k"),
+            Component::new("r2", ComponentKind::Resistor).with_value("1k"),
+        ],
+        nets: vec![
+            Net::new("a", [("mcu", "1"), ("r1", "1")]),
+            Net::new("mid", [("r1", "2"), ("r2", "1")]),
+            Net::new("b", [("mcu", "2"), ("r2", "2")]),
+            Net::new("gnd", [("mcu", "3")]),
+        ],
+    };
+    let bench = Bench::new("gnd");
+    let tied: Vec<String> = netlist
+        .to_circuit(&bench)
+        .unwrap()
+        .high_impedance
+        .into_iter()
+        .map(|h| h.node)
+        .collect();
+    assert_eq!(tied, ["a", "b"]);
+    let r = op(&netlist, &bench);
+    assert_eq!(r.voltage("mid"), Some(0.0));
+}
+
+#[test]
+fn a_tie_never_takes_an_id_already_in_use() {
+    let mut netlist = board_with_ics();
+    netlist
+        .components
+        .push(Component::new("alert.hi_z", ComponentKind::TestPoint));
+    netlist.nets.push(Net::new("tp", [("alert.hi_z", "1")]));
+    let imported = netlist
+        .to_circuit(&Bench::new("gnd").with_source(BenchSource::voltage("vin", "vdd", 3.3)))
+        .unwrap();
+    let alert = imported
+        .high_impedance
+        .iter()
+        .find(|h| h.node == "alert")
+        .unwrap();
+    assert_eq!(alert.resistor, "alert.hi_z2");
+}
+
+#[test]
+fn a_net_named_0v_is_a_ground_not_a_supply() {
+    // Before, `0V` read as a 0 V supply, which on the bench's own ground
+    // net put a source between ground and itself.
+    let netlist = Netlist {
+        components: vec![Component::new("r1", ComponentKind::Resistor).with_value("1k")],
+        nets: vec![
+            Net::new("top", [("r1", "1")]).with_name("5V"),
+            Net::new("bottom", [("r1", "2")]).with_name("0V"),
+        ],
+    };
+    let bench = Bench::new("bottom").with_supplies_from_net_names(&netlist);
+    assert_eq!(bench.sources.len(), 1);
+    let r = op(&netlist, &bench);
+    assert!((r.current("r1").unwrap().abs() - 5e-3).abs() < 1e-12);
+}
+
+/// r1 from `n5` (named `5V`) to `gnd`.
+fn named_5v() -> Netlist {
+    Netlist {
+        components: vec![Component::new("r1", ComponentKind::Resistor).with_value("1k")],
+        nets: vec![
+            Net::new("n5", [("r1", "1")]).with_name("5V"),
+            Net::new("gnd", [("r1", "2")]),
+        ],
+    }
+}
+
+fn source_ids(imported: &ImportedCircuit) -> Vec<&str> {
+    imported
+        .circuit
+        .components
+        .iter()
+        .filter(|e| matches!(e, CircuitElement::VoltageSource(_)))
+        .map(CircuitElement::id)
+        .collect()
+}
+
+#[test]
+fn a_named_supply_gives_way_to_the_benchs_own_source() {
+    // Before, a net the bench already drove got a second ideal source
+    // across it, and the operating point was singular.
+    let netlist = named_5v();
+    let own = BenchSource::voltage("vs", "n5", 4.0);
+    let before = Bench::new("gnd")
+        .with_source(own.clone())
+        .with_supplies_from_net_names(&netlist);
+    let after = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_source(own);
+    for bench in [before, after] {
+        assert_eq!(source_ids(&netlist.to_circuit(&bench).unwrap()), ["vs"]);
+        let r = op(&netlist, &bench);
+        assert!((r.node_voltages["n5"] - 4.0).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn a_named_supply_gives_way_through_a_tie_or_a_chain_of_sources() {
+    let mut netlist = named_5v();
+    netlist
+        .components
+        .push(Component::new("r2", ComponentKind::Resistor).with_value("1k"));
+    netlist.nets.push(Net::new("x", [("r2", "1")]));
+    netlist.nets[1].pins.push(Pin::new("r2", "2"));
+
+    // A tie to a net the bench drives, added after the supplies.
+    let tied = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_source(BenchSource::voltage("vs", "x", 3.0))
+        .with_tie("n5", "x");
+    assert_eq!(source_ids(&netlist.to_circuit(&tied).unwrap()), ["vs"]);
+    assert!((op(&netlist, &tied).node_voltages["n5"] - 3.0).abs() < 1e-12);
+
+    // A source from `x` to the named net, with `x` itself driven: the named
+    // net's voltage is already fixed.
+    let chained = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_source(BenchSource::voltage("vx", "x", 1.0))
+        .with_source(BenchSource::voltage("vd", "n5", 2.0).with_minus("x"));
+    assert_eq!(
+        source_ids(&netlist.to_circuit(&chained).unwrap()),
+        ["vx", "vd"]
+    );
+    assert!((op(&netlist, &chained).node_voltages["n5"] - 3.0).abs() < 1e-12);
+
+    // A tie to ground.
+    let grounded = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_tie("n5", "gnd");
+    assert!(source_ids(&netlist.to_circuit(&grounded).unwrap()).is_empty());
+}
+
+#[test]
+fn tied_nets_named_for_one_supply_get_one_source() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("r1", ComponentKind::Resistor).with_value("1k"),
+            Component::new("r2", ComponentKind::Resistor).with_value("1k"),
+        ],
+        nets: vec![
+            Net::new("a", [("r1", "1")]).with_name("3V3"),
+            Net::new("b", [("r2", "1")]).with_name("+3.3V"),
+            Net::new("gnd", [("r1", "2"), ("r2", "2")]),
+        ],
+    };
+    let bench = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_tie("a", "b");
+    assert_eq!(
+        source_ids(&netlist.to_circuit(&bench).unwrap()),
+        ["supply:a"]
+    );
+    let r = op(&netlist, &bench);
+    assert!((r.current("r2").unwrap().abs() - 3.3e-3).abs() < 1e-12);
+
+    // Untied, each keeps its own.
+    let apart = Bench::new("gnd").with_supplies_from_net_names(&netlist);
+    assert_eq!(
+        source_ids(&netlist.to_circuit(&apart).unwrap()),
+        ["supply:a", "supply:b"]
+    );
+}
+
+#[test]
+fn tied_nets_named_for_two_voltages_are_refused() {
+    let netlist = Netlist {
+        components: vec![
+            Component::new("r1", ComponentKind::Resistor).with_value("1k"),
+            Component::new("r2", ComponentKind::Resistor).with_value("1k"),
+        ],
+        nets: vec![
+            Net::new("a", [("r1", "1")]).with_name("3V3"),
+            Net::new("b", [("r2", "1")]).with_name("5V"),
+            Net::new("gnd", [("r1", "2"), ("r2", "2")]),
+        ],
+    };
+    let bench = Bench::new("gnd")
+        .with_supplies_from_net_names(&netlist)
+        .with_tie("b", "a");
+    assert_eq!(
+        err(&netlist, &bench),
+        ImportError::ConflictingSupplies {
+            node: "a".into(),
+            first: "supply:a".into(),
+            first_volts: 3.3,
+            second: "supply:b".into(),
+            second_volts: 5.0,
+        }
+    );
+    // The bench's own source on the group settles it.
+    let driven = bench.with_source(BenchSource::voltage("vs", "a", 5.0));
+    assert_eq!(source_ids(&netlist.to_circuit(&driven).unwrap()), ["vs"]);
+}
+
+/// The divider, with r3 wired at one end only and u1 excluded from
+/// simulation (a black box across `out` and `gnd`).
+fn half_wired() -> Netlist {
+    let mut n = divider("1k", "1k");
+    n.components
+        .push(Component::new("r3", ComponentKind::Resistor).with_value("1k"));
+    n.components
+        .push(Component::new("u1", ComponentKind::BlackBox));
+    n.nets[1].pins.push(Pin::new("r3", "1"));
+    n.nets[1].pins.push(Pin::new("u1", "1"));
+    n.nets[2].pins.push(Pin::new("u1", "2"));
+    n
+}
+
+#[test]
+fn a_half_wired_part_is_refused_by_default() {
+    assert_eq!(
+        half_wired()
+            .to_circuit_with(&gnd_bench(), &ImportOptions::new())
+            .expect_err("refused"),
+        ImportError::Unconnected {
+            component: "r3".into(),
+            terminal: "2".into()
+        }
+    );
+}
+
+#[test]
+fn skip_leaves_a_half_wired_part_out_and_simulates_the_rest() {
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&half_wired(), &gnd_bench(), &options).expect("simulates");
+    let Simulation::OperatingPoint(r) = &out.result else {
+        panic!()
+    };
+    // r3 carries nothing, so the divider is undisturbed.
+    assert!((r.node_voltages["out"] - 0.5).abs() < 1e-9);
+    assert!(r.component_results.iter().all(|c| c.id != "r3"));
+
+    let imported = &out.circuit;
+    assert_eq!(
+        imported.skipped,
+        vec![SkippedPart {
+            component: "r3".into(),
+            unconnected: vec!["2".into()],
+        }]
+    );
+    assert_eq!(
+        imported.warnings,
+        vec![ImportWarning {
+            component: "r3".into(),
+            message: "left out of the simulation: terminal \"2\" on no net".into(),
+        }]
+    );
+    // The excluded part is a black box, reported as one.
+    assert_eq!(imported.black_boxes.len(), 1);
+    assert_eq!(imported.black_boxes[0].component, "u1");
+    assert!(imported.high_impedance.is_empty());
+}
+
+#[test]
+fn a_part_with_no_terminals_wired_is_skipped_too() {
+    let mut n = divider("1k", "1k");
+    n.components.push(Component::new("q1", ComponentKind::Npn));
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let imported = n.to_circuit_with(&gnd_bench(), &options).expect("builds");
+    assert_eq!(
+        imported.skipped,
+        vec![SkippedPart {
+            component: "q1".into(),
+            unconnected: vec!["base".into(), "collector".into(), "emitter".into()],
+        }]
+    );
+    assert!(imported.warnings[0]
+        .message
+        .contains("terminals \"base\", \"collector\", \"emitter\""));
+}
+
+#[test]
+fn a_skipped_part_leaves_its_net_to_the_high_impedance_tie() {
+    // r3 hangs off its own net `tap`, which only it reaches: skipped, the
+    // net would float, so it's tied as a black box's would be.
+    let mut n = divider("1k", "1k");
+    n.components
+        .push(Component::new("r3", ComponentKind::Resistor).with_value("1k"));
+    n.components.push(Component::new("q1", ComponentKind::Npn));
+    n.nets.push(Net::new("tap", [("q1", "base"), ("r3", "1")]));
+    n.nets[1].pins.push(Pin::new("r3", "2"));
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &gnd_bench(), &options).expect("simulates");
+    assert_eq!(out.circuit.skipped[0].component, "q1");
+    assert_eq!(out.circuit.high_impedance.len(), 1);
+    assert_eq!(out.circuit.high_impedance[0].node, "tap");
+}
+
+#[test]
+fn skip_leaves_out_a_half_wired_unit_and_keeps_the_other() {
+    let n = Netlist {
+        components: vec![
+            Component::new("r1", ComponentKind::Resistor).with_value("1k"),
+            Component::new("r2", ComponentKind::Resistor).with_value("1k"),
+            Component::new("u1", ComponentKind::DualOpAmp),
+        ],
+        nets: vec![
+            Net::new("in", [("r1", "1"), ("u1", "v+")]),
+            Net::new(
+                "mid",
+                [("r1", "2"), ("r2", "1"), ("u1", "a_in+"), ("u1", "b_in+")],
+            ),
+            Net::new("buf", [("u1", "a_in-"), ("u1", "a_out")]),
+            Net::new("gnd", [("r2", "2"), ("u1", "v-")]),
+        ],
+    };
+    let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "in", 10.0));
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &bench, &options).expect("simulates");
+    let Simulation::OperatingPoint(r) = &out.result else {
+        panic!()
+    };
+    assert!(
+        (r.node_voltages["buf"] - 5.0).abs() < 1e-3,
+        "{}",
+        r.node_voltages["buf"]
+    );
+    assert_eq!(
+        out.circuit.skipped,
+        vec![SkippedPart {
+            component: "u1.b".into(),
+            unconnected: vec!["in-".into(), "out".into()],
+        }]
+    );
+    assert!(r.component_results.iter().any(|c| c.id == "u1.a"));
+    assert!(r.component_results.iter().all(|c| c.id != "u1.b"));
+    assert!(n.to_circuit_with(&bench, &ImportOptions::new()).is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn the_unconnected_option_reads_from_json() {
+    let options: ImportOptions = serde_json::from_str(r#"{"unconnected":"skip"}"#).unwrap();
+    assert_eq!(options.unconnected, UnconnectedTerminals::Skip);
+    assert_eq!(
+        ImportOptions::new().unconnected,
+        UnconnectedTerminals::Error
+    );
+}
+
+#[test]
+fn skip_ties_open_ends_a_schematic_leaves() {
+    // r3 runs from `out` to `stub`, a net nothing else reaches; r4 and r5
+    // form an island not yet wired to anything.
+    let mut n = divider("1k", "1k");
+    for id in ["r3", "r4", "r5"] {
+        n.components
+            .push(Component::new(id, ComponentKind::Resistor).with_value("1k"));
+    }
+    n.nets[1].pins.push(Pin::new("r3", "1"));
+    n.nets.push(Net::new("stub", [("r3", "2")]));
+    n.nets.push(Net::new("x", [("r4", "1"), ("r5", "1")]));
+    n.nets.push(Net::new("y", [("r4", "2"), ("r5", "2")]));
+    assert!(simulate(&n, &gnd_bench()).is_err());
+
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &gnd_bench(), &options).expect("simulates");
+    let Simulation::OperatingPoint(r) = &out.result else {
+        panic!()
+    };
+    assert!((r.node_voltages["out"] - 0.5).abs() < 1e-9);
+    let tied: Vec<&str> = out
+        .circuit
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    assert_eq!(tied, ["stub", "x", "y"]);
+    assert!(out.circuit.high_impedance.iter().all(|h| h.pins.is_empty()));
+    assert!(out.circuit.skipped.is_empty());
+}
+
+#[test]
+fn skip_ties_a_group_whose_only_way_to_ground_is_a_capacitor() {
+    // A second divider, half drawn: r3 and r4 from `top` down to `bot`,
+    // which reaches ground only through the decoupling cap c1. Open at
+    // DC, the cap leaves `mid` and `bot` floating in the operating point.
+    let mut n = divider("1k", "1k");
+    for id in ["r3", "r4"] {
+        n.components
+            .push(Component::new(id, ComponentKind::Resistor).with_value("1k"));
+    }
+    n.components
+        .push(Component::new("c1", ComponentKind::Capacitor).with_value("100n"));
+    n.nets.push(Net::new("top", [("r3", "1")]));
+    n.nets.push(Net::new("mid", [("r3", "2"), ("r4", "1")]));
+    n.nets.push(Net::new("bot", [("r4", "2"), ("c1", "1")]));
+    n.nets[2].pins.push(Pin::new("c1", "2"));
+
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &gnd_bench(), &options).expect("simulates");
+    let Simulation::OperatingPoint(r) = &out.result else {
+        panic!()
+    };
+    assert!((r.node_voltages["out"] - 0.5).abs() < 1e-9);
+    let tied: Vec<&str> = out
+        .circuit
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    assert_eq!(tied, ["bot", "mid", "top"]);
+}
+
+#[test]
+fn skip_ties_a_gate_driven_only_through_a_capacitor() {
+    // m1's gate is AC-coupled from `out` through c1: the gate draws no
+    // current, so `g` has no DC path to ground and is tied.
+    let mut n = divider("1k", "1k");
+    n.components
+        .push(Component::new("c1", ComponentKind::Capacitor).with_value("100n"));
+    n.components.push(Component::new("m1", ComponentKind::Nmos));
+    n.nets[1].pins.push(Pin::new("c1", "1"));
+    n.nets.push(Net::new("g", [("c1", "2"), ("m1", "gate")]));
+    n.nets[0].pins.push(Pin::new("m1", "drain"));
+    n.nets[2].pins.push(Pin::new("m1", "source"));
+
+    let options = ImportOptions::new().with_unconnected(UnconnectedTerminals::Skip);
+    let out = simulate_with(&n, &gnd_bench(), &options).expect("simulates");
+    let tied: Vec<&str> = out
+        .circuit
+        .high_impedance
+        .iter()
+        .map(|h| h.node.as_str())
+        .collect();
+    assert_eq!(tied, ["g"]);
+}
+
+#[cfg(feature = "spice")]
+mod subckt_models {
+    use super::*;
+
+    /// A vendor-style op-amp: input resistance, a gain stage with a pole,
+    /// output resistance and clamp diodes to the rails. Ports in+ in- out
+    /// v+ v-.
+    const OPAMP: &str = "
+* vendor op-amp macromodel
+.subckt OPX inp inn out vcc vee
+Rin inp inn 2meg
+G1 0 n1 inp inn 1m
+R1 n1 0 100meg
+C1 n1 0 15n
+E1 n2 0 n1 0 1
+Ro n2 out 50
+D1 out vcc dclamp
+D2 vee out dclamp
+.model dclamp D(IS=1e-14)
+.ends OPX
+";
+
+    /// A regulator: 3.3 V out, or the input less 1 V when that's lower.
+    /// Ports in out gnd.
+    const REG: &str = "
+.subckt reg33 in out gnd
+B1 out gnd V = min(V(in, gnd) - 1, 3.3)
+.ends
+";
+
+    /// An inverting amplifier, gain −10, on ±12 V rails, built around U1.
+    fn inverting_amp(model: SubcktModel) -> Netlist {
+        Netlist {
+            components: vec![
+                Component::new("R1", ComponentKind::Resistor).with_value("10k"),
+                Component::new("R2", ComponentKind::Resistor).with_value("100k"),
+                Component::new("U1", ComponentKind::OpAmp).with_model(Model::Subckt(model)),
+            ],
+            nets: vec![
+                Net::new("in", [("R1", "1")]),
+                Net::new("inv", [("R1", "2"), ("R2", "1"), ("U1", "-")]),
+                Net::new("out", [("R2", "2"), ("U1", "OUT")]),
+                Net::new("vcc", [("U1", "V+")]),
+                Net::new("vee", [("U1", "V-")]),
+                Net::new("gnd", [("U1", "+")]),
+            ],
+        }
+    }
+
+    fn amp_bench() -> Bench {
+        Bench::new("gnd")
+            .with_source(BenchSource::voltage("vin", "in", 0.5))
+            .with_source(BenchSource::voltage("vp", "vcc", 12.0))
+            .with_source(BenchSource::voltage("vn", "vee", -12.0))
+    }
+
+    fn opamp_model() -> SubcktModel {
+        SubcktModel::new(OPAMP, "opx", ["+", "-", "OUT", "V+", "V-"])
+    }
+
+    fn deck_op(deck: &str) -> crate::SimulationResult {
+        let parsed = crate::spice::parse_str(deck).expect("deck parses");
+        crate::solve_circuit(&parsed.circuit).expect("deck solves")
+    }
+
+    #[test]
+    fn a_vendor_op_amp_matches_the_same_deck_run_as_spice() {
+        let r = op(&inverting_amp(opamp_model()), &amp_bench());
+        let deck = format!(
+            "inverting amp\n{OPAMP}\nVIN in 0 0.5\nVP vcc 0 12\nVN vee 0 -12\n\
+             R1 in inv 10k\nR2 inv out 100k\nXU1 0 inv out vcc vee OPX\n.end\n"
+        );
+        let spice = deck_op(&deck);
+        // Two separate Newton solves: equal to within their tolerance.
+        assert!((r.node_voltages["out"] - spice.node_voltages["out"]).abs() < 1e-6);
+        assert!(
+            (r.node_voltages["out"] + 5.0).abs() < 1e-2,
+            "{}",
+            r.node_voltages["out"]
+        );
+        // Internal nodes live under the component's id.
+        assert!(
+            r.node_voltages.contains_key("U1.n1"),
+            "{:?}",
+            r.node_voltages.keys()
+        );
+    }
+
+    #[test]
+    fn a_regulator_model_attaches_by_terminal_names() {
+        let model = SubcktModel::new(REG, "REG33", ["VIN", "VOUT", "GND"]);
+        let netlist = Netlist {
+            components: vec![
+                Component::new("U2", ComponentKind::Regulator).with_model(Model::Subckt(model)),
+                Component::new("RL", ComponentKind::Resistor).with_value("100"),
+            ],
+            nets: vec![
+                Net::new("vin", [("U2", "1")]),
+                Net::new("vout", [("U2", "3"), ("RL", "1")]),
+                Net::new("gnd", [("U2", "2"), ("RL", "2")]),
+            ],
+        };
+        let options = ImportOptions::new()
+            .with_terminal_names("U2", [("1", "VIN"), ("2", "GND"), ("3", "VOUT")]);
+        for (vin, want) in [(5.0, 3.3), (3.8, 2.8)] {
+            let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "vin", vin));
+            let out = simulate_with(&netlist, &bench, &options).expect("simulates");
+            let Simulation::OperatingPoint(r) = &out.result else {
+                panic!()
+            };
+            let deck =
+                format!("reg\n{REG}\nV1 vin 0 {vin}\nXU2 vin vout 0 reg33\nRL vout 0 100\n.end\n");
+            let spice = deck_op(&deck);
+            assert!((r.node_voltages["vout"] - want).abs() < 1e-6);
+            assert!((r.node_voltages["vout"] - spice.node_voltages["vout"]).abs() < 1e-9);
+            assert_eq!(out.circuit.model_source("U2"), Some(ModelSource::Model));
+        }
+    }
+
+    /// Under `Skip` every net is checked for an open end. A subcircuit's
+    /// pins are element terminals like any other: the regulator drives
+    /// `vout`, so the net isn't tied to ground or reported as floating.
+    #[test]
+    fn a_net_a_subcircuit_drives_is_not_high_impedance() {
+        let model = SubcktModel::new(REG, "REG33", ["VIN", "VOUT", "GND"]);
+        let netlist = Netlist {
+            components: vec![
+                Component::new("U2", ComponentKind::Regulator).with_model(Model::Subckt(model)),
+                Component::new("RL", ComponentKind::Resistor).with_value("100"),
+            ],
+            nets: vec![
+                Net::new("vin", [("U2", "1")]),
+                Net::new("vout", [("U2", "3"), ("RL", "1")]),
+                Net::new("gnd", [("U2", "2"), ("RL", "2")]),
+            ],
+        };
+        let options = ImportOptions::new()
+            .with_terminal_names("U2", [("1", "VIN"), ("2", "GND"), ("3", "VOUT")])
+            .with_unconnected(UnconnectedTerminals::Skip);
+        let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "vin", 5.0));
+        let out = simulate_with(&netlist, &bench, &options).expect("simulates");
+        assert_eq!(out.circuit.high_impedance, vec![]);
+        let Simulation::OperatingPoint(r) = &out.result else {
+            panic!()
+        };
+        assert!((r.node_voltages["vout"] - 3.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_pin_that_isnt_a_terminal_is_named_in_the_error() {
+        let model = SubcktModel::new(OPAMP, "OPX", ["+", "-", "OUTPUT", "V+", "V-"]);
+        assert_eq!(
+            inverting_amp(model).to_circuit(&amp_bench()).unwrap_err(),
+            ImportError::SubcktPin {
+                component: "U1".into(),
+                pin: "OUTPUT".into(),
+                problem: "isn't a terminal of the component".into(),
+            }
+        );
+        let twice = SubcktModel::new(OPAMP, "OPX", ["+", "-", "OUT", "V+", "+"]);
+        assert!(matches!(
+            inverting_amp(twice).to_circuit(&amp_bench()).unwrap_err(),
+            ImportError::SubcktPin { pin, .. } if pin == "+"
+        ));
+    }
+
+    #[test]
+    fn a_map_of_the_wrong_length_or_name_is_refused() {
+        let short = SubcktModel::new(OPAMP, "OPX", ["+", "-", "OUT", "V+"]);
+        let e = inverting_amp(short).to_circuit(&amp_bench()).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "component \"U1\": its subcircuit model .subckt \"OPX\" has 5 ports, and the pin \
+             map gives 4"
+        );
+        let missing = SubcktModel::new(OPAMP, "OPA2134", ["+", "-", "OUT", "V+", "V-"]);
+        let e = inverting_amp(missing).to_circuit(&amp_bench()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("has no .subckt \"OPA2134\" (it has \"OPX\")"),
+            "{e}"
+        );
+        let broken = SubcktModel::new(".subckt bad a b\nR1 a b\n.ends", "bad", ["+", "-"]);
+        let e = inverting_amp(broken).to_circuit(&amp_bench()).unwrap_err();
+        assert!(matches!(e, ImportError::SubcktModel { .. }), "{e}");
+    }
+
+    #[test]
+    fn an_unconnected_pin_is_refused_or_skipped() {
+        let mut n = inverting_amp(opamp_model());
+        n.nets.retain(|net| net.id != "vee");
+        assert_eq!(
+            n.to_circuit(&amp_bench().with_source(BenchSource::voltage("vx", "in", 0.0)))
+                .unwrap_err(),
+            ImportError::UnknownNet {
+                item: "vn".into(),
+                net: "vee".into(),
+                problem: "isn't in the netlist".into(),
+            }
+        );
+        let bench = Bench::new("gnd")
+            .with_source(BenchSource::voltage("vin", "in", 0.5))
+            .with_source(BenchSource::voltage("vp", "vcc", 12.0));
+        let options = ImportOptions::new().with_terminal_names(
+            "U1",
+            [
+                ("+", "+"),
+                ("-", "-"),
+                ("OUT", "OUT"),
+                ("V+", "V+"),
+                ("V-", "V-"),
+            ],
+        );
+        assert_eq!(
+            n.to_circuit_with(&bench, &options).unwrap_err(),
+            ImportError::Unconnected {
+                component: "U1".into(),
+                terminal: "V-".into(),
+            }
+        );
+        let skip = options.with_unconnected(UnconnectedTerminals::Skip);
+        let imported = n.to_circuit_with(&bench, &skip).expect("skips");
+        assert_eq!(imported.skipped[0].component, "U1");
+        assert!(imported.circuit.instances.is_empty());
+    }
+
+    #[test]
+    fn two_parts_with_the_same_model_each_get_their_own_copy() {
+        let mut n = inverting_amp(opamp_model());
+        n.components.push(
+            Component::new("U3", ComponentKind::OpAmp).with_model(Model::Subckt(opamp_model())),
+        );
+        n.nets.push(Net::new("buf", [("U3", "-"), ("U3", "OUT")]));
+        for net in &mut n.nets {
+            match net.id.as_str() {
+                "out" => net.pins.push(Pin::new("U3", "+")),
+                "vcc" => net.pins.push(Pin::new("U3", "V+")),
+                "vee" => net.pins.push(Pin::new("U3", "V-")),
+                _ => {}
+            }
+        }
+        let r = op(&n, &amp_bench());
+        assert!((r.node_voltages["buf"] - r.node_voltages["out"]).abs() < 1e-3);
+        let imported = n.to_circuit(&amp_bench()).unwrap();
+        assert_eq!(imported.circuit.blocks.len(), 2);
+    }
+
+    /// The op-amp model with its internal node `n1` named `to` instead.
+    fn opamp_with_internal(to: &str) -> SubcktModel {
+        let text = OPAMP.replace(" n1 ", &format!(" {to} "));
+        SubcktModel::new(text, "opx", ["+", "-", "OUT", "V+", "V-"])
+    }
+
+    /// A model's internal node named like the circuit's ground net stays
+    /// the model's own: the results are the model's with the node renamed.
+    #[test]
+    fn a_model_node_named_like_the_ground_net_is_not_ground() {
+        let on_ground_one = |model: SubcktModel| {
+            let mut n = inverting_amp(model);
+            for net in &mut n.nets {
+                if net.id == "gnd" {
+                    net.id = "1".into();
+                }
+            }
+            let bench = Bench::new("1")
+                .with_source(BenchSource::voltage("vin", "in", 0.5))
+                .with_source(BenchSource::voltage("vp", "vcc", 12.0))
+                .with_source(BenchSource::voltage("vn", "vee", -12.0));
+            op(&n, &bench).node_voltages["out"]
+        };
+        let named_one = on_ground_one(opamp_with_internal("1"));
+        let by_hand = on_ground_one(opamp_with_internal("n1"));
+        assert!(
+            (named_one - by_hand).abs() < 1e-9,
+            "{named_one} vs {by_hand}"
+        );
+        assert!((by_hand + 5.0).abs() < 1e-2, "{by_hand}");
+    }
+
+    /// A model's internal node named like another model's `.global` stays
+    /// the model's own.
+    #[test]
+    fn a_model_node_named_like_another_models_global_is_not_that_global() {
+        const BIAS: &str = "
+.subckt bias p
+.global vref
+Ra p vref 1k
+Rb vref 0 1k
+.ends
+";
+        let with_bias = |model: SubcktModel| {
+            let mut n = inverting_amp(model);
+            n.components.push(
+                Component::new("U2", ComponentKind::BlackBox)
+                    .with_model(Model::Subckt(SubcktModel::new(BIAS, "bias", ["1"]))),
+            );
+            for net in &mut n.nets {
+                if net.id == "vcc" {
+                    net.pins.push(Pin::new("U2", "1"));
+                }
+            }
+            let r = op(&n, &amp_bench());
+            (r.node_voltages["out"], r.node_voltages["vref"])
+        };
+        let named_vref = with_bias(opamp_with_internal("vref"));
+        let by_hand = with_bias(opamp_with_internal("n1"));
+        assert!(
+            (named_vref.0 - by_hand.0).abs() < 1e-9,
+            "{named_vref:?} vs {by_hand:?}"
+        );
+        assert!(
+            (named_vref.1 - by_hand.1).abs() < 1e-9,
+            "{named_vref:?} vs {by_hand:?}"
+        );
+        assert!((by_hand.1 - 6.0).abs() < 1e-6, "{by_hand:?}");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_subckt_model_reads_from_json() {
+        let json =
+            r#"{"type": "subckt", "text": ".subckt b a\n.ends", "name": "b", "pins": ["1"]}"#;
+        let model: Model = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            model,
+            Model::Subckt(SubcktModel::new(".subckt b a\n.ends", "b", ["1"]))
+        );
+    }
 }

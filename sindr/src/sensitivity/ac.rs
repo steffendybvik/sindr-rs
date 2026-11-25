@@ -1,5 +1,7 @@
 //! AC sensitivity, as SPICE's `.sens output ac ...`.
 
+use crate::element::{Capacitor, Cccs, Ccvs, Inductor, Resistor, Vccs, Vcvs, VoltageSource};
+use crate::handle::{ComponentId, NodeId};
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -14,6 +16,7 @@ use crate::transfer_function::{Port, TfOutput};
 
 /// AC sensitivity configuration. Build one with [`AcSensConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct AcSensConfig {
@@ -45,25 +48,29 @@ impl AcSensConfig {
 /// The sensitivity of the small-signal output to one parameter, at one
 /// frequency.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct AcSensEntry {
     /// Id of the component.
-    pub component_id: String,
+    pub component_id: ComponentId,
     /// Which of its parameters.
     pub parameter: SensParameter,
     /// The parameter's value, in its own unit.
     pub value: f64,
     /// d(output)/d(parameter), a phasor: the output's unit (V or A) per the
     /// parameter's unit.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub sensitivity: Complex64,
     /// Change in the output phasor for a 1 % rise in the parameter:
     /// `sensitivity · value / 100`.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub per_percent: Complex64,
 }
 
 /// The output and its sensitivities at one frequency.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct AcSensPoint {
@@ -71,6 +78,7 @@ pub struct AcSensPoint {
     pub frequency: f64,
     /// The output phasor (V or A), as [`solve_ac`](crate::ac_analysis::solve_ac)
     /// gives it.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub output: Complex64,
     /// One entry per supported parameter, in circuit order.
     pub entries: Vec<AcSensEntry>,
@@ -79,12 +87,18 @@ pub struct AcSensPoint {
 impl AcSensPoint {
     /// The entry for the component `id`: its first, for a device with
     /// several parameters (see [`get_parameter`](Self::get_parameter)).
-    pub fn get(&self, id: &str) -> Option<&AcSensEntry> {
+    pub fn get(&self, id: impl AsRef<str>) -> Option<&AcSensEntry> {
+        let id = id.as_ref();
         self.entries.iter().find(|e| e.component_id == id)
     }
 
     /// The entry for `parameter` of the component `id`.
-    pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&AcSensEntry> {
+    pub fn get_parameter(
+        &self,
+        id: impl AsRef<str>,
+        parameter: SensParameter,
+    ) -> Option<&AcSensEntry> {
+        let id = id.as_ref();
         self.entries
             .iter()
             .find(|e| e.component_id == id && e.parameter == parameter)
@@ -93,6 +107,7 @@ impl AcSensPoint {
 
 /// Result of an AC sensitivity analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct AcSensResult {
@@ -105,7 +120,8 @@ pub struct AcSensResult {
 impl AcSensResult {
     /// `(frequency, sensitivity)` of `parameter` of the component `id` at
     /// every frequency where it has an entry.
-    pub fn curve(&self, id: &str, parameter: SensParameter) -> Vec<(f64, Complex64)> {
+    pub fn curve(&self, id: impl AsRef<str>, parameter: SensParameter) -> Vec<(f64, Complex64)> {
+        let id = id.as_ref();
         self.points
             .iter()
             .filter_map(|p| {
@@ -140,10 +156,10 @@ impl AcSensResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if `config.ac` is invalid (as for
-///   [`solve_ac`](crate::ac_analysis::solve_ac)), if the output node is not
-///   in the circuit, or a current output does not name an independent
-///   voltage source
+/// - [`SimError::UnknownNode`] if the output node is not in the circuit
+/// - [`SimError::InvalidConfig`] if `config.ac` is invalid (as for
+///   [`solve_ac`](crate::ac_analysis::solve_ac)), or a current output does
+///   not name an independent voltage source
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the small-signal system is singular at
 ///   any frequency
@@ -154,28 +170,29 @@ impl AcSensResult {
 /// use num_complex::Complex64;
 /// use sindr::ac_analysis::AcConfig;
 /// use sindr::{solve_ac_sensitivity, AcSensConfig, Circuit, CircuitElement, SensParameter, TfOutput};
+/// use sindr::element::{Capacitor, Resistor, VoltageSource};
 ///
 /// // RC low-pass: V(out) = 1 / (1 + jωRC).
 /// let (r, c) = (1_000.0, 1e-6);
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["in".into(), "0".into()],
 ///             voltage: 0.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["in".into(), "out".into()],
 ///             resistance: r,
-///         },
-///         CircuitElement::Capacitor {
+///         }),
+///         CircuitElement::Capacitor(Capacitor {
 ///             id: "C1".into(),
 ///             nodes: ["out".into(), "0".into()],
 ///             capacitance: c,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -190,6 +207,7 @@ impl AcSensResult {
 /// assert!((got.sensitivity - want).norm() < 1e-12);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_ac_sensitivity(
     circuit: &Circuit,
     config: &AcSensConfig,
@@ -231,8 +249,8 @@ pub(crate) fn solve_ac_sensitivity_with(
         let lambda = system.solve_transpose(&c)?;
 
         let at = |v: &DVector<Complex64>, n: Option<usize>| n.map_or(zero, |i| v[i]);
-        let node = |name: &String| node_map.index(name);
-        let across = |v: &DVector<Complex64>, nodes: &[String; 2]| {
+        let node = |name: &str| node_map.index(name);
+        let across = |v: &DVector<Complex64>, nodes: &[NodeId; 2]| {
             at(v, node(&nodes[0])) - at(v, node(&nodes[1]))
         };
         let branch = |id: &str| small_signal.vsource_branch_index(id).map(|k| num_nodes + k);
@@ -240,7 +258,7 @@ pub(crate) fn solve_ac_sensitivity_with(
         let mut entries = Vec::new();
         let mut push = |id: &str, parameter, value: f64, sensitivity: Complex64| {
             entries.push(AcSensEntry {
-                component_id: id.to_string(),
+                component_id: id.into(),
                 parameter,
                 value,
                 sensitivity,
@@ -259,15 +277,15 @@ pub(crate) fn solve_ac_sensitivity_with(
                 push(component.id(), d.parameter, d.value, -s);
             }
             // The admittance derivative ∂Y/∂p of a two-terminal element.
-            let two_terminal = |nodes: &[String; 2], dy: Complex64| {
+            let two_terminal = |nodes: &[NodeId; 2], dy: Complex64| {
                 -across(&lambda, nodes) * dy * across(&x, nodes)
             };
             let (id, parameter, value, sensitivity) = match component {
-                CircuitElement::Resistor {
+                CircuitElement::Resistor(Resistor {
                     id,
                     nodes,
                     resistance,
-                } => {
+                }) => {
                     let dy = Complex64::new(-1.0 / (resistance * resistance), 0.0);
                     (
                         id,
@@ -276,11 +294,11 @@ pub(crate) fn solve_ac_sensitivity_with(
                         two_terminal(nodes, dy),
                     )
                 }
-                CircuitElement::Capacitor {
+                CircuitElement::Capacitor(Capacitor {
                     id,
                     nodes,
                     capacitance,
-                } => {
+                }) => {
                     let dy = Complex64::new(0.0, omega);
                     (
                         id,
@@ -289,18 +307,18 @@ pub(crate) fn solve_ac_sensitivity_with(
                         two_terminal(nodes, dy),
                     )
                 }
-                CircuitElement::Inductor {
+                CircuitElement::Inductor(Inductor {
                     id,
                     nodes,
                     inductance,
                     ..
-                } => {
+                }) => {
                     if matches!(
                         original,
-                        CircuitElement::Inductor {
+                        CircuitElement::Inductor(Inductor {
                             saturation: Some(_),
                             ..
-                        }
+                        })
                     ) {
                         continue;
                     }
@@ -317,7 +335,7 @@ pub(crate) fn solve_ac_sensitivity_with(
                         two_terminal(nodes, dy),
                     )
                 }
-                CircuitElement::VoltageSource { id, .. } if *id == ac.source_id => {
+                CircuitElement::VoltageSource(VoltageSource { id, .. }) if *id == ac.source_id => {
                     let Some(k) = source_branch else { continue };
                     (
                         id,
@@ -326,42 +344,42 @@ pub(crate) fn solve_ac_sensitivity_with(
                         lambda[k] * stimulus,
                     )
                 }
-                CircuitElement::Vcvs {
+                CircuitElement::Vcvs(Vcvs {
                     id,
                     control_nodes,
                     gain,
                     ..
-                } => {
+                }) => {
                     let Some(k) = branch(id) else { continue };
                     let s = lambda[k] * across(&x, control_nodes);
                     (id, SensParameter::VoltageGain, *gain, s)
                 }
-                CircuitElement::Vccs {
+                CircuitElement::Vccs(Vccs {
                     id,
                     nodes,
                     control_nodes,
                     gm,
-                } => {
+                }) => {
                     let s = -across(&lambda, nodes) * across(&x, control_nodes);
                     (id, SensParameter::Transconductance, *gm, s)
                 }
-                CircuitElement::Ccvs {
+                CircuitElement::Ccvs(Ccvs {
                     id,
                     control_source,
                     rm,
                     ..
-                } => {
+                }) => {
                     let (Some(k), Some(ctrl)) = (branch(id), branch(control_source)) else {
                         continue;
                     };
                     (id, SensParameter::Transresistance, *rm, lambda[k] * x[ctrl])
                 }
-                CircuitElement::Cccs {
+                CircuitElement::Cccs(Cccs {
                     id,
                     nodes,
                     control_source,
                     alpha,
-                } => {
+                }) => {
                     let Some(ctrl) = branch(control_source) else {
                         continue;
                     };
@@ -391,6 +409,7 @@ pub(crate) fn solve_ac_sensitivity_with(
 mod tests {
     use super::*;
     use crate::circuit::{BjtModel, DiodeModel};
+    use crate::element::{Bjt, Diode, Mosfet};
     use sindr_devices::bjt::BjtKind;
     use sindr_devices::mosfet::{MosfetKind, MosfetParams};
     use SensParameter as P;
@@ -402,14 +421,20 @@ mod tests {
             panic!("no {id}");
         };
         match (element, parameter) {
-            (CircuitElement::Resistor { resistance, .. }, P::Resistance) => *resistance = x,
-            (CircuitElement::Capacitor { capacitance, .. }, P::Capacitance) => *capacitance = x,
-            (CircuitElement::Inductor { inductance, .. }, P::Inductance) => *inductance = x,
-            (CircuitElement::Vcvs { gain, .. }, P::VoltageGain) => *gain = x,
-            (CircuitElement::Vccs { gm, .. }, P::Transconductance) => *gm = x,
-            (CircuitElement::Ccvs { rm, .. }, P::Transresistance) => *rm = x,
-            (CircuitElement::Cccs { alpha, .. }, P::CurrentGain) => *alpha = x,
-            (CircuitElement::Diode { model, .. }, p) => {
+            (CircuitElement::Resistor(Resistor { resistance, .. }), P::Resistance) => {
+                *resistance = x
+            }
+            (CircuitElement::Capacitor(Capacitor { capacitance, .. }), P::Capacitance) => {
+                *capacitance = x
+            }
+            (CircuitElement::Inductor(Inductor { inductance, .. }), P::Inductance) => {
+                *inductance = x
+            }
+            (CircuitElement::Vcvs(Vcvs { gain, .. }), P::VoltageGain) => *gain = x,
+            (CircuitElement::Vccs(Vccs { gm, .. }), P::Transconductance) => *gm = x,
+            (CircuitElement::Ccvs(Ccvs { rm, .. }), P::Transresistance) => *rm = x,
+            (CircuitElement::Cccs(Cccs { alpha, .. }), P::CurrentGain) => *alpha = x,
+            (CircuitElement::Diode(Diode { model, .. }), p) => {
                 let m = model.get_or_insert_with(DiodeModel::default);
                 match p {
                     P::SaturationCurrent => m.is = x,
@@ -420,8 +445,8 @@ mod tests {
                     _ => panic!("diode {p:?}"),
                 }
             }
-            (CircuitElement::Bjt { bf, .. }, P::ForwardBeta) => *bf = x,
-            (CircuitElement::Bjt { model, .. }, p) => {
+            (CircuitElement::Bjt(Bjt { bf, .. }), P::ForwardBeta) => *bf = x,
+            (CircuitElement::Bjt(Bjt { model, .. }), p) => {
                 let m = model.get_or_insert_with(BjtModel::default);
                 match p {
                     P::SaturationCurrent => m.is = x,
@@ -432,7 +457,7 @@ mod tests {
                     _ => panic!("BJT {p:?}"),
                 }
             }
-            (CircuitElement::Mosfet { params, .. }, p) => match p {
+            (CircuitElement::Mosfet(Mosfet { params, .. }), p) => match p {
                 P::TransconductanceParameter => params.kp = x,
                 P::ThresholdVoltage => params.vto = x,
                 P::ChannelLengthModulation => params.lambda = x,
@@ -484,7 +509,7 @@ mod tests {
                 reference: None,
             } = &config.output
             {
-                let want = ac_point.node_voltages[node];
+                let want = ac_point.node_voltages[node.as_str()];
                 assert!(
                     (point.output - want).norm() <= 1e-12 * want.norm().max(1e-12),
                     "{name}"
@@ -537,28 +562,28 @@ mod tests {
     }
 
     fn vsource(id: &str, p: &str, v: f64) -> CircuitElement {
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: id.into(),
             nodes: [p.into(), "0".into()],
             voltage: v,
             waveform: None,
-        }
+        })
     }
 
     fn res(id: &str, a: &str, b: &str, r: f64) -> CircuitElement {
-        CircuitElement::Resistor {
+        CircuitElement::Resistor(Resistor {
             id: id.into(),
             nodes: [a.into(), b.into()],
             resistance: r,
-        }
+        })
     }
 
     fn cap(id: &str, a: &str, b: &str, c: f64) -> CircuitElement {
-        CircuitElement::Capacitor {
+        CircuitElement::Capacitor(Capacitor {
             id: id.into(),
             nodes: [a.into(), b.into()],
             capacitance: c,
-        }
+        })
     }
 
     fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -591,12 +616,12 @@ mod tests {
         let c = circuit(vec![
             vsource("V1", "in", 2.0),
             res("R1", "in", "a", 1e3),
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["a".into(), "0".into()],
                 temperature: 320.0,
                 model: Some(model),
-            },
+            }),
             cap("C1", "a", "0", 1e-9),
         ]);
         let r = solve_ac_sensitivity(&c, &config("a", 1e3, 100e6)).unwrap();
@@ -641,7 +666,7 @@ mod tests {
                 res("RE", "e", "0", 470.0),
                 cap("CE", "e", "0", 10e-6),
                 cap("CL", "c", "0", 100e-12),
-                CircuitElement::Bjt {
+                CircuitElement::Bjt(Bjt {
                     id: "Q1".into(),
                     nodes: ["b".into(), "c".into(), "e".into()],
                     kind,
@@ -649,7 +674,7 @@ mod tests {
                     temperature: 300.15,
                     parasitic_caps: None,
                     model: Some(model),
-                },
+                }),
             ]);
             assert_matches_frozen_bias("BJT", &c, &config("c", 10.0, 10e6), 1e-4);
         }
@@ -668,52 +693,52 @@ mod tests {
             vsource("V1", "g", 2.0),
             res("RD", "vdd", "d", 5e3),
             cap("CD", "d", "0", 1e-9),
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "0".into()],
                 kind: MosfetKind::Nmos,
                 params: nmos.clone(),
                 parasitic_caps: None,
                 body_diode: None,
-            },
-            CircuitElement::Vcvs {
+            }),
+            CircuitElement::Vcvs(Vcvs {
                 id: "E1".into(),
                 nodes: ["e".into(), "0".into()],
                 control_nodes: ["d".into(), "0".into()],
                 gain: 0.5,
-            },
-            CircuitElement::Inductor {
+            }),
+            CircuitElement::Inductor(Inductor {
                 id: "L1".into(),
                 nodes: ["e".into(), "m".into()],
                 inductance: 1e-3,
                 saturation: None,
-            },
-            CircuitElement::VoltageSource {
+            }),
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "VS".into(),
                 nodes: ["m".into(), "n".into()],
                 voltage: 0.0,
                 waveform: None,
-            },
+            }),
             res("R2", "n", "0", 2e3),
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id: "G1".into(),
                 nodes: ["0".into(), "out".into()],
                 control_nodes: ["e".into(), "0".into()],
                 gm: 1e-3,
-            },
-            CircuitElement::Ccvs {
+            }),
+            CircuitElement::Ccvs(Ccvs {
                 id: "H1".into(),
                 nodes: ["h".into(), "0".into()],
                 control_source: "VS".into(),
                 rm: 500.0,
-            },
+            }),
             res("R3", "h", "out", 1e3),
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id: "F1".into(),
                 nodes: ["0".into(), "out".into()],
                 control_source: "VS".into(),
                 alpha: 2.0,
-            },
+            }),
             res("R4", "out", "0", 1e3),
         ]);
         assert_matches_frozen_bias("MOSFET", &c, &config("out", 100.0, 10e6), 1e-4);
@@ -723,14 +748,14 @@ mod tests {
             vsource("VDD", "vdd", 0.5),
             res("RD", "vdd", "d", 100.0),
             cap("CG", "g", "d", 1e-9),
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id: "M1".into(),
                 nodes: ["g".into(), "d".into(), "0".into()],
                 kind: MosfetKind::Nmos,
                 params: nmos,
                 parasitic_caps: None,
                 body_diode: None,
-            },
+            }),
         ]);
         let current = AcSensConfig::new(TfOutput::current("VDD"), AcConfig::new("V1", 1e3, 1e8, 4));
         assert_matches_frozen_bias("triode", &triode, &current, 1e-4);

@@ -24,6 +24,13 @@
 //! | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 //! | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
 //! | voltage regulator | `voltage` (input, from its ground pin), `current` (output), `power` |
+//! | digital pin | `current` (into or out of the pin) |
+//! | digital pin's port | `current`: the larger of what its pins source and what they sink |
+//!
+//! A digital pin's [`port`](crate::element::DigitalPin::port) is checked
+//! as a part of its own: the `current` on the [`Part`](crate::Part) named
+//! for the port limits the sum over its pins, as a datasheet limits the
+//! current a port sources and sinks.
 //!
 //! A part with [`Thermal`](crate::Thermal) data also needs `tj_max`, checked
 //! against the junction temperature self-heating reports. Without thermal
@@ -38,12 +45,13 @@
 //!
 //! ```
 //! use sindr::{check_ratings, solve_circuit, Circuit, CircuitElement, Part, Ratings};
+//! use sindr::element::{Resistor, VoltageSource};
 //!
 //! let mut circuit = Circuit::new(
 //!     "0",
 //!     vec![
-//!         CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 12.0, waveform: None },
-//!         CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "0".into()], resistance: 100.0 },
+//!         CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 12.0, waveform: None }),
+//!         CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "0".into()], resistance: 100.0 }),
 //!     ],
 //! );
 //! // A 1/8 W resistor across 12 V dissipates 1.44 W.
@@ -59,17 +67,21 @@
 //! assert!((r1.worst.unwrap() - 1.44).abs() < 1e-9);
 //! assert!(!report.is_safe());
 //! ```
+//!
 
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::design::Ratings;
+use crate::element::DigitalPin;
 use crate::error::SimError;
+use crate::handle::NodeId;
 use crate::results::{ComponentResult, SimulationResult};
 
 /// One absolute-maximum rating. Each is a magnitude; see [`Ratings`] for
 /// what it measures.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -159,6 +171,7 @@ impl RatingKind {
 
 /// How a part did against one rating.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -174,6 +187,7 @@ pub enum RatingStatus {
 
 /// One part checked against one rating.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RatingCheck {
@@ -197,6 +211,7 @@ pub struct RatingCheck {
 
 /// Every rating checked on every part, in circuit order.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct RatingsReport {
@@ -231,45 +246,6 @@ impl RatingsReport {
     }
 }
 
-/// Ratings a component kind needs, checked even when unset.
-fn needed(element: &CircuitElement) -> &'static [RatingKind] {
-    use RatingKind::*;
-    match element {
-        CircuitElement::Resistor { .. }
-        | CircuitElement::Potentiometer { .. }
-        | CircuitElement::Thermistor { .. }
-        | CircuitElement::Photoresistor { .. } => &[Power],
-        CircuitElement::Capacitor { .. } => &[Voltage],
-        CircuitElement::Inductor { .. } => &[Current],
-        CircuitElement::Diode { .. }
-        | CircuitElement::SchottkyDiode { .. }
-        | CircuitElement::Led { .. }
-        | CircuitElement::Photodiode { .. } => &[ReverseVoltage, ForwardCurrent, Power],
-        CircuitElement::ZenerDiode { .. } => &[Power],
-        CircuitElement::Varactor { .. } => &[ReverseVoltage],
-        CircuitElement::Bjt { .. } => &[Vce, Vcb, Veb, Ic, Power],
-        CircuitElement::Mosfet { .. } | CircuitElement::Jfet { .. } => &[Vds, Vgs, Id, Power],
-        CircuitElement::Igbt { .. } => &[Vce, Vgs, Ic, Power],
-        CircuitElement::VoltageRegulator { .. } => &[Voltage, Current, Power],
-        // A crystal's power is its drive level.
-        CircuitElement::Crystal { .. } => &[Power],
-        CircuitElement::FerriteBead { .. } => &[Current, Power],
-        _ => &[],
-    }
-}
-
-fn is_diode(element: &CircuitElement) -> bool {
-    matches!(
-        element,
-        CircuitElement::Diode { .. }
-            | CircuitElement::SchottkyDiode { .. }
-            | CircuitElement::Led { .. }
-            | CircuitElement::Photodiode { .. }
-            | CircuitElement::ZenerDiode { .. }
-            | CircuitElement::Varactor { .. }
-    )
-}
-
 /// The value of `kind` on `element` at one instant, or `None` when it
 /// can't be measured on this component.
 fn measure(
@@ -278,47 +254,64 @@ fn measure(
     port: Option<&ComponentResult>,
     sample: &Sample<'_>,
 ) -> Option<f64> {
-    let voltages = sample.voltages;
-    let v = |i: usize| voltages.get(element.nodes().get(i)?).copied();
-    let between = |a: usize, b: usize| Some((v(a)? - v(b)?).abs());
-    let value = match (kind, element) {
-        (RatingKind::Tj, e) => *sample.junction_temperatures.get(e.id())?,
-        (RatingKind::Power, _) => port?.power.max(0.0),
-        // A regulator's voltage rating is its maximum input.
-        (RatingKind::Voltage, CircuitElement::VoltageRegulator { .. }) => between(0, 2)?,
-        (RatingKind::Voltage, _) => port?.voltage_across.abs(),
-        (RatingKind::Current, _) => port?.current_through.abs(),
-        (RatingKind::ReverseVoltage, e) if is_diode(e) => (-port?.voltage_across).max(0.0),
-        // A polarised capacitor's + terminal is nodes[0].
-        (RatingKind::ReverseVoltage, CircuitElement::Capacitor { .. }) => {
-            (-port?.voltage_across).max(0.0)
-        }
-        (RatingKind::ForwardCurrent, e) if is_diode(e) => port?.current_through.max(0.0),
-        // [base, collector, emitter] and [gate, collector, emitter]
-        (RatingKind::Vce, CircuitElement::Bjt { .. } | CircuitElement::Igbt { .. }) => {
-            between(1, 2)?
-        }
-        (RatingKind::Vcb, CircuitElement::Bjt { .. }) => between(1, 0)?,
-        (RatingKind::Veb, CircuitElement::Bjt { .. }) => between(2, 0)?,
-        (RatingKind::Ic, CircuitElement::Bjt { .. } | CircuitElement::Igbt { .. }) => {
-            port?.current_through.abs()
-        }
-        // [gate, drain, source]
-        (RatingKind::Vds, CircuitElement::Mosfet { .. } | CircuitElement::Jfet { .. }) => {
-            between(1, 2)?
-        }
-        (
-            RatingKind::Vgs,
-            CircuitElement::Mosfet { .. }
-            | CircuitElement::Jfet { .. }
-            | CircuitElement::Igbt { .. },
-        ) => between(0, 2)?,
-        (RatingKind::Id, CircuitElement::Mosfet { .. } | CircuitElement::Jfet { .. }) => {
-            port?.current_through.abs()
-        }
-        _ => return None,
+    let value = match kind {
+        RatingKind::Tj => *sample.junction_temperatures.get(element.id())?,
+        RatingKind::Power => port?.power.max(0.0),
+        _ => element.device().rating(
+            kind,
+            &RatingProbe {
+                nodes: element.nodes(),
+                voltages: sample.voltages,
+                port,
+            },
+        )?,
     };
     value.is_finite().then_some(value)
+}
+
+/// One element at one instant, for [`Device::rating`]: its port result
+/// and the node voltages its terminals sit at.
+///
+/// [`Device::rating`]: crate::element::Device::rating
+pub(crate) struct RatingProbe<'a> {
+    nodes: &'a [NodeId],
+    voltages: &'a HashMap<String, f64>,
+    port: Option<&'a ComponentResult>,
+}
+
+impl RatingProbe<'_> {
+    /// The element's port result: the voltage across it, the current
+    /// through it and its power. `None` when the solve gave none.
+    pub(crate) fn port(&self) -> Option<&ComponentResult> {
+        self.port
+    }
+
+    /// `|V(nodes[a]) − V(nodes[b])|`.
+    pub(crate) fn between(&self, a: usize, b: usize) -> Option<f64> {
+        let v = |i: usize| self.voltages.get(self.nodes.get(i)?.as_str()).copied();
+        Some((v(a)? - v(b)?).abs())
+    }
+
+    /// What every element's port gives: its voltage rating against the
+    /// magnitude of the voltage across it, its current rating against the
+    /// current through it. `None` for any other kind.
+    pub(crate) fn port_rating(&self, kind: RatingKind) -> Option<f64> {
+        match kind {
+            RatingKind::Voltage => Some(self.port?.voltage_across.abs()),
+            RatingKind::Current => Some(self.port?.current_through.abs()),
+            _ => None,
+        }
+    }
+
+    /// A junction's ratings: reverse voltage and forward current from its
+    /// port, `nodes[0]` the anode. Others as [`port_rating`](Self::port_rating).
+    pub(crate) fn junction_rating(&self, kind: RatingKind) -> Option<f64> {
+        match kind {
+            RatingKind::ReverseVoltage => Some((-self.port?.voltage_across).max(0.0)),
+            RatingKind::ForwardCurrent => Some(self.port?.current_through.max(0.0)),
+            _ => self.port_rating(kind),
+        }
+    }
 }
 
 /// One instant: when (`None` for DC), node voltages, per-component results.
@@ -388,7 +381,7 @@ pub fn check_ratings(
         let part = flat.parts.get(id);
         let ratings = part.map_or(&none, |p| &p.ratings);
         let heated = part.is_some_and(|p| p.thermal.is_some());
-        let needs = needed(element);
+        let needs = element.device().needed_ratings();
         for kind in RatingKind::ALL {
             let limit = kind.limit(ratings);
             let needed = needs.contains(&kind) || (kind == RatingKind::Tj && heated);
@@ -407,7 +400,46 @@ pub fn check_ratings(
             checks.push(judge(id, kind, limit, worst));
         }
     }
+    checks.extend(port_checks(&flat, &samples));
     Ok(RatingsReport { checks })
+}
+
+/// Each digital-pin port's current: the larger of the sums its pins source
+/// and sink, against the `current` on the part named for the port.
+fn port_checks(flat: &Circuit, samples: &[Sample<'_>]) -> Vec<RatingCheck> {
+    let mut ports: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
+    for element in &flat.components {
+        if let CircuitElement::DigitalPin(DigitalPin {
+            id,
+            port: Some(port),
+            ..
+        }) = element
+        {
+            ports.entry(port).or_default().push(id);
+        }
+    }
+    ports
+        .into_iter()
+        .map(|(port, pins)| {
+            let limit = flat.parts.get(port).and_then(|p| p.ratings.current);
+            let mut worst: Option<(f64, Option<f64>)> = None;
+            for sample in samples {
+                let (mut sourced, mut sunk) = (0.0, 0.0);
+                for pin in &pins {
+                    if let Some(r) = sample.ports.get(pin) {
+                        // Into the pin is positive.
+                        sunk += r.current_through.max(0.0);
+                        sourced += (-r.current_through).max(0.0);
+                    }
+                }
+                let value = f64::max(sourced, sunk);
+                if value.is_finite() && worst.is_none_or(|(w, _)| value > w) {
+                    worst = Some((value, sample.time));
+                }
+            }
+            judge(port, RatingKind::Current, limit, worst)
+        })
+        .collect()
 }
 
 fn judge(

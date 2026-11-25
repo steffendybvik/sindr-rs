@@ -14,22 +14,30 @@ sindr-rs/
 │   ├── src/
 │   │   ├── lib.rs              # public API surface, re-exports
 │   │   ├── circuit.rs          # data model: Circuit, CircuitElement
+│   │   ├── handle.rs           # NodeId / ComponentId handles, CircuitBuilder
+│   │   ├── element/            # one file per CircuitElement variant (its struct and Device impl), plus the Device trait and its
+│   │   │                       #   stamp contexts: layout.rs, dc_stamp.rs, tran_stamp.rs, ac_stamp.rs, report.rs
 │   │   ├── design.rs           # hierarchy: Block, Instance, Part, flatten
 │   │   ├── waveform.rs         # sine, pulse, square, triangle, PWM, PWL
-│   │   ├── mna.rs              # MNA matrix assembly
-│   │   ├── stamp.rs            # per-element matrix stamping
+│   │   ├── mna.rs              # MNA matrix: dense below 100 unknowns, sparse above (fixed layout replayed per solve, faer LU)
+│   │   ├── stamp.rs            # stamp dispatch and the stamps several elements share
 │   │   ├── op_amp.rs           # op-amp / comparator macromodel stamps
-│   │   ├── composite.rs        # SPDT switch, crystal, ferrite bead as networks of simpler elements
+│   │   ├── composite.rs        # SPDT switch, crystal, ferrite bead, digital pin, logic gate, DC motor as networks of simpler elements
 │   │   ├── battery_state.rs    # battery Norton equivalent and state of charge
 │   │   ├── device_params.rs    # effective device parameters from element fields
+│   │   ├── datasheet.rs        # models fitted to datasheet figures
+│   │   ├── expression.rs       # behavioural (B-source) expressions, with forward-mode AD for the Jacobian
 │   │   ├── newton_raphson.rs   # nonlinear DC solver
 │   │   ├── solver.rs           # SolverOptions and Solver (.options, .nodeset)
 │   │   ├── transient.rs        # transient stepper (TransientConfig, solve_transient)
+│   │   ├── session.rs          # TransientSession: step a transient, change inputs, stop on events
 │   │   ├── integration.rs      # Gear-2 / trapezoidal / backward-Euler formulas
 │   │   ├── ac_analysis.rs      # small-signal AC (and the linearised system .tf reuses)
 │   │   ├── noise.rs            # .noise: thermal, shot and flicker noise
 │   │   ├── transfer_function.rs # .tf: DC small-signal gain, Rin, Rout
-│   │   ├── sensitivity.rs      # .sens: DC adjoint sensitivity
+│   │   ├── sensitivity.rs      # .sens: DC adjoint sensitivity (and sensitivity/ for AC)
+│   │   ├── pole_zero.rs        # .pz: poles and zeros of the small-signal pencil G + s·C
+│   │   ├── loop_gain.rs        # loop gain and stability margins at a probe (Tian's method)
 │   │   ├── dc_sweep.rs         # parameter sweep
 │   │   ├── temp_sweep.rs       # temperature sweep
 │   │   ├── results.rs          # SimulationResult, ComponentResult, etc.
@@ -37,19 +45,22 @@ sindr-rs/
 │   │   ├── node_map.rs         # node-name → matrix-index mapping
 │   │   ├── ratings.rs          # check_ratings: absolute-maximum ratings vs. a result
 │   │   ├── measure.rs          # measurements (.meas) and specs: check_specs, pass/fail and margin
+│   │   ├── variation.rs        # Monte Carlo and corners over part tolerances
+│   │   ├── fourier.rs          # .four harmonics and THD, windowed FFT of transient results
 │   │   ├── thermal.rs          # self-heating: DC balance iteration, transient thermal RC
 │   │   ├── validation.rs       # circuit pre-flight checks
 │   │   ├── error.rs            # SimError variants
 │   │   ├── import/             # netlist-and-bench import for editors: Netlist, Bench, simulate, parse_value
 │   │   ├── examples.rs         # named example circuits, runnable from list_examples / run_example
-│   │   └── spice/              # SPICE3 netlist parser (optional `spice` feature)
+│   │   └── spice/              # SPICE3 netlist parser (`spice` feature, on by default)
 │   │       └── {mod,parser,preprocess,flatten,build,ast,param_eval,si,
 │   │            analysis,error,export,source_map}.rs
 │   ├── examples/               # cargo run --example targets
 │   └── tests/                  # integration tests (+ spice fixtures/)
 ├── sindr-devices/      # device physics (no solver dep)
 │   └── src/{diode,bjt,mosfet,igbt,jfet,varactor,schottky,zener,led,
-│            photodiode,photoresistor,thermistor,battery,inductor,regulator}.rs
+│            photodiode,photoresistor,thermistor,battery,inductor,regulator,converter,
+│            datasheet}.rs
 ├── docs/RELEASING.md    # where capabilities are documented + release checklist
 ├── scripts/gen_llms_full.py  # regenerates llms-full.txt
 ├── llms.txt            # short index for LLMs (llmstxt.org)
@@ -57,7 +68,7 @@ sindr-rs/
 └── .planning/          # local GSD workflow artefacts (gitignored) — IGNORE for normal code work
 ```
 
-`sindr` depends on `sindr-devices`. The data model is `sindr::{circuit, design, waveform}` (`Circuit`, `CircuitElement`, design hierarchy, `Waveform`). Every public analysis entry point flattens a hierarchical `Circuit` first (`circuit.flattened()?`); the internal `mna`/`stamp`/`newton_raphson` code assumes a flat one. SPICE netlist parsing lives in `sindr::spice` behind the optional, default-off `spice` feature, which pulls in `winnow` + `miette`.
+`sindr` depends on `sindr-devices`. The data model is `sindr::{circuit, design, waveform}` (`Circuit`, `CircuitElement`, design hierarchy, `Waveform`). Every public analysis entry point flattens a hierarchical `Circuit` first (`circuit.flattened()?`); the internal `mna`/`stamp`/`newton_raphson` code assumes a flat one. SPICE netlist parsing lives in `sindr::spice` behind the `spice` feature (on by default), which pulls in `winnow` + `miette`.
 
 ## Commands
 
@@ -68,11 +79,11 @@ cargo test --workspace --no-default-features  # serde/examples off (CI)
 cargo test -p sindr                           # solver crate only
 cargo test -p sindr-devices                   # device-physics crate only (includes README doctests)
 cargo run --example voltage_divider           # run a named example
-cargo run --example list_examples --features examples  # list every bundled example circuit
+cargo run --example list_examples  # list every bundled example circuit
 cargo doc --workspace --no-deps --all-features --open  # API docs (CI uses RUSTDOCFLAGS=-D warnings)
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint (CI)
 cargo fmt --all                               # format
-cargo bench -p sindr --features spice --bench transient --bench newton --bench analyses --bench spice -- --quick  # benchmarks (CI gates PRs at +25 %)
+cargo bench -p sindr --bench transient --bench newton --bench analyses --bench spice -- --quick  # benchmarks (CI gates PRs at +25 %)
 python3 scripts/gen_llms_full.py              # regenerate llms-full.txt (CI checks it)
 ```
 
@@ -85,24 +96,26 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 - **Edition 2021, MSRV 1.89** (`rust-version` in both manifests; CI tests on 1.89 and stable). Don't use std/language features newer than 1.89.
 - **No `unsafe`.** This is a numerical library; we have no reason for it.
 - **No `unwrap()` / `expect()` in non-test code paths.** Return `SimError` instead.
-- **Errors flow through `SimError`** (see `sindr/src/error.rs`). When adding a new failure mode, prefer extending the enum over `String` errors.
+- **Errors flow through `SimError`** (see `sindr/src/error.rs`), with typed causes: a bad component value is `SimError::component(id, reason)` (`InvalidComponent`), a bad analysis setting `SimError::config(ConfigKind::.., reason)` (`InvalidConfig`), a missing name `UnknownNode`/`UnknownComponent`. `reason` names the field and its value. When adding a new failure mode, prefer a new variant with fields over a message string.
 - **`f64` everywhere.** No generic numeric backend, no `f32`.
 - **Serde is feature-gated** but on by default. Any new public type that is part of `Circuit` or `SimulationResult` must derive `Serialize`/`Deserialize` under `#[cfg(feature = "serde")]`. Component types use `snake_case` tags (see existing `#[serde(rename_all = "snake_case")]`).
-- **Public API stability**: the crates are at `0.2.0`, plain 0.x until 1.0. A breaking change bumps the minor version (`0.2.0`), anything else the patch (`0.1.1`). Breaking changes are allowed, but call them out in the commit message and the PR description. Feature PRs don't edit `CHANGELOG.md`; the release PR writes it.
-- **Room to grow**: enums that will gain variants, result structs callers only read, and analysis configs are `#[non_exhaustive]`; configs are built with `new(..)` and `with_*` setters (`AcConfig::new("V1", 1.0, 1e6, 61)`, `TfConfig::new(TfOutput::voltage("out"), "V1")`). Data structs callers fill in (`Circuit`, `DiodeModel`, `Part`, the `sindr-devices` `*Params`) stay open and are built with `..Default::default()`. A new public type follows the same split.
+- **Public API stability**: the crates are at `0.3.0`, plain 0.x until 1.0. A breaking change bumps the minor version (`0.4.0`), anything else the patch (`0.3.1`). Breaking changes are allowed, but call them out in the commit message and the PR description. Feature PRs don't edit `CHANGELOG.md`; the release PR writes it.
+- **Room to grow**: enums that will gain variants, result structs callers only read, and analysis configs are `#[non_exhaustive]`; configs are built with `new(..)` and `with_*` setters (`AcConfig::new("V1", 1.0, 1e6, 61)`, `TfConfig::new(TfOutput::voltage("out"), "V1")`). Data structs callers fill in (`Circuit`, `DiodeModel`, `Part`, the `sindr-devices` `*Params`) stay open and are built with `..Default::default()`; `BatteryParams` has no `Default` and comes from its presets. A new public type follows the same split.
 - **Comments**: lean. Don't restate what well-named code already says. Do explain *why* for non-obvious numerical choices (e.g. damping factors, why `k ≤ 0.999`, why `gmin` thresholds).
 - **No GSD planning-artefact references in source.** Strip `EX-NN`, `Pitfall N`, `RESEARCH.md` / `PLAN.md` mentions. They belong in `.planning/`, not in code or commits.
 
 ## Adding a new circuit element
 
-1. Add a variant to `CircuitElement` in `sindr/src/circuit.rs` (with serde tags), and to its `nodes`/`nodes_mut`/`id`/`id_mut` matches.
+1. Add a file in `sindr/src/element/` with a struct for its fields (serde attributes on the fields) and its `Device` impl (identity, branch rows, history slots, nonlinear/reactive flags, value checks, DC and transient stamps, and in `sensed` any net or branch current it reads without connecting to, which stamps get as matrix indices from `s.sensed()`), re-export it from `element/mod.rs` and add it to the `device`/`device_mut` matches there, and add a variant wrapping it to `CircuitElement` in `sindr/src/circuit.rs` (with the serde `rename`).
 2. If it has device physics, add a module in `sindr-devices/src/` exposing a companion-model function.
-3. Implement matrix stamping in `sindr/src/stamp.rs` (and Newton-Raphson contribution if nonlinear).
-4. If it stores state across timesteps (charge, current), thread it through the transient state in `sindr/src/transient.rs`.
-5. Extend `SimulationResult` (`sindr/src/results.rs`) only if the element produces results that don't fit `ComponentResult`.
-6. Add a unit test that exercises a known analytical answer.
-7. Document it in `sindr/README.md` under the appropriate section.
-8. If it changes solver routing (forces transient / nonlinear), update the routing table in `sindr/README.md`.
+3. Implement its DC stamp as `Device::stamp_dc` in its file (linearised at `v_prev` if nonlinear), with `stamp.rs`'s shared helpers.
+4. Implement `Device::stamp_transient` too unless its transient model is exactly its DC stamp (no stored energy, nothing that changes with time): the provided one calls `stamp_dc`. Capacitor and inductor histories come from `TranStamp::capacitor` / `inductor` (counted by `capacitor_histories` / `inductor_histories`); other state it carries across timesteps (a junction's charge, a battery's state) is read with `TranStamp::history(id, key)` from the transient's history map, set up and advanced in `sindr/src/transient.rs`.
+5. Implement `Device::stamp_ac`, its small-signal model at `AcStamp::s` (admittances, branch rows). A nonlinear device also implements `Device::linearise`, its conductances at the DC bias, taken once per bias point and stamped after every element's `stamp_ac`. A stamp that isn't affine in `s` (an inductor's `1/(sL)`) takes `Device::pencil_rows` extra unknowns from `AcStamp::aux` when `AcStamp::pencil` is set, for pole-zero analysis. A device that makes noise pushes its generators in `Device::noise` (`NoiseSources::thermal`, `shot`, `flicker`, `channel`).
+6. Implement `Device::report`, what it reports at a solution: its port through `Report::port` (or `component` for a power other than V·I), and the branch current others read it by (`branch_current_of`). The same method runs after a DC solve and after every transient step (`Report::step` is `Some`), where a reactive device also moves its histories on with `set_capacitor` / `set_inductor`. Extend `SimulationResult` (`sindr/src/results.rs`) only if the element produces results that don't fit `ComponentResult`, and report them through a `Report` method kept after a DC solve, as `Report::bjt` is.
+7. Implement `Device::write_spice` (behind the `spice` feature), or have it return `unsupported(..)` for an element SPICE3 has no primitive for. A device with ratings it should always be checked against lists them in `Device::needed_ratings`.
+8. Add a unit test that exercises a known analytical answer.
+9. Document it in `sindr/README.md` under the appropriate section.
+10. If it changes solver routing (forces transient / nonlinear), update the routing table in `sindr/README.md`.
 
 ## Adding a new device model in `sindr-devices`
 
@@ -117,6 +130,8 @@ Most tests live inline in `#[cfg(test)] mod tests` blocks; cross-cutting integra
 
 These trip up human users *and* code-generating agents. If you are producing example circuits or tests:
 
+- **Terminals are `NodeId` handles, not `String`s.** `nodes: ["a".into(), "0".into()]` still works, but a `format!` or a `String` needs `.into()` (`[format!("n{i}").into(), "0".into()]`). CCVS/CCCS `control_source` is a `ComponentId`; element `id` fields stay `String`. Analysis configs take handles too (`AcConfig::source_id`, `NoiseConfig::output`, `PzConfig`, `TfOutput`, `LoopGainConfig::probe`, …) and their constructors take `impl Into<…>`, so names still work; result accessors (`voltage`, `current`, `component`, the curves) take `impl AsRef<str>`, a handle or a name. Both handles serialise as plain strings.
+- **Prefer `CircuitBuilder` when writing circuits by hand.** `b.node("out")` declares a net and returns its `NodeId`; `b.build()` fails with `SimError::UnknownNode` for an element wired to an undeclared net, which catches typos that would otherwise surface as `FloatingNode`. `Circuit::node_id` / `component_id` check a name against an existing circuit.
 - **One node must equal `Circuit::ground_node`.** Otherwise → `SimError::NoGround`.
 - **Every node must have a DC path to ground.** Floating sub-circuits (e.g. capacitor stack with no DC return) → `FloatingNode`. Add a large bleeder resistor if the topology calls for it.
 - **Every node needs at least two connections.** A node reached by a single component (a dangling resistor end) is also `FloatingNode`.
@@ -133,19 +148,20 @@ These trip up human users *and* code-generating agents. If you are producing exa
 - **Junction `temperature` fields are kelvin** (300.15 K = 27 °C, the nominal). IS and the thermal voltage kT/q both follow it.
 - **PMOS `vto` is SPICE-signed:** negative for an enhancement PMOS, as `MosfetParams::default_pmos()` has it.
 - **The default integrator is Gear-2:** second order, no ringing, slightly dissipative over many periods. For ringing amplitude in a resonant tank use `IntegrationMethod::Trapezoidal`, but not on circuits with time constants far below the step, where it rings. `IntegrationMethod::BackwardEuler` reproduces results from before 0.1.0-alpha.7.
-- **Voltage regulators drop out.** `VoltageRegulator { model: Some(RegulatorParams::lm7805()), .. }` needs about 2 V of headroom and draws its output plus 4.3 mA from the input; check `voltage_across` (`Vin − Vout`) and `power` on its result. `model: None` is ideal but can't boost.
+- **Voltage regulators drop out.** `VoltageRegulator { model: Some(RegulatorParams::lm7805()), .. }` needs about 2 V of headroom and draws its output plus 4.3 mA from the input; check `voltage_across` (`Vin − Vout`) and `power` on its result. `model: None` is ideal but can't boost. For a switching supply use `SwitchingRegulator` (averaged buck or boost): its input draws by power balance, `Vout·Iout/(η·Vin)`, so it's a negative resistance to its source.
 - **Self-heating is opt-in per part:** set `Part::thermal` (`Thermal::junction_to_ambient(rθja)` or `Thermal::on_heatsink(rθjc, rθca)`). Then the element's `temperature` field is ignored, and `SimError::ThermalRunaway` means the design has no thermal balance (add degeneration or a heatsink, don't retry). Only junction devices and thermistors feel the heat; MOSFET/IGBT models don't.
+- **Model a microcontroller pin as a `DigitalPin`, not a voltage source.** `nodes: [pad, vdd, gnd]`: it drives through `r_high`/`r_low` from the rails, clamps past them, and reads its input against `vil`/`vih`. A `TransientSession` changes `Param::PinMode`, `Level` and `Pull` and reads `logic_level(id)`. Its `current_through` is into the pin, so a sourcing pin is negative.
 - **Check ratings before calling a design done.** `check_ratings(&circuit, &result)` compares every part with the `Ratings` on its `Part`; for anything with switching or start-up, run it on a transient, since the DC operating point misses the peaks. `report.is_safe()` is false while any needed rating is missing, so fill them in rather than ignoring unverified checks.
 - **Judge a design with specs, not by eye.** `check_specs(&result, &[Spec::new(Measurement::new("vout", Measure::stat(Signal::v("out"), Stat::Final))).between(4.9, 5.1)])` gives each spec's value, pass/fail and margin; attach `check_ratings` with `SpecReport::with_ratings`. `SpecStatus::Unmeasured` (an unknown node, a level never crossed) is never a pass: read its `reason`. Node and component names in a parsed SPICE deck are lowercase.
 - **`ConvergenceFailed { iterations, max_step_volts, node, components, at }`**: `node` is where the circuit won't settle (the largest final Newton step), `components` what's on it, `at` the `SolvePoint` (operating point, DC or temperature sweep point, transient time); the message names all three. Usually a nonlinear element with no DC path to ground, or component values orders of magnitude outside typical ranges. `max_step_volts` is the max Newton step (not a KCL residual). The solver already retries with gmin stepping (`SolverOptions::gmin_steps`, `1e-2` → `1e-10` then none) and then source stepping before giving up; `SimulationResult::convergence_aid` says which one a solve needed. If neither rescues it, perturb the circuit, give a starting guess in `SolverOptions::nodeset`, or raise `max_iterations`, and run it through a `Solver` — don't blindly retry.
 
-When in doubt, run `cargo run --example list_examples --features examples` and copy the closest existing example; the bundled circuits are known-good.
+When in doubt, run `cargo run --example list_examples` and copy the closest existing example; the bundled circuits are known-good.
 
 ## Things NOT to do
 
 - **Don't add `unsafe`.**
-- **Don't add a new dependency without a clear need.** `nalgebra`, `faer` (sparse LU above 100 unknowns), `serde`, `thiserror` are the load-bearing ones; `winnow` + `miette` back the SPICE parser and are pulled in only by the optional `spice` feature.
-- **Don't introduce a CLI or GUI in `sindr` or `sindr-devices`** — those are explicit non-goals; propose a sibling crate instead. Schematic and PCB tools are meant to build on sindr's design model (blocks, instances, parts) from their own crates, not inside these. Heavy *optional* capabilities (like SPICE netlist parsing) belong behind a default-off feature flag with their deps marked `optional`, following the `spice` precedent.
+- **Don't add a new dependency without a clear need.** `nalgebra`, `faer` (sparse LU above 100 unknowns), `serde`, `thiserror` are the load-bearing ones; `winnow` + `miette` back the SPICE parser (the `spice` feature), and `schemars` the JSON Schemas; every feature but `internals` is on by default, and a caller can drop them with `default-features = false`.
+- **Don't introduce a CLI or GUI in `sindr` or `sindr-devices`** — those are explicit non-goals; propose a sibling crate instead. Schematic and PCB tools are meant to build on sindr's design model (blocks, instances, parts) from their own crates, not inside these. Heavy capabilities (like SPICE netlist parsing) go behind a feature flag with their deps marked `optional`, following the `spice` precedent. Features are on by default, so `sindr = "0.3"` gets everything; a caller keeps only some with `default-features = false`. `internals` is the exception: unstable, so off.
 - **Don't implement BSIM / Gummel-Poon / VBIC** speculatively. They are large undertakings; coordinate via an issue first.
 - **Don't bypass `SimError`** with `panic!` / `unwrap()` in solver code.
 - **Don't write to `.planning/`** unless you are explicitly running a GSD command. It is workflow state, not source.
@@ -165,9 +181,9 @@ When in doubt, run `cargo run --example list_examples --features examples` and c
 
 | Question | File |
 |----------|------|
-| "What components exist?" | `sindr/src/circuit.rs` (`CircuitElement` enum) |
+| "What components exist?" | `sindr/src/circuit.rs` (`CircuitElement` enum) and `sindr/src/element/` (its structs) |
 | "What does the solver do for circuit X?" | routing table in `sindr/README.md`, plus `sindr/src/lib.rs::solve_circuit` |
-| "How is element Y stamped?" | `sindr/src/stamp.rs` |
+| "How is element Y stamped?" | its `stamp_dc` and `stamp_transient` in `sindr/src/element/`, dispatched from `sindr/src/stamp.rs` and `sindr/src/transient.rs` |
 | "Why did this fail?" | `sindr/src/error.rs` (`SimError` variants) |
 | "What does sindr *not* do?" | [`LIMITATIONS.md`](./LIMITATIONS.md) |
 | "What's a known-good example circuit?" | `sindr/src/examples.rs` and `sindr/examples/` |

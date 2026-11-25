@@ -9,34 +9,55 @@
 //! the linear DC, Newton–Raphson, and transient pipelines all build an
 //! [`MnaSystem`], stamp into it, and call [`MnaSystem::solve`].
 //!
-//! The matrix is stored densely for small systems and as a sparse list of
-//! entries above [`DENSE_MAX`] unknowns, where it is factorised with a sparse
-//! LU. A circuit's sparsity pattern is the same from one Newton iteration or
-//! timestep to the next, so the sparse LU's symbolic analysis is reused while
-//! the pattern doesn't change.
+//! The matrix is stored densely for small systems and sparsely above
+//! [`DENSE_MAX`] unknowns, where it is factorised with a sparse LU. A
+//! circuit stamps the same entries in the same order on every Newton
+//! iteration and timestep, so the first sparse solve records that order as a
+//! layout: each write's slot in the compressed-column values, and the
+//! pattern's symbolic LU. Later assemblies of that size add straight into the
+//! slots and refactor numerically, with no hashing, sorting or symbolic
+//! analysis. A write out of the recorded order switches that assembly back
+//! to recording, and its solve leaves a new layout.
+//!
+//! Before a sparse factorisation, every unknown the system fixes on its own
+//! is substituted out: a grounded voltage source's node, whose branch row
+//! reads `v = V`, together with the source's branch current, found
+//! afterwards from the node's row. A supply rail is a dense row and column,
+//! and left in it fills the factor in; taken out, a board with one shared
+//! rail factorises as cheaply as one with a supply per part. The rearrangement
+//! is exact.
 
+use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 use std::ops::{Index, IndexMut};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use faer::linalg::solvers::Solve;
-use faer::sparse::linalg::solvers::{Lu, SymbolicLu};
-use faer::sparse::{SparseColMat, Triplet};
+use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
+use faer::sparse::linalg::lu::{factorize_symbolic_lu, NumericLu, SymbolicLu};
+use faer::sparse::{SparseColMatRef, SymbolicSparseColMat};
+use faer::Conj;
 use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 
 use crate::error::SimError;
+use crate::node_map::Fnv;
 
 /// Largest system (unknowns) stored and solved densely. Above it the matrix
-/// is sparse. From `benches/mna_solve.rs`: dense and sparse cost about the
-/// same at 100 unknowns (70 µs vs 35–80 µs), dense is 5–7× faster at 10, and
-/// sparse is 50–250× faster at 1 000.
+/// is sparse. From `benches/mna_solve.rs`, the crossover depends on the
+/// circuit's shape: a ladder (three entries a row) goes sparse-faster near
+/// 75 unknowns (41 µs vs 73 µs at 100), while a mesh (five a row) is still
+/// faster dense at 100 (71 µs vs 85 µs). Below 60 dense wins on both by
+/// 1.5–5×, and sparse is 50–250× faster at 1 000. 100 keeps mesh-like
+/// circuits dense and costs a ladder tens of µs a solve.
 pub const DENSE_MAX: usize = 100;
 
 /// A scalar the MNA matrix can hold: `f64` for DC and transient,
 /// [`Complex64`] for AC.
 pub trait MnaScalar:
-    nalgebra::ComplexField<RealField = f64> + faer::traits::ComplexField + Copy
+    nalgebra::ComplexField<RealField = f64> + faer::traits::ComplexField + Copy + 'static
 {
     /// Whether the value is finite (both parts, for a complex number).
     fn is_finite_value(&self) -> bool;
@@ -64,14 +85,39 @@ pub struct MnaMatrix<T: MnaScalar = f64> {
     zero: T,
 }
 
+type EntryIndex = HashMap<(usize, usize), usize, BuildHasherDefault<Fnv>>;
+
 #[derive(Debug, Clone)]
 enum Storage<T: MnaScalar> {
     Dense(DMatrix<T>),
-    /// Entries in the order first written, with an index from position.
+    /// Recording: entries in the order first written, with an index from
+    /// position, and the entry each write went to. Solving it makes the
+    /// [`Layout`] the next assembly replays.
     Sparse {
         entries: Vec<(usize, usize, T)>,
-        index: HashMap<(usize, usize), usize>,
+        index: EntryIndex,
+        writes: Vec<usize>,
+        /// Whether its layout is kept for the next assembly: not for a
+        /// transposed matrix, which would push out its forward one.
+        share: bool,
     },
+    /// Replaying a layout: write `cursor` goes straight into its CSC slot.
+    Replay {
+        layout: Arc<Layout>,
+        values: Vec<T>,
+        cursor: usize,
+    },
+}
+
+impl<T: MnaScalar> Storage<T> {
+    fn recording(share: bool) -> Self {
+        Storage::Sparse {
+            entries: Vec::new(),
+            index: EntryIndex::default(),
+            writes: Vec::new(),
+            share,
+        }
+    }
 }
 
 impl<T: MnaScalar> MnaMatrix<T> {
@@ -93,14 +139,21 @@ impl<T: MnaScalar> MnaMatrix<T> {
         }
     }
 
-    /// A zero `size × size` matrix stored sparsely.
+    /// A zero `size × size` matrix stored sparsely. When the last sparse
+    /// matrix of this size solved on this thread left a layout, writes
+    /// follow it into place for as long as they come in its order.
     pub fn sparse(size: usize) -> Self {
+        let storage = match last_layout::<T>(size) {
+            Some(layout) => Storage::Replay {
+                values: vec![T::zero(); layout.entries.len()],
+                layout,
+                cursor: 0,
+            },
+            None => Storage::recording(true),
+        };
         Self {
             size,
-            storage: Storage::Sparse {
-                entries: Vec::new(),
-                index: HashMap::new(),
-            },
+            storage,
             zero: T::zero(),
         }
     }
@@ -121,6 +174,13 @@ impl<T: MnaScalar> MnaMatrix<T> {
                 }
                 m
             }
+            Storage::Replay { layout, values, .. } => {
+                let mut m = DMatrix::from_element(self.size, self.size, T::zero());
+                for &(r, c, s) in &layout.entries {
+                    m[(r, c)] += values[s];
+                }
+                m
+            }
         }
     }
 
@@ -128,14 +188,9 @@ impl<T: MnaScalar> MnaMatrix<T> {
     pub fn transpose(&self) -> Self {
         let storage = match &self.storage {
             Storage::Dense(m) => Storage::Dense(m.transpose()),
-            Storage::Sparse { entries, .. } => {
-                let entries: Vec<_> = entries.iter().map(|&(r, c, v)| (c, r, v)).collect();
-                let index = entries
-                    .iter()
-                    .enumerate()
-                    .map(|(k, &(r, c, _))| ((r, c), k))
-                    .collect();
-                Storage::Sparse { entries, index }
+            Storage::Sparse { entries, .. } => transposed(entries.iter().copied()),
+            Storage::Replay { layout, values, .. } => {
+                transposed(layout.entries.iter().map(|&(r, c, s)| (r, c, values[s])))
             }
         };
         Self {
@@ -152,9 +207,41 @@ impl<T: MnaScalar> MnaMatrix<T> {
     /// [`SimError::SingularMatrix`] if the matrix is singular, or
     /// [`SimError::InvalidSolution`] if the solution contains NaN or Inf.
     pub fn solve(&self, b: &DVector<T>) -> Result<DVector<T>, SimError> {
+        // A circuit with nothing but ground (an element from ground to
+        // ground) has no unknowns; nalgebra's LU can't take a 0 × 0 matrix.
+        if self.size == 0 {
+            return Ok(DVector::from_element(0, T::zero()));
+        }
         let solution = match &self.storage {
             Storage::Dense(m) => m.clone().lu().solve(b).ok_or(SimError::SingularMatrix)?,
-            Storage::Sparse { entries, .. } => solve_sparse(self.size, entries, b)?,
+            Storage::Sparse {
+                entries,
+                writes,
+                share,
+                ..
+            } => {
+                let (layout, values) = Layout::build(self.size, entries, writes);
+                if *share {
+                    keep_layout::<T>(&layout);
+                }
+                layout.solve(&values, b)?
+            }
+            Storage::Replay {
+                layout,
+                values,
+                cursor,
+            } if *cursor == layout.writes.len() => layout.solve(values, b)?,
+            // Fewer writes than its layout has: a pattern of its own.
+            Storage::Replay {
+                layout,
+                values,
+                cursor,
+            } => {
+                let (entries, _, writes) = replayed(layout, values, *cursor);
+                let (layout, values) = Layout::build(self.size, &entries, &writes);
+                keep_layout::<T>(&layout);
+                layout.solve(&values, b)?
+            }
         };
         if solution.iter().all(MnaScalar::is_finite_value) {
             Ok(solution)
@@ -164,14 +251,55 @@ impl<T: MnaScalar> MnaMatrix<T> {
     }
 }
 
+/// A recording of `entries` with rows and columns swapped.
+fn transposed<T: MnaScalar>(entries: impl Iterator<Item = (usize, usize, T)>) -> Storage<T> {
+    let entries: Vec<_> = entries.map(|(r, c, v)| (c, r, v)).collect();
+    let index = entries
+        .iter()
+        .enumerate()
+        .map(|(k, &(r, c, _))| ((r, c), k))
+        .collect();
+    Storage::Sparse {
+        writes: (0..entries.len()).collect(),
+        entries,
+        index,
+        share: false,
+    }
+}
+
+/// The first `cursor` writes of a replay as a recording: each entry with
+/// the sum written to it so far, in the order first written.
+fn replayed<T: MnaScalar>(
+    layout: &Layout,
+    values: &[T],
+    cursor: usize,
+) -> (Vec<(usize, usize, T)>, EntryIndex, Vec<usize>) {
+    let mut entry_of_slot = vec![usize::MAX; layout.entries.len()];
+    let mut entries = Vec::new();
+    let mut index = EntryIndex::default();
+    let mut writes = Vec::with_capacity(cursor);
+    for (&(r, c), &s) in layout.writes[..cursor].iter().zip(&layout.write_slot) {
+        if entry_of_slot[s] == usize::MAX {
+            entry_of_slot[s] = entries.len();
+            index.insert((r, c), entries.len());
+            entries.push((r, c, values[s]));
+        }
+        writes.push(entry_of_slot[s]);
+    }
+    (entries, index, writes)
+}
+
 impl<T: MnaScalar> Index<(usize, usize)> for MnaMatrix<T> {
     type Output = T;
 
     fn index(&self, (r, c): (usize, usize)) -> &T {
         match &self.storage {
             Storage::Dense(m) => &m[(r, c)],
-            Storage::Sparse { entries, index } => {
+            Storage::Sparse { entries, index, .. } => {
                 index.get(&(r, c)).map_or(&self.zero, |&k| &entries[k].2)
+            }
+            Storage::Replay { layout, values, .. } => {
+                layout.slot(r, c).map_or(&self.zero, |s| &values[s])
             }
         }
     }
@@ -180,62 +308,505 @@ impl<T: MnaScalar> Index<(usize, usize)> for MnaMatrix<T> {
 impl<T: MnaScalar> IndexMut<(usize, usize)> for MnaMatrix<T> {
     fn index_mut(&mut self, (r, c): (usize, usize)) -> &mut T {
         assert!(r < self.size && c < self.size, "MNA index out of range");
+        // A write out of the layout's order: record from here on.
+        if let Storage::Replay {
+            layout,
+            values,
+            cursor,
+        } = &self.storage
+        {
+            if layout.writes.get(*cursor) != Some(&(r, c)) {
+                let (entries, index, writes) = replayed(layout, values, *cursor);
+                self.storage = Storage::Sparse {
+                    entries,
+                    index,
+                    writes,
+                    share: true,
+                };
+            }
+        }
         match &mut self.storage {
             Storage::Dense(m) => &mut m[(r, c)],
-            Storage::Sparse { entries, index } => {
+            Storage::Sparse {
+                entries,
+                index,
+                writes,
+                ..
+            } => {
                 let k = *index.entry((r, c)).or_insert_with(|| {
                     entries.push((r, c, T::zero()));
                     entries.len() - 1
                 });
+                writes.push(k);
                 &mut entries[k].2
+            }
+            Storage::Replay {
+                layout,
+                values,
+                cursor,
+            } => {
+                let s = layout.write_slot[*cursor];
+                *cursor += 1;
+                &mut values[s]
             }
         }
     }
 }
 
-/// A cached sparse symbolic LU and the pattern (column pointers, row
-/// indices) it was computed for.
-type CachedSymbolic = (Vec<usize>, Vec<usize>, SymbolicLu<usize>);
-
 thread_local! {
-    /// The last sparse symbolic LU computed on this thread.
-    static SYMBOLIC: RefCell<Option<CachedSymbolic>> = const { RefCell::new(None) };
+    /// The layout the last shared sparse matrix solved on this thread left,
+    /// one for real and one for complex matrices.
+    static LAYOUTS: RefCell<[Option<Arc<Layout>>; 2]> = const { RefCell::new([None, None]) };
 }
 
-fn solve_sparse<T: MnaScalar>(
-    size: usize,
-    entries: &[(usize, usize, T)],
-    b: &DVector<T>,
-) -> Result<DVector<T>, SimError> {
-    let triplets: Vec<Triplet<usize, usize, T>> = entries
-        .iter()
-        .map(|&(r, c, v)| Triplet::new(r, c, v))
-        .collect();
-    let mat = SparseColMat::<usize, T>::try_new_from_triplets(size, size, &triplets)
-        .map_err(|_| SimError::InvalidSolution)?;
+fn layout_kind<T: MnaScalar>() -> usize {
+    usize::from(TypeId::of::<T>() != TypeId::of::<f64>())
+}
 
-    let symbolic = SYMBOLIC.with(|cache| -> Result<SymbolicLu<usize>, SimError> {
-        let mut cache = cache.borrow_mut();
-        let pattern = mat.symbolic();
-        if let Some((col_ptr, row_idx, symbolic)) = cache.as_ref() {
-            if col_ptr == pattern.col_ptr() && row_idx == pattern.row_idx() {
-                return Ok(symbolic.clone());
+fn last_layout<T: MnaScalar>(size: usize) -> Option<Arc<Layout>> {
+    LAYOUTS.with(|cache| {
+        cache.borrow()[layout_kind::<T>()]
+            .as_ref()
+            .filter(|layout| layout.size == size)
+            .cloned()
+    })
+}
+
+fn keep_layout<T: MnaScalar>(layout: &Arc<Layout>) {
+    LAYOUTS.with(|cache| cache.borrow_mut()[layout_kind::<T>()] = Some(layout.clone()));
+}
+
+/// Where a sparse assembly's writes go: the order they came in, each one's
+/// slot in the CSC value array, and the symbolic factorisations of that
+/// pattern. An assembly whose writes come in the same order (every Newton
+/// iteration and timestep of a circuit) adds straight into the slots: no
+/// hashing, sorting, pattern compare or symbolic analysis.
+#[derive(Debug)]
+struct Layout {
+    size: usize,
+    writes: Vec<(usize, usize)>,
+    write_slot: Vec<usize>,
+    /// Each entry in the order first written: row, column and slot.
+    entries: Vec<(usize, usize, usize)>,
+    pattern: SymbolicSparseColMat<usize>,
+    /// The whole system's symbolic LU, `None` if the analysis failed.
+    symbolic: OnceLock<Option<Symbolic>>,
+    /// The last reduction its fixed unknowns asked for.
+    reduction: Mutex<Option<Arc<Reduction>>>,
+}
+
+impl Layout {
+    /// The layout of a recording, with the values in its slots.
+    fn build<T: MnaScalar>(
+        size: usize,
+        entries: &[(usize, usize, T)],
+        writes: &[usize],
+    ) -> (Arc<Self>, Vec<T>) {
+        let mut order: Vec<usize> = (0..entries.len()).collect();
+        order.sort_unstable_by_key(|&e| (entries[e].1, entries[e].0));
+        let mut slot = vec![0; entries.len()];
+        let mut col_ptr = vec![0usize; size + 1];
+        let mut row_idx = Vec::with_capacity(entries.len());
+        let mut values = Vec::with_capacity(entries.len());
+        for (s, &e) in order.iter().enumerate() {
+            let (r, c, v) = entries[e];
+            slot[e] = s;
+            col_ptr[c + 1] += 1;
+            row_idx.push(r);
+            values.push(v);
+        }
+        for c in 0..size {
+            col_ptr[c + 1] += col_ptr[c];
+        }
+        let layout = Layout {
+            size,
+            writes: writes
+                .iter()
+                .map(|&k| (entries[k].0, entries[k].1))
+                .collect(),
+            write_slot: writes.iter().map(|&k| slot[k]).collect(),
+            entries: entries
+                .iter()
+                .zip(&slot)
+                .map(|(&(r, c, _), &s)| (r, c, s))
+                .collect(),
+            pattern: SymbolicSparseColMat::new_checked(size, size, col_ptr, None, row_idx),
+            symbolic: OnceLock::new(),
+            reduction: Mutex::new(None),
+        };
+        (Arc::new(layout), values)
+    }
+
+    /// The slot holding (`r`, `c`), if the pattern has it.
+    fn slot(&self, r: usize, c: usize) -> Option<usize> {
+        let pattern = self.pattern.as_ref();
+        let col = pattern.col_ptr()[c]..pattern.col_ptr()[c + 1];
+        pattern.row_idx()[col.clone()]
+            .binary_search(&r)
+            .ok()
+            .map(|k| col.start + k)
+    }
+
+    fn solve<T: MnaScalar>(&self, values: &[T], b: &DVector<T>) -> Result<DVector<T>, SimError> {
+        let fixed = self.fixed_unknowns(values);
+        if fixed.is_empty() {
+            let symbolic = self
+                .symbolic
+                .get_or_init(|| symbolic_lu(&self.pattern))
+                .as_ref()
+                .ok_or(SimError::SingularMatrix)?;
+            return factor_and_solve(
+                symbolic,
+                SparseColMatRef::new(self.pattern.as_ref(), values),
+                b,
+            );
+        }
+        self.reduction_for(&fixed).solve(self, values, &fixed, b)
+    }
+
+    /// The fixed unknowns, each with its own row, none sharing an unknown.
+    /// Exact rearrangement only: a second row fixing an unknown already
+    /// taken is left in, so a circuit that over-determines a node stays
+    /// singular. An entry holding zero doesn't count.
+    fn fixed_unknowns<T: MnaScalar>(&self, values: &[T]) -> Vec<Fixed<T>> {
+        let size = self.size;
+        // Per row and per column: the number of non-zeros and the last one.
+        let mut row_count = vec![0u32; size];
+        let mut row_last = vec![(0usize, T::zero()); size];
+        let mut col_count = vec![0u32; size];
+        let mut col_last = vec![0usize; size];
+        for &(r, c, s) in &self.entries {
+            let v = values[s];
+            if v != T::zero() {
+                row_count[r] += 1;
+                row_last[r] = (c, v);
+                col_count[c] += 1;
+                col_last[c] = r;
             }
         }
-        let symbolic = SymbolicLu::try_new(pattern).map_err(|_| SimError::SingularMatrix)?;
-        *cache = Some((
-            pattern.col_ptr().to_vec(),
-            pattern.row_idx().to_vec(),
-            symbolic.clone(),
-        ));
-        Ok(symbolic)
-    })?;
+        let mut taken = vec![false; size];
+        let mut fixed = Vec::new();
+        for row in 0..size {
+            let (known, value) = row_last[row];
+            if row_count[row] == 1
+                && col_count[row] == 1
+                && col_last[row] == known
+                && known != row
+                && !taken[known]
+                && !taken[row]
+            {
+                taken[known] = true;
+                taken[row] = true;
+                fixed.push(Fixed { known, row, value });
+            }
+        }
+        fixed
+    }
 
-    let lu =
-        Lu::try_new_with_symbolic(symbolic, mat.as_ref()).map_err(|_| SimError::SingularMatrix)?;
-    let mut x = faer::Mat::<T>::from_fn(size, 1, |i, _| b[i]);
-    lu.solve_in_place(x.as_mut());
-    Ok(DVector::from_fn(size, |i, _| x[(i, 0)]))
+    fn reduction_for<T: MnaScalar>(&self, fixed: &[Fixed<T>]) -> Arc<Reduction> {
+        let mut cached = self
+            .reduction
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(reduction) = cached.as_ref() {
+            if reduction.fixes(fixed) {
+                return reduction.clone();
+            }
+        }
+        let reduction = Arc::new(Reduction::new(self, fixed));
+        *cached = Some(reduction.clone());
+        reduction
+    }
+}
+
+/// An unknown the system fixes on its own: `row`'s only entry is in column
+/// `known`, so `x[known] = b[row] / value`. The row's partner unknown (`row`
+/// as a column) appears in one equation only, `known`'s row, and is found
+/// from it once everything else is solved.
+///
+/// This is how a voltage source to ground stamps: its branch row reads
+/// `v_node = V` and its branch current enters only the node's KCL row. A
+/// supply rail shared by many parts is a dense row and column, and
+/// factorising with it fills the sparse LU in; taking it out first keeps
+/// the factor as sparse as the circuit without the rail.
+#[derive(Debug, Clone, Copy)]
+struct Fixed<T> {
+    known: usize,
+    row: usize,
+    /// The entry at (`row`, `known`).
+    value: T,
+}
+
+const NONE: usize = usize::MAX;
+
+/// A layout with a set of fixed unknowns substituted out: where each entry
+/// of the full system goes, and the reduced system's pattern.
+#[derive(Debug)]
+struct Reduction {
+    /// `(known, row)` of each fixed unknown.
+    key: Vec<(usize, usize)>,
+    /// For each unknown: its index in the reduced system, or [`NONE`].
+    index: Vec<usize>,
+    pattern: SymbolicSparseColMat<usize>,
+    symbolic: Option<Symbolic>,
+    /// For each layout entry, in the order first written.
+    actions: Vec<Action>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Action {
+    /// Into this slot of the reduced matrix.
+    Reduced(usize),
+    /// Times the known unknown (column), moved to this reduced row's right.
+    Rhs(usize, usize),
+    /// The coefficient of fixed unknown `i`'s partner in its own row.
+    PartnerCoef(usize),
+    /// Another term of fixed unknown `i`'s row, times the unknown (column).
+    PartnerTerm(usize, usize),
+    /// The fixing entry itself, or one in a column nothing reads.
+    Drop,
+}
+
+impl Reduction {
+    fn new<T: MnaScalar>(layout: &Layout, fixed: &[Fixed<T>]) -> Self {
+        let size = layout.size;
+        let mut index = vec![0usize; size];
+        // For each row that's some `known`'s: which entry of `fixed`.
+        let mut slot = vec![NONE; size];
+        let mut is_known = vec![false; size];
+        for (i, f) in fixed.iter().enumerate() {
+            index[f.known] = NONE;
+            index[f.row] = NONE;
+            is_known[f.known] = true;
+            slot[f.known] = i;
+        }
+        let mut m = 0;
+        for j in index.iter_mut() {
+            if *j != NONE {
+                *j = m;
+                m += 1;
+            }
+        }
+        let mut actions = Vec::with_capacity(layout.entries.len());
+        // Reduced row, column and the action to point at its slot.
+        let mut reduced = Vec::new();
+        for &(r, c, _) in &layout.entries {
+            let i = slot[r];
+            let action = if i != NONE {
+                if c == fixed[i].row {
+                    Action::PartnerCoef(i)
+                } else {
+                    Action::PartnerTerm(i, c)
+                }
+            } else if index[r] == NONE {
+                Action::Drop
+            } else if is_known[c] {
+                Action::Rhs(index[r], c)
+            } else if index[c] != NONE {
+                reduced.push((index[r], index[c], actions.len()));
+                Action::Reduced(0)
+            } else {
+                Action::Drop
+            };
+            actions.push(action);
+        }
+        reduced.sort_unstable_by_key(|&(r, c, _)| (c, r));
+        let mut col_ptr = vec![0usize; m + 1];
+        let mut row_idx = Vec::with_capacity(reduced.len());
+        for (s, &(r, c, a)) in reduced.iter().enumerate() {
+            actions[a] = Action::Reduced(s);
+            col_ptr[c + 1] += 1;
+            row_idx.push(r);
+        }
+        for c in 0..m {
+            col_ptr[c + 1] += col_ptr[c];
+        }
+        let pattern = SymbolicSparseColMat::new_checked(m, m, col_ptr, None, row_idx);
+        let symbolic = if m > 0 { symbolic_lu(&pattern) } else { None };
+        Self {
+            key: fixed.iter().map(|f| (f.known, f.row)).collect(),
+            index,
+            pattern,
+            symbolic,
+            actions,
+        }
+    }
+
+    fn fixes<T>(&self, fixed: &[Fixed<T>]) -> bool {
+        self.key.len() == fixed.len()
+            && self
+                .key
+                .iter()
+                .zip(fixed)
+                .all(|(&(known, row), f)| known == f.known && row == f.row)
+    }
+
+    /// Solves the system with the fixed unknowns substituted first.
+    fn solve<T: MnaScalar>(
+        &self,
+        layout: &Layout,
+        values: &[T],
+        fixed: &[Fixed<T>],
+        b: &DVector<T>,
+    ) -> Result<DVector<T>, SimError> {
+        let m = self.pattern.nrows();
+        let mut x = DVector::from_element(layout.size, T::zero());
+        for f in fixed {
+            x[f.known] = b[f.row] / f.value;
+        }
+        let mut rhs = DVector::from_element(m, T::zero());
+        for (j, &k) in self.index.iter().enumerate() {
+            if k != NONE {
+                rhs[k] = b[j];
+            }
+        }
+        // One pass: the reduced matrix, the known unknowns moved to the
+        // right, and each partner's coefficient in its row.
+        let mut reduced = vec![T::zero(); self.pattern.row_idx().len()];
+        let mut partner_acc: Vec<T> = fixed.iter().map(|f| b[f.known]).collect();
+        let mut partner_coef = vec![T::zero(); fixed.len()];
+        for (&(_, _, s), &action) in layout.entries.iter().zip(&self.actions) {
+            let v = values[s];
+            match action {
+                Action::Reduced(k) => reduced[k] = v,
+                Action::Rhs(row, c) => rhs[row] -= v * x[c],
+                Action::PartnerCoef(i) => partner_coef[i] += v,
+                Action::PartnerTerm(..) | Action::Drop => {}
+            }
+        }
+        if m > 0 {
+            let symbolic = self.symbolic.as_ref().ok_or(SimError::SingularMatrix)?;
+            let y = factor_and_solve(
+                symbolic,
+                SparseColMatRef::new(self.pattern.as_ref(), &reduced),
+                &rhs,
+            )?;
+            for (j, &k) in self.index.iter().enumerate() {
+                if k != NONE {
+                    x[j] = y[k];
+                }
+            }
+        }
+        for (&(_, _, s), &action) in layout.entries.iter().zip(&self.actions) {
+            if let Action::PartnerTerm(i, c) = action {
+                partner_acc[i] -= values[s] * x[c];
+            }
+        }
+        for (i, f) in fixed.iter().enumerate() {
+            x[f.row] = partner_acc[i] / partner_coef[i];
+        }
+        Ok(x)
+    }
+}
+
+/// A symbolic LU with an id of its own, for [`Workspace`] to tell them apart.
+#[derive(Debug)]
+struct Symbolic {
+    id: u64,
+    lu: SymbolicLu<usize>,
+}
+
+fn symbolic_lu(pattern: &SymbolicSparseColMat<usize>) -> Option<Symbolic> {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let lu = factorize_symbolic_lu(pattern.as_ref(), Default::default()).ok()?;
+    Some(Symbolic {
+        id: NEXT.fetch_add(1, Ordering::Relaxed),
+        lu,
+    })
+}
+
+/// A numeric LU and scratch memory, kept between factorisations on a
+/// thread so a refactor allocates nothing once they're big enough.
+struct Workspace<T> {
+    numeric: NumericLu<usize, T>,
+    /// The id of the symbolic LU `numeric` was last factorised with: faer
+    /// keeps some of a numeric LU's arrays at their old size, so one is
+    /// only refactorised for the same symbolic analysis.
+    symbolic: u64,
+    stack: MemBuffer,
+    stack_bytes: usize,
+}
+
+impl<T: MnaScalar> Workspace<T> {
+    fn new() -> Self {
+        Self {
+            numeric: NumericLu::new(),
+            symbolic: 0,
+            stack: MemBuffer::new(StackReq::EMPTY),
+            stack_bytes: 0,
+        }
+    }
+
+    /// Scratch memory for `req`, grown if it's short.
+    fn stack(&mut self, req: StackReq) -> &mut MemStack {
+        let bytes = req.unaligned_bytes_required();
+        if bytes > self.stack_bytes {
+            self.stack = MemBuffer::new(req);
+            self.stack_bytes = bytes;
+        }
+        MemStack::new(&mut self.stack)
+    }
+}
+
+thread_local! {
+    /// A [`Workspace`] for real and one for complex systems.
+    static WORKSPACES: RefCell<[Option<Box<dyn Any>>; 2]> = const { RefCell::new([None, None]) };
+}
+
+fn factor_and_solve<T: MnaScalar>(
+    symbolic: &Symbolic,
+    mat: SparseColMatRef<'_, usize, T>,
+    b: &DVector<T>,
+) -> Result<DVector<T>, SimError> {
+    WORKSPACES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let slot = &mut cache[layout_kind::<T>()];
+        if !slot.as_ref().is_some_and(|w| w.is::<Workspace<T>>()) {
+            *slot = Some(Box::new(Workspace::<T>::new()));
+        }
+        match slot.as_mut().and_then(|w| w.downcast_mut::<Workspace<T>>()) {
+            Some(work) => factor_and_solve_in(work, symbolic, mat, b),
+            None => factor_and_solve_in(&mut Workspace::new(), symbolic, mat, b),
+        }
+    })
+}
+
+fn factor_and_solve_in<T: MnaScalar>(
+    work: &mut Workspace<T>,
+    symbolic: &Symbolic,
+    mat: SparseColMatRef<'_, usize, T>,
+    b: &DVector<T>,
+) -> Result<DVector<T>, SimError> {
+    let size = mat.nrows();
+    let par = faer::get_global_parallelism();
+    let req = StackReq::any_of(&[
+        symbolic
+            .lu
+            .factorize_numeric_lu_scratch::<T>(par, Default::default()),
+        symbolic.lu.solve_in_place_scratch::<T>(1, par),
+    ]);
+    // Taken out so the factor can borrow it while the scratch is borrowed.
+    let mut numeric = std::mem::take(&mut work.numeric);
+    if work.symbolic != symbolic.id {
+        numeric = NumericLu::new();
+        work.symbolic = symbolic.id;
+    }
+    let result = (|| {
+        let stack = work.stack(req);
+        let lu = symbolic
+            .lu
+            .factorize_numeric_lu(&mut numeric, mat, par, stack, Default::default())
+            .map_err(|_| SimError::SingularMatrix)?;
+        let mut x = faer::Mat::<T>::from_fn(size, 1, |i, _| b[i]);
+        lu.solve_in_place_with_conj(Conj::No, x.as_mut(), par, work.stack(req));
+        Ok(DVector::from_fn(size, |i, _| x[(i, 0)]))
+    })();
+    if result.is_ok() {
+        work.numeric = numeric;
+    } else {
+        work.symbolic = 0;
+    }
+    result
 }
 
 /// Modified Nodal Analysis system.
@@ -387,6 +958,15 @@ mod tests {
 
     /// A tridiagonal system with a voltage-source row (zero diagonal), solved
     /// dense and sparse: the same answer.
+    /// Nothing but ground has no unknowns: an empty solution, not a panic
+    /// in the LU (it underflowed `0 - 1`).
+    #[test]
+    fn a_system_with_no_unknowns_solves_to_nothing() {
+        let empty = DVector::<f64>::from_element(0, 0.0);
+        assert_eq!(MnaMatrix::<f64>::dense(0).solve(&empty).unwrap().len(), 0);
+        assert_eq!(MnaMatrix::<f64>::sparse(0).solve(&empty).unwrap().len(), 0);
+    }
+
     #[test]
     fn sparse_matches_dense() {
         let n = 50;
@@ -415,6 +995,110 @@ mod tests {
         assert_eq!(y, y2);
     }
 
+    /// `n` nodes on a chain to ground, every one also tied to node 0, a
+    /// rail that `sources` grounded voltage sources hold (node 0 and nodes
+    /// 1.. for the rest), and one floating source between the last two
+    /// nodes. Unknowns: `n` nodes, then one branch per source.
+    fn hub_system<T: MnaScalar>(
+        n: usize,
+        sources: usize,
+        g: impl Fn(usize) -> T,
+        a: &mut MnaMatrix<T>,
+    ) -> DVector<T> {
+        let one = T::one();
+        for i in 1..n {
+            // Each node to the rail, to ground and to its neighbour.
+            let (gr, gg) = (g(i), g(i + n));
+            a[(i, i)] += gr + gg;
+            a[(0, 0)] += gr;
+            a[(i, 0)] -= gr;
+            a[(0, i)] -= gr;
+            if i + 1 < n {
+                let gc = g(i + 2 * n);
+                a[(i, i)] += gc;
+                a[(i + 1, i + 1)] += gc;
+                a[(i, i + 1)] -= gc;
+                a[(i + 1, i)] -= gc;
+            }
+        }
+        let mut b = DVector::from_element(n + sources + 1, T::zero());
+        for s in 0..sources {
+            let (node, k) = (if s == 0 { 0 } else { 10 * s }, n + s);
+            a[(node, k)] += one;
+            a[(k, node)] += one;
+            b[k] = g(s) * T::from_real(1e3 + s as f64);
+        }
+        // A floating source between the last two nodes: not grounded, so it
+        // stays in the system.
+        let (p, q, k) = (n - 2, n - 1, n + sources);
+        a[(p, k)] += one;
+        a[(k, p)] += one;
+        a[(q, k)] -= one;
+        a[(k, q)] -= one;
+        b[k] = T::from_real(0.25);
+        b
+    }
+
+    fn assert_hub_matches_dense<T: MnaScalar + std::fmt::Debug>(g: impl Fn(usize) -> T + Copy) {
+        let (n, sources) = (150, 3);
+        let size = n + sources + 1;
+        let (mut dense, mut sparse) = (MnaMatrix::dense(size), MnaMatrix::sparse(size));
+        let b = hub_system(n, sources, g, &mut dense);
+        hub_system(n, sources, g, &mut sparse);
+        let (x, y) = (dense.solve(&b).unwrap(), sparse.solve(&b).unwrap());
+        for i in 0..size {
+            let scale = x[i].abs().max(1e-12);
+            assert!(
+                (x[i] - y[i]).abs() <= 1e-10 * scale,
+                "unknown {i}: {:?} vs {:?}",
+                x[i],
+                y[i]
+            );
+        }
+        // And transposed, as the adjoint analyses solve it.
+        let (xt, yt) = (
+            dense.transpose().solve(&b).unwrap(),
+            sparse.transpose().solve(&b).unwrap(),
+        );
+        for i in 0..size {
+            let scale = xt[i].abs().max(1e-12);
+            assert!(
+                (xt[i] - yt[i]).abs() <= 1e-10 * scale,
+                "transposed {i}: {:?} vs {:?}",
+                xt[i],
+                yt[i]
+            );
+        }
+    }
+
+    /// A rail held by grounded sources is taken out before factorising
+    /// (it would fill the sparse LU in); the answer, the source currents
+    /// included, is the dense LU's.
+    #[test]
+    fn grounded_sources_are_substituted_exactly() {
+        assert_hub_matches_dense(|i| 1e-3 * (1.0 + (i % 7) as f64));
+        assert_hub_matches_dense(|i| {
+            Complex64::new(1e-3 * (1.0 + (i % 7) as f64), 1e-4 * (i % 5) as f64)
+        });
+    }
+
+    /// Two sources fixing one node over-determine it: still singular, not
+    /// one of them picked.
+    #[test]
+    fn a_node_fixed_twice_is_still_singular() {
+        let n = 120;
+        let mut a = MnaMatrix::<f64>::sparse(n + 2);
+        for i in 0..n {
+            a[(i, i)] += 1e-3;
+        }
+        for k in [n, n + 1] {
+            a[(0, k)] = 1.0;
+            a[(k, 0)] = 1.0;
+        }
+        let b = DVector::from_fn(n + 2, |i, _| if i >= n { 5.0 } else { 0.0 });
+        assert!(matches!(a.solve(&b), Err(SimError::SingularMatrix)));
+    }
+
     #[test]
     fn sparse_complex_matches_dense() {
         let n = 30;
@@ -435,6 +1119,83 @@ mod tests {
         let (x, y) = (dense.solve(&b).unwrap(), sparse.solve(&b).unwrap());
         for i in 0..n {
             assert!((x[i] - y[i]).norm() < 1e-12 * x[i].norm().max(1.0));
+        }
+    }
+
+    /// A sparse ladder of `n` unknowns with a grounded source on node 0,
+    /// written in a fixed order, scaled by `g`.
+    fn ladder(n: usize, g: f64) -> (MnaMatrix<f64>, DVector<f64>) {
+        let mut a = MnaMatrix::sparse(n + 1);
+        for i in 0..n {
+            a[(i, i)] += g * (2.0 + 0.01 * i as f64);
+            if i + 1 < n {
+                a[(i, i + 1)] -= g;
+                a[(i + 1, i)] -= g;
+            }
+        }
+        a[(0, n)] += 1.0;
+        a[(n, 0)] += 1.0;
+        let b = DVector::from_fn(n + 1, |i, _| if i == n { 5.0 } else { 0.0 });
+        (a, b)
+    }
+
+    /// Each sparse solve against the dense LU of the same matrix.
+    fn assert_matches_dense(a: &MnaMatrix<f64>, b: &DVector<f64>) {
+        let (x, y) = (a.to_dense().lu().solve(b).unwrap(), a.solve(b).unwrap());
+        for i in 0..b.len() {
+            assert_relative_eq!(x[i], y[i], max_relative = 1e-10, epsilon = 1e-14);
+        }
+    }
+
+    /// The second assembly in the same order replays the first one's
+    /// layout, and solves the same as a fresh one.
+    #[test]
+    fn a_replayed_assembly_solves_as_a_fresh_one() {
+        let (a, b) = ladder(150, 1e-3);
+        let first = a.solve(&b).unwrap();
+        let (a, b) = ladder(150, 1e-3);
+        assert!(matches!(a.storage, Storage::Replay { .. }));
+        assert_eq!(a.solve(&b).unwrap(), first);
+        // Other values, same order: still replayed.
+        let (a, b) = ladder(150, 2e-3);
+        assert!(matches!(a.storage, Storage::Replay { .. }));
+        assert_matches_dense(&a, &b);
+    }
+
+    /// A write out of the recorded order, or an assembly that stops short of
+    /// it, records a pattern of its own and solves right.
+    #[test]
+    fn a_changed_pattern_records_again() {
+        let (a, b) = ladder(150, 1e-3);
+        a.solve(&b).unwrap();
+        // An extra entry partway through: out of order.
+        let (mut a, b) = ladder(150, 1e-3);
+        a[(3, 7)] -= 1e-4;
+        assert!(matches!(a.storage, Storage::Sparse { .. }));
+        assert_matches_dense(&a, &b);
+        // Its layout is the one kept now, and the next assembly in the
+        // ladder's own order stops short of it.
+        let (a, b) = ladder(150, 1e-3);
+        assert!(
+            matches!(a.storage, Storage::Replay { cursor, ref layout, .. }
+            if cursor < layout.writes.len())
+        );
+        assert_matches_dense(&a, &b);
+        // Reading back through a replay.
+        let (a, _) = ladder(150, 1e-3);
+        assert_eq!(a[(0, 0)], 2e-3);
+        assert_eq!(a[(5, 9)], 0.0);
+    }
+
+    /// Systems of different sizes in turn each keep their factor right (a
+    /// numeric LU reused for another size kept its old arrays).
+    #[test]
+    fn sizes_in_turn_solve_right() {
+        for n in [150, 120, 150, 200, 120] {
+            let (a, b) = ladder(n, 1e-3);
+            assert_matches_dense(&a, &b);
+            let (a, b) = ladder(n, 1e-3);
+            assert_matches_dense(&a, &b);
         }
     }
 

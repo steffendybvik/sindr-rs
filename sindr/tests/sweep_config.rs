@@ -1,29 +1,31 @@
 //! Invalid sweep configs must return `Err`, never panic or yield NaN.
 
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::element::{Capacitor, Resistor, VoltageSource};
 use sindr::{dc_sweep, temperature_sweep, Circuit, CircuitElement, SimError};
+use sindr::{DcSweepAxis, TempSweepConfig};
 
 /// V1 -> R1 -> out -> C1 -> gnd.
 fn rc_lowpass() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "out".into()],
                 resistance: 1_000.0,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -35,8 +37,8 @@ fn ac_config(f_start: f64, f_stop: f64, num_points: usize, spacing: FrequencySpa
 
 fn assert_invalid<T: std::fmt::Debug>(result: Result<T, SimError>, case: &str) {
     match result {
-        Err(SimError::InvalidComponent(_)) => {}
-        other => panic!("{case}: expected InvalidComponent, got {other:?}"),
+        Err(SimError::InvalidConfig { .. }) => {}
+        other => panic!("{case}: expected InvalidConfig, got {other:?}"),
     }
 }
 
@@ -115,21 +117,45 @@ fn ac_linear_sweep_from_zero_hz_is_finite() {
 #[test]
 fn dc_sweep_rejects_non_finite_endpoints() {
     let circuit = rc_lowpass();
-    assert_invalid(dc_sweep(&circuit, "V1", f64::NAN, 1.0, 5), "NaN start");
-    assert_invalid(dc_sweep(&circuit, "V1", 0.0, f64::INFINITY, 5), "inf stop");
-    assert_invalid(dc_sweep(&circuit, "V1", 0.0, 1.0, 0), "zero points");
-    assert_invalid(dc_sweep(&circuit, "V1", 0.0, 1.0, 1), "one point");
+    assert_invalid(
+        dc_sweep(&circuit, &DcSweepAxis::new("V1", f64::NAN, 1.0, 5)),
+        "NaN start",
+    );
+    assert_invalid(
+        dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, f64::INFINITY, 5)),
+        "inf stop",
+    );
+    assert_invalid(
+        dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 1.0, 0)),
+        "zero points",
+    );
+    assert_invalid(
+        dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 1.0, 1)),
+        "one point",
+    );
 }
 
 #[test]
 fn temperature_sweep_rejects_invalid_temperatures() {
     let circuit = rc_lowpass();
-    assert_invalid(temperature_sweep(&circuit, 0.0, 300.0, 5), "0 K start");
-    assert_invalid(temperature_sweep(&circuit, 300.0, -10.0, 5), "negative end");
-    assert_invalid(temperature_sweep(&circuit, f64::NAN, 300.0, 5), "NaN start");
     assert_invalid(
-        temperature_sweep(&circuit, 300.0, f64::INFINITY, 5),
+        temperature_sweep(&circuit, &TempSweepConfig::new(0.0, 300.0, 5)),
+        "0 K start",
+    );
+    assert_invalid(
+        temperature_sweep(&circuit, &TempSweepConfig::new(300.0, -10.0, 5)),
+        "negative end",
+    );
+    assert_invalid(
+        temperature_sweep(&circuit, &TempSweepConfig::new(f64::NAN, 300.0, 5)),
+        "NaN start",
+    );
+    assert_invalid(
+        temperature_sweep(&circuit, &TempSweepConfig::new(300.0, f64::INFINITY, 5)),
         "inf end",
     );
-    assert_invalid(temperature_sweep(&circuit, 250.0, 350.0, 0), "zero steps");
+    assert_invalid(
+        temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 350.0, 0)),
+        "zero steps",
+    );
 }

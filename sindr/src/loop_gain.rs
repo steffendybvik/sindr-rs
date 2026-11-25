@@ -27,6 +27,8 @@
 //! `T` is the return ratio: positive at low frequency for negative feedback,
 //! and the closed-loop response goes as `1/(1 + T)`.
 
+use crate::element::VoltageSource;
+use crate::handle::ComponentId;
 use num_complex::Complex64;
 
 use crate::ac_analysis::{
@@ -35,18 +37,19 @@ use crate::ac_analysis::{
     SmallSignalModel,
 };
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::node_map::NodeMap;
 
 /// Loop-gain analysis configuration. Build one with [`LoopGainConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct LoopGainConfig {
     /// Id of the probe: an independent voltage source in series with the
     /// loop, `nodes[1]` on the driving side and `nodes[0]` on the driven
     /// side. Its DC value biases the circuit as usual; 0 V leaves it out.
-    pub probe: String,
+    pub probe: ComponentId,
     /// Start frequency (Hz).
     pub f_start: f64,
     /// Stop frequency (Hz).
@@ -67,7 +70,12 @@ impl LoopGainConfig {
     /// let config = LoopGainConfig::new("Vprobe", 1.0, 100e6, 801);
     /// assert_eq!(config.probe, "Vprobe");
     /// ```
-    pub fn new(probe: impl Into<String>, f_start: f64, f_stop: f64, num_points: usize) -> Self {
+    pub fn new(
+        probe: impl Into<ComponentId>,
+        f_start: f64,
+        f_stop: f64,
+        num_points: usize,
+    ) -> Self {
         Self {
             probe: probe.into(),
             f_start,
@@ -96,12 +104,14 @@ impl LoopGainConfig {
 
 /// The loop gain at one frequency.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct LoopGainPoint {
     /// Frequency (Hz).
     pub frequency: f64,
     /// The loop gain `T(j·2πf)`.
+    #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub gain: Complex64,
     /// Phase of `T` (degrees), unwrapped along the sweep from the first
     /// point's value in (−180°, 180°].
@@ -117,6 +127,7 @@ impl LoopGainPoint {
 
 /// Result of a loop-gain analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct LoopGainResult {
@@ -158,7 +169,7 @@ pub struct LoopGainResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the sweep is invalid (as for
+/// - [`SimError::InvalidConfig`] if the sweep is invalid (as for
 ///   [`AcConfig`]), or the probe is not an independent voltage source with
 ///   neither terminal on ground. Checked before the DC solve
 /// - Any [`SimError`] from the DC operating-point solve
@@ -170,30 +181,31 @@ pub struct LoopGainResult {
 /// ```
 /// use sindr::{Circuit, CircuitElement, OpAmpModel};
 /// use sindr::loop_gain::{solve_loop_gain, LoopGainConfig};
+/// use sindr::element::{OpAmp, Resistor, VoltageSource};
 ///
 /// // A follower on a single-pole op-amp (100 dB, 1 MHz GBW), broken at
 /// // its output: T = A(s), phase margin just over 90°.
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::OpAmp {
+///         CircuitElement::OpAmp(OpAmp {
 ///             id: "U1".into(),
 ///             nodes: ["0".into(), "fb".into(), "out".into()],
 ///             v_pos: 15.0,
 ///             v_neg: -15.0,
 ///             model: Some(OpAmpModel::default()),
-///         },
-///         CircuitElement::VoltageSource {
+///         }),
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "Vprobe".into(),
 ///             nodes: ["fb".into(), "out".into()],
 ///             voltage: 0.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "RL".into(),
 ///             nodes: ["out".into(), "0".into()],
 ///             resistance: 10e3,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -205,6 +217,7 @@ pub struct LoopGainResult {
 /// assert!(lg.gain_margin_db.is_none());
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_loop_gain(
     circuit: &Circuit,
     config: &LoopGainConfig,
@@ -226,22 +239,30 @@ pub(crate) fn solve_loop_gain_with(
         .components
         .iter()
         .find_map(|c| match c {
-            CircuitElement::VoltageSource { id, nodes, .. } if *id == config.probe => {
+            CircuitElement::VoltageSource(VoltageSource { id, nodes, .. })
+                if *id == config.probe =>
+            {
                 Some(nodes.clone())
             }
             _ => None,
         })
         .ok_or_else(|| {
-            SimError::InvalidComponent(format!(
-                "loop gain: probe `{}` is not an independent voltage source",
-                config.probe
-            ))
+            SimError::config(
+                ConfigKind::LoopGain,
+                format!(
+                    "probe `{}` is not an independent voltage source",
+                    config.probe
+                ),
+            )
         })?;
-    if probe_nodes.contains(&circuit.ground_node) {
-        return Err(SimError::InvalidComponent(format!(
-            "loop gain: probe `{}` has a terminal on ground; it must sit in series with the loop",
-            config.probe
-        )));
+    if probe_nodes.iter().any(|n| *n == circuit.ground_node) {
+        return Err(SimError::config(
+            ConfigKind::LoopGain,
+            format!(
+                "probe `{}` has a terminal on ground; it must sit in series with the loop",
+                config.probe
+            ),
+        ));
     }
 
     let (node_map, dc_solution, dc) = bias_point_with_result(circuit, opts)?;
@@ -314,7 +335,7 @@ struct Probe<'a> {
     circuit: &'a Circuit,
     node_map: &'a NodeMap,
     dc_solution: &'a nalgebra::DVector<f64>,
-    ss_models: &'a [SmallSignalModel],
+    ss_models: &'a SmallSignalModel,
     id: &'a str,
     /// Row of the probe's driven terminal, `nodes[0]`.
     driven: Option<usize>,
@@ -332,10 +353,10 @@ impl Probe<'_> {
             omega,
         );
         let (Some(k), Some(p)) = (system.vsource_branch(self.id), self.driven) else {
-            return Err(SimError::InvalidComponent(format!(
-                "loop gain: probe `{}` is not an independent voltage source",
-                self.id
-            )));
+            return Err(SimError::config(
+                ConfigKind::LoopGain,
+                format!("probe `{}` is not an independent voltage source", self.id),
+            ));
         };
         let zero = nalgebra::DVector::from_element(system.size(), Complex64::new(0.0, 0.0));
         // Voltage injection: the probe at 1, everything else zero.

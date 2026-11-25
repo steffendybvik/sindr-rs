@@ -5,15 +5,16 @@
 //! Only compiled when the `spice` feature is enabled.
 #![cfg(feature = "spice")]
 
+use sindr::element::{Cccs, Ccvs, Resistor, Transformer, Vccs, Vcvs, VoltageSource};
 use sindr::spice::{parse_str, parse_str_with_options, to_netlist, ParseOptions};
 use sindr::{solve_circuit, Circuit, CircuitElement};
 
 fn resistor(id: &str, a: &str, b: &str, r: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: r,
-    }
+    })
 }
 
 fn find<'a>(circuit: &'a Circuit, id: &str) -> &'a CircuitElement {
@@ -29,50 +30,50 @@ fn controlled_circuit() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "v1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 2.0,
                 waveform: None,
-            },
+            }),
             resistor("r1", "in", "a", 1e3),
             resistor("r2", "a", "0", 2e3),
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 id: "e1".into(),
                 nodes: ["e".into(), "0".into()],
                 control_nodes: ["a".into(), "0".into()],
                 gain: 3.0,
-            },
+            }),
             resistor("re", "e", "0", 1e3),
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id: "g1".into(),
                 nodes: ["0".into(), "g".into()],
                 control_nodes: ["a".into(), "0".into()],
                 gm: 1e-3,
-            },
+            }),
             resistor("rg", "g", "0", 1e3),
-            CircuitElement::Ccvs {
+            CircuitElement::Ccvs(Ccvs {
                 id: "h1".into(),
                 nodes: ["h".into(), "0".into()],
                 control_source: "v1".into(),
                 rm: 100.0,
-            },
+            }),
             resistor("rh", "h", "0", 1e3),
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id: "f1".into(),
                 nodes: ["0".into(), "f".into()],
                 control_source: "v1".into(),
                 alpha: 2.0,
-            },
+            }),
             resistor("rf", "f", "0", 1e3),
-            CircuitElement::Transformer {
+            CircuitElement::Transformer(Transformer {
                 id: "t1".into(),
                 nodes: ["e".into(), "0".into(), "s".into(), "0".into()],
                 l1: 1e-3,
                 l2: 4e-3,
                 k: 0.99,
                 saturation: None,
-            },
+            }),
             resistor("rs", "s", "0", 1e3),
         ],
         ..Default::default()
@@ -92,21 +93,21 @@ fn exported_controlled_sources_and_transformer_parse_back() {
         let id = element.id();
         let parsed = match element {
             // The transformer comes back under its `K` line's name.
-            CircuitElement::Transformer { .. } => find(&back, "kt1"),
+            CircuitElement::Transformer(Transformer { .. }) => find(&back, "kt1"),
             _ => find(&back, id),
         };
         match (element, parsed) {
             (
-                CircuitElement::Transformer {
+                CircuitElement::Transformer(Transformer {
                     nodes, l1, l2, k, ..
-                },
-                CircuitElement::Transformer {
+                }),
+                CircuitElement::Transformer(Transformer {
                     nodes: n,
                     l1: a,
                     l2: b,
                     k: c,
                     ..
-                },
+                }),
             ) => assert_eq!((nodes, l1, l2, k), (n, a, b, c)),
             (a, b) => {
                 let mut b = b.clone();
@@ -161,25 +162,25 @@ fn hand_written_deck_reads_each_card_in_strict_mode() {
     let c = &parsed.circuit;
     assert!(matches!(
         find(c, "eamp"),
-        CircuitElement::Vcvs { nodes, control_nodes, gain, .. }
+        CircuitElement::Vcvs(Vcvs { nodes, control_nodes, gain, .. })
             if nodes == &["out".to_string(), "0".to_string()]
                 && control_nodes == &["a".to_string(), "0".to_string()]
                 && *gain == 10.0
     ));
-    assert!(matches!(find(c, "gtc"), CircuitElement::Vccs { gm, .. } if *gm == 2e-3));
+    assert!(matches!(find(c, "gtc"), CircuitElement::Vccs(Vccs { gm, .. }) if *gm == 2e-3));
     assert!(matches!(
         find(c, "fmir"),
-        CircuitElement::Cccs { control_source, alpha, .. }
+        CircuitElement::Cccs(Cccs { control_source, alpha, .. })
             if control_source == "vsense" && *alpha == 3.0
     ));
     assert!(matches!(
         find(c, "htr"),
-        CircuitElement::Ccvs { control_source, rm, .. }
+        CircuitElement::Ccvs(Ccvs { control_source, rm, .. })
             if control_source == "vsense" && *rm == 1e3
     ));
     assert!(matches!(
         find(c, "kxfmr"),
-        CircuitElement::Transformer { nodes, l1, l2, k, .. }
+        CircuitElement::Transformer(Transformer { nodes, l1, l2, k, .. })
             if nodes == &["p".to_string(), "0".into(), "x".into(), "0".into()]
                 && *l1 == 10e-3 && *l2 == 40e-3 && *k == 0.95
     ));
@@ -221,11 +222,11 @@ Rc c 0 1k
     for x in ["x1", "x2"] {
         assert!(matches!(
             find(&flat, &format!("{x}.fo")),
-            CircuitElement::Cccs { control_source, .. } if *control_source == format!("{x}.vs")
+            CircuitElement::Cccs(Cccs { control_source, .. }) if *control_source == format!("{x}.vs")
         ));
         assert!(matches!(
             find(&flat, &format!("{x}.kab")),
-            CircuitElement::Transformer { .. }
+            CircuitElement::Transformer(Transformer { .. })
         ));
     }
     let r = solve_circuit(&parsed.circuit).unwrap();

@@ -1,0 +1,97 @@
+//! A varactor: a diode used for its voltage-dependent junction capacitance.
+
+use crate::error::SimError;
+use crate::handle::NodeId;
+use crate::stamp::{stamp_companion_at, stamp_resistor_at};
+
+use super::{AcStamp, DcStamp, Device, Report, TranStamp};
+use crate::ratings::{RatingKind, RatingProbe};
+
+#[cfg(feature = "spice")]
+use crate::spice::export::{unsupported, Deck, ExportError};
+
+/// Varactor diode: voltage-dependent junction capacitance.
+/// Open circuit in DC (a 1 TΩ leak); voltage-dependent capacitor in
+/// transient; in AC, its capacitance at the DC bias point.
+/// nodes: [anode, cathode]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Varactor {
+    /// Unique component identifier.
+    pub id: String,
+    /// Terminals `[anode, cathode]`.
+    pub nodes: [NodeId; 2],
+    /// Model parameters (zero-bias capacitance, grading, etc.).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub params: sindr_devices::varactor::VaractorParams,
+}
+
+impl Device for Varactor {
+    device_identity!();
+
+    /// Open at DC. Over a step its current is the companion the step was
+    /// solved with, at the junction capacitance of the step's start.
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let Some(step) = r.step() else {
+            r.component(&self.id, v, 0.0, 0.0);
+            return;
+        };
+        let history = r.capacitor(0);
+        let cj = sindr_devices::varactor::junction_capacitance(history.x1, &self.params);
+        let (g, i_hist) = step.integ.capacitor(cj, &history);
+        let i = g * v + i_hist;
+        r.set_capacitor(0, history.push(v, i));
+        r.port(&self.id, v, i);
+    }
+
+    /// Its capacitance at the DC bias.
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let c = sindr_devices::varactor::junction_capacitance(s.across(), &self.params);
+        let y = s.s * c;
+        let nodes = s.nodes();
+        s.admittance(nodes, y);
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::ReverseVoltage]
+    }
+
+    fn rating(&self, kind: RatingKind, m: &RatingProbe<'_>) -> Option<f64> {
+        m.junction_rating(kind)
+    }
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        // Open at DC: a 1e12 Ω shunt, open for practical purposes.
+        let nodes = s.nodes();
+        stamp_resistor_at(s.system, nodes, 1e12);
+        Ok(())
+    }
+
+    /// Its capacitance linearised at the voltage the step starts from.
+    fn stamp_transient(&self, s: &mut TranStamp<'_>) -> Result<(), SimError> {
+        let history = s.capacitor(0);
+        let c = sindr_devices::varactor::junction_capacitance(history.x1, &self.params);
+        let (g, i_hist) = s.integ.capacitor(c, history);
+        let nodes = s.nodes();
+        stamp_companion_at(s.system, nodes, g, i_hist);
+        Ok(())
+    }
+
+    fn capacitor_histories(&self) -> usize {
+        1
+    }
+
+    fn is_reactive(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, _: &mut Deck<'_>, _: &str) -> Result<(), ExportError> {
+        Err(unsupported(
+            &self.id,
+            "a SPICE diode with junction capacitance also conducts",
+        ))
+    }
+}

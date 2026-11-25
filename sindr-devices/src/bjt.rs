@@ -11,6 +11,7 @@ use crate::diode::{thermal_voltage, V_T};
 
 /// BJT polarity.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BjtKind {
     /// NPN (electrons are majority carriers in base region).
@@ -24,7 +25,10 @@ pub enum BjtKind {
 /// Operating region of a BJT — useful for diagnostics and circuit
 /// classification (amplifier biased "active", switch in "saturation", …).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum BjtRegion {
     /// Both junctions reverse-biased — negligible currents.
     Cutoff,
@@ -42,6 +46,12 @@ impl BjtRegion {
             BjtRegion::Active => "active",
             BjtRegion::Saturation => "saturation",
         }
+    }
+}
+
+impl std::fmt::Display for BjtRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -431,6 +441,18 @@ pub fn detect_region(vbe: f64, vbc: f64) -> BjtRegion {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[test]
+    fn region_displays_as_its_label() {
+        for (region, label) in [
+            (BjtRegion::Cutoff, "cutoff"),
+            (BjtRegion::Active, "active"),
+            (BjtRegion::Saturation, "saturation"),
+        ] {
+            assert_eq!(region.to_string(), label);
+            assert_eq!(region.as_str(), label);
+        }
+    }
 
     #[test]
     fn bjt_companion_at_zero_voltages() {

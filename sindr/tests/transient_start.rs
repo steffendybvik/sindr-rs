@@ -2,6 +2,7 @@
 //! (`TransientStart::OperatingPoint`, SPICE's `.tran` without `UIC`) or from
 //! the initial conditions alone (`TransientStart::InitialConditions`, `UIC`).
 
+use sindr::element::{Capacitor, Inductor, OpAmp, Resistor, Transformer, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::{
@@ -10,28 +11,28 @@ use sindr::{
 };
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn v(id: &str, a: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [a.into(), "0".into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn c(id: &str, a: &str, farads: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), "0".into()],
         capacitance: farads,
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -100,12 +101,12 @@ fn an_inductor_starts_with_its_dc_current() {
     let rl = circuit(vec![
         v("V1", "in", 1.0),
         r("R1", "in", "a", 10.0),
-        CircuitElement::Inductor {
+        CircuitElement::Inductor(Inductor {
             id: "L1".into(),
             nodes: ["a".into(), "0".into()],
             inductance: 10e-3,
             saturation: None,
-        },
+        }),
     ]);
     let tran = run(&rl, &at_op(2e-3, 1e-5));
     for k in 0..tran.timesteps.len() {
@@ -122,12 +123,12 @@ fn an_inductor_current_is_held_at_the_operating_point() {
     let rl = circuit(vec![
         v("V1", "in", 1.0),
         r("R1", "in", "a", 10.0),
-        CircuitElement::Inductor {
+        CircuitElement::Inductor(Inductor {
             id: "L1".into(),
             nodes: ["a".into(), "0".into()],
             inductance: 10e-3,
             saturation: None,
-        },
+        }),
     ]);
     let tran = run(&rl, &at_op(1e-3, 1e-6).with_initial_current("L1", 0.05));
     // Held at 50 mA, the 10 Ω drops 0.5 V, so `a` starts at 0.5 V.
@@ -163,7 +164,7 @@ fn an_ic_node_is_held_at_the_operating_point() {
 #[test]
 fn a_waveform_source_starts_at_its_t0_value() {
     let pulse = circuit(vec![
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: "V1".into(),
             nodes: ["in".into(), "0".into()],
             voltage: 0.0,
@@ -176,7 +177,7 @@ fn a_waveform_source_starts_at_its_t0_value() {
                 pulse_width: 10e-3,
                 period: 20e-3,
             }),
-        },
+        }),
         r("R1", "in", "a", 1e3),
         c("C1", "a", 1e-6),
     ]);
@@ -192,14 +193,14 @@ fn transformer_windings_start_with_their_dc_currents() {
     let xfmr = circuit(vec![
         v("V1", "in", 5.0),
         r("R1", "in", "p", 10.0),
-        CircuitElement::Transformer {
+        CircuitElement::Transformer(Transformer {
             id: "T1".into(),
             nodes: ["p".into(), "0".into(), "s".into(), "0".into()],
             l1: 10e-3,
             l2: 10e-3,
             k: 0.99,
             saturation: None,
-        },
+        }),
         r("RL", "s", "0", 100.0),
     ]);
     let tran = run(&xfmr, &at_op(1e-3, 1e-6));
@@ -224,13 +225,13 @@ fn transformer_windings_start_with_their_dc_currents() {
 fn an_op_amp_stage_starts_settled() {
     let buffer = circuit(vec![
         v("V1", "in", 2.0),
-        CircuitElement::OpAmp {
+        CircuitElement::OpAmp(OpAmp {
             id: "U1".into(),
             nodes: ["in".into(), "out".into(), "out".into()],
             v_pos: 15.0,
             v_neg: -15.0,
             model: Some(OpAmpModel::default()),
-        },
+        }),
         r("RL", "out", "0", 10e3),
     ]);
     flat(&run(&buffer, &at_op(10e-6, 1e-7)), "out", 2.0, 1e-3);

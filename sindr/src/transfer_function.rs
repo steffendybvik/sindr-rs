@@ -4,6 +4,8 @@
 //! gain from an input source to an output, the resistance the input source
 //! sees, and the resistance at the output.
 
+use crate::element::{CurrentSource, VoltageSource};
+use crate::handle::{ComponentId, NodeId};
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -12,11 +14,12 @@ use crate::ac_analysis::{
     SmallSignalSystem,
 };
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::node_map::NodeMap;
 
 /// What a transfer function is measured at.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum TfOutput {
@@ -24,15 +27,15 @@ pub enum TfOutput {
     /// or against ground when `reference` is `None`.
     Voltage {
         /// Output node.
-        node: String,
+        node: NodeId,
         /// Reference node; ground when `None`.
-        reference: Option<String>,
+        reference: Option<NodeId>,
     },
     /// `I(source)`: the current through an independent voltage source,
     /// from its `nodes[0]` through the source to its `nodes[1]`.
     Current {
         /// Id of the voltage source the current runs through.
-        source_id: String,
+        source_id: ComponentId,
     },
 }
 
@@ -47,7 +50,7 @@ impl TfOutput {
     ///     TfOutput::Voltage { node: "out".into(), reference: None },
     /// );
     /// ```
-    pub fn voltage(node: impl Into<String>) -> Self {
+    pub fn voltage(node: impl Into<NodeId>) -> Self {
         TfOutput::Voltage {
             node: node.into(),
             reference: None,
@@ -55,7 +58,7 @@ impl TfOutput {
     }
 
     /// `V(node,reference)`: the voltage of `node` against `reference`.
-    pub fn voltage_between(node: impl Into<String>, reference: impl Into<String>) -> Self {
+    pub fn voltage_between(node: impl Into<NodeId>, reference: impl Into<NodeId>) -> Self {
         TfOutput::Voltage {
             node: node.into(),
             reference: Some(reference.into()),
@@ -64,7 +67,7 @@ impl TfOutput {
 
     /// `I(source_id)`: the current through the independent voltage source
     /// `source_id`.
-    pub fn current(source_id: impl Into<String>) -> Self {
+    pub fn current(source_id: impl Into<ComponentId>) -> Self {
         TfOutput::Current {
             source_id: source_id.into(),
         }
@@ -74,13 +77,14 @@ impl TfOutput {
 /// Transfer-function analysis configuration. Build one with
 /// [`TfConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TfConfig {
     /// The output the gain is measured at.
     pub output: TfOutput,
     /// Id of the input: an independent voltage or current source.
-    pub input_source: String,
+    pub input_source: ComponentId,
 }
 
 impl TfConfig {
@@ -94,7 +98,7 @@ impl TfConfig {
     /// let config = TfConfig::new(TfOutput::voltage("out"), "V1");
     /// assert_eq!(config.input_source, "V1");
     /// ```
-    pub fn new(output: TfOutput, input_source: impl Into<String>) -> Self {
+    pub fn new(output: TfOutput, input_source: impl Into<ComponentId>) -> Self {
         Self {
             output,
             input_source: input_source.into(),
@@ -107,6 +111,7 @@ impl TfConfig {
 /// The gain's unit follows the input and output: V/V for a voltage in and
 /// out, A/A for a current in and out, Ω or S for a mix.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TfResult {
@@ -142,11 +147,11 @@ pub struct TfResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the input is not an independent
-///   voltage or current source, the output node is not in the circuit, or
-///   a current output does not name an independent voltage source. These
-///   are checked before the DC solve, so a misspelt name isn't hidden by a
-///   DC failure
+/// - [`SimError::UnknownNode`] if the output node is not in the circuit,
+///   and [`SimError::InvalidConfig`] if the input is not an independent
+///   voltage or current source, or a current output does not name an
+///   independent voltage source. These are checked before the DC solve, so
+///   a misspelt name isn't hidden by a DC failure
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -155,27 +160,28 @@ pub struct TfResult {
 /// ```
 /// use sindr::{Circuit, CircuitElement};
 /// use sindr::transfer_function::{solve_tf, TfConfig, TfOutput};
+/// use sindr::element::{Resistor, VoltageSource};
 ///
 /// // A 1 kΩ / 3 kΩ divider: gain 3/4, Rin 4 kΩ, Rout 1k ‖ 3k = 750 Ω.
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["in".into(), "0".into()],
 ///             voltage: 1.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["in".into(), "out".into()],
 ///             resistance: 1_000.0,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R2".into(),
 ///             nodes: ["out".into(), "0".into()],
 ///             resistance: 3_000.0,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -187,6 +193,7 @@ pub struct TfResult {
 /// assert!((tf.output_resistance - 750.0).abs() < 1e-6);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_tf(circuit: &Circuit, config: &TfConfig) -> Result<TfResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
@@ -234,38 +241,36 @@ pub(crate) fn solve_tf_with(
 /// alone, so a misspelt port fails before the DC solve rather than after it.
 fn check_ports(circuit: &Circuit, config: &TfConfig) -> Result<(), SimError> {
     let is_vsource = |id: &str| {
-        circuit
-            .components
-            .iter()
-            .any(|c| matches!(c, CircuitElement::VoltageSource { id: v, .. } if v == id))
+        circuit.components.iter().any(
+            |c| matches!(c, CircuitElement::VoltageSource(VoltageSource { id: v, .. }) if v == id),
+        )
     };
     let is_isource = |id: &str| {
-        circuit
-            .components
-            .iter()
-            .any(|c| matches!(c, CircuitElement::CurrentSource { id: i, .. } if i == id))
+        circuit.components.iter().any(
+            |c| matches!(c, CircuitElement::CurrentSource(CurrentSource { id: i, .. }) if i == id),
+        )
     };
     let id = &config.input_source;
     if !is_vsource(id) && !is_isource(id) {
-        return Err(SimError::InvalidComponent(format!(
-            "transfer function: input `{id}` is not an independent voltage or current source"
-        )));
+        return Err(SimError::config(
+            ConfigKind::TransferFunction,
+            format!("input `{id}` is not an independent voltage or current source"),
+        ));
     }
     match &config.output {
         TfOutput::Voltage { node, reference } => {
             let node_map = NodeMap::from_circuit(circuit);
             for name in std::iter::once(node).chain(reference) {
                 if node_map.index(name).is_none() && *name != circuit.ground_node {
-                    return Err(SimError::InvalidComponent(format!(
-                        "transfer function: output node `{name}` is not in the circuit"
-                    )));
+                    return Err(SimError::unknown_node(name.as_str()));
                 }
             }
         }
         TfOutput::Current { source_id } if !is_vsource(source_id) => {
-            return Err(SimError::InvalidComponent(format!(
-                "transfer function: output current source `{source_id}` is not an independent voltage source"
-            )));
+            return Err(SimError::config(
+                ConfigKind::TransferFunction,
+                format!("output current source `{source_id}` is not an independent voltage source"),
+            ));
         }
         TfOutput::Current { .. } => {}
     }
@@ -283,7 +288,7 @@ pub(crate) fn independent_vsource_branch(
     circuit
         .components
         .iter()
-        .any(|c| matches!(c, CircuitElement::VoltageSource { id: vid, .. } if vid == id))
+        .any(|c| matches!(c, CircuitElement::VoltageSource(VoltageSource { id: vid, .. }) if vid == id))
         .then(|| system.vsource_branch(id))
         .flatten()
 }
@@ -313,15 +318,21 @@ impl Port {
             .find_map(|c| match c {
                 // A current source drives current through itself from
                 // nodes[0] to nodes[1], so into the circuit at nodes[1].
-                CircuitElement::CurrentSource { id: cid, nodes, .. } if cid == id => Some(
-                    Port::Nodes(node_map.index(&nodes[1]), node_map.index(&nodes[0])),
-                ),
+                CircuitElement::CurrentSource(CurrentSource { id: cid, nodes, .. })
+                    if cid == id =>
+                {
+                    Some(Port::Nodes(
+                        node_map.index(&nodes[1]),
+                        node_map.index(&nodes[0]),
+                    ))
+                }
                 _ => None,
             })
             .ok_or_else(|| {
-                SimError::InvalidComponent(format!(
-                    "transfer function: input `{id}` is not an independent voltage or current source"
-                ))
+                SimError::config(
+                    ConfigKind::TransferFunction,
+                    format!("input `{id}` is not an independent voltage or current source"),
+                )
             })
     }
 
@@ -334,9 +345,7 @@ impl Port {
         match output {
             TfOutput::Voltage { node, reference } => {
                 let index = |name: &str| match node_map.index(name) {
-                    None if name != circuit.ground_node => Err(SimError::InvalidComponent(
-                        format!("transfer function: output node `{name}` is not in the circuit"),
-                    )),
+                    None if name != circuit.ground_node => Err(SimError::unknown_node(name)),
                     index => Ok(index),
                 };
                 let reference = match reference {
@@ -345,13 +354,16 @@ impl Port {
                 };
                 Ok(Port::Nodes(index(node)?, reference))
             }
-            TfOutput::Current { source_id } => independent_vsource_branch(circuit, system, source_id)
-                .map(Port::Branch)
-                .ok_or_else(|| {
-                    SimError::InvalidComponent(format!(
-                        "transfer function: output current source `{source_id}` is not an independent voltage source"
-                    ))
-                }),
+            TfOutput::Current { source_id } => {
+                independent_vsource_branch(circuit, system, source_id)
+                    .map(Port::Branch)
+                    .ok_or_else(|| {
+                        SimError::config(
+            ConfigKind::TransferFunction,
+            format!("output current source `{source_id}` is not an independent voltage source"),
+        )
+                    })
+            }
         }
     }
 

@@ -1,41 +1,44 @@
 //! Pole-zero analysis against closed-form poles and zeros.
 
 use num_complex::Complex64;
+use sindr::element::{
+    Battery, Capacitor, CurrentSource, Diode, Inductor, Jfet, OpAmp, Resistor, VoltageSource,
+};
 use sindr::pole_zero::{solve_pz, PzConfig, PzFind};
 use sindr::{Circuit, CircuitElement, OpAmpModel, SimError};
 
 fn v(id: &str, p: &str, n: &str) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage: 0.0,
         waveform: None,
-    }
+    })
 }
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn c(id: &str, a: &str, b: &str, farads: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance: farads,
-    }
+    })
 }
 
 fn l(id: &str, a: &str, b: &str, henries: f64) -> CircuitElement {
-    CircuitElement::Inductor {
+    CircuitElement::Inductor(Inductor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         inductance: henries,
         saturation: None,
-    }
+    })
 }
 
 fn circuit(components: Vec<CircuitElement>) -> Circuit {
@@ -151,12 +154,12 @@ fn infinite_eigenvalues_of_higher_index_are_deflated() {
     // may show up as a spurious finite root.
     let mut parts = series_rlc();
     parts.push(c("Cdec", "in", "0", 1e-3));
-    parts.push(CircuitElement::CurrentSource {
+    parts.push(CircuitElement::CurrentSource(CurrentSource {
         id: "I1".into(),
         nodes: ["0".into(), "x".into()],
         current: 0.0,
         waveform: None,
-    });
+    }));
     parts.push(l("L2", "x", "b", 1e-2));
     let pz = solve_pz(
         &circuit(parts),
@@ -205,13 +208,13 @@ fn follower_pole_is_the_open_loop_pole_times_one_plus_a0() {
     let tau = model.gain / (2.0 * std::f64::consts::PI * 1e6);
     let parts = vec![
         v("V1", "in", "0"),
-        CircuitElement::OpAmp {
+        CircuitElement::OpAmp(OpAmp {
             id: "U1".into(),
             nodes: ["in".into(), "out".into(), "out".into()],
             v_pos: 15.0,
             v_neg: -15.0,
             model: Some(model),
-        },
+        }),
         r("RL", "out", "0", 10e3),
     ];
     let pz = solve_pz(
@@ -262,13 +265,16 @@ fn bad_ports_are_rejected() {
         PzConfig::voltage_gain("in", "0", "b", "b"),
     ] {
         assert!(
-            matches!(solve_pz(&rlc, &config), Err(SimError::InvalidComponent(_))),
+            matches!(
+                solve_pz(&rlc, &config),
+                Err(SimError::UnknownNode { .. } | SimError::InvalidConfig { .. })
+            ),
             "{config:?}"
         );
     }
     // A current into a node V1 holds at 0 V never reaches the output.
     let err = solve_pz(&rlc, &PzConfig::transimpedance("in", "0", "b", "0")).unwrap_err();
-    assert!(matches!(err, SimError::InvalidComponent(_)), "{err:?}");
+    assert!(matches!(err, SimError::InvalidConfig { .. }), "{err:?}");
 }
 
 #[cfg(feature = "spice")]
@@ -321,22 +327,22 @@ fn pz_card_parses_into_a_config() {
 fn jfet_stage(caps: Option<sindr::circuit::JfetParasiticCaps>) -> Circuit {
     circuit(vec![
         v("vin", "in", "0"),
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: "vdd".into(),
             nodes: ["vdd".into(), "0".into()],
             voltage: 15.0,
             waveform: None,
-        },
+        }),
         r("rg", "in", "g", 100e3),
         r("rd", "vdd", "d", 1e3),
-        CircuitElement::Jfet {
+        CircuitElement::Jfet(Jfet {
             id: "j1".into(),
             nodes: ["g".into(), "d".into(), "0".into()],
             kind: sindr::JfetKind::NChannel,
             idss: 10e-3,
             vp: -2.0,
             parasitic_caps: caps,
-        },
+        }),
     ])
 }
 
@@ -383,12 +389,12 @@ fn battery_rc_pair_gives_a_pole_and_a_zero() {
     let mut params = sindr_devices::battery::BatteryParams::constant(3.7, 1.0, r0);
     params.rc = Some(sindr_devices::battery::BatteryRc { r: r1, c: c1 });
     let parts = vec![
-        CircuitElement::Battery {
+        CircuitElement::Battery(Battery {
             id: "B1".into(),
             nodes: ["p".into(), "0".into()],
             params,
             state_of_charge: 0.5,
-        },
+        }),
         r("RL", "p", "0", rl),
     ];
     let pz = solve_pz(
@@ -415,19 +421,19 @@ fn reverse_biased_diode_charge_sits_behind_its_series_resistance() {
     };
     let cj = cjo * (1.0 + 5.0 / model.vj).powf(-model.m);
     let parts = vec![
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: "V1".into(),
             nodes: ["in".into(), "0".into()],
             voltage: -5.0,
             waveform: None,
-        },
+        }),
         r("R1", "in", "a", rr),
-        CircuitElement::Diode {
+        CircuitElement::Diode(Diode {
             id: "D1".into(),
             nodes: ["a".into(), "0".into()],
             temperature: 300.15,
             model: Some(model),
-        },
+        }),
     ];
     let pz = solve_pz(
         &circuit(parts),
@@ -440,4 +446,55 @@ fn reverse_biased_diode_charge_sits_behind_its_series_resistance() {
         1e-6,
     );
     assert_roots(&pz.zeros, &[Complex64::new(-1.0 / (rs * cj), 0.0)], 1e-6);
+}
+
+/// Two RC low-passes off one input, read differentially:
+/// H = 1/(1 + sτ1) − 1/(1 + sτ2) = s(τ2 − τ1) / ((1 + sτ1)(1 + sτ2)),
+/// so poles at −1/τ1 and −1/τ2 and a zero at the origin.
+#[test]
+fn differential_output_has_both_poles_and_a_zero_at_the_origin() {
+    let (t1, t2) = (1e3 * 1e-6, 4.7e3 * 1e-6);
+    let parts = vec![
+        v("V1", "in", "0"),
+        r("R1", "in", "a", 1e3),
+        c("C1", "a", "0", 1e-6),
+        r("R2", "in", "b", 4.7e3),
+        c("C2", "b", "0", 1e-6),
+    ];
+    let pz = solve_pz(
+        &circuit(parts),
+        &PzConfig::voltage_gain("in", "0", "a", "b"),
+    )
+    .unwrap();
+    let mut poles: Vec<f64> = pz.poles.iter().map(|p| p.re).collect();
+    poles.sort_by(f64::total_cmp);
+    assert_eq!(poles.len(), 2);
+    assert!((poles[0] + 1.0 / t1).abs() < 1e-9 / t1, "{poles:?}");
+    assert!((poles[1] + 1.0 / t2).abs() < 1e-9 / t2, "{poles:?}");
+    assert_eq!(pz.zeros.len(), 1, "{:?}", pz.zeros);
+    assert!(pz.zeros[0].norm() < 1e-6, "{:?}", pz.zeros);
+}
+
+/// A current driven into `a` and out of `b` across C, with R1 and R2 to
+/// ground: Z = (R1 + R2) ‖ 1/(sC), one pole at −1/((R1 + R2)·C).
+#[test]
+fn transimpedance_between_two_nodes() {
+    let parts = vec![
+        r("R1", "a", "0", 1e3),
+        r("R2", "b", "0", 2e3),
+        c("C1", "a", "b", 1e-6),
+    ];
+    let pz = solve_pz(
+        &circuit(parts),
+        &PzConfig::transimpedance("a", "b", "a", "b"),
+    )
+    .unwrap();
+    assert_eq!(pz.poles.len(), 1, "{:?}", pz.poles);
+    let want = -1.0 / (3e3 * 1e-6);
+    assert!(
+        (pz.poles[0].re - want).abs() < 1e-9 * want.abs() && pz.poles[0].im == 0.0,
+        "{:?}",
+        pz.poles
+    );
+    assert!(pz.zeros.is_empty(), "{:?}", pz.zeros);
 }

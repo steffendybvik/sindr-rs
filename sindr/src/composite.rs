@@ -1,25 +1,39 @@
 //! Elements solved as a network of simpler ones: the SPDT switch (two
-//! switches), the crystal (C0 beside Rm–Lm–Cm) and the ferrite bead (Rdc
-//! into L ∥ Rac ∥ C).
+//! switches), the crystal (C0 beside Rm–Lm–Cm), the ferrite bead (Rdc
+//! into L ∥ Rac ∥ C) and the digital pin (its output stage, clamps, die
+//! capacitance and leakage), the logic gate (its input stage, delay
+//! and a pin's output stage) and the DC motor (armature R–L–back-EMF,
+//! and its shaft as an analogue network).
 //!
 //! [`lower`] turns each into its parts before any analysis, with internal
 //! ids and nodes `<id>#…`. [`fold`] puts a result back together: one
 //! [`ComponentResult`] under the element's own id, from its parts', and the
 //! parts and internal nodes gone.
 
+use crate::circuit::BehaviouralOutput;
+use crate::element::{
+    Behavioural, Capacitor, Cccs, Crystal, CurrentSource, DcMotor, DcMotorParams, DigitalPin,
+    Diode, FerriteBead, GateKind, Inductor, LogicGate, Resistor, Switch, SwitchSpdt, Vcvs,
+    VoltageSource,
+};
+use crate::expression::Expression;
+use crate::handle::NodeId;
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement, CrystalParams, FerriteBeadParams, SpdtPosition};
-use crate::results::{ComponentResult, SimulationResult};
+use crate::results::{ComponentResult, MotorResult, SimulationResult, TimestepSnapshot};
 use crate::SimError;
 
 /// Whether `element` is solved as a network of others.
 pub(crate) fn is_composite(element: &CircuitElement) -> bool {
     matches!(
         element,
-        CircuitElement::SwitchSpdt { .. }
-            | CircuitElement::Crystal { .. }
-            | CircuitElement::FerriteBead { .. }
+        CircuitElement::SwitchSpdt(SwitchSpdt { .. })
+            | CircuitElement::Crystal(Crystal { .. })
+            | CircuitElement::FerriteBead(FerriteBead { .. })
+            | CircuitElement::DigitalPin(DigitalPin { .. })
+            | CircuitElement::DcMotor(DcMotor { .. })
+            | CircuitElement::LogicGate(LogicGate { .. })
     )
 }
 
@@ -27,9 +41,10 @@ fn positive(id: &str, what: &str, v: f64) -> Result<f64, SimError> {
     if v.is_finite() && v > 0.0 {
         Ok(v)
     } else {
-        Err(SimError::InvalidComponent(format!(
-            "`{id}`: {what} {v} must be a positive, finite number"
-        )))
+        Err(SimError::component(
+            id,
+            format!("{what} {v} must be a positive, finite number"),
+        ))
     }
 }
 
@@ -45,27 +60,30 @@ fn part(id: &str, suffix: &str) -> String {
 /// finite.
 pub(crate) fn lower(element: &CircuitElement) -> Result<Option<Vec<CircuitElement>>, SimError> {
     let parts = match element {
-        CircuitElement::SwitchSpdt {
+        CircuitElement::SwitchSpdt(SwitchSpdt {
             id,
             nodes,
             position,
-        } => {
+        }) => {
             let [com, a, b] = nodes.clone();
             vec![
-                CircuitElement::Switch {
+                CircuitElement::Switch(Switch {
                     id: part(id, "a"),
                     nodes: [com.clone(), a],
                     closed: *position == SpdtPosition::A,
-                },
-                CircuitElement::Switch {
+                }),
+                CircuitElement::Switch(Switch {
                     id: part(id, "b"),
                     nodes: [com, b],
                     closed: *position == SpdtPosition::B,
-                },
+                }),
             ]
         }
-        CircuitElement::Crystal { id, nodes, params } => crystal(id, nodes, params)?,
-        CircuitElement::FerriteBead { id, nodes, params } => bead(id, nodes, params)?,
+        CircuitElement::Crystal(Crystal { id, nodes, params }) => crystal(id, nodes, params)?,
+        CircuitElement::FerriteBead(FerriteBead { id, nodes, params }) => bead(id, nodes, params)?,
+        CircuitElement::DigitalPin(p) => pin(p)?,
+        CircuitElement::DcMotor(m) => motor(m)?,
+        CircuitElement::LogicGate(g) => gate(g)?,
         _ => return Ok(None),
     };
     Ok(Some(parts))
@@ -73,83 +91,443 @@ pub(crate) fn lower(element: &CircuitElement) -> Result<Option<Vec<CircuitElemen
 
 fn crystal(
     id: &str,
-    nodes: &[String; 2],
+    nodes: &[NodeId; 2],
     p: &CrystalParams,
 ) -> Result<Vec<CircuitElement>, SimError> {
     positive(id, "frequency (Hz)", p.frequency)?;
     let esr = positive(id, "esr (Ω)", p.esr)?;
     let cm = positive(id, "cm (F)", p.cm)?;
     if !(p.c0.is_finite() && p.c0 >= 0.0) {
-        return Err(SimError::InvalidComponent(format!(
-            "`{id}`: c0 {} F must be zero or positive",
-            p.c0
-        )));
+        return Err(SimError::component(
+            id,
+            format!("c0 {} F must be zero or positive", p.c0),
+        ));
     }
     let lm = positive(id, "motional inductance (H)", p.lm())?;
     let [a, b] = nodes.clone();
-    let (m1, m2) = (part(id, "m1"), part(id, "m2"));
+    let (m1, m2): (NodeId, NodeId) = (part(id, "m1").into(), part(id, "m2").into());
     let mut parts = vec![
-        CircuitElement::Resistor {
+        CircuitElement::Resistor(Resistor {
             id: part(id, "rm"),
             nodes: [a.clone(), m1.clone()],
             resistance: esr,
-        },
-        CircuitElement::Inductor {
+        }),
+        CircuitElement::Inductor(Inductor {
             id: part(id, "lm"),
             nodes: [m1, m2.clone()],
             inductance: lm,
             saturation: None,
-        },
-        CircuitElement::Capacitor {
+        }),
+        CircuitElement::Capacitor(Capacitor {
             id: part(id, "cm"),
             nodes: [m2, b.clone()],
             capacitance: cm,
-        },
+        }),
     ];
     if p.c0 > 0.0 {
-        parts.push(CircuitElement::Capacitor {
+        parts.push(CircuitElement::Capacitor(Capacitor {
             id: part(id, "c0"),
             nodes: [a, b],
             capacitance: p.c0,
-        });
+        }));
     }
     Ok(parts)
 }
 
 fn bead(
     id: &str,
-    nodes: &[String; 2],
+    nodes: &[NodeId; 2],
     p: &FerriteBeadParams,
 ) -> Result<Vec<CircuitElement>, SimError> {
     let r_dc = positive(id, "r_dc (Ω)", p.r_dc)?;
     let l = positive(id, "l (H)", p.l)?;
     let r_ac = positive(id, "r_ac (Ω)", p.r_ac)?;
     let [a, b] = nodes.clone();
-    let mid = part(id, "m");
+    let mid: NodeId = part(id, "m").into();
     let mut parts = vec![
-        CircuitElement::Resistor {
+        CircuitElement::Resistor(Resistor {
             id: part(id, "rdc"),
             nodes: [a, mid.clone()],
             resistance: r_dc,
-        },
-        CircuitElement::Inductor {
+        }),
+        CircuitElement::Inductor(Inductor {
             id: part(id, "l"),
             nodes: [mid.clone(), b.clone()],
             inductance: l,
             saturation: None,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: part(id, "rac"),
             nodes: [mid.clone(), b.clone()],
             resistance: r_ac,
-        },
+        }),
     ];
     if let Some(c) = p.c {
-        parts.push(CircuitElement::Capacitor {
+        parts.push(CircuitElement::Capacitor(Capacitor {
             id: part(id, "c"),
             nodes: [mid, b],
             capacitance: positive(id, "c (F)", c)?,
-        });
+        }));
+    }
+    Ok(parts)
+}
+
+/// A digital pin's parts: `#up` from the supply and `#down` to ground (the
+/// output stage and the pull resistor, [`DigitalPin::stage`]), the clamp
+/// diodes `#pc` (pin to supply) and `#gc` (ground to pin), and with a
+/// `c_comp` or `leakage` the capacitor `#c` and current source `#leak`.
+///
+/// The parts are the same whatever the mode, level and pull, which only
+/// set the two resistances, so a session changes them in place.
+pub(crate) fn pin(p: &DigitalPin) -> Result<Vec<CircuitElement>, SimError> {
+    use crate::element::Device;
+    p.validate()?;
+    let DigitalPin {
+        id, nodes, model, ..
+    } = p;
+    let [pad, vdd, gnd] = nodes.clone();
+    let (r_up, r_down) = p.stage();
+    let diode = |suffix: &str, nodes: [NodeId; 2]| {
+        CircuitElement::Diode(Diode {
+            id: part(id, suffix),
+            nodes,
+            temperature: 300.15,
+            model: Some(model.clamp),
+        })
+    };
+    let mut parts = vec![
+        CircuitElement::Resistor(Resistor {
+            id: part(id, "up"),
+            nodes: [vdd.clone(), pad.clone()],
+            resistance: r_up,
+        }),
+        CircuitElement::Resistor(Resistor {
+            id: part(id, "down"),
+            nodes: [pad.clone(), gnd.clone()],
+            resistance: r_down,
+        }),
+        diode("pc", [pad.clone(), vdd]),
+        diode("gc", [gnd.clone(), pad.clone()]),
+    ];
+    if model.c_comp > 0.0 {
+        parts.push(CircuitElement::Capacitor(Capacitor {
+            id: part(id, "c"),
+            nodes: [pad.clone(), gnd.clone()],
+            capacitance: model.c_comp,
+        }));
+    }
+    if model.leakage != 0.0 {
+        parts.push(CircuitElement::CurrentSource(CurrentSource {
+            id: part(id, "leak"),
+            nodes: [pad, gnd],
+            current: model.leakage,
+            waveform: None,
+        }));
+    }
+    Ok(parts)
+}
+
+/// A DC motor's parts, with its shaft speed `ω` as the voltage of node
+/// `#w` over terminal `b`:
+///
+/// - the armature: `#r` (R) from `a`, `#l` (L, when not zero), the
+///   zero-volt `#sense` whose current is the armature current, and the
+///   back-EMF `#emf`, `ke·ω`, into `b`;
+/// - the shaft, between `#w` and `b`: the torque `kt·i` (`#kt`, driven by
+///   `#sense`), the inertia as a capacitance `#j`, the friction as a
+///   conductance `#b` (each left out when zero), and the load torque as a
+///   current `#load` out of `#w`, there even at zero for a session to set.
+pub(crate) fn motor(m: &DcMotor) -> Result<Vec<CircuitElement>, SimError> {
+    use crate::element::Device;
+    m.validate()?;
+    let DcMotor { id, nodes, params } = m;
+    let DcMotorParams {
+        resistance,
+        inductance,
+        ke,
+        kt,
+        inertia,
+        friction,
+        load_torque,
+        ..
+    } = *params;
+    let [a, b] = nodes.clone();
+    let node = |suffix: &str| -> NodeId { part(id, suffix).into() };
+    let (m1, m3, w) = (node("m1"), node("m3"), node("w"));
+    let m2 = if inductance > 0.0 {
+        node("m2")
+    } else {
+        m1.clone()
+    };
+    let mut parts = vec![CircuitElement::Resistor(Resistor {
+        id: part(id, "r"),
+        nodes: [a, m1.clone()],
+        resistance,
+    })];
+    if inductance > 0.0 {
+        parts.push(CircuitElement::Inductor(Inductor {
+            id: part(id, "l"),
+            nodes: [m1, m2.clone()],
+            inductance,
+            saturation: None,
+        }));
+    }
+    parts.extend([
+        CircuitElement::VoltageSource(VoltageSource::dc(part(id, "sense"), [m2, m3.clone()], 0.0)),
+        CircuitElement::Vcvs(Vcvs {
+            id: part(id, "emf"),
+            nodes: [m3, b.clone()],
+            control_nodes: [w.clone(), b.clone()],
+            gain: ke,
+        }),
+        CircuitElement::Cccs(Cccs {
+            id: part(id, "kt"),
+            nodes: [b.clone(), w.clone()],
+            control_source: part(id, "sense").into(),
+            alpha: kt,
+        }),
+    ]);
+    if inertia > 0.0 {
+        parts.push(CircuitElement::Capacitor(Capacitor {
+            id: part(id, "j"),
+            nodes: [w.clone(), b.clone()],
+            capacitance: inertia,
+        }));
+    }
+    if friction > 0.0 {
+        parts.push(CircuitElement::Resistor(Resistor {
+            id: part(id, "b"),
+            nodes: [w.clone(), b.clone()],
+            resistance: 1.0 / friction,
+        }));
+    }
+    // Always there, so a session can change it.
+    parts.push(CircuitElement::CurrentSource(CurrentSource {
+        id: part(id, "load"),
+        nodes: [w, b],
+        current: load_torque,
+        waveform: None,
+    }));
+    Ok(parts)
+}
+
+/// The current the delay's follower slews its capacitor with (A).
+const DELAY_I: f64 = 1e-3;
+/// How far the follower's node is from its target (V, of the 1 V logic
+/// level) when its current is 76 % of `DELAY_I`: the sharpness of its
+/// settling.
+const DELAY_EPS: f64 = 0.01;
+/// The DC path from the delay's input to its follower (Ω): 1 µA a volt,
+/// 0.1 % of `DELAY_I`.
+const DELAY_R: f64 = 1e6;
+/// A plain input's threshold span over its switching width.
+const PLAIN_SHARPNESS: f64 = 20.0;
+/// A Schmitt state's threshold span over its switching width: the
+/// higher, the closer it switches to `vih` and `vil`.
+const SCHMITT_SHARPNESS: f64 = 64.0;
+/// A Schmitt state's conductance toward its target (S).
+const STATE_G: f64 = 1e-3;
+/// A Schmitt state's time constant (s): fast beside any gate's delay.
+const STATE_TAU: f64 = 1e-9;
+
+/// A logic gate's parts, all referred to its ground terminal `gnd`:
+///
+/// - Each input `k`'s logic value, 0 to 1: a smooth step from `vil` to
+///   `vih`. With Schmitt inputs it is the voltage of `#h<k>`, a source
+///   state that feeds its own value back into its threshold, so it holds
+///   between the thresholds.
+/// - `#f`, a source setting `#x` to the gate's function of those values
+///   (V, 0 to 1).
+/// - With a `tpd`, `#sd`, `#cd` and `#rd` make `#d` follow `#x` at a
+///   limited slew, crossing half way `tpd` after it switches.
+/// - The output stage, as the lagged level `y` sets it: `#up` drives
+///   `y · v(vdd, out) / r_high` from the supply, `#dn` drives
+///   `(1 − y) · v(out, gnd) / r_low` to ground, with `#ru` and `#rd0` at
+///   `R_OFF` (1 TΩ) keeping the output's
+///   DC path, the clamps `#pc` and `#gc`, and `c_comp` as `#c`.
+/// - `c_in` on each input as `#cin<k>`.
+pub(crate) fn gate(g: &LogicGate) -> Result<Vec<CircuitElement>, SimError> {
+    use crate::element::Device;
+    g.validate()?;
+    let id = &g.id;
+    let m = &g.model;
+    let inputs = g.inputs();
+    let [out, vdd, gnd] = g.outputs();
+    // Expressions are written over placeholder names, then renamed to the
+    // circuit's nets, which may hold characters the parser doesn't read.
+    let mut names: HashMap<String, NodeId> = HashMap::new();
+    for (k, input) in inputs.iter().enumerate() {
+        names.insert(format!("in{k}"), input.clone());
+        names.insert(format!("h{k}"), part(id, &format!("h{k}")).into());
+    }
+    for (name, node) in [
+        ("out", out.clone()),
+        ("vdd", vdd.clone()),
+        ("gnd", gnd.clone()),
+        ("x", part(id, "x").into()),
+        ("d", part(id, "d").into()),
+    ] {
+        names.insert(name.into(), node);
+    }
+    let expr = |text: String| -> Result<Expression, SimError> {
+        let mut e = Expression::parse(&text).map_err(|e| g.internal_error(e))?;
+        e.rename(|n| names[n].to_string(), |s| s.to_string());
+        Ok(e)
+    };
+    let behavioural = |suffix: &str, nodes: [NodeId; 2], output, text: String| {
+        Ok::<_, SimError>(CircuitElement::Behavioural(Behavioural {
+            id: part(id, suffix),
+            nodes,
+            output,
+            expr: expr(text)?,
+        }))
+    };
+    let mut parts = Vec::new();
+
+    // Each input's logic value. Plain: tanh over (vih − vil) / 20 either
+    // side of the midpoint, as steep as a CMOS input's transfer and fully
+    // switched well inside vil and vih, so a delay counts from the input's
+    // midpoint whatever its edge rate. Schmitt: the
+    // state `#h<k>` follows a target whose threshold moves from vih to vil
+    // as the state rises. The loop gain of SCHMITT_SHARPNESS / 2 latches it
+    // within a few percent of the span of each threshold; its 1 ns
+    // capacitor lets it switch over time rather than jump.
+    let span = m.vih - m.vil;
+    let mut values = Vec::with_capacity(inputs.len());
+    for k in 0..inputs.len() {
+        if g.schmitt {
+            let h: NodeId = part(id, &format!("h{k}")).into();
+            parts.push(behavioural(
+                &format!("h{k}"),
+                [gnd.clone(), h.clone()],
+                BehaviouralOutput::Current,
+                format!(
+                    "({STATE_G:e})*(0.5*(1+tanh((v(in{k},gnd)-({vih:e})+v(h{k},gnd)*({span:e}))/({w:e})))-v(h{k},gnd))",
+                    vih = m.vih,
+                    w = span / SCHMITT_SHARPNESS,
+                ),
+            )?);
+            parts.push(CircuitElement::Capacitor(Capacitor {
+                id: part(id, &format!("ch{k}")),
+                nodes: [h, gnd.clone()],
+                capacitance: STATE_G * STATE_TAU,
+            }));
+            values.push(format!("v(h{k},gnd)"));
+        } else {
+            values.push(format!(
+                "0.5*(1+tanh((v(in{k},gnd)-({mid:e}))/({w:e})))",
+                mid = 0.5 * (m.vil + m.vih),
+                w = span / PLAIN_SHARPNESS,
+            ));
+        }
+    }
+    let product = |terms: Vec<String>| {
+        terms
+            .iter()
+            .map(|t| format!("({t})"))
+            .collect::<Vec<_>>()
+            .join("*")
+    };
+    let not = |t: &str| format!("(1-({t}))");
+    let all = product(values.clone());
+    let none = product(values.iter().map(|v| not(v)).collect());
+    // Parity: (1 − Π(1 − 2a)) / 2 is 1 for an odd count of 1s.
+    let odd = format!(
+        "0.5*(1-{})",
+        product(values.iter().map(|v| format!("1-2*({v})")).collect())
+    );
+    let function = match g.kind {
+        GateKind::Buffer => values[0].clone(),
+        GateKind::Not => not(&values[0]),
+        GateKind::And => all,
+        GateKind::Nand => not(&all),
+        GateKind::Or => not(&none),
+        GateKind::Nor => none,
+        GateKind::Xor => odd,
+        GateKind::Xnor => not(&odd),
+    };
+    parts.push(behavioural(
+        "f",
+        [part(id, "x").into(), gnd.clone()],
+        BehaviouralOutput::Voltage,
+        function,
+    )?);
+    // The delay: `#d` slews from `#x`'s old level to its new one at
+    // 1 / (2 · tpd) V/s, `#sd` driving `#cd` with a current that saturates
+    // at DELAY_I, so it crosses half way `tpd` after `#x` switched. A
+    // follower, not an RC lag, so the delay is the same however recently
+    // the gate last switched. `#rd` gives `#d` its DC path.
+    let level = if g.tpd > 0.0 {
+        let d: NodeId = part(id, "d").into();
+        parts.push(behavioural(
+            "sd",
+            [gnd.clone(), d.clone()],
+            BehaviouralOutput::Current,
+            format!("({DELAY_I:e})*tanh((v(x,gnd)-v(d,gnd))/({DELAY_EPS:e}))"),
+        )?);
+        parts.push(CircuitElement::Capacitor(Capacitor {
+            id: part(id, "cd"),
+            nodes: [d.clone(), gnd.clone()],
+            capacitance: 2.0 * DELAY_I * g.tpd,
+        }));
+        parts.push(CircuitElement::Resistor(Resistor {
+            id: part(id, "rd"),
+            nodes: [part(id, "x").into(), d],
+            resistance: DELAY_R,
+        }));
+        "v(d,gnd)"
+    } else {
+        "v(x,gnd)"
+    };
+
+    parts.push(behavioural(
+        "up",
+        [vdd.clone(), out.clone()],
+        BehaviouralOutput::Current,
+        format!("({level})*v(vdd,out)/({:e})", m.r_high),
+    )?);
+    parts.push(behavioural(
+        "dn",
+        [out.clone(), gnd.clone()],
+        BehaviouralOutput::Current,
+        format!("(1-({level}))*v(out,gnd)/({:e})", m.r_low),
+    )?);
+    let r_off = crate::element::R_OFF;
+    parts.push(CircuitElement::Resistor(Resistor {
+        id: part(id, "ru"),
+        nodes: [vdd.clone(), out.clone()],
+        resistance: r_off,
+    }));
+    parts.push(CircuitElement::Resistor(Resistor {
+        id: part(id, "rl"),
+        nodes: [out.clone(), gnd.clone()],
+        resistance: r_off,
+    }));
+    let diode = |suffix: &str, nodes: [NodeId; 2]| {
+        CircuitElement::Diode(Diode {
+            id: part(id, suffix),
+            nodes,
+            temperature: 300.15,
+            model: Some(m.clamp),
+        })
+    };
+    parts.push(diode("pc", [out.clone(), vdd.clone()]));
+    parts.push(diode("gc", [gnd.clone(), out.clone()]));
+    if m.c_comp > 0.0 {
+        parts.push(CircuitElement::Capacitor(Capacitor {
+            id: part(id, "c"),
+            nodes: [out.clone(), gnd.clone()],
+            capacitance: m.c_comp,
+        }));
+    }
+    if g.c_in > 0.0 {
+        for (k, input) in inputs.iter().enumerate() {
+            parts.push(CircuitElement::Capacitor(Capacitor {
+                id: part(id, &format!("cin{k}")),
+                nodes: [input.clone(), gnd.clone()],
+                capacitance: g.c_in,
+            }));
+        }
     }
     Ok(parts)
 }
@@ -159,10 +537,16 @@ struct Recipe<'a> {
     id: &'a str,
     /// The terminals whose voltage difference is `voltage_across`.
     across: [&'a str; 2],
-    /// Parts whose `current_through` add up to the terminal current.
-    current: Vec<String>,
+    /// Parts whose `current_through`, each times its sign, add up to the
+    /// terminal current.
+    current: Vec<(String, f64)>,
     /// Parts whose `power` adds up to the element's.
     power: Vec<String>,
+    /// The element's `power` is `voltage_across · current_through`, what it
+    /// takes from the circuit, instead of the parts' sum.
+    electrical: bool,
+    /// For a motor: its torque constant and speed node, to report its shaft.
+    motor: Option<(f64, String)>,
 }
 
 fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
@@ -170,11 +554,11 @@ fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
         .components
         .iter()
         .filter_map(|c| match c {
-            CircuitElement::SwitchSpdt {
+            CircuitElement::SwitchSpdt(SwitchSpdt {
                 id,
                 nodes,
                 position,
-            } => {
+            }) => {
                 let (throw, suffix) = match position {
                     SpdtPosition::A => (&nodes[1], "a"),
                     SpdtPosition::B => (&nodes[2], "b"),
@@ -182,22 +566,76 @@ fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
                 Some(Recipe {
                     id,
                     across: [&nodes[0], throw],
-                    current: vec![part(id, suffix)],
+                    current: vec![(part(id, suffix), 1.0)],
                     power: vec![part(id, "a"), part(id, "b")],
+                    electrical: false,
+                    motor: None,
                 })
             }
-            CircuitElement::Crystal { id, nodes, .. } => Some(Recipe {
+            CircuitElement::Crystal(Crystal { id, nodes, .. }) => Some(Recipe {
                 id,
                 across: [&nodes[0], &nodes[1]],
-                current: vec![part(id, "rm"), part(id, "c0")],
+                current: vec![(part(id, "rm"), 1.0), (part(id, "c0"), 1.0)],
                 power: vec![part(id, "rm")],
+                electrical: false,
+                motor: None,
             }),
-            CircuitElement::FerriteBead { id, nodes, .. } => Some(Recipe {
+            CircuitElement::FerriteBead(FerriteBead { id, nodes, .. }) => Some(Recipe {
                 id,
                 across: [&nodes[0], &nodes[1]],
-                current: vec![part(id, "rdc")],
+                current: vec![(part(id, "rdc"), 1.0)],
                 power: vec![part(id, "rdc"), part(id, "rac")],
+                electrical: false,
+                motor: None,
             }),
+            // Into the pin: what leaves the pad through each part.
+            CircuitElement::DigitalPin(DigitalPin { id, nodes, .. }) => {
+                let parts = [
+                    ("up", -1.0),
+                    ("down", 1.0),
+                    ("pc", 1.0),
+                    ("gc", -1.0),
+                    ("c", 1.0),
+                    ("leak", 1.0),
+                ];
+                Some(Recipe {
+                    id,
+                    across: [&nodes[0], &nodes[2]],
+                    current: parts.iter().map(|(s, k)| (part(id, s), *k)).collect(),
+                    power: parts.iter().map(|(s, _)| part(id, s)).collect(),
+                    electrical: false,
+                    motor: None,
+                })
+            }
+            CircuitElement::DcMotor(DcMotor { id, nodes, params }) => Some(Recipe {
+                id,
+                across: [&nodes[0], &nodes[1]],
+                current: vec![(part(id, "r"), 1.0)],
+                power: vec![],
+                electrical: true,
+                motor: Some((params.kt, part(id, "w"))),
+            }),
+            // Into the output: what leaves it through the output stage.
+            CircuitElement::LogicGate(g) if g.nodes.len() >= 3 => {
+                let [out, _, gnd] = g.outputs();
+                let stage = [
+                    ("up", -1.0),
+                    ("dn", 1.0),
+                    ("ru", -1.0),
+                    ("rl", 1.0),
+                    ("pc", 1.0),
+                    ("gc", -1.0),
+                    ("c", 1.0),
+                ];
+                Some(Recipe {
+                    id: &g.id,
+                    across: [out, gnd],
+                    current: stage.iter().map(|(s, k)| (part(&g.id, s), *k)).collect(),
+                    power: stage.iter().map(|(s, _)| part(&g.id, s)).collect(),
+                    electrical: false,
+                    motor: None,
+                })
+            }
             _ => None,
         })
         .collect()
@@ -220,14 +658,42 @@ pub(crate) fn fold(circuit: &Circuit, result: &mut SimulationResult) {
         &recipes,
         &result.node_voltages,
         &mut result.component_results,
+        &mut result.motors,
     );
     strip(&recipes, &mut result.node_voltages);
     strip(&recipes, &mut result.branch_currents);
     if let Some(tran) = &mut result.transient {
         for step in &mut tran.timesteps {
-            fold_one(&recipes, &step.node_voltages, &mut step.component_results);
-            strip(&recipes, &mut step.node_voltages);
+            fold_step(&recipes, step);
         }
+    }
+}
+
+fn fold_step(recipes: &[Recipe<'_>], step: &mut TimestepSnapshot) {
+    fold_one(
+        recipes,
+        &step.node_voltages,
+        &mut step.component_results,
+        &mut step.motors,
+    );
+    strip(recipes, &mut step.node_voltages);
+}
+
+/// The composites of a flattened circuit, to fold its transient steps one
+/// at a time as they are taken.
+pub(crate) struct StepFolder<'a>(Vec<Recipe<'a>>);
+
+impl<'a> StepFolder<'a> {
+    /// `flat` is the caller's circuit flattened, before lowering; `None`
+    /// when it has no composites, so there is nothing to fold.
+    pub(crate) fn new(flat: &'a Circuit) -> Option<Self> {
+        let recipes = recipes(flat);
+        (!recipes.is_empty()).then_some(Self(recipes))
+    }
+
+    /// `step` as [`fold`] leaves it in the result.
+    pub(crate) fn fold(&self, step: &mut TimestepSnapshot) {
+        fold_step(&self.0, step);
     }
 }
 
@@ -253,25 +719,54 @@ fn fold_one(
     recipes: &[Recipe<'_>],
     voltages: &HashMap<String, f64>,
     results: &mut Vec<ComponentResult>,
+    motors: &mut HashMap<String, MotorResult>,
 ) {
     let by_id: HashMap<&str, &ComponentResult> =
         results.iter().map(|r| (r.id.as_str(), r)).collect();
-    let sum = |ids: &[String], f: fn(&ComponentResult) -> f64| -> f64 {
+    let sum = |ids: &[String]| -> f64 {
         ids.iter()
             .filter_map(|id| by_id.get(id.as_str()))
-            .map(|r| f(r))
+            .map(|r| r.power)
+            .sum()
+    };
+    let current = |parts: &[(String, f64)]| -> f64 {
+        parts
+            .iter()
+            .filter_map(|(id, sign)| Some(sign * by_id.get(id.as_str())?.current_through))
             .sum()
     };
     let v = |node: &str| voltages.get(node).copied().unwrap_or(0.0);
     let folded: Vec<ComponentResult> = recipes
         .iter()
-        .map(|r| ComponentResult {
-            id: r.id.to_string(),
-            voltage_across: v(r.across[0]) - v(r.across[1]),
-            current_through: sum(&r.current, |c| c.current_through),
-            power: sum(&r.power, |c| c.power),
+        .map(|r| {
+            let voltage_across = v(r.across[0]) - v(r.across[1]);
+            let current_through = current(&r.current);
+            ComponentResult {
+                id: r.id.to_string(),
+                voltage_across,
+                current_through,
+                power: if r.electrical {
+                    voltage_across * current_through
+                } else {
+                    sum(&r.power)
+                },
+            }
         })
         .collect();
+    for (r, c) in recipes.iter().zip(&folded) {
+        if let Some((kt, w)) = &r.motor {
+            let speed = v(w) - v(r.across[1]);
+            let torque = kt * c.current_through;
+            motors.insert(
+                r.id.to_string(),
+                MotorResult {
+                    speed,
+                    torque,
+                    mechanical_power: torque * speed,
+                },
+            );
+        }
+    }
     results.retain(|c| !is_internal(recipes, &c.id));
     results.extend(folded);
 }

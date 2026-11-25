@@ -1,0 +1,9 @@
+four: 2 V 1 kHz sine through 1k into antiparallel diodes, clipped at about 0.6 V
+V1 in 0 SIN(0 2 1k)
+R1 in out 1k
+D1 out 0 dmod
+D2 0 out dmod
+.model dmod D(IS=1e-14 N=1)
+.tran 5u 5m 0 5u
+.four 1k v(out)
+.end

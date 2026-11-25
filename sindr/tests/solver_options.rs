@@ -1,9 +1,11 @@
 //! `SolverOptions` and `Solver`: the defaults match the free functions, each
 //! option changes what it says, and bad options are rejected.
 
+use sindr::element::{Bjt, Capacitor, Diode, Resistor, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::dc_sweep::DcSweepAxis;
+use sindr::TempSweepConfig;
 use sindr::{
     solve_ac_sensitivity, solve_circuit, solve_loop_gain, solve_pz, solve_transient, AcSensConfig,
     BjtKind, Circuit, CircuitElement, ConvergenceAid, LoopGainConfig, NoiseConfig, PzConfig,
@@ -11,33 +13,33 @@ use sindr::{
 };
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 fn diode(id: &str, a: &str, k: &str) -> CircuitElement {
-    CircuitElement::Diode {
+    CircuitElement::Diode(Diode {
         id: id.into(),
         nodes: [a.into(), k.into()],
         temperature: 300.15,
         model: None,
-    }
+    })
 }
 
 fn npn(id: &str, b: &str, c: &str, e: &str) -> CircuitElement {
-    CircuitElement::Bjt {
+    CircuitElement::Bjt(Bjt {
         id: id.into(),
         nodes: [b.into(), c.into(), e.into()],
         kind: BjtKind::Npn,
@@ -45,7 +47,7 @@ fn npn(id: &str, b: &str, c: &str, e: &str) -> CircuitElement {
         temperature: 300.15,
         parasitic_caps: None,
         model: None,
-    }
+    })
 }
 
 /// 5 V through 1 kΩ into a diode.
@@ -93,11 +95,11 @@ fn default_solver_matches_the_free_functions() {
         vec![
             vsource("V1", "in", "0", 1.0),
             resistor("R1", "in", "out", 1e3),
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
     );
     let config = TransientConfig::new(5e-3, 1e-5);
@@ -206,7 +208,7 @@ fn transient_step_cap_and_trtol_apply() {
     let rc = Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
@@ -216,13 +218,13 @@ fn transient_step_cap_and_trtol_apply() {
                     frequency: 1e3,
                     phase: 0.0,
                 }),
-            },
+            }),
             resistor("R1", "in", "out", 1e3),
-            CircuitElement::Capacitor {
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
     );
     let config = TransientConfig::new(5e-3, 1e-5);
@@ -270,7 +272,7 @@ fn bad_options_are_rejected() {
         f(&mut o);
         let err = Solver::new(o).circuit(&c).unwrap_err();
         assert!(
-            matches!(&err, SimError::InvalidComponent(m) if m.contains(what)),
+            matches!(&err, SimError::InvalidConfig { config: sindr::ConfigKind::SolverOptions, reason } if reason.contains(what)),
             "{what}: {err}"
         );
     }
@@ -436,7 +438,9 @@ fn every_analysis(solver: &Solver, c: &Circuit) -> Vec<(&'static str, Result<(),
         ),
         (
             "dc_sweep",
-            solver.dc_sweep(c, "V1", 5.0, 5.001, 2).map(drop),
+            solver
+                .dc_sweep(c, &DcSweepAxis::new("V1", 5.0, 5.001, 2))
+                .map(drop),
         ),
         (
             "dc_sweep_nested",
@@ -444,7 +448,9 @@ fn every_analysis(solver: &Solver, c: &Circuit) -> Vec<(&'static str, Result<(),
         ),
         (
             "temperature_sweep",
-            solver.temperature_sweep(c, 300.15, 300.25, 2).map(drop),
+            solver
+                .temperature_sweep(c, &TempSweepConfig::new(300.15, 300.25, 2))
+                .map(drop),
         ),
     ]
 }
@@ -482,7 +488,7 @@ fn every_analysis_rejects_bad_options() {
     o.reltol = -1.0;
     for (name, result) in every_analysis(&Solver::new(o), &two_source_diode_circuit()) {
         assert!(
-            matches!(&result, Err(SimError::InvalidComponent(m)) if m.contains("reltol")),
+            matches!(&result, Err(SimError::InvalidConfig { config: sindr::ConfigKind::SolverOptions, reason }) if reason.contains("reltol")),
             "{name}: {result:?}"
         );
     }
@@ -533,11 +539,11 @@ fn every_analysis_runs_with_the_solvers_options() {
 /// frequency have a pole to find.
 fn diode_rc_circuit() -> Circuit {
     let mut c = two_source_diode_circuit();
-    c.components.push(CircuitElement::Capacitor {
+    c.components.push(CircuitElement::Capacitor(Capacitor {
         id: "C1".into(),
         nodes: ["a".into(), "0".into()],
         capacitance: 1e-9,
-    });
+    }));
     c
 }
 

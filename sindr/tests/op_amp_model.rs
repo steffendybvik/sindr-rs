@@ -2,36 +2,37 @@
 //! rate, rail clamp, output resistance, offset and bias current.
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{Comparator, OpAmp, Resistor, VoltageSource};
 use sindr::{
     solve_circuit, solve_transient, Circuit, CircuitElement, OpAmpModel, SimError, TransientConfig,
     Waveform,
 };
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn source(voltage: f64, waveform: Option<Waveform>) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: "VIN".into(),
         nodes: ["in".into(), "0".into()],
         voltage,
         waveform,
-    }
+    })
 }
 
 fn op_amp(plus: &str, minus: &str, model: OpAmpModel) -> CircuitElement {
-    CircuitElement::OpAmp {
+    CircuitElement::OpAmp(OpAmp {
         id: "U1".into(),
         nodes: [plus.into(), minus.into(), "out".into()],
         v_pos: 15.0,
         v_neg: -15.0,
         model: Some(model),
-    }
+    })
 }
 
 /// Non-inverting amplifier of gain 1 + rf/rg, with a 10 kΩ load.
@@ -220,13 +221,13 @@ fn the_ideal_op_amp_is_unchanged() {
         "0",
         vec![
             source(2.0, None),
-            CircuitElement::OpAmp {
+            CircuitElement::OpAmp(OpAmp {
                 id: "U1".into(),
                 nodes: ["in".into(), "fb".into(), "out".into()],
                 v_pos: 15.0,
                 v_neg: -15.0,
                 model: None,
-            },
+            }),
             r("RF", "out", "fb", 9e3),
             r("RG", "fb", "0", 1e3),
         ],
@@ -270,7 +271,9 @@ fn bad_model_parameters_name_the_field() {
     ];
     for (model, field) in cases {
         match solve_circuit(&non_inverting(source(0.1, None), 9e3, 1e3, model)) {
-            Err(SimError::InvalidComponent(msg)) => assert!(msg.contains(field), "{msg}"),
+            Err(SimError::InvalidComponent { reason, .. }) => {
+                assert!(reason.contains(field), "{reason}")
+            }
             other => panic!("{field}: expected InvalidComponent, got {other:?}"),
         }
     }
@@ -281,10 +284,13 @@ fn bad_model_parameters_name_the_field() {
 fn json_without_a_model_is_the_ideal_op_amp() {
     let json = r#"{"type":"op_amp","id":"U1","nodes":["a","b","c"]}"#;
     let el: CircuitElement = serde_json::from_str(json).unwrap();
-    assert!(matches!(el, CircuitElement::OpAmp { model: None, .. }));
+    assert!(matches!(
+        el,
+        CircuitElement::OpAmp(OpAmp { model: None, .. })
+    ));
     let json = r#"{"type":"op_amp","id":"U1","nodes":["a","b","c"],"model":{"gbw":2e6}}"#;
     match serde_json::from_str::<CircuitElement>(json).unwrap() {
-        CircuitElement::OpAmp { model: Some(m), .. } => {
+        CircuitElement::OpAmp(OpAmp { model: Some(m), .. }) => {
             assert_eq!(m.gbw, Some(2e6));
             assert_eq!(m.gain, 1e5);
         }
@@ -397,12 +403,12 @@ fn comparator_against_ground_follows_the_sign_of_its_input() {
                     phase: 0.0,
                 }),
             ),
-            CircuitElement::Comparator {
+            CircuitElement::Comparator(Comparator {
                 id: "U1".into(),
                 nodes: ["in".into(), "0".into(), "out".into()],
                 v_pos: 5.0,
                 v_neg: 0.0,
-            },
+            }),
             r("RL", "out", "0", 10e3),
         ],
     );

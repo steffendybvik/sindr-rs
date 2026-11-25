@@ -3,8 +3,10 @@
 use super::{parse_value, ImportError, ImportOptions, ImportedCircuit, Netlist, Pin, Value};
 use crate::ac_analysis::{solve_ac, AcConfig, AcResult};
 use crate::circuit::{BehaviouralOutput, Circuit, CircuitElement};
-use crate::dc_sweep::{dc_sweep, DcSweepResult};
+use crate::dc_sweep::{dc_sweep, DcSweepAxis, DcSweepResult};
+use crate::element::{Behavioural, Capacitor, CurrentSource, Inductor, Resistor, VoltageSource};
 use crate::expression::Expression;
+use crate::handle::NodeId;
 use crate::results::SimulationResult;
 use crate::transient::{solve_transient, TransientConfig};
 use crate::waveform::Waveform;
@@ -13,6 +15,7 @@ use crate::SimError;
 /// Where a bench item connects: a net, or a component's terminal (a
 /// connector pin, a test point) standing for the net it is on.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -44,6 +47,7 @@ impl From<Pin> for Attach {
 
 /// What a [`BenchSource`] drives.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -75,6 +79,7 @@ pub enum SourceKind {
 
 /// A source the bench adds: a supply on a net, or a signal into an input.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct BenchSource {
     /// Its id, unique among components and bench items. Results are keyed
@@ -91,6 +96,15 @@ pub struct BenchSource {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub minus: Option<Attach>,
+    /// A supply [`Bench::with_supplies_from_net_names`] assumed from a net's
+    /// name. The circuit leaves it out where the bench's other voltage
+    /// sources already fix its net (after ties), and keeps one per group of
+    /// tied nets.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
+    pub assumed: bool,
 }
 
 impl BenchSource {
@@ -104,6 +118,7 @@ impl BenchSource {
             },
             plus: plus.into(),
             minus: None,
+            assumed: false,
         }
     }
 
@@ -118,6 +133,7 @@ impl BenchSource {
             },
             plus: plus.into(),
             minus: None,
+            assumed: false,
         }
     }
 
@@ -137,25 +153,27 @@ impl BenchSource {
         self
     }
 
-    pub(super) fn element(&self, nodes: [String; 2]) -> CircuitElement {
+    pub(super) fn element(&self, nodes: [NodeId; 2]) -> CircuitElement {
         let id = self.id.clone();
         match &self.kind {
-            SourceKind::Voltage { volts, waveform } => CircuitElement::VoltageSource {
-                id,
-                nodes,
-                voltage: *volts,
-                waveform: waveform.clone(),
-            },
+            SourceKind::Voltage { volts, waveform } => {
+                CircuitElement::VoltageSource(VoltageSource {
+                    id,
+                    nodes,
+                    voltage: *volts,
+                    waveform: waveform.clone(),
+                })
+            }
             // sindr's current source pushes current from nodes[0] to
             // nodes[1] through itself, so it drives nodes[1]'s net.
             SourceKind::Current { amps, waveform } => {
                 let [plus, minus] = nodes;
-                CircuitElement::CurrentSource {
+                CircuitElement::CurrentSource(CurrentSource {
                     id,
                     nodes: [minus, plus],
                     current: *amps,
                     waveform: waveform.clone(),
-                }
+                })
             }
         }
     }
@@ -163,6 +181,7 @@ impl BenchSource {
 
 /// What a [`BenchLoad`] is.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
@@ -258,6 +277,7 @@ impl LoadKind {
 
 /// A load the bench adds: what an output drives, a probe's capacitance.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct BenchLoad {
     /// Its id, unique among components and bench items.
@@ -291,33 +311,33 @@ impl BenchLoad {
         self
     }
 
-    pub(super) fn element(&self, nodes: [String; 2]) -> Result<CircuitElement, ImportError> {
+    pub(super) fn element(&self, nodes: [NodeId; 2]) -> Result<CircuitElement, ImportError> {
         let id = self.id.clone();
         Ok(match self.kind {
-            LoadKind::Resistor(resistance) => CircuitElement::Resistor {
+            LoadKind::Resistor(resistance) => CircuitElement::Resistor(Resistor {
                 id,
                 nodes,
                 resistance,
-            },
-            LoadKind::Capacitor(capacitance) => CircuitElement::Capacitor {
+            }),
+            LoadKind::Capacitor(capacitance) => CircuitElement::Capacitor(Capacitor {
                 id,
                 nodes,
                 capacitance,
-            },
-            LoadKind::Inductor(inductance) => CircuitElement::Inductor {
+            }),
+            LoadKind::Inductor(inductance) => CircuitElement::Inductor(Inductor {
                 id,
                 nodes,
                 inductance,
                 saturation: None,
-            },
+            }),
             // A current source pushes from nodes[0] to nodes[1] through
             // itself, so it draws from a's net into b's.
-            LoadKind::CurrentSink { amps } => CircuitElement::CurrentSource {
+            LoadKind::CurrentSink { amps } => CircuitElement::CurrentSource(CurrentSource {
                 id,
                 nodes,
                 current: amps,
                 waveform: None,
-            },
+            }),
             // A behavioural current v(a, b)·g(t): Newton stamps it as the
             // conductance it is, and the transient lands a step on `at`
             // from the `time < at` it compares.
@@ -346,12 +366,12 @@ impl BenchLoad {
                 };
                 let [a, b] = &nodes;
                 let expr = Expression::timed_conductance(a, b, at, before, after);
-                CircuitElement::Behavioural {
+                CircuitElement::Behavioural(Behavioural {
                     id,
                     nodes,
                     output: BehaviouralOutput::Current,
                     expr,
-                }
+                })
             }
         })
     }
@@ -368,6 +388,7 @@ impl BenchLoad {
 
 /// The analysis a [`Bench`] runs.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -380,22 +401,14 @@ pub enum Analysis {
     /// A small-signal frequency sweep, as [`solve_ac`]. `source_id` names
     /// a bench source.
     Ac(AcConfig),
-    /// A DC sweep of one source's value, as [`dc_sweep`].
-    DcSweep {
-        /// The bench source to sweep.
-        source: String,
-        /// First value (V or A).
-        start: f64,
-        /// Last value (V or A).
-        stop: f64,
-        /// Number of points, both ends included.
-        points: usize,
-    },
+    /// A DC sweep of one bench source's value, as [`dc_sweep`].
+    DcSweep(DcSweepAxis),
 }
 
 /// What a schematic leaves out: the ground net, the sources and loads that
 /// drive it, nets to tie together, and the analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bench {
     /// The reference (0 V) net.
@@ -462,22 +475,136 @@ impl Bench {
 
     /// Adds a DC supply to ground on every net of `netlist` whose display
     /// name is a voltage: `3V3`, `+5V`, `5V0`, `12V`, `-12V`, `+3.3V`.
-    /// Names that aren't (`VCC`, `VDD`, `GND`) get nothing. Each source's
-    /// id is `supply:` and the net's id. Never done unless called: a power
-    /// port's name is only a hint.
+    /// Names that aren't (`VCC`, `VDD`, `GND`) get nothing, and neither do
+    /// decorated ones (`3V3_A`, `12V_IN`): those are often rails derived
+    /// through a filter or a switch, and a source on them would short it.
+    /// Each source's id is `supply:` and the net's id. Never done unless
+    /// called: a power port's name is only a hint. [`supply_names`] says
+    /// which supplies this assumes and which supply-like names it left for
+    /// the caller to set.
+    ///
+    /// The supplies are [`assumed`](BenchSource::assumed): one the bench
+    /// already drives with a voltage source of its own, or ties to ground,
+    /// gets none, and nets tied together get one between them, whichever
+    /// order the sources and ties are added in. Tied nets whose names
+    /// state different voltages are an [`ImportError::ConflictingSupplies`].
+    ///
+    /// Ground names (`GND`, `AGND`, `GND_ISO`, `0V`) get nothing either, `0V`
+    /// included though it states a voltage. A ground net other than the
+    /// bench's own stays a separate node: join it with
+    /// [`with_tie`](Self::with_tie) when it is the same return, or validation
+    /// reports it floating. Joining it here would short an isolated return
+    /// without a word.
     pub fn with_supplies_from_net_names(mut self, netlist: &Netlist) -> Self {
-        for net in &netlist.nets {
-            let Some(volts) = net.name.as_deref().and_then(voltage_from_name) else {
-                continue;
-            };
-            self.sources.push(BenchSource::voltage(
-                format!("supply:{}", net.id),
-                Attach::Net(net.id.clone()),
-                volts,
-            ));
+        for supply in supply_names(netlist).assumed {
+            self.sources.push(BenchSource {
+                assumed: true,
+                ..BenchSource::voltage(
+                    format!("supply:{}", supply.net),
+                    Attach::Net(supply.net),
+                    supply.volts,
+                )
+            });
         }
         self
     }
+}
+
+/// What [`Bench::with_supplies_from_net_names`] makes of a netlist's net
+/// names, for a UI to show before simulating ("assumed 3.3 V on 3V3; set
+/// VCC").
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct SupplyNames {
+    /// Nets whose name is a voltage, each getting a supply of that voltage,
+    /// in netlist order.
+    pub assumed: Vec<AssumedSupply>,
+    /// Nets whose name looks like a supply but isn't a plain voltage
+    /// (`VCC`, `VDD`, `VBAT`, `3V3_A`), in netlist order, by net id: they get
+    /// nothing, so the caller sets them or leaves them to the circuit.
+    pub unresolved: Vec<String>,
+    /// Nets named like a ground (`GND`, `AGND`, `0V`), in netlist order, by
+    /// net id. One is the bench's ground; joining the others to it is the
+    /// caller's call, with [`Bench::with_tie`].
+    pub grounds: Vec<String>,
+}
+
+/// A supply assumed from a net's name.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct AssumedSupply {
+    /// The net's id.
+    pub net: String,
+    /// Its display name, which states the voltage.
+    pub name: String,
+    /// The voltage to ground, in volts.
+    pub volts: f64,
+}
+
+/// Reads `netlist`'s net display names as power ports: which state a
+/// voltage, which look like supplies without one, and which are grounds.
+/// Changes nothing; see [`Bench::with_supplies_from_net_names`].
+///
+/// ```
+/// use sindr::import::{supply_names, Net, Netlist};
+///
+/// let netlist = Netlist {
+///     nets: vec![
+///         Net::new("n1", [("r1", "1")]).with_name("3V3"),
+///         Net::new("n2", [("r1", "2")]).with_name("VCC"),
+///         Net::new("n3", [("r2", "1")]).with_name("GND"),
+///     ],
+///     ..Default::default()
+/// };
+/// let names = supply_names(&netlist);
+/// assert_eq!((names.assumed[0].net.as_str(), names.assumed[0].volts), ("n1", 3.3));
+/// assert_eq!(names.unresolved, ["n2"]);
+/// assert_eq!(names.grounds, ["n3"]);
+/// ```
+pub fn supply_names(netlist: &Netlist) -> SupplyNames {
+    let mut names = SupplyNames::default();
+    for net in &netlist.nets {
+        let Some(name) = net.name.as_deref() else {
+            continue;
+        };
+        // A ground first: `0V` states a voltage, but a source on the
+        // ground net would sit between ground and itself.
+        if is_ground_name(name) {
+            names.grounds.push(net.id.clone());
+        } else if let Some(volts) = voltage_from_name(name) {
+            names.assumed.push(AssumedSupply {
+                net: net.id.clone(),
+                name: name.to_string(),
+                volts,
+            });
+        } else if is_supply_like_name(name) {
+            names.unresolved.push(net.id.clone());
+        }
+    }
+    names
+}
+
+/// `GND`, `AGND`, `PGND`, `GND_ISO`, `0V`.
+fn is_ground_name(name: &str) -> bool {
+    let n = name.trim().to_ascii_uppercase();
+    n.contains("GND") || n == "0V" || n == "0"
+}
+
+/// A name a power port would carry without stating a plain voltage:
+/// `VCC`, `VDD`, `VEE`, `VSS`, `VBAT`, `VIN`, `VBUS`, `V+`, `AVDD`,
+/// `+VCC`, or a decorated voltage such as `3V3_A` or `+12V_IN`.
+fn is_supply_like_name(name: &str) -> bool {
+    let n = name.trim().to_ascii_uppercase();
+    let bare = n.trim_start_matches(['+', '-']);
+    let rail = [
+        "VCC", "VDD", "VEE", "VSS", "VBAT", "VIN", "VBUS", "VSYS", "VREF", "VPP",
+    ];
+    (bare.starts_with(|c: char| c.is_ascii_digit()) && bare.contains('V'))
+        || bare.starts_with("V+")
+        || bare.starts_with("V-")
+        || rail
+            .iter()
+            .any(|r| bare.starts_with(r) || bare.ends_with(r))
 }
 
 /// The voltage a power net's name states: `3V3`, `+5V`, `-12V`, `3.3V`.
@@ -584,12 +711,7 @@ pub fn simulate_with(
             Simulation::Transient(solve_transient(&circuit.circuit, config)?)
         }
         Analysis::Ac(config) => Simulation::Ac(solve_ac(&circuit.circuit, config)?),
-        Analysis::DcSweep {
-            source,
-            start,
-            stop,
-            points,
-        } => Simulation::DcSweep(dc_sweep(&circuit.circuit, source, *start, *stop, *points)?),
+        Analysis::DcSweep(axis) => Simulation::DcSweep(dc_sweep(&circuit.circuit, axis)?),
     };
     Ok(Imported { circuit, result })
 }

@@ -41,6 +41,8 @@
 
 use std::fmt;
 
+use crate::handle::{ComponentId, NodeId};
+
 /// A parsed behavioural expression. See the [module docs](self) for the
 /// syntax.
 ///
@@ -59,15 +61,15 @@ pub enum Variable {
     /// `v(node)` or `v(node, reference)`: in volts.
     Voltage {
         /// The node.
-        node: String,
+        node: NodeId,
         /// The node it is measured against; ground when `None`.
-        reference: Option<String>,
+        reference: Option<NodeId>,
     },
     /// `i(source)`: the branch current of a voltage-defined element, in
     /// amperes, flowing into its first node.
     Current {
         /// The element's id.
-        source: String,
+        source: ComponentId,
     },
     /// `time`, in seconds.
     Time,
@@ -244,12 +246,12 @@ impl Expression {
         for variable in &mut self.variables {
             match variable {
                 Variable::Voltage { node: n, reference } => {
-                    *n = node(n);
+                    *n = node(n).into();
                     if let Some(r) = reference {
-                        *r = node(r);
+                        *r = node(r).into();
                     }
                 }
-                Variable::Current { source: s } => *s = source(s),
+                Variable::Current { source: s } => *s = source(s).into(),
                 Variable::Time => {}
             }
         }
@@ -275,8 +277,8 @@ impl Expression {
             ),
             variables: vec![
                 Variable::Voltage {
-                    node: a.to_string(),
-                    reference: Some(b.to_string()),
+                    node: a.into(),
+                    reference: Some(b.into()),
                 },
                 Variable::Time,
             ],
@@ -315,7 +317,7 @@ impl Expression {
     }
 
     /// The nodes the expression reads, ground references included.
-    pub(crate) fn nodes(&self) -> impl Iterator<Item = &String> {
+    pub(crate) fn nodes(&self) -> impl Iterator<Item = &NodeId> {
         self.variables.iter().flat_map(|v| match v {
             Variable::Voltage { node, reference } => std::iter::once(node)
                 .chain(reference.iter())
@@ -351,6 +353,21 @@ impl<'de> serde::Deserialize<'de> for Expression {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         Expression::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
+/// An expression is written as its text, so its schema is a string.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for Expression {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Expression".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "A behavioural expression, as SPICE writes it: `V(a, b) * 2`, `min(I(V1), 1m)`."
+        })
     }
 }
 
@@ -621,9 +638,9 @@ impl Parser<'_> {
         if self.eat("(") {
             return match name.as_str() {
                 "v" => {
-                    let node = self.name()?;
+                    let node = self.name()?.into();
                     let reference = if self.eat(",") {
-                        Some(self.name()?)
+                        Some(self.name()?.into())
                     } else {
                         None
                     };
@@ -631,7 +648,7 @@ impl Parser<'_> {
                     Ok(self.var(Variable::Voltage { node, reference }))
                 }
                 "i" => {
-                    let source = self.name()?;
+                    let source = self.name()?.into();
                     self.expect(")")?;
                     Ok(self.var(Variable::Current { source }))
                 }

@@ -27,6 +27,7 @@
 //! Integrated noise assumes each PSD follows a power law between points, as
 //! ngspice does.
 
+use crate::element::{CurrentSource, VoltageSource};
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -35,7 +36,8 @@ use crate::ac_analysis::{
     validate_config, AcConfig, FrequencySpacing,
 };
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
+use crate::handle::{ComponentId, NodeId};
 use crate::node_map::NodeMap;
 use crate::results::SimulationResult;
 use crate::transfer_function::Port;
@@ -51,15 +53,16 @@ const T_NOISE: f64 = 300.15;
 /// `.noise V(output[,reference]) input_source {dec|lin} points f_start f_stop`.
 /// Build one with [`NoiseConfig::new`] and its `with_*` setters.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NoiseConfig {
     /// The output node.
-    pub output: String,
+    pub output: NodeId,
     /// The node the output is measured against; ground when `None`.
-    pub reference: Option<String>,
+    pub reference: Option<NodeId>,
     /// The independent voltage or current source noise is referred back to.
-    pub input_source: String,
+    pub input_source: ComponentId,
     /// Start frequency (Hz), above 0: flicker noise is infinite at DC.
     pub f_start: f64,
     /// Stop frequency (Hz).
@@ -87,8 +90,8 @@ impl NoiseConfig {
     /// assert_eq!(config.reference.as_deref(), Some("ref"));
     /// ```
     pub fn new(
-        output: impl Into<String>,
-        input_source: impl Into<String>,
+        output: impl Into<NodeId>,
+        input_source: impl Into<ComponentId>,
         f_start: f64,
         f_stop: f64,
         num_points: usize,
@@ -105,7 +108,7 @@ impl NoiseConfig {
     }
 
     /// Measure the output against node `reference` instead of ground.
-    pub fn with_reference(mut self, reference: impl Into<String>) -> Self {
+    pub fn with_reference(mut self, reference: impl Into<NodeId>) -> Self {
         self.reference = Some(reference.into());
         self
     }
@@ -119,6 +122,7 @@ impl NoiseConfig {
 
 /// The physical mechanism behind a noise source.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NoiseKind {
@@ -132,6 +136,7 @@ pub enum NoiseKind {
 
 /// One noise source in the circuit.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NoiseSource {
@@ -146,6 +151,7 @@ pub struct NoiseSource {
 
 /// Noise at one frequency.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NoisePoint {
@@ -178,6 +184,7 @@ impl NoisePoint {
 
 /// Result of a noise analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NoiseResult {
@@ -212,9 +219,11 @@ struct Generator {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the input isn't an independent
-///   voltage or current source, the output or reference node isn't in the
-///   circuit, or the frequencies are invalid (`f_start` must be above 0)
+/// - [`SimError::UnknownNode`] if the output or reference node isn't in
+///   the circuit
+/// - [`SimError::InvalidConfig`] if the input isn't an independent voltage
+///   or current source, or the frequencies are invalid (`f_start` must be
+///   above 0)
 /// - Any [`SimError`] from the DC operating point
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -223,18 +232,20 @@ struct Generator {
 /// ```
 /// use sindr::{Circuit, CircuitElement};
 /// use sindr::noise::{solve_noise, NoiseConfig};
+/// use sindr::element::{Capacitor, Resistor, VoltageSource};
 ///
 /// // A 1 kΩ / 1 µF low-pass: the output noise integrates to √(kT/C).
 /// let circuit = Circuit::new("0", vec![
-///     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None },
-///     CircuitElement::Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 },
-///     CircuitElement::Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 },
+///     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None }),
+///     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 }),
+///     CircuitElement::Capacitor(Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 }),
 /// ]);
 /// let noise = solve_noise(&circuit, &NoiseConfig::new("out", "V1", 0.01, 1e7, 91))?;
 /// let kt_over_c = (1.380649e-23 * 300.15 / 1e-6_f64).sqrt();
 /// assert!((noise.total_output_noise / kt_over_c - 1.0).abs() < 0.01);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_noise(circuit: &Circuit, config: &NoiseConfig) -> Result<NoiseResult, SimError> {
     solve_noise_with(circuit, config, &crate::SolverOptions::default())
 }
@@ -247,7 +258,7 @@ pub(crate) fn solve_noise_with(
 ) -> Result<NoiseResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
-    let invalid = |msg: String| SimError::InvalidComponent(format!("noise: {msg}"));
+    let invalid = |msg: String| SimError::config(ConfigKind::Noise, msg);
 
     let ac = AcConfig::new(
         config.input_source.clone(),
@@ -264,21 +275,14 @@ pub(crate) fn solve_noise_with(
         )));
     }
     let node_map = NodeMap::from_circuit(circuit);
-    let node = |role: &str, name: &str| match node_map.index(name) {
-        None if name != circuit.ground_node => Err(invalid(format!(
-            "{role} node `{name}` is not in the circuit"
-        ))),
+    let node = |name: &str| match node_map.index(name) {
+        None if name != circuit.ground_node => Err(SimError::unknown_node(name)),
         index => Ok(index),
     };
-    let out = node("output", &config.output)?;
-    let reference = config
-        .reference
-        .as_deref()
-        .map(|name| node("reference", name))
-        .transpose()?
-        .flatten();
+    let out = node(&config.output)?;
+    let reference = config.reference.as_deref().map(node).transpose()?.flatten();
     let is_input = circuit.components.iter().any(|c| {
-        matches!(c, CircuitElement::VoltageSource { id, .. } | CircuitElement::CurrentSource { id, .. } if *id == config.input_source)
+        matches!(c, CircuitElement::VoltageSource(VoltageSource { id, .. }) | CircuitElement::CurrentSource(CurrentSource { id, .. }) if *id == config.input_source)
     });
     if !is_input {
         return Err(invalid(format!(
@@ -374,181 +378,111 @@ fn integrate(points: &[NoisePoint], psd: &dyn Fn(&NoisePoint) -> f64) -> f64 {
 
 /// Every noise source in flat `circuit`, at the operating point `dc`.
 fn generators(circuit: &Circuit, node_map: &NodeMap, dc: &SimulationResult) -> Vec<Generator> {
-    let idx = |n: &String| node_map.index(n);
-    let current = |id: &str| {
-        dc.component_results
+    let mut sources = NoiseSources {
+        node_map,
+        dc,
+        out: Vec::new(),
+    };
+    for c in &circuit.components {
+        c.device().noise(&mut sources);
+    }
+    sources.out
+}
+
+/// Where an element's [`Device::noise`] puts its generators, with the
+/// operating point they are taken at.
+///
+/// [`Device::noise`]: crate::element::Device::noise
+pub(crate) struct NoiseSources<'a> {
+    node_map: &'a NodeMap,
+    /// The DC operating point.
+    pub(crate) dc: &'a SimulationResult,
+    out: Vec<Generator>,
+}
+
+impl NoiseSources<'_> {
+    /// The DC current through component `id` (0 A if it has no result).
+    pub(crate) fn current(&self, id: &str) -> f64 {
+        self.dc
+            .component_results
             .iter()
             .find(|r| r.id == id)
             .map_or(0.0, |r| r.current_through)
-    };
-    let source = |id: &str, kind, branch: &str| NoiseSource {
-        component: id.to_string(),
-        kind,
-        branch: branch.to_string(),
-    };
-    let thermal =
-        |id: &str, branch: &'static str, a: &String, b: &String, r: f64, t: f64| Generator {
-            source: source(id, NoiseKind::Thermal, branch),
-            p: idx(a),
-            q: idx(b),
-            white: if r > 0.0 {
-                4.0 * BOLTZMANN * t / r
-            } else {
-                0.0
-            },
-            flicker: 0.0,
-        };
-    let shot = |id: &str, branch: &'static str, a: &String, b: &String, i: f64| Generator {
-        source: source(id, NoiseKind::Shot, branch),
-        p: idx(a),
-        q: idx(b),
-        white: 2.0 * CHARGE * i.abs(),
-        flicker: 0.0,
-    };
-    let flicker =
-        |id: &str, branch: &'static str, a: &String, b: &String, i: f64, kf: f64, af: f64| {
-            Generator {
-                source: source(id, NoiseKind::Flicker, branch),
-                p: idx(a),
-                q: idx(b),
-                white: 0.0,
-                flicker: kf * i.abs().powf(af),
-            }
-        };
-    let voltage = |n: &String| dc.node_voltages.get(n).copied().unwrap_or(0.0);
-
-    let mut out = Vec::new();
-    for c in &circuit.components {
-        match c {
-            CircuitElement::Resistor {
-                id,
-                nodes,
-                resistance,
-            } => out.push(thermal(id, "", &nodes[0], &nodes[1], *resistance, T_NOISE)),
-            CircuitElement::Potentiometer {
-                id,
-                nodes,
-                resistance,
-                position,
-            } => {
-                let pos = position.clamp(0.001, 0.999);
-                out.push(thermal(
-                    id,
-                    "top",
-                    &nodes[0],
-                    &nodes[1],
-                    resistance * pos,
-                    T_NOISE,
-                ));
-                out.push(thermal(
-                    id,
-                    "bottom",
-                    &nodes[1],
-                    &nodes[2],
-                    resistance * (1.0 - pos),
-                    T_NOISE,
-                ));
-            }
-            CircuitElement::Thermistor {
-                id,
-                nodes,
-                temperature,
-            } => {
-                let r = crate::device_params::thermistor_resistance(*temperature);
-                out.push(thermal(id, "", &nodes[0], &nodes[1], r, *temperature));
-            }
-            CircuitElement::Photoresistor {
-                id,
-                nodes,
-                light_level,
-            } => {
-                let r = crate::stamp::ldr_resistance(*light_level);
-                out.push(thermal(id, "", &nodes[0], &nodes[1], r, T_NOISE));
-            }
-            CircuitElement::Diode {
-                id, nodes, model, ..
-            } => {
-                let i = current(id);
-                out.push(shot(id, "", &nodes[0], &nodes[1], i));
-                if let Some(m) = model.filter(|m| m.kf > 0.0) {
-                    out.push(flicker(id, "", &nodes[0], &nodes[1], i, m.kf, m.af));
-                }
-            }
-            CircuitElement::Led { id, nodes, .. }
-            | CircuitElement::SchottkyDiode { id, nodes, .. }
-            | CircuitElement::ZenerDiode { id, nodes, .. }
-            | CircuitElement::Photodiode { id, nodes, .. } => {
-                out.push(shot(id, "", &nodes[0], &nodes[1], current(id)));
-            }
-            CircuitElement::Bjt {
-                id, nodes, model, ..
-            } => {
-                let Some(bjt) = dc.bjt_results.iter().find(|b| b.id == *id) else {
-                    continue;
-                };
-                let [b, col, e] = nodes;
-                out.push(shot(id, "ic", col, e, bjt.ic));
-                out.push(shot(id, "ib", b, e, bjt.ib));
-                if let Some(m) = model.filter(|m| m.kf > 0.0) {
-                    out.push(flicker(id, "ib", b, e, bjt.ib, m.kf, m.af));
-                }
-            }
-            CircuitElement::Mosfet {
-                id,
-                nodes,
-                kind,
-                params,
-                ..
-            } => {
-                let [g, d, s] = nodes;
-                let comp = crate::device_params::mosfet_op(
-                    *kind,
-                    params,
-                    voltage(g),
-                    voltage(d),
-                    voltage(s),
-                );
-                out.push(channel(
-                    source(id, NoiseKind::Thermal, ""),
-                    idx(d),
-                    idx(s),
-                    comp.gm,
-                ));
-                if params.kf > 0.0 {
-                    out.push(flicker(id, "", d, s, comp.id, params.kf, params.af));
-                }
-            }
-            CircuitElement::Jfet {
-                id,
-                nodes,
-                kind,
-                idss,
-                vp,
-                ..
-            } => {
-                let [g, d, s] = nodes;
-                let (vg, vd, vs) = (voltage(g), voltage(d), voltage(s));
-                let comp = sindr_devices::jfet::jfet_companion(vg - vs, vd - vs, *kind, *idss, *vp);
-                out.push(channel(
-                    source(id, NoiseKind::Thermal, ""),
-                    idx(d),
-                    idx(s),
-                    comp.gm,
-                ));
-            }
-            _ => {}
-        }
     }
-    out
-}
 
-/// A FET channel's thermal noise, `(8/3)·kT·|gm|`, between drain and source.
-fn channel(source: NoiseSource, d: Option<usize>, s: Option<usize>, gm: f64) -> Generator {
-    Generator {
-        source,
-        p: d,
-        q: s,
-        white: 8.0 / 3.0 * BOLTZMANN * T_NOISE * gm.abs(),
-        flicker: 0.0,
+    /// The DC voltage at node `n` (0 V if it has none).
+    pub(crate) fn voltage(&self, n: &str) -> f64 {
+        self.dc.node_voltages.get(n).copied().unwrap_or(0.0)
+    }
+
+    fn push(
+        &mut self,
+        id: &str,
+        kind: NoiseKind,
+        branch: &str,
+        [a, b]: [&NodeId; 2],
+        white: f64,
+        flicker: f64,
+    ) {
+        self.out.push(Generator {
+            source: NoiseSource {
+                component: id.to_string(),
+                kind,
+                branch: branch.to_string(),
+            },
+            p: self.node_map.index(a),
+            q: self.node_map.index(b),
+            white,
+            flicker,
+        });
+    }
+
+    /// The thermal noise `4kT/R` of a resistance `r` (Ω) at `t` (K) from
+    /// `a` to `b`; none for a resistance that isn't positive.
+    pub(crate) fn thermal(&mut self, id: &str, branch: &str, ab: [&NodeId; 2], r: f64, t: f64) {
+        let white = if r > 0.0 {
+            4.0 * BOLTZMANN * t / r
+        } else {
+            0.0
+        };
+        self.push(id, NoiseKind::Thermal, branch, ab, white, 0.0);
+    }
+
+    /// [`thermal`](Self::thermal) at the 27 °C noise temperature.
+    pub(crate) fn thermal_27c(&mut self, id: &str, branch: &str, ab: [&NodeId; 2], r: f64) {
+        self.thermal(id, branch, ab, r, T_NOISE);
+    }
+
+    /// The shot noise `2q|I|` of a junction current `i` (A) from `a` to `b`.
+    pub(crate) fn shot(&mut self, id: &str, branch: &str, ab: [&NodeId; 2], i: f64) {
+        self.push(id, NoiseKind::Shot, branch, ab, 2.0 * CHARGE * i.abs(), 0.0);
+    }
+
+    /// The flicker noise `KF·|I|^AF / f` of a current `i` (A) from `a` to `b`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn flicker(
+        &mut self,
+        id: &str,
+        branch: &str,
+        ab: [&NodeId; 2],
+        i: f64,
+        kf: f64,
+        af: f64,
+    ) {
+        self.push(
+            id,
+            NoiseKind::Flicker,
+            branch,
+            ab,
+            0.0,
+            kf * i.abs().powf(af),
+        );
+    }
+
+    /// A FET channel's thermal noise, `(8/3)·kT·|gm|`, from drain `d` to
+    /// source `s`.
+    pub(crate) fn channel(&mut self, id: &str, ds: [&NodeId; 2], gm: f64) {
+        let white = 8.0 / 3.0 * BOLTZMANN * T_NOISE * gm.abs();
+        self.push(id, NoiseKind::Thermal, "", ds, white, 0.0);
     }
 }

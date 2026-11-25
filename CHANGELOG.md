@@ -7,6 +7,169 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-25
+
+A typed API (element structs, node and component handles, error causes,
+sweep configs, result enums), one file per device, a sparse solver that
+stamps into a fixed layout (Newton about twice as fast, large transients
+nearly so), new analyses and elements, and a schematic import that
+simulates a board while it's still being drawn. Serialised circuit JSON
+and SPICE input are unchanged.
+
+### Migrating from 0.2
+
+- **Elements are structs.** Each `CircuitElement` variant wraps a struct
+  from `sindr::element`:
+  `CircuitElement::Resistor { id, nodes, resistance }` becomes
+  `CircuitElement::Resistor(Resistor { id, nodes, resistance })`, with
+  `use sindr::element::Resistor;`. Match the same way:
+  `CircuitElement::Resistor(Resistor { resistance, .. })`.
+- **Nodes and components are handles.** Terminals are `[NodeId; N]`, a
+  controlled source's `control_source` is a `ComponentId`, and analysis
+  configs take `NodeId`/`ComponentId`. `"n1".into()` still compiles; a
+  `String` needs `.into()` or `NodeId::from`. `SensEntry::component_id`,
+  `AcSensEntry::component_id`, `DcSweepResult::source_id` and
+  `NestedDcSweepResult::outer_source_id` are handles (`.as_str()` for the
+  name).
+- **Errors have typed causes.** `SimError::InvalidComponent(msg)` is
+  `InvalidComponent { id, reason }`. `InvalidResistance` is gone: a bad
+  resistance is `InvalidComponent`. A bad analysis setting is
+  `InvalidConfig { config: ConfigKind, reason }`, a repeated id
+  `DuplicateId`, and a name nothing has `UnknownNode` or
+  `UnknownComponent`. Match on the variant instead of the message.
+- **Sweeps take configs.** `dc_sweep(c, "V1", 0.0, 5.0, 51)` is
+  `dc_sweep(c, &DcSweepAxis::new("V1", 0.0, 5.0, 51))`, and
+  `temperature_sweep(c, 250.0, 400.0, 4)` is
+  `temperature_sweep(c, &TempSweepConfig::new(250.0, 400.0, 4))`, on
+  `Solver` too. `TempSweepPoint::temperature_kelvin` is `temperature`,
+  `TempSweepResult::{temp_start, temp_end}` are `{start, stop}`, and
+  `import::Analysis::DcSweep { .. }` is `Analysis::DcSweep(DcSweepAxis)`
+  (its JSON has `source_id` and `num_points`).
+- **Regions are enums.** `BjtResult::region` is a `BjtRegion` and
+  `MosfetResult::region` a `MosfetRegion`: compare with
+  `BjtRegion::Active`, or call `.as_str()` for the old string. They
+  serialise as the same lowercase strings. `LedColor` and
+  `RegulatorRegion` are `#[non_exhaustive]`, so a `match` needs a
+  wildcard arm.
+- **Three structs gained fields.** `BenchSource` has `assumed` (use
+  `..BenchSource::voltage(..)` or set `assumed: false`), `Instance` has
+  `variant` (`variant: None`, or `Instance::new`), and `Block` has
+  `base_variant`, `variants` and `default_variant` (end a literal with
+  `..Default::default()`). All default in JSON.
+- **Every feature is on by default.** `sindr = "0.3"` gets serde, JSON
+  Schema, SPICE, examples and threaded Monte Carlo. To keep a build
+  small, set `default-features = false` and list the features you want.
+- **`0V` is a ground.** A net named `0V` is no longer given a 0 V
+  supply. If it isn't the bench's ground, tie it with `with_tie`, or
+  validation fails with `FloatingNode`.
+- **Stuck transients stop.** A transient whose step sits at its floor
+  stops with `SimError::TimestepTooSmall` instead of running for
+  minutes.
+
+### Added
+
+- `TransientSession`: a transient held open between calls, for a
+  circuit paired with firmware, a user or a changing environment. It
+  follows FMI 3.0 co-simulation: `advance_to`, `set_source` and
+  `set_param` at the time reached, and `run_until` with an early return
+  on threshold-crossing events.
+- `solve_transient_with_progress` runs a hook after every accepted step;
+  returning `Flow::Stop` cancels the run with `SimError::Cancelled`.
+- `sindr::fourier`: `Fourier` (SPICE `.four`: harmonics, phases and THD,
+  as ngspice computes them) and `Fft` (a windowed radix-2 FFT of a
+  uniform resample, scaled to peak amplitude), reading a `Signal` from a
+  transient or a `(t, v)` trace. The SPICE parser reads `.four` cards
+  into `ParsedNetlist::fourier`.
+- `SwitchingRegulator`: an averaged buck or boost converter. It holds its
+  set voltage and draws `Vout·Iout/(η·Vin)` from its input, with an
+  efficiency constant or over load, a current limit, dropout and UVLO.
+  `ConverterParams::ripple_current` estimates the inductor ripple, and
+  `converter::feedback_voltage` gives a set point from a divider.
+- `DcMotor`: a brushed DC motor with armature R, L and back-EMF, and a
+  shaft with inertia, viscous friction and a load torque, which a
+  `TransientSession` can change.
+- `DigitalPin`: the electrical side of an MCU or logic-IC pin, after
+  the IBIS I/O buffer, with mode, level and pull settable through a
+  session. `LogicGate`: a CMOS gate at the analog level, with `vil`/`vih`
+  or Schmitt inputs, the pin's output stage and a propagation delay.
+- `CircuitBuilder` hands out `NodeId` and `ComponentId` handles and
+  refuses an undeclared net or a repeated id. Results take a handle or a
+  name.
+- A block can hold several variants of one body (ideal, behavioural,
+  detailed), and each `Instance` picks one with `with_variant`.
+- `schemars` feature: `JsonSchema` for every serde type in both crates.
+- `sindr::VERSION` and `sindr_devices::VERSION`.
+- `import::supply_names` reports which supplies net names imply, the
+  supply-like names it left alone, and the nets that look like grounds.
+- `UnconnectedTerminals::Skip` leaves out components with unconnected
+  required terminals, so a schematic being drawn still simulates.
+- `Model::Subckt` uses a vendor `.subckt` as a part's model, with a pin
+  map from its terminals to the subcircuit's ports.
+- The import ties nets that only reach IC pins to ground through 1 TΩ
+  and lists them, so a board with black-box ICs solves.
+
+### Changed
+
+- **Breaking:** each `CircuitElement` variant wraps a struct from
+  `sindr::element`.
+- **Breaking:** terminals, controlled-source controls and analysis
+  configs take `NodeId`/`ComponentId` handles.
+- **Breaking:** `SimError` has typed causes: `InvalidComponent { id,
+  reason }`, `InvalidConfig { config, reason }`, `DuplicateId`,
+  `UnknownNode` and `UnknownComponent`.
+- **Breaking:** `dc_sweep` and `temperature_sweep` take a `DcSweepAxis`
+  and a `TempSweepConfig`, with renamed result fields.
+- **Breaking:** `BjtResult::region` and `MosfetResult::region` are
+  enums; `LedColor` and `RegulatorRegion` are `#[non_exhaustive]`.
+- **Breaking:** `BenchSource` has an `assumed` field, `Instance` a
+  `variant` field, and `Block` `base_variant`, `variants` and
+  `default_variant`. Sensitivity entries' `component_id` and DC sweep
+  results' `source_id` are handles.
+- Every feature but `internals` is on by default.
+- A net named `0V` counts as a ground, not a 0 V supply.
+- `Bench::with_supplies_from_net_names` doesn't put a second source on a
+  net the bench already drives, and tied nets get one supply between
+  them. A supply it assumes is marked `assumed`.
+- Sparse systems (above 100 unknowns) stamp into a fixed layout recorded
+  on the first solve and refactor numerically into a reused LU: Newton
+  on 1 000 stages is about twice as fast, AC 2.4×, and a 1 000-stage RC
+  ladder transient 1.8×. Grounded sources are substituted out before a
+  sparse factorisation, so a supply rail shared by every part no longer
+  fills the LU in (`newton_bjt_row/1000`: 401 → 33 ms before the layout
+  change). Node names, control branches, sensed nets and AC terminals
+  are resolved once per solve, not on every iteration.
+- Each device's DC, transient, AC and noise models, ratings, SPICE line
+  and results live in its own file in `sindr::element`. Results are
+  unchanged.
+
+### Removed
+
+- `SimError::InvalidResistance`: a bad resistance is
+  `SimError::InvalidComponent`.
+
+### Fixed
+
+- A circuit with no unknowns (only elements from ground to ground)
+  solves to 0 V and 0 A instead of panicking.
+- A transient that can't be followed at any step (a current source into
+  a node with no DC path) stops with `TimestepTooSmall` instead of
+  running for minutes. Only steps stuck within 10× the step floor count,
+  so a fast circuit with a coarse `tstep` still runs, and accepted steps
+  are capped at the step budget.
+- `dc_sweep` accepts a one-point axis (`start == stop`), as
+  `DcSweepAxis::from_step` and a deck's `.dc` can produce.
+- The progress hook's step has crystals, ferrite beads and SPDT switches
+  folded back, as the result's timesteps do.
+- `to_netlist` refuses a circuit with two elements of one id instead of
+  writing a deck that doesn't parse.
+- The import's floating-net tie counts subcircuit ports, and follows only
+  DC paths, so a group grounded only through a capacitor, a current
+  source or a FET gate gets its tie.
+- A `Model::Subckt` part's internal nodes no longer join the outer
+  circuit's ground or another model's `.global` by name.
+- Named-net supplies no longer short a net the bench already drives,
+  which made the operating point a `SingularMatrix`.
+
 ## [0.2.0] - 2026-11-22
 
 ### Added
@@ -1119,7 +1282,8 @@ staged as `0.1.0-alpha.8`.
   semiconductor models (diode, BJT, MOSFET, JFET, IGBT, varactor, zener,
   Schottky, LED, photodiode, photoresistor, thermistor).
 
-[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/steffendybvik/sindr-rs/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/steffendybvik/sindr-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.7...v0.1.0
 [0.1.0-alpha.7]: https://github.com/steffendybvik/sindr-rs/compare/v0.1.0-alpha.6...v0.1.0-alpha.7

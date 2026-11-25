@@ -43,6 +43,26 @@
 //! attach to its terminals. Any other kind sindr doesn't know is refused
 //! by default; [`UnknownKinds::BlackBox`] makes those black boxes too.
 //! Either way each one is listed in [`ImportedCircuit::black_boxes`].
+//! A net a black box leaves floating (a pull-up into an MCU input, a
+//! resistor between two IC pins) is tied to ground through
+//! [`HIGH_IMPEDANCE_OHMS`], the pin's leakage, so the rest of the circuit
+//! solves; each is listed in [`ImportedCircuit::high_impedance`].
+//!
+//! An editor's "exclude from simulation" attribute maps onto the same
+//! thing: send that part as a [`ComponentKind::BlackBox`], and its nets
+//! stay for the bench without an element.
+//!
+//! # Schematics still being drawn
+//!
+//! A required terminal on no net refuses the import with
+//! [`ImportError::Unconnected`]. A schematic being drawn always has loose
+//! ends, so [`UnconnectedTerminals::Skip`] leaves such a component out
+//! instead: it adds no element, its connected nets stay, an
+//! [`ImportWarning`] names it, and it is listed in
+//! [`ImportedCircuit::skipped`]. Open ends (a net only one element
+//! reaches, parts not yet wired to ground) are tied through
+//! [`HIGH_IMPEDANCE_OHMS`], so the finished part of the design still
+//! simulates.
 //!
 //! # Models from part data
 //!
@@ -87,12 +107,22 @@ mod bench;
 mod value;
 
 pub use bench::{
-    simulate, simulate_with, Analysis, Attach, Bench, BenchError, BenchLoad, BenchSource, Imported,
-    LoadKind, Simulation, SourceKind,
+    simulate, simulate_with, supply_names, Analysis, AssumedSupply, Attach, Bench, BenchError,
+    BenchLoad, BenchSource, Imported, LoadKind, Simulation, SourceKind, SupplyNames,
 };
 pub use value::parse_value;
 
+use crate::element::{
+    Battery, Bjt, Capacitor, Comparator, Crystal, CurrentSource, Diode, FerriteBead, Fuse, Igbt,
+    Inductor, Jfet, Led, Mosfet, OpAmp, Photodiode, Photoresistor, Potentiometer, Pushbutton,
+    Relay, Resistor, SchottkyDiode, Switch, Thermistor, Transformer, Varactor, VoltageRegulator,
+    VoltageSource, ZenerDiode,
+};
+use crate::handle::NodeId;
 use std::collections::{BTreeMap, BTreeSet};
+
+#[cfg(feature = "spice")]
+mod subckt;
 
 use crate::circuit::{
     BjtModel, Circuit, CircuitElement, CrystalParams, DiodeModel, FerriteBeadParams, OpAmpModel,
@@ -115,6 +145,7 @@ use sindr_devices::varactor::VaractorParams;
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// so a field added in a later release doesn't break the literal.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Netlist {
     /// The components, in any order.
@@ -125,6 +156,7 @@ pub struct Netlist {
 
 /// One component of a [`Netlist`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Component {
     /// The caller's id, unique in the netlist. It becomes the element's id,
@@ -209,6 +241,7 @@ impl Component {
 /// A value or parameter: a number in SI base units, text, a flag, or a
 /// typed quantity.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(untagged))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -235,6 +268,7 @@ pub enum Value {
 /// Set the fields you need and fill the rest with `..Default::default()`,
 /// or build it with [`new`](Self::new) and [`with_text`](Self::with_text).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Quantity {
     /// The number, in the unit's base unit (A, not mA), exact as the
@@ -274,6 +308,7 @@ impl Quantity {
 /// (a gain, a position). [`from_symbol`](Self::from_symbol) also reads
 /// `Ω`; any other symbol is [`Other`](Self::Other).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -375,6 +410,7 @@ impl From<Quantity> for Value {
 /// component that becomes an element, in
 /// [`ImportedCircuit::models`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -440,6 +476,7 @@ impl From<String> for Value {
 
 /// A device model for a [`Component`] whose kind takes one.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -460,6 +497,87 @@ pub enum Model {
     Varactor(VaractorParams),
     /// For an IGBT.
     Igbt(IgbtParams),
+    /// A SPICE subcircuit, such as a vendor's op-amp or regulator model,
+    /// standing in for the whole part. See [`SubcktModel`].
+    #[cfg(feature = "spice")]
+    Subckt(SubcktModel),
+}
+
+/// A part simulated by a SPICE subcircuit instead of a built-in element:
+/// the model text a vendor ships, which `.subckt` in it to use, and which
+/// of the component's terminals binds to each of its ports.
+///
+/// A component of any kind with this model is placed as an instance of the
+/// subcircuit under the component's id, so its internal nodes are
+/// `<id>.<node>` in a result. Only the model's ground and its own
+/// `.global` nets join the circuit's: a node named like the circuit's
+/// ground net or another model's global stays the model's own, as
+/// `<id>.<node>_local`. Its terminals are read like a black box's: any
+/// name, through [`ImportOptions::terminal_names`] when given.
+///
+/// ```
+/// use sindr::import::{
+///     simulate, Bench, BenchSource, Component, ComponentKind, Model, Net, Netlist, Simulation,
+///     SubcktModel,
+/// };
+///
+/// // A unity-gain buffer: a vendor-style macromodel with ports in+, in-, out.
+/// let text = "
+/// .subckt buffer inp inn out
+/// Rin inp inn 10meg
+/// E1 mid 0 inp inn 1e5
+/// Rout mid out 10
+/// .ends";
+/// let netlist = Netlist {
+///     components: vec![
+///         Component::new("U1", ComponentKind::BlackBox).with_model(Model::Subckt(
+///             SubcktModel::new(text, "buffer", ["IN+", "IN-", "OUT"]),
+///         )),
+///         Component::new("RL", ComponentKind::Resistor).with_value("10k"),
+///     ],
+///     nets: vec![
+///         Net::new("in", [("U1", "IN+")]),
+///         Net::new("out", [("U1", "IN-"), ("U1", "OUT"), ("RL", "1")]),
+///         Net::new("gnd", [("RL", "2")]),
+///     ],
+/// };
+/// let bench = Bench::new("gnd").with_source(BenchSource::voltage("v", "in", 2.0));
+/// let out = simulate(&netlist, &bench).unwrap();
+/// let Simulation::OperatingPoint(r) = &out.result else { unreachable!() };
+/// assert!((r.node_voltages["out"] - 2.0).abs() < 1e-3);
+/// ```
+#[cfg(feature = "spice")]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SubcktModel {
+    /// SPICE text holding the subcircuit: a `.subckt` … `.ends` block, or a
+    /// `.lib` excerpt with several and their `.model` cards. Elements
+    /// outside any `.subckt` are ignored.
+    pub text: String,
+    /// The `.subckt` to use, matched without regard to case.
+    pub name: String,
+    /// The component's terminal for each port, in the subcircuit's port
+    /// order: `pins[0]` binds to its first port.
+    pub pins: Vec<String>,
+}
+
+#[cfg(feature = "spice")]
+impl SubcktModel {
+    /// Subcircuit `name` from `text`, with `pins` the component's terminal
+    /// for each of its ports in order.
+    pub fn new<P: Into<String>>(
+        text: impl Into<String>,
+        name: impl Into<String>,
+        pins: impl IntoIterator<Item = P>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            name: name.into(),
+            pins: pins.into_iter().map(Into::into).collect(),
+        }
+    }
 }
 
 impl Model {
@@ -473,6 +591,8 @@ impl Model {
             Model::Battery(_) => "battery",
             Model::Varactor(_) => "varactor",
             Model::Igbt(_) => "igbt",
+            #[cfg(feature = "spice")]
+            Model::Subckt(_) => "subckt",
         }
     }
 }
@@ -567,7 +687,7 @@ impl Model {
 /// `v-` (or `vcc`, `vee`, `positive supply` …), without a unit. A unit
 /// with none of its terminals connected (a spare half) adds no element;
 /// one connected in part is an [`ImportError::Unconnected`] as for a
-/// single op-amp.
+/// single op-amp (or skipped, under [`UnconnectedTerminals::Skip`]).
 ///
 /// Names besides the canonical ones: `resistor_iec`, `resistor_us`, `res`;
 /// `cap`, `capacitor_polarised`, `capacitor_electrolytic`, `electrolytic`;
@@ -580,6 +700,7 @@ impl Model {
 /// `pin_header`, `terminal_block`, `conn` for a connector; `ic` for a
 /// black box.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(missing_docs)]
@@ -1018,6 +1139,7 @@ impl From<ComponentKind> for String {
 
 /// A net: the terminals wired together.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Net {
     /// The caller's id, unique in the netlist. It becomes the node's name.
@@ -1056,6 +1178,7 @@ impl Net {
 
 /// A component's terminal, by the component's id and the terminal's name.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Pin {
     /// The component's id.
@@ -1195,6 +1318,27 @@ pub enum ImportError {
         /// `"isn't in the netlist"` or `"is the name of several nets"`.
         problem: String,
     },
+    /// A [`SubcktModel`]'s text doesn't parse, or has no `.subckt` by its
+    /// name.
+    #[error("component \"{component}\": its subcircuit model {problem}")]
+    SubcktModel {
+        /// The component's id.
+        component: String,
+        /// What's wrong: the parse error, or the missing name.
+        problem: String,
+    },
+    /// A [`SubcktModel`]'s pin map doesn't fit the subcircuit or the
+    /// component.
+    #[error("component \"{component}\": pin \"{pin}\" of its subcircuit model {problem}")]
+    SubcktPin {
+        /// The component's id.
+        component: String,
+        /// The pin as given in [`SubcktModel::pins`], or the port count
+        /// for a map of the wrong length.
+        pin: String,
+        /// What's wrong with it.
+        problem: String,
+    },
     /// The bench attaches to a terminal that's on no net.
     #[error("{item} attaches to terminal \"{terminal}\" of component \"{component}\", which is on no net")]
     AttachedToUnconnected {
@@ -1205,11 +1349,29 @@ pub enum ImportError {
         /// The terminal.
         terminal: String,
     },
+    /// Two supplies [`Bench::with_supplies_from_net_names`] assumed land on
+    /// one node, through the bench's ties, at different voltages.
+    #[error(
+        "supplies \"{first}\" ({first_volts} V) and \"{second}\" ({second_volts} V) are on one node, \"{node}\""
+    )]
+    ConflictingSupplies {
+        /// The node, by its name in the circuit (a net id).
+        node: String,
+        /// The first supply's id.
+        first: String,
+        /// Its voltage.
+        first_volts: f64,
+        /// The second supply's id.
+        second: String,
+        /// Its voltage.
+        second_volts: f64,
+    },
 }
 
 /// What to do with a component of a kind sindr doesn't know
 /// ([`ComponentKind::Other`]).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1224,8 +1386,38 @@ pub enum UnknownKinds {
     BlackBox,
 }
 
+/// What to do with a component that has a required terminal on no net.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UnconnectedTerminals {
+    /// Refuse the import with [`ImportError::Unconnected`], naming the
+    /// first such terminal. The default, and what [`Netlist::to_circuit`]
+    /// does.
+    #[default]
+    Error,
+    /// Leave the component out: no element, its connected nets kept, an
+    /// [`ImportWarning`] naming it, and listed in
+    /// [`ImportedCircuit::skipped`]. Open ends (a net only one element
+    /// reaches, or parts not yet wired to ground) are tied through
+    /// [`HIGH_IMPEDANCE_OHMS`] and listed in
+    /// [`ImportedCircuit::high_impedance`]. For a schematic still being
+    /// drawn.
+    Skip,
+}
+
+impl UnconnectedTerminals {
+    #[cfg(feature = "serde")]
+    fn is_error(&self) -> bool {
+        *self == Self::Error
+    }
+}
+
 /// How [`Netlist::to_circuit_with`] and [`simulate_with`] read a netlist:
-/// what to do with unknown kinds, and each component's terminal names.
+/// what to do with unknown kinds and unconnected terminals, and each
+/// component's terminal names.
 ///
 /// Built with [`new`](Self::new) and the `with_*` setters. The default
 /// reads a netlist as [`Netlist::to_circuit`] does.
@@ -1239,12 +1431,19 @@ pub enum UnknownKinds {
 /// assert_eq!(options.terminal_names["q1"]["1"], "Base");
 /// ```
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone, Default, PartialEq)]
 #[non_exhaustive]
 pub struct ImportOptions {
     /// What to do with a component of a kind sindr doesn't know.
     pub unknown_kinds: UnknownKinds,
+    /// What to do with a component that has a required terminal on no net.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip_serializing_if = "UnconnectedTerminals::is_error")
+    )]
+    pub unconnected: UnconnectedTerminals,
     /// Terminal names by component id, then terminal id: the table a
     /// schematic tool keeps on each component (`"1"` is `"Base"`). A pin
     /// whose terminal has a name here is matched by that name, then by its
@@ -1265,6 +1464,12 @@ impl ImportOptions {
     /// Sets [`unknown_kinds`](Self::unknown_kinds).
     pub fn with_unknown_kinds(mut self, unknown_kinds: UnknownKinds) -> Self {
         self.unknown_kinds = unknown_kinds;
+        self
+    }
+
+    /// Sets [`unconnected`](Self::unconnected).
+    pub fn with_unconnected(mut self, unconnected: UnconnectedTerminals) -> Self {
+        self.unconnected = unconnected;
         self
     }
 
@@ -1289,6 +1494,10 @@ impl ImportOptions {
     /// Whether `component` is imported as a black box; an error for an
     /// unknown kind when those are refused.
     fn black_box(&self, component: &Component) -> Result<bool, ImportError> {
+        #[cfg(feature = "spice")]
+        if matches!(component.model, Some(Model::Subckt(_))) {
+            return Ok(true);
+        }
         match &component.kind {
             ComponentKind::BlackBox => Ok(true),
             ComponentKind::Other(_) if self.unknown_kinds == UnknownKinds::BlackBox => Ok(true),
@@ -1299,6 +1508,18 @@ impl ImportOptions {
             _ => Ok(false),
         }
     }
+}
+
+/// A component left out under [`UnconnectedTerminals::Skip`] because a
+/// terminal its element needs is on no net.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SkippedPart {
+    /// The component's id, or a dual or quad unit's (`<id>.a`).
+    pub component: String,
+    /// The required terminals on no net, by canonical name, in terminal
+    /// order.
+    pub unconnected: Vec<String>,
 }
 
 /// A component imported as a black box: a [`ComponentKind::BlackBox`],
@@ -1313,6 +1534,127 @@ pub struct BlackBoxPart {
     pub kind: String,
     /// Net id by terminal id, for the terminals that are on a net.
     pub terminals: BTreeMap<String, String>,
+}
+
+/// The resistance an import ties a floating net to ground through: an IC
+/// input's leakage, and SPICE's gmin (10⁻¹² S). A 10 kΩ pull-up into it
+/// sits 33 pV below its rail.
+pub const HIGH_IMPEDANCE_OHMS: f64 = 1e12;
+
+/// A net whose only connections, besides at most one element terminal,
+/// are pins of parts sindr doesn't simulate: an MCU input with a pull-up,
+/// an I²C line between two black boxes, a resistor between two IC pins.
+/// Electrically those pins are high impedance, so the net is held where its
+/// one element puts it; for the solver it would be floating. The import
+/// ties it to ground through [`HIGH_IMPEDANCE_OHMS`], as element
+/// [`resistor`](Self::resistor), so the rest of the circuit solves.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct HighImpedanceNet {
+    /// The node, by its name in the circuit (a net id; see
+    /// [`ImportedCircuit::node`]).
+    pub node: String,
+    /// The id of the tie's resistor in [`ImportedCircuit::circuit`].
+    pub resistor: String,
+    /// The pins of unsimulated parts on the net, in netlist order. Empty
+    /// for an open end under [`UnconnectedTerminals::Skip`]: a net only one
+    /// element reaches, or one in a group not yet wired to ground.
+    pub pins: Vec<Pin>,
+}
+
+/// Ties every node an unsimulated pin leaves floating (fewer than two
+/// element or subcircuit terminals, or no DC path to ground but through
+/// such pins) to ground through [`HIGH_IMPEDANCE_OHMS`]. A capacitor, a
+/// current source or a FET's gate isn't a DC path.
+fn tie_high_impedance_nets(
+    circuit: &mut Circuit,
+    unsimulated: BTreeMap<String, Vec<Pin>>,
+    ids: &BTreeSet<&str>,
+) -> Vec<HighImpedanceNet> {
+    let ground = circuit.ground_node.clone();
+    let ground_id = NodeId::from(&ground);
+    let floating: Vec<(String, Vec<Pin>)> = {
+        let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut adjacent: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        // Ground is reached only through what conducts at DC, as the
+        // solver stamps it: a net whose way down is a capacitor, a
+        // current source or a MOSFET's gate floats in the operating point.
+        let element_paths = circuit
+            .components
+            .iter()
+            .flat_map(|e| e.device().dc_paths(&ground_id))
+            .map(|[a, b]| [a.as_str(), b.as_str()]);
+        // A subcircuit instance's ports are element terminals too: the
+        // vendor model behind them drives its nets. What it joins inside
+        // isn't known here, so every port counts as joined to the first.
+        let port_paths = circuit
+            .instances
+            .iter()
+            .flat_map(|i| i.nodes.iter().map(|n| [i.nodes[0].as_str(), n.as_str()]));
+        for [a, b] in element_paths.chain(port_paths) {
+            adjacent.entry(a).or_default().insert(b);
+            adjacent.entry(b).or_default().insert(a);
+        }
+        let terminals = circuit
+            .components
+            .iter()
+            .map(|c| {
+                c.all_nodes()
+                    .into_iter()
+                    .map(NodeId::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .chain(
+                circuit
+                    .instances
+                    .iter()
+                    .map(|i| i.nodes.iter().map(String::as_str).collect()),
+            );
+        for nodes in terminals {
+            for n in nodes {
+                *degree.entry(n).or_default() += 1;
+            }
+        }
+        let mut grounded = BTreeSet::from([ground.as_str()]);
+        let mut stack = vec![ground.as_str()];
+        while let Some(n) = stack.pop() {
+            for &m in adjacent.get(n).into_iter().flatten() {
+                if grounded.insert(m) {
+                    stack.push(m);
+                }
+            }
+        }
+        unsimulated
+            .into_iter()
+            .filter(|(n, _)| *n != ground)
+            .filter(|(n, _)| {
+                let d = degree.get(n.as_str()).copied().unwrap_or(0);
+                d == 1 || (d > 1 && !grounded.contains(n.as_str()))
+            })
+            .collect()
+    };
+    let mut tied = Vec::new();
+    for (node, pins) in floating {
+        let mut resistor = format!("{node}.hi_z");
+        let mut k = 2;
+        while ids.contains(resistor.as_str())
+            || circuit.components.iter().any(|e| e.id() == resistor)
+        {
+            resistor = format!("{node}.hi_z{k}");
+            k += 1;
+        }
+        circuit.components.push(CircuitElement::Resistor(Resistor {
+            id: resistor.clone(),
+            nodes: [NodeId::from(&node), NodeId::from(&ground)],
+            resistance: HIGH_IMPEDANCE_OHMS,
+        }));
+        tied.push(HighImpedanceNet {
+            node,
+            resistor,
+            pins,
+        });
+    }
+    tied
 }
 
 /// A [`Circuit`] built from a [`Netlist`], with the map from the caller's
@@ -1337,6 +1679,14 @@ pub struct ImportedCircuit {
     /// Warnings, in netlist order: one for every component whose model is
     /// [`ModelSource::Default`], and any other part data sindr couldn't use.
     pub warnings: Vec<ImportWarning>,
+    /// Nets left floating by parts that simulate nothing, each tied to
+    /// ground through [`HIGH_IMPEDANCE_OHMS`] so the rest of the circuit
+    /// solves. See [`HighImpedanceNet`].
+    pub high_impedance: Vec<HighImpedanceNet>,
+    /// Components left out under [`UnconnectedTerminals::Skip`], in
+    /// netlist order. Like a black box, none of them is in
+    /// [`circuit`](Self::circuit).
+    pub skipped: Vec<SkippedPart>,
 }
 
 impl ImportedCircuit {
@@ -1504,8 +1854,14 @@ impl Netlist {
                 None => Ok(node(ground_net)),
             }
         };
+        let sources = bench_sources(bench, |source| {
+            Ok([
+                node(resolver.net(&source.plus, &source.id)?),
+                side(&source.minus, &source.id)?,
+            ])
+        })?;
         let mut supply = BTreeMap::from([(circuit.ground_node.clone(), 0.0)]);
-        for source in &bench.sources {
+        for source in &sources {
             if let SourceKind::Voltage { volts, .. } = source.kind {
                 let plus = node(resolver.net(&source.plus, &source.id)?);
                 if side(&source.minus, &source.id)? == circuit.ground_node {
@@ -1515,9 +1871,57 @@ impl Netlist {
         }
 
         let mut black_boxes = Vec::new();
+        // Node by node, the pins of parts that simulate nothing (black
+        // boxes, connectors, test points): what an IC pin leaves a net.
+        let mut unsimulated: BTreeMap<String, Vec<Pin>> = BTreeMap::new();
+        let pins_of = |id: &str| -> Vec<(String, Pin)> {
+            self.nets
+                .iter()
+                .flat_map(|net| {
+                    net.pins
+                        .iter()
+                        .filter(|p| p.component == id)
+                        .map(|p| (node(&net.id), p.clone()))
+                })
+                .collect()
+        };
         let mut models = BTreeMap::new();
         let mut warnings = Vec::new();
-        let mut record = |id: &str, built: &Built| {
+        let mut skipped = Vec::new();
+        // Under `Skip`, a component (or unit) with a required terminal on
+        // no net is listed and warned about; its connected pins are left
+        // to the high-impedance tie as a black box's are. `true` when it
+        // was skipped.
+        let mut skip =
+            |id: &str, unconnected: Vec<String>, warnings: &mut Vec<ImportWarning>| -> bool {
+                if options.unconnected != UnconnectedTerminals::Skip {
+                    return false;
+                }
+                if unconnected.is_empty() {
+                    return false;
+                }
+                let list = unconnected
+                    .iter()
+                    .map(|t| format!("\"{t}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                warnings.push(ImportWarning {
+                    component: id.to_string(),
+                    message: format!(
+                        "left out of the simulation: terminal{} {list} on no net",
+                        if unconnected.len() == 1 { "" } else { "s" }
+                    ),
+                });
+                skipped.push(SkippedPart {
+                    component: id.to_string(),
+                    unconnected,
+                });
+                true
+            };
+        let record = |warnings: &mut Vec<ImportWarning>,
+                      models: &mut BTreeMap<String, ModelSource>,
+                      id: &str,
+                      built: &Built| {
             if let Some(source) = built.source {
                 models.entry(id.to_string()).or_insert(source);
             }
@@ -1531,11 +1935,47 @@ impl Netlist {
                 }
             }
         };
+        #[cfg(feature = "spice")]
+        let mut placed_models: Vec<subckt::Placed> = Vec::new();
         for component in &self.components {
             if let Some(part) = &component.part {
                 circuit.parts.insert(component.id.clone(), part.clone());
             }
             if options.black_box(component)? {
+                #[cfg(feature = "spice")]
+                if let Some(Model::Subckt(model)) = &component.model {
+                    let terminals: BTreeMap<String, String> = pin_net
+                        .iter()
+                        .filter(|((c, _), _)| *c == component.id)
+                        .filter_map(|((_, slot), net)| match slot {
+                            Slot::Named(t) => Some((t.clone(), node(net))),
+                            Slot::Index(_) => None,
+                        })
+                        .collect();
+                    let mut placed = subckt::place(component, model, &terminals, options)?;
+                    if !placed.unconnected.is_empty() {
+                        if skip(&component.id, placed.unconnected.clone(), &mut warnings) {
+                            for (n, pin) in pins_of(&component.id) {
+                                unsimulated.entry(n).or_default().push(pin);
+                            }
+                            continue;
+                        }
+                        return Err(ImportError::Unconnected {
+                            component: component.id.clone(),
+                            terminal: placed.unconnected[0].clone(),
+                        });
+                    }
+                    for global in &placed.globals {
+                        if !circuit.globals.contains(global) {
+                            circuit.globals.push(global.clone());
+                        }
+                    }
+                    warnings.extend(std::mem::take(&mut placed.warnings));
+                    models.insert(component.id.clone(), ModelSource::Model);
+                    // Bound once every model's globals are known.
+                    placed_models.push(placed);
+                    continue;
+                }
                 let terminals = pin_net
                     .iter()
                     .filter(|((c, _), _)| *c == component.id)
@@ -1549,6 +1989,9 @@ impl Netlist {
                     kind: component.kind.name().to_string(),
                     terminals,
                 });
+                for (n, pin) in pins_of(&component.id) {
+                    unsimulated.entry(n).or_default().push(pin);
+                }
                 continue;
             }
             let nodes_of = |slot: usize| -> Option<String> {
@@ -1557,8 +2000,21 @@ impl Netlist {
                     .map(|net| node(net))
             };
             let Some((unit_kind, count)) = component.kind.units() else {
+                let connected = |i: usize| nodes_of(i).is_some();
+                let missing = missing_terminals(&component.kind, &connected);
+                if skip(&component.id, missing, &mut warnings) {
+                    for (n, pin) in pins_of(&component.id) {
+                        unsimulated.entry(n).or_default().push(pin);
+                    }
+                    continue;
+                }
                 let built = build_element(component, nodes_of, &supply)?;
-                record(&component.id, &built);
+                record(&mut warnings, &mut models, &component.id, &built);
+                if built.element.is_none() {
+                    for (n, pin) in pins_of(&component.id) {
+                        unsimulated.entry(n).or_default().push(pin);
+                    }
+                }
                 circuit.components.extend(built.element);
                 continue;
             };
@@ -1578,26 +2034,60 @@ impl Netlist {
                 if ids.contains(unit.id.as_str()) {
                     return Err(ImportError::DuplicateId { id: unit.id });
                 }
+                let connected = |i: usize| nodes_of(slot(i)).is_some();
+                let missing = missing_terminals(&unit.kind, &connected);
+                if skip(&unit.id, missing, &mut warnings) {
+                    // The package's other pins may still serve the other
+                    // units; only this unit's own nets lose a pin.
+                    let own: Vec<String> = (0..3).filter_map(|i| nodes_of(slot(i))).collect();
+                    for (n, pin) in pins_of(&component.id) {
+                        if own.contains(&n) {
+                            unsimulated.entry(n).or_default().push(pin);
+                        }
+                    }
+                    continue;
+                }
                 let built = build_element(&unit, |i| nodes_of(slot(i)), &supply)?;
-                record(&component.id, &built);
+                record(&mut warnings, &mut models, &component.id, &built);
                 circuit.components.extend(built.element);
             }
         }
 
-        for source in &bench.sources {
+        #[cfg(feature = "spice")]
+        for placed in placed_models {
+            let (blocks, instance) = placed.bind(&circuit.ground_node, &circuit.globals);
+            circuit.blocks.extend(blocks);
+            circuit.instances.push(instance);
+        }
+
+        for source in &sources {
             let nodes = [
                 node(resolver.net(&source.plus, &source.id)?),
                 side(&source.minus, &source.id)?,
             ];
-            circuit.components.push(source.element(nodes));
+            circuit
+                .components
+                .push(source.element(nodes.map(NodeId::from)));
         }
         for load in &bench.loads {
             let nodes = [
                 node(resolver.net(&load.a, &load.id)?),
                 side(&load.b, &load.id)?,
             ];
-            circuit.components.push(load.element(nodes)?);
+            circuit
+                .components
+                .push(load.element(nodes.map(NodeId::from))?);
         }
+
+        // A schematic still being drawn has open ends: a net only one
+        // element terminal reaches, or a group of parts not yet wired to the
+        // rest. Under `Skip` those are tied like a black box's nets.
+        if options.unconnected == UnconnectedTerminals::Skip {
+            for net in &self.nets {
+                unsimulated.entry(node(&net.id)).or_default();
+            }
+        }
+        let high_impedance = tie_high_impedance_nets(&mut circuit, unsimulated, &ids);
 
         Ok(ImportedCircuit {
             circuit,
@@ -1605,8 +2095,74 @@ impl Netlist {
             black_boxes,
             models,
             warnings,
+            high_impedance,
+            skipped,
         })
     }
+}
+
+/// The bench's sources that go into the circuit: all but the
+/// [`assumed`](BenchSource::assumed) supplies whose node the other voltage
+/// sources (or an assumed one before) already fix against ground. Two
+/// assumed supplies on one node at different voltages are an error.
+fn bench_sources(
+    bench: &Bench,
+    nodes_of: impl Fn(&BenchSource) -> Result<[String; 2], ImportError>,
+) -> Result<Vec<&BenchSource>, ImportError> {
+    // Union-find over the nodes the voltage sources join: a source across
+    // two nodes already joined would close a loop of ideal sources.
+    let mut parent: BTreeMap<String, String> = BTreeMap::new();
+    fn root(parent: &BTreeMap<String, String>, mut n: String) -> String {
+        while let Some(p) = parent.get(&n) {
+            if *p == n {
+                break;
+            }
+            n = p.clone();
+        }
+        n
+    }
+    fn join(parent: &mut BTreeMap<String, String>, [a, b]: [String; 2]) {
+        let (ra, rb) = (root(parent, a), root(parent, b));
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    }
+    for source in &bench.sources {
+        if !source.assumed && matches!(source.kind, SourceKind::Voltage { .. }) {
+            join(&mut parent, nodes_of(source)?);
+        }
+    }
+    let mut assumed_on: BTreeMap<String, (&str, f64)> = BTreeMap::new();
+    let mut kept = Vec::with_capacity(bench.sources.len());
+    for source in &bench.sources {
+        let SourceKind::Voltage { volts, .. } = source.kind else {
+            kept.push(source);
+            continue;
+        };
+        if !source.assumed {
+            kept.push(source);
+            continue;
+        }
+        let [plus, minus] = nodes_of(source)?;
+        if root(&parent, plus.clone()) == root(&parent, minus.clone()) {
+            if let Some(&(first, first_volts)) = assumed_on.get(&plus) {
+                if (first_volts - volts).abs() > 1e-9 * first_volts.abs().max(volts.abs()) {
+                    return Err(ImportError::ConflictingSupplies {
+                        node: plus,
+                        first: first.to_string(),
+                        first_volts,
+                        second: source.id.clone(),
+                        second_volts: volts,
+                    });
+                }
+            }
+            continue;
+        }
+        assumed_on.insert(plus.clone(), (source.id.as_str(), volts));
+        join(&mut parent, [plus, minus]);
+        kept.push(source);
+    }
+    Ok(kept)
 }
 
 fn find<'a>(parent: &BTreeMap<&'a str, &'a str>, mut id: &'a str) -> &'a str {
@@ -1887,6 +2443,23 @@ struct Built {
     warnings: Vec<String>,
 }
 
+/// The canonical names of `kind`'s required terminals that aren't
+/// connected, in terminal order.
+fn missing_terminals(kind: &ComponentKind, connected: &dyn Fn(usize) -> bool) -> Vec<String> {
+    if kind.is_passive() {
+        return Vec::new();
+    }
+    let terminals = kind.terminals();
+    let required = terminals.len() - kind.optional_terminals();
+    terminals
+        .iter()
+        .enumerate()
+        .take(required)
+        .filter(|(i, _)| !connected(*i))
+        .map(|(_, names)| names[0].to_string())
+        .collect()
+}
+
 /// The element for `component`, or `None` for a passive one. `node(i)` is
 /// the node of terminal slot `i`, if connected.
 fn build_element(
@@ -1931,16 +2504,10 @@ fn build_element(
             terminal: names[0].to_string(),
         })?);
     }
-    let n2 = || [nodes[0].clone(), nodes[1].clone()];
-    let n3 = || [nodes[0].clone(), nodes[1].clone(), nodes[2].clone()];
-    let n4 = || {
-        [
-            nodes[0].clone(),
-            nodes[1].clone(),
-            nodes[2].clone(),
-            nodes[3].clone(),
-        ]
-    };
+    let n = |i: usize| NodeId::from(&nodes[i]);
+    let n2 = || [n(0), n(1)];
+    let n3 = || [n(0), n(1), n(2)];
+    let n4 = || [n(0), n(1), n(2), n(3)];
 
     let r = Reader { component };
     let id = component.id.clone();
@@ -1968,22 +2535,22 @@ fn build_element(
     };
 
     let element = match kind {
-        K::Resistor => CircuitElement::Resistor {
+        K::Resistor => CircuitElement::Resistor(Resistor {
             id,
             nodes: n2(),
             resistance: r.required_value("a resistance (Ω)")?,
-        },
-        K::Capacitor | K::CapacitorPolarized => CircuitElement::Capacitor {
+        }),
+        K::Capacitor | K::CapacitorPolarized => CircuitElement::Capacitor(Capacitor {
             id,
             nodes: n2(),
             capacitance: r.required_value("a capacitance (F)")?,
-        },
-        K::Inductor => CircuitElement::Inductor {
+        }),
+        K::Inductor => CircuitElement::Inductor(Inductor {
             id,
             nodes: n2(),
             inductance: r.required_value("an inductance (H)")?,
             saturation: None,
-        },
+        }),
         K::Diode => {
             let model = match model {
                 Some(Model::Diode(m)) => {
@@ -2002,31 +2569,31 @@ fn build_element(
                     }
                 },
             };
-            CircuitElement::Diode {
+            CircuitElement::Diode(Diode {
                 id,
                 nodes: n2(),
                 temperature: temperature()?,
                 model,
-            }
+            })
         }
         K::SchottkyDiode => {
             source =
                 defaulted("the built-in Schottky diode; sindr reads no model for this kind".into());
-            CircuitElement::SchottkyDiode {
+            CircuitElement::SchottkyDiode(SchottkyDiode {
                 id,
                 nodes: n2(),
                 temperature: temperature()?,
-            }
+            })
         }
         K::Photodiode => {
             source =
                 defaulted("the built-in photodiode; sindr reads no model for this kind".into());
-            CircuitElement::Photodiode {
+            CircuitElement::Photodiode(Photodiode {
                 id,
                 nodes: n2(),
                 irradiance: r.param_or("irradiance", 0.0)?,
                 temperature: temperature()?,
-            }
+            })
         }
         K::ZenerDiode => {
             let (vz, from) = match r.spec("vz")? {
@@ -2053,24 +2620,24 @@ fn build_element(
                     vz.require("vz").map_err(|e| r.datasheet(e))?
                 }
             };
-            CircuitElement::ZenerDiode {
+            CircuitElement::ZenerDiode(ZenerDiode {
                 id,
                 nodes: n2(),
                 vz,
                 temperature: temperature()?,
-            }
+            })
         }
         K::Led => match diode_datasheet(&r)? {
             // An LED through its own Vf is a diode with that model: the LED
             // element knows only its colour's preset.
             Some(ds) => {
                 source = ModelSource::Datasheet;
-                CircuitElement::Diode {
+                CircuitElement::Diode(Diode {
                     id,
                     nodes: n2(),
                     temperature: temperature()?,
                     model: Some(DiodeModel::led_from_datasheet(&ds).map_err(|e| r.datasheet(e))?),
-                }
+                })
             }
             None => {
                 let given = r.text(&["color", "colour"])?;
@@ -2100,12 +2667,12 @@ fn build_element(
                         "red"
                     }
                 };
-                CircuitElement::Led {
+                CircuitElement::Led(Led {
                     id,
                     nodes: n2(),
                     color: color.to_string(),
                     temperature: temperature()?,
-                }
+                })
             }
         },
         K::Varactor => {
@@ -2113,14 +2680,14 @@ fn build_element(
                 Some(Model::Varactor(_)) => ModelSource::Model,
                 _ => defaulted("the built-in varactor".into()),
             };
-            CircuitElement::Varactor {
+            CircuitElement::Varactor(Varactor {
                 id,
                 nodes: n2(),
                 params: match model {
                     Some(Model::Varactor(p)) => p.clone(),
                     _ => VaractorParams::default(),
                 },
-            }
+            })
         }
         K::Npn | K::Pnp => {
             let npn = *kind == K::Npn;
@@ -2174,7 +2741,7 @@ fn build_element(
                 };
                 (bf, given)
             };
-            CircuitElement::Bjt {
+            CircuitElement::Bjt(Bjt {
                 id,
                 nodes: n3(),
                 kind: if npn { BjtKind::Npn } else { BjtKind::Pnp },
@@ -2182,7 +2749,7 @@ fn build_element(
                 temperature: temperature()?,
                 parasitic_caps: None,
                 model: bjt_model,
-            }
+            })
         }
         K::Nmos | K::Pmos => {
             if let Some(body) = node(3) {
@@ -2193,7 +2760,7 @@ fn build_element(
                 }
             }
             let nmos = *kind == K::Nmos;
-            CircuitElement::Mosfet {
+            CircuitElement::Mosfet(Mosfet {
                 id,
                 nodes: n3(),
                 kind: if nmos {
@@ -2235,7 +2802,7 @@ fn build_element(
                 },
                 parasitic_caps: None,
                 body_diode: None,
-            }
+            })
         }
         K::Njfet | K::Pjfet => {
             let n = *kind == K::Njfet;
@@ -2245,7 +2812,7 @@ fn build_element(
                     if n { "−2" } else { "2" }
                 ));
             }
-            CircuitElement::Jfet {
+            CircuitElement::Jfet(Jfet {
                 id,
                 nodes: n3(),
                 kind: if n {
@@ -2256,21 +2823,21 @@ fn build_element(
                 idss: r.param_or("idss", 10e-3)?,
                 vp: r.param_or("vp", if n { -2.0 } else { 2.0 })?,
                 parasitic_caps: None,
-            }
+            })
         }
         K::Igbt => {
             source = match model {
                 Some(Model::Igbt(_)) => ModelSource::Model,
                 _ => defaulted("the built-in IGBT".into()),
             };
-            CircuitElement::Igbt {
+            CircuitElement::Igbt(Igbt {
                 id,
                 nodes: n3(),
                 params: match model {
                     Some(Model::Igbt(p)) => p.clone(),
                     _ => IgbtParams::default(),
                 },
-            }
+            })
         }
         K::OpAmp | K::Comparator => {
             let rail = |name: &str, slot: usize, default: f64| -> Result<f64, ImportError> {
@@ -2292,7 +2859,7 @@ fn build_element(
                 _ => defaulted("the built-in comparator (gain 1e5, clamped to its rails)".into()),
             };
             if *kind == K::OpAmp {
-                CircuitElement::OpAmp {
+                CircuitElement::OpAmp(OpAmp {
                     id,
                     nodes: n3(),
                     v_pos,
@@ -2301,54 +2868,54 @@ fn build_element(
                         Some(Model::OpAmp(m)) => Some(*m),
                         _ => None,
                     },
-                }
+                })
             } else {
-                CircuitElement::Comparator {
+                CircuitElement::Comparator(Comparator {
                     id,
                     nodes: n3(),
                     v_pos,
                     v_neg,
-                }
+                })
             }
         }
-        K::Potentiometer => CircuitElement::Potentiometer {
+        K::Potentiometer => CircuitElement::Potentiometer(Potentiometer {
             id,
             nodes: n3(),
             resistance: r.required_value("an end-to-end resistance (Ω)")?,
             position: r.param_or("position", 0.5)?,
-        },
-        K::Switch => CircuitElement::Switch {
+        }),
+        K::Switch => CircuitElement::Switch(Switch {
             id,
             nodes: n2(),
             closed: r.flag("closed")?,
-        },
-        K::PushButton => CircuitElement::Pushbutton {
+        }),
+        K::PushButton => CircuitElement::Pushbutton(Pushbutton {
             id,
             nodes: n2(),
             closed: r.flag("closed")?,
-        },
-        K::Fuse => CircuitElement::Fuse {
+        }),
+        K::Fuse => CircuitElement::Fuse(Fuse {
             id,
             nodes: n2(),
             rating: r.value()?.unwrap_or(1.0),
             blown: r.flag("blown")?,
-        },
-        K::Relay => CircuitElement::Relay {
+        }),
+        K::Relay => CircuitElement::Relay(Relay {
             id,
             nodes: n4(),
             coil_resistance: r.param_or("coil_resistance", 500.0)?,
             pickup_voltage: r.required_param("pickup_voltage", "a pickup voltage (V)")?,
             inductance: r.param_or("inductance", 0.0)?,
-        },
-        K::Transformer => CircuitElement::Transformer {
+        }),
+        K::Transformer => CircuitElement::Transformer(Transformer {
             id,
             nodes: n4(),
             l1: r.required_param("l1", "a primary inductance (H)")?,
             l2: r.required_param("l2", "a secondary inductance (H)")?,
             k: r.param_or("k", 0.999)?,
             saturation: None,
-        },
-        K::Regulator => CircuitElement::VoltageRegulator {
+        }),
+        K::Regulator => CircuitElement::VoltageRegulator(VoltageRegulator {
             id,
             nodes: n3(),
             voltage: match r.param(&["voltage"])? {
@@ -2368,8 +2935,8 @@ fn build_element(
                     None
                 }
             },
-        },
-        K::Crystal => CircuitElement::Crystal {
+        }),
+        K::Crystal => CircuitElement::Crystal(Crystal {
             id,
             nodes: n2(),
             params: CrystalParams::from_datasheet(
@@ -2383,8 +2950,8 @@ fn build_element(
                 r.param_or("esr", 50.0)?,
                 r.param_or("c0", 5e-12)?,
             ),
-        },
-        K::FerriteBead => CircuitElement::FerriteBead {
+        }),
+        K::FerriteBead => CircuitElement::FerriteBead(FerriteBead {
             id,
             nodes: n2(),
             params: FerriteBeadParams::from_datasheet(
@@ -2397,8 +2964,8 @@ fn build_element(
                 },
                 r.param_or("r_dc", 0.1)?,
             ),
-        },
-        K::Battery => CircuitElement::Battery {
+        }),
+        K::Battery => CircuitElement::Battery(Battery {
             id,
             nodes: n2(),
             params: match model {
@@ -2413,38 +2980,38 @@ fn build_element(
                 ),
             },
             state_of_charge: r.param_or("state_of_charge", 1.0)?,
-        },
+        }),
         K::Thermistor => {
             source = defaulted(
                 "the built-in 10 kΩ NTC (β = 3950); sindr reads no model for this kind".into(),
             );
-            CircuitElement::Thermistor {
+            CircuitElement::Thermistor(Thermistor {
                 id,
                 nodes: n2(),
                 temperature: r.param_or("temperature", 298.15)?,
-            }
+            })
         }
         K::Photoresistor => {
             source =
                 defaulted("the built-in photoresistor; sindr reads no model for this kind".into());
-            CircuitElement::Photoresistor {
+            CircuitElement::Photoresistor(Photoresistor {
                 id,
                 nodes: n2(),
                 light_level: r.param_or("light_level", 0.0)?,
-            }
+            })
         }
-        K::VoltageSource => CircuitElement::VoltageSource {
+        K::VoltageSource => CircuitElement::VoltageSource(VoltageSource {
             id,
             nodes: n2(),
             voltage: r.required_value("a voltage (V)")?,
             waveform: None,
-        },
-        K::CurrentSource => CircuitElement::CurrentSource {
+        }),
+        K::CurrentSource => CircuitElement::CurrentSource(CurrentSource {
             id,
             nodes: n2(),
             current: r.required_value("a current (A)")?,
             waveform: None,
-        },
+        }),
         K::Connector | K::TestPoint | K::NetTie | K::MountingHole | K::BlackBox | K::Other(_) => {
             return Ok(Built::default())
         }

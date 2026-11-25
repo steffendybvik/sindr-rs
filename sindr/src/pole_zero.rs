@@ -41,6 +41,8 @@
 //! root more than about 1e13 times `ω₀` is treated as infinite and dropped.
 //! Poles and zeros that cancel are both reported, as SPICE does.
 
+use crate::element::VoltageSource;
+use crate::handle::NodeId;
 use nalgebra::{DMatrix, DVector};
 use num_complex::Complex64;
 
@@ -49,12 +51,13 @@ use crate::ac_analysis::{
     small_signal_pencil,
 };
 use crate::circuit::{Circuit, CircuitElement};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::node_map::NodeMap;
 
 /// The transfer function a pole-zero analysis is of: SPICE's `vol` or
 /// `cur`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -69,6 +72,7 @@ pub enum PzTransfer {
 
 /// What a pole-zero analysis finds: SPICE's `pol`, `zer` or `pz`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -86,17 +90,18 @@ pub enum PzFind {
 /// Build one with [`PzConfig::voltage_gain`] or
 /// [`PzConfig::transimpedance`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct PzConfig {
     /// Positive input node.
-    pub input: String,
+    pub input: NodeId,
     /// Negative input node (the ground node for a single-ended input).
-    pub input_reference: String,
+    pub input_reference: NodeId,
     /// Positive output node.
-    pub output: String,
+    pub output: NodeId,
     /// Negative output node (the ground node for a single-ended output).
-    pub output_reference: String,
+    pub output_reference: NodeId,
     /// Voltage gain or transimpedance.
     pub transfer: PzTransfer,
     /// Poles, zeros or both. Default both.
@@ -117,10 +122,10 @@ impl PzConfig {
     /// assert_eq!(config.transfer, PzTransfer::VoltageGain);
     /// ```
     pub fn voltage_gain(
-        input: impl Into<String>,
-        input_reference: impl Into<String>,
-        output: impl Into<String>,
-        output_reference: impl Into<String>,
+        input: impl Into<NodeId>,
+        input_reference: impl Into<NodeId>,
+        output: impl Into<NodeId>,
+        output_reference: impl Into<NodeId>,
     ) -> Self {
         Self {
             input: input.into(),
@@ -136,10 +141,10 @@ impl PzConfig {
     /// current driven into `input` and out of `input_reference`, as SPICE's
     /// `.pz … cur pz`.
     pub fn transimpedance(
-        input: impl Into<String>,
-        input_reference: impl Into<String>,
-        output: impl Into<String>,
-        output_reference: impl Into<String>,
+        input: impl Into<NodeId>,
+        input_reference: impl Into<NodeId>,
+        output: impl Into<NodeId>,
+        output_reference: impl Into<NodeId>,
     ) -> Self {
         Self {
             transfer: PzTransfer::Transimpedance,
@@ -161,12 +166,15 @@ impl PzConfig {
 /// in conjugate pairs; a stable circuit's poles all have negative real
 /// parts. Only finite roots are listed.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct PzResult {
     /// The poles (rad/s); empty when only zeros were asked for.
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<[f64; 2]>"))]
     pub poles: Vec<Complex64>,
     /// The zeros (rad/s); empty when only poles were asked for.
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<[f64; 2]>"))]
     pub zeros: Vec<Complex64>,
     /// Configuration used to produce this result.
     pub config: PzConfig,
@@ -194,8 +202,9 @@ impl PzResult {
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if a node is not in the circuit, a
-///   pair names the same node twice, or (for zeros) the output does not
+/// - [`SimError::UnknownNode`] if a node is not in the circuit
+/// - [`SimError::InvalidConfig`] if a pair names the same node twice, or
+///   (for zeros) the output does not
 ///   respond to the input at all, such as a transimpedance whose input is
 ///   shorted by a voltage source. Node names are checked before the DC
 ///   solve
@@ -210,27 +219,28 @@ impl PzResult {
 /// ```
 /// use sindr::{Circuit, CircuitElement};
 /// use sindr::pole_zero::{solve_pz, PzConfig};
+/// use sindr::element::{Capacitor, Resistor, VoltageSource};
 ///
 /// // RC low-pass, 1 kΩ and 1 µF: one pole at −1/RC = −1000 rad/s.
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["in".into(), "0".into()],
 ///             voltage: 0.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["in".into(), "out".into()],
 ///             resistance: 1_000.0,
-///         },
-///         CircuitElement::Capacitor {
+///         }),
+///         CircuitElement::Capacitor(Capacitor {
 ///             id: "C1".into(),
 ///             nodes: ["out".into(), "0".into()],
 ///             capacitance: 1e-6,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -241,6 +251,7 @@ impl PzResult {
 /// assert!(pz.zeros.is_empty());
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_pz(circuit: &Circuit, config: &PzConfig) -> Result<PzResult, SimError> {
     solve_pz_with(circuit, config, &crate::SolverOptions::default())
 }
@@ -266,7 +277,7 @@ pub(crate) fn solve_pz_with(
     let b = match config.transfer {
         PzTransfer::VoltageGain => {
             let existing = circuit.components.iter().find_map(|e| match e {
-                CircuitElement::VoltageSource { id, nodes, .. }
+                CircuitElement::VoltageSource(VoltageSource { id, nodes, .. })
                     if same_pair(nodes, &config.input, &config.input_reference) =>
                 {
                     pencil.vsource_branches.get(id).copied()
@@ -307,11 +318,14 @@ pub(crate) fn solve_pz_with(
         let gb = border(&g, Some(&b), Some(&out));
         let cb = border(&c, None, None);
         pencil_roots(&gb, &cb).map_err(|e| match e {
-            PencilError::Singular => SimError::InvalidComponent(format!(
-                "pole-zero: V({}, {}) does not respond to the input at ({}, {}), so the \
-                 transfer function has no zeros",
-                config.output, config.output_reference, config.input, config.input_reference
-            )),
+            PencilError::Singular => SimError::config(
+                ConfigKind::PoleZero,
+                format!(
+                    "V({}, {}) does not respond to the input at ({}, {}), so the \
+                     transfer function has no zeros",
+                    config.output, config.output_reference, config.input, config.input_reference
+                ),
+            ),
             PencilError::NoConvergence => qz_failure(),
         })?
     };
@@ -331,7 +345,7 @@ fn qz_failure() -> SimError {
 
 /// Whether the two terminals `nodes` are the pair `(p, q)`, either way
 /// round.
-fn same_pair(nodes: &[String; 2], p: &str, q: &str) -> bool {
+fn same_pair(nodes: &[NodeId; 2], p: &str, q: &str) -> bool {
     (nodes[0] == p && nodes[1] == q) || (nodes[0] == q && nodes[1] == p)
 }
 
@@ -347,9 +361,7 @@ impl Ports {
     fn of(circuit: &Circuit, config: &PzConfig) -> Result<Self, SimError> {
         let node_map = NodeMap::from_circuit(circuit);
         let index = |name: &str| match node_map.index(name) {
-            None if name != circuit.ground_node => Err(SimError::InvalidComponent(format!(
-                "pole-zero: node `{name}` is not in the circuit"
-            ))),
+            None if name != circuit.ground_node => Err(SimError::unknown_node(name)),
             index => Ok(index),
         };
         for (p, q, what) in [
@@ -357,9 +369,10 @@ impl Ports {
             (&config.output, &config.output_reference, "output"),
         ] {
             if p == q {
-                return Err(SimError::InvalidComponent(format!(
-                    "pole-zero: the {what} pair names `{p}` twice"
-                )));
+                return Err(SimError::config(
+                    ConfigKind::PoleZero,
+                    format!("the {what} pair names `{p}` twice"),
+                ));
             }
         }
         Ok(Self {

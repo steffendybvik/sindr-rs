@@ -12,6 +12,7 @@
 //! Other parts (resistors, MOSFETs, IGBTs, …) have no temperature in their
 //! model, so their junction temperature is reported but changes nothing.
 
+use crate::element::{Bjt, Diode, Led, Photodiode, SchottkyDiode, Thermistor, ZenerDiode};
 use std::collections::HashMap;
 
 use crate::circuit::{Circuit, CircuitElement};
@@ -50,13 +51,13 @@ pub(crate) struct Heated {
 
 pub(crate) fn temperature_mut(element: &mut CircuitElement) -> Option<&mut f64> {
     match element {
-        CircuitElement::Diode { temperature, .. }
-        | CircuitElement::Led { temperature, .. }
-        | CircuitElement::ZenerDiode { temperature, .. }
-        | CircuitElement::SchottkyDiode { temperature, .. }
-        | CircuitElement::Photodiode { temperature, .. }
-        | CircuitElement::Bjt { temperature, .. }
-        | CircuitElement::Thermistor { temperature, .. } => Some(temperature),
+        CircuitElement::Diode(Diode { temperature, .. })
+        | CircuitElement::Led(Led { temperature, .. })
+        | CircuitElement::ZenerDiode(ZenerDiode { temperature, .. })
+        | CircuitElement::SchottkyDiode(SchottkyDiode { temperature, .. })
+        | CircuitElement::Photodiode(Photodiode { temperature, .. })
+        | CircuitElement::Bjt(Bjt { temperature, .. })
+        | CircuitElement::Thermistor(Thermistor { temperature, .. }) => Some(temperature),
         _ => None,
     }
 }
@@ -65,9 +66,10 @@ fn positive(id: &str, what: &str, value: f64) -> Result<f64, SimError> {
     if value.is_finite() && value > 0.0 {
         Ok(value)
     } else {
-        Err(SimError::InvalidComponent(format!(
-            "part `{id}`: thermal {what} must be positive and finite (got {value})"
-        )))
+        Err(SimError::component(
+            id,
+            format!("thermal {what} must be positive and finite (got {value})"),
+        ))
     }
 }
 
@@ -92,11 +94,9 @@ impl Heated {
         thermal: &Thermal,
         element: &CircuitElement,
     ) -> Result<Entry, SimError> {
-        let rth = thermal.resistance().ok_or_else(|| {
-            SimError::InvalidComponent(format!(
-                "part `{id}`: thermal needs rth_ja, or rth_jc and rth_ca"
-            ))
-        })?;
+        let rth = thermal
+            .resistance()
+            .ok_or_else(|| SimError::component(id, "thermal needs rth_ja, or rth_jc and rth_ca"))?;
         Ok(Entry {
             index,
             id: id.to_string(),

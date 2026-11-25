@@ -4,6 +4,7 @@
 
 use approx::assert_relative_eq;
 use sindr::dc_sweep::DcSweepAxis;
+use sindr::element::{Capacitor, Inductor, Resistor, Transformer, VoltageSource};
 use sindr::{
     dc_sweep, dc_sweep_nested, solve_circuit, solve_op, Circuit, CircuitElement, Solver,
     SolverOptions, Waveform,
@@ -18,37 +19,37 @@ fn circuit(components: Vec<CircuitElement>) -> Circuit {
 }
 
 fn v(id: &str, a: &str, b: &str, volts: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [a.into(), b.into()],
         voltage: volts,
         waveform: None,
-    }
+    })
 }
 
 fn r(id: &str, a: &str, b: &str, ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn l(id: &str, a: &str, b: &str, henries: f64) -> CircuitElement {
-    CircuitElement::Inductor {
+    CircuitElement::Inductor(Inductor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         inductance: henries,
         saturation: None,
-    }
+    })
 }
 
 fn c(id: &str, a: &str, b: &str, farads: f64) -> CircuitElement {
-    CircuitElement::Capacitor {
+    CircuitElement::Capacitor(Capacitor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         capacitance: farads,
-    }
+    })
 }
 
 /// 1 V through 1 mH into 1 kΩ: the inductor is a short at DC.
@@ -86,7 +87,7 @@ fn op_opens_a_capacitor() {
 #[test]
 fn op_takes_a_waveform_source_at_t_zero() {
     let mut pulse = v("V1", "in", "0", 0.5);
-    if let CircuitElement::VoltageSource { waveform, .. } = &mut pulse {
+    if let CircuitElement::VoltageSource(VoltageSource { waveform, .. }) = &mut pulse {
         *waveform = Some(Waveform::Pulse {
             v1: 2.0,
             v2: 5.0,
@@ -107,14 +108,14 @@ fn op_reports_no_internal_transformer_branch() {
     let op = solve_op(&circuit(vec![
         v("V1", "in", "0", 1.0),
         r("R1", "in", "p", 10.0),
-        CircuitElement::Transformer {
+        CircuitElement::Transformer(Transformer {
             id: "T1".into(),
             nodes: ["p".into(), "0".into(), "s".into(), "0".into()],
             l1: 1e-3,
             l2: 4e-3,
             k: 0.99,
             saturation: None,
-        },
+        }),
         r("R2", "s", "0", 100.0),
     ]))
     .unwrap();
@@ -140,7 +141,7 @@ fn op_rejects_an_invalid_circuit() {
 
 #[test]
 fn dc_sweep_solves_operating_points() {
-    let sweep = dc_sweep(&rl(), "V1", 0.0, 2.0, 5).unwrap();
+    let sweep = dc_sweep(&rl(), &DcSweepAxis::new("V1", 0.0, 2.0, 5)).unwrap();
     for point in &sweep.points {
         assert_relative_eq!(
             point.result.node_voltages["mid"],
@@ -157,7 +158,7 @@ fn dc_sweep_solves_operating_points() {
 fn swept_sources_drop_their_waveforms() {
     let sine = |id: &str, node: &str| {
         let mut s = v(id, node, "0", 0.0);
-        if let CircuitElement::VoltageSource { waveform, .. } = &mut s {
+        if let CircuitElement::VoltageSource(VoltageSource { waveform, .. }) = &mut s {
             *waveform = Some(Waveform::Sine {
                 amplitude: 1.0,
                 frequency: 1e3,

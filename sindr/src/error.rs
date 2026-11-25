@@ -22,9 +22,13 @@ use thiserror::Error;
 ///   [`InvalidSolution`](Self::InvalidSolution),
 ///   [`ConvergenceFailed`](Self::ConvergenceFailed)) — the matrix has no
 ///   unique solution or Newton–Raphson failed to converge.
-/// - **Configuration errors** ([`InvalidComponent`](Self::InvalidComponent),
-///   [`InvalidResistance`](Self::InvalidResistance)) — a component value or
-///   analysis setting that the solver explicitly rejects.
+/// - **Definition errors** ([`InvalidComponent`](Self::InvalidComponent),
+///   [`InvalidConfig`](Self::InvalidConfig),
+///   [`DuplicateId`](Self::DuplicateId), [`UnknownNode`](Self::UnknownNode),
+///   [`UnknownComponent`](Self::UnknownComponent)) — a component value,
+///   analysis setting or name that the solver explicitly rejects. Each
+///   carries its cause as fields, so a caller can match on it rather than
+///   on the message.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum SimError {
@@ -71,20 +75,62 @@ pub enum SimError {
     )]
     InvalidSolution,
 
-    /// A component definition or analysis setting is malformed: a device
-    /// `temperature` or BJT `bf` that isn't positive and finite, an id that
-    /// names no suitable source or component, a non-finite or out-of-range
-    /// sweep or transient setting, a transient of more than 10⁷ steps or a
-    /// sweep of more than 10⁷ points, a bad initial condition. Carries a
-    /// human-readable description naming the offending id or field.
-    #[error("Invalid component: {0}")]
-    InvalidComponent(String),
+    /// A component's definition is malformed: a value out of range (a
+    /// device `temperature` or BJT `bf` that isn't positive and finite, a
+    /// resistance that is zero, negative or not finite), a control source
+    /// of the wrong kind, a part self-heating can't model. `reason` names
+    /// the field and its value.
+    #[error("Invalid component `{id}`: {reason}")]
+    InvalidComponent {
+        /// The component's id.
+        id: String,
+        /// What is wrong with it, naming the field and its value.
+        reason: String,
+    },
 
-    /// A resistor's resistance is zero, negative or not finite.
-    #[error(
-        "Resistor \"{0}\" has a zero, negative or non-finite resistance, which is not physically meaningful."
-    )]
-    InvalidResistance(String),
+    /// An analysis setting can't be used: a non-finite or out-of-range
+    /// sweep or transient setting, a transient of more than 10⁷ steps or a
+    /// sweep of more than 10⁷ points, an input or probe that isn't the
+    /// kind of source the analysis drives, a bad initial condition.
+    #[error("{config}: {reason}")]
+    InvalidConfig {
+        /// Which settings it is.
+        config: ConfigKind,
+        /// What is wrong with them, naming the field and its value.
+        reason: String,
+    },
+
+    /// Two components have one id, as declared or once the solver splits
+    /// switches, crystals, beads, digital pins, DC motors and MOSFET body diodes into
+    /// their parts.
+    #[error("`{id}`: {}", duplicate_message(*.lowered))]
+    DuplicateId {
+        /// The id they share.
+        id: String,
+        /// The clash only appears once parts are split into the elements
+        /// they are solved as.
+        lowered: bool,
+    },
+
+    /// A net no component names: a typo in a [`CircuitBuilder`] element, or
+    /// a name [`Circuit::node_id`] can't find.
+    ///
+    /// [`CircuitBuilder`]: crate::CircuitBuilder
+    /// [`Circuit::node_id`]: crate::Circuit::node_id
+    #[error("{}", unknown_node_message(node, component.as_deref()))]
+    UnknownNode {
+        /// The net's name.
+        node: String,
+        /// The component that names it, when one does.
+        component: Option<String>,
+    },
+
+    /// A component id nothing in the circuit has, as
+    /// [`Circuit::component_id`] looks it up.
+    ///
+    /// [`Circuit::component_id`]: crate::Circuit::component_id
+    #[error("No component \"{0}\" in the circuit.")]
+    UnknownComponent(String),
 
     /// Newton–Raphson exhausted its iteration budget without converging,
     /// in DC after the gmin- and source-stepping fallbacks failed too, or in
@@ -137,6 +183,34 @@ pub enum SimError {
         temperature: f64,
     },
 
+    /// A transient's step stayed far below `tstep` (three decades or more)
+    /// for thousands of steps in a row, the solution still changing too
+    /// fast to follow. A node driven with no DC path to ground (a current
+    /// source into a capacitor or an open end) ramps without limit like
+    /// this. SPICE's "timestep too small". A run whose step settles a
+    /// little higher stops this way too once it has taken
+    /// [`max_transient_steps`](crate::SolverOptions::max_transient_steps)
+    /// steps short of `tstop`.
+    #[error(
+        "time step too small at t = {time:.3e} s: the step stayed near {step:.1e} s and \
+         the solution still changes too fast to follow. Check for a node driven with no \
+         DC path to ground, such as a current source into a capacitor or an open end."
+    )]
+    TimestepTooSmall {
+        /// Simulated time when the run stopped (s).
+        time: f64,
+        /// The last step taken (s).
+        step: f64,
+    },
+
+    /// A progress hook asked the run to stop
+    /// ([`solve_transient_with_progress`](crate::solve_transient_with_progress)).
+    #[error("cancelled at t = {time:.3e} s")]
+    Cancelled {
+        /// Simulated time of the last accepted step (s).
+        time: f64,
+    },
+
     /// A [`Measurement`](crate::measure::Measurement) couldn't be taken on
     /// a result: an unknown node or component, a window outside the
     /// result, or a level the signal never crosses.
@@ -144,6 +218,16 @@ pub enum SimError {
     Measurement {
         /// The measurement's name.
         name: String,
+        /// Why it couldn't be taken.
+        reason: String,
+    },
+
+    /// A [`Fourier`](crate::fourier::Fourier) analysis or
+    /// [`Fft`](crate::fourier::Fft) couldn't be taken: no transient, an
+    /// unknown signal, a run shorter than one period, or settings it can't
+    /// use.
+    #[error("spectrum: {reason}")]
+    Spectrum {
         /// Why it couldn't be taken.
         reason: String,
     },
@@ -218,6 +302,82 @@ impl std::fmt::Display for SolvePoint {
     }
 }
 
+/// Which settings a [`SimError::InvalidConfig`] is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConfigKind {
+    /// [`SolverOptions`](crate::SolverOptions).
+    SolverOptions,
+    /// A transient: [`TransientConfig`](crate::TransientConfig), its
+    /// initial conditions, or the span [`solve_circuit`](crate::solve_circuit)
+    /// picks for one.
+    Transient,
+    /// A [`TransientSession`](crate::TransientSession) call.
+    TransientSession,
+    /// A DC sweep axis or nested sweep.
+    DcSweep,
+    /// A temperature sweep.
+    TemperatureSweep,
+    /// An AC sweep ([`AcConfig`](crate::ac_analysis::AcConfig)), including
+    /// one a SPICE deck's `.ac`, `.noise` or `.sens ac` card asks for.
+    Ac,
+    /// A noise analysis.
+    Noise,
+    /// A `.tf` small-signal transfer function, or the output a DC or AC
+    /// sensitivity reads, which names its ports the same way.
+    TransferFunction,
+    /// A pole-zero analysis.
+    PoleZero,
+    /// A loop-gain probe.
+    LoopGain,
+    /// Monte Carlo or corner runs: their tolerances and run count.
+    Variation,
+}
+
+impl std::fmt::Display for ConfigKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ConfigKind::SolverOptions => "solver options",
+            ConfigKind::Transient => "transient",
+            ConfigKind::TransientSession => "transient session",
+            ConfigKind::DcSweep => "DC sweep",
+            ConfigKind::TemperatureSweep => "temperature sweep",
+            ConfigKind::Ac => "AC sweep",
+            ConfigKind::Noise => "noise",
+            ConfigKind::TransferFunction => "transfer function",
+            ConfigKind::PoleZero => "pole-zero",
+            ConfigKind::LoopGain => "loop gain",
+            ConfigKind::Variation => "variation",
+        })
+    }
+}
+
+impl SimError {
+    /// An [`InvalidComponent`](Self::InvalidComponent) for `id`.
+    pub(crate) fn component(id: impl Into<String>, reason: impl Into<String>) -> Self {
+        SimError::InvalidComponent {
+            id: id.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// An [`InvalidConfig`](Self::InvalidConfig) for `config`.
+    pub(crate) fn config(config: ConfigKind, reason: impl Into<String>) -> Self {
+        SimError::InvalidConfig {
+            config,
+            reason: reason.into(),
+        }
+    }
+
+    /// An [`UnknownNode`](Self::UnknownNode) no component names.
+    pub(crate) fn unknown_node(node: impl Into<String>) -> Self {
+        SimError::UnknownNode {
+            node: node.into(),
+            component: None,
+        }
+    }
+}
+
 impl SimError {
     /// This error with a convergence failure's [`SolvePoint`] set to
     /// `point`. Other errors pass through unchanged.
@@ -265,9 +425,96 @@ fn stuck(node: &Option<String>, components: &[String], step: &f64) -> String {
     format!(": node `{node}`{on} was still moving {step:.3e} V per iteration")
 }
 
+fn duplicate_message(lowered: bool) -> &'static str {
+    if lowered {
+        "two components share this id once switches, crystals, beads, digital pins, \
+         DC motors and body diodes are split into their parts"
+    } else {
+        "more than one component has this id"
+    }
+}
+
+fn unknown_node_message(node: &str, component: Option<&str>) -> String {
+    match component {
+        Some(c) => format!(
+            "\"{c}\" connects to net \"{node}\", which was never declared. \
+             Declare it with `CircuitBuilder::node`, or check the name for a typo."
+        ),
+        None => format!("No net \"{node}\" in the circuit."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_handles_name_what_is_missing() {
+        let from_builder = SimError::UnknownNode {
+            node: "vout".into(),
+            component: Some("R1".into()),
+        };
+        assert_eq!(
+            from_builder.to_string(),
+            "\"R1\" connects to net \"vout\", which was never declared. \
+             Declare it with `CircuitBuilder::node`, or check the name for a typo."
+        );
+        let lookup = SimError::UnknownNode {
+            node: "vout".into(),
+            component: None,
+        };
+        assert_eq!(lookup.to_string(), "No net \"vout\" in the circuit.");
+        assert_eq!(
+            SimError::UnknownComponent("Q9".into()).to_string(),
+            "No component \"Q9\" in the circuit."
+        );
+    }
+
+    #[test]
+    fn definition_errors_carry_their_cause() {
+        assert_eq!(
+            SimError::component("R1", "resistance 0 Ω must be a positive, finite number")
+                .to_string(),
+            "Invalid component `R1`: resistance 0 Ω must be a positive, finite number"
+        );
+        assert_eq!(
+            SimError::config(ConfigKind::Ac, "num_points must be at least 1").to_string(),
+            "AC sweep: num_points must be at least 1"
+        );
+        assert_eq!(
+            SimError::DuplicateId {
+                id: "R1".into(),
+                lowered: false
+            }
+            .to_string(),
+            "`R1`: more than one component has this id"
+        );
+        assert!(SimError::DuplicateId {
+            id: "s1#a".into(),
+            lowered: true
+        }
+        .to_string()
+        .contains("split into their parts"));
+        assert_eq!(
+            SimError::unknown_node("x").to_string(),
+            "No net \"x\" in the circuit."
+        );
+        for (kind, name) in [
+            (ConfigKind::SolverOptions, "solver options"),
+            (ConfigKind::Transient, "transient"),
+            (ConfigKind::TransientSession, "transient session"),
+            (ConfigKind::DcSweep, "DC sweep"),
+            (ConfigKind::TemperatureSweep, "temperature sweep"),
+            (ConfigKind::Ac, "AC sweep"),
+            (ConfigKind::Noise, "noise"),
+            (ConfigKind::TransferFunction, "transfer function"),
+            (ConfigKind::PoleZero, "pole-zero"),
+            (ConfigKind::LoopGain, "loop gain"),
+            (ConfigKind::Variation, "variation"),
+        ] {
+            assert_eq!(kind.to_string(), name);
+        }
+    }
 
     #[test]
     fn convergence_failed_carries_diagnostics() {

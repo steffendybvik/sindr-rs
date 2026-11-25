@@ -1,11 +1,13 @@
 //! CSV export reads back as the same numbers, for every result type.
 
+use sindr::element::{Capacitor, Diode, Resistor, VoltageSource};
 use std::collections::HashMap;
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::{
     dc_sweep, solve_transient, temperature_sweep, Circuit, CircuitElement, TransientConfig,
 };
+use sindr::{DcSweepAxis, TempSweepConfig};
 
 /// Parses CSV as `to_csv` writes it (RFC 4180 quoting, `\n` lines) into a
 /// header and rows of optional numbers.
@@ -63,22 +65,22 @@ fn rc() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "out,1".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out,1".into(), "0".into()],
                 capacitance: 1e-6,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -128,23 +130,23 @@ fn diode() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["a".into(), "0".into()],
                 voltage: 5.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["a".into(), "b".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Diode {
+            }),
+            CircuitElement::Diode(Diode {
                 id: "D1".into(),
                 nodes: ["b".into(), "0".into()],
                 temperature: 300.15,
                 model: None,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -152,7 +154,7 @@ fn diode() -> Circuit {
 
 #[test]
 fn sweeps_round_trip() {
-    let sweep = dc_sweep(&diode(), "V1", 0.0, 5.0, 11).unwrap();
+    let sweep = dc_sweep(&diode(), &DcSweepAxis::new("V1", 0.0, 5.0, 11)).unwrap();
     let (header, rows) = read(&sweep.to_csv());
     assert_eq!(header[0], "V1");
     let values: Vec<f64> = column(&header, &rows, "V1").collect();
@@ -170,7 +172,7 @@ fn sweeps_round_trip() {
         assert_eq!(id[k], d1.current_through);
     }
 
-    let temps = temperature_sweep(&diode(), 250.0, 350.0, 5).unwrap();
+    let temps = temperature_sweep(&diode(), &TempSweepConfig::new(250.0, 350.0, 5)).unwrap();
     let (header, rows) = read(&temps.to_csv());
     assert_eq!(header[0], "temperature");
     let kelvin: Vec<f64> = column(&header, &rows, "temperature").collect();
@@ -178,7 +180,7 @@ fn sweeps_round_trip() {
     let by_t: HashMap<u64, f64> = temps
         .points
         .iter()
-        .map(|p| (p.temperature_kelvin.to_bits(), p.result.node_voltages["b"]))
+        .map(|p| (p.temperature.to_bits(), p.result.node_voltages["b"]))
         .collect();
     for (t, v) in kelvin.iter().zip(&vb) {
         assert_eq!(by_t[&t.to_bits()], *v);

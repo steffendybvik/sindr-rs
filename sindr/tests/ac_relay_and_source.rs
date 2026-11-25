@@ -3,24 +3,25 @@
 //! names no voltage source is an error, not a sweep of zeros.
 
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::element::{CurrentSource, Relay, Resistor, VoltageSource};
 use sindr::transfer_function::{solve_tf, TfConfig, TfOutput};
 use sindr::{Circuit, CircuitElement, SimError};
 
 fn vsource(id: &str, p: &str, n: &str, voltage: f64) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: id.into(),
         nodes: [p.into(), n.into()],
         voltage,
         waveform: None,
-    }
+    })
 }
 
 fn resistor(id: &str, a: &str, b: &str, resistance: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: id.into(),
         nodes: [a.into(), b.into()],
         resistance,
-    }
+    })
 }
 
 /// `v_coil` across a relay coil (pickup 5 V); V1 through 1 kΩ and the
@@ -30,13 +31,13 @@ fn relay_divider(v_coil: f64) -> Circuit {
         ground_node: "0".into(),
         components: vec![
             vsource("VCOIL", "coil", "0", v_coil),
-            CircuitElement::Relay {
+            CircuitElement::Relay(Relay {
                 id: "K1".into(),
                 nodes: ["coil".into(), "0".into(), "a".into(), "out".into()],
                 coil_resistance: 500.0,
                 pickup_voltage: 5.0,
                 inductance: 0.0,
-            },
+            }),
             vsource("V1", "in", "0", 1.0),
             resistor("R1", "in", "a", 1e3),
             resistor("RL", "out", "0", 1e3),
@@ -74,18 +75,21 @@ fn ac_and_tf_see_the_relay_contact_dc_closed() {
 #[test]
 fn ac_rejects_a_source_id_that_is_not_a_voltage_source() {
     let mut circuit = relay_divider(12.0);
-    circuit.components.push(CircuitElement::CurrentSource {
-        id: "I1".into(),
-        nodes: ["0".into(), "out".into()],
-        current: 0.0,
-        waveform: None,
-    });
+    circuit
+        .components
+        .push(CircuitElement::CurrentSource(CurrentSource {
+            id: "I1".into(),
+            nodes: ["0".into(), "out".into()],
+            current: 0.0,
+            waveform: None,
+        }));
     for id in ["V9", "I1", "R1"] {
         match solve_ac(&circuit, &ac(id)) {
-            Err(SimError::InvalidComponent(msg)) => {
-                assert!(msg.contains(&format!("'{id}'")), "{msg}")
+            Err(SimError::InvalidConfig { config, reason }) => {
+                assert_eq!(config, sindr::ConfigKind::Ac);
+                assert!(reason.contains(&format!("'{id}'")), "{reason}")
             }
-            other => panic!("{id}: expected InvalidComponent, got {other:?}"),
+            other => panic!("{id}: expected InvalidConfig, got {other:?}"),
         }
     }
 }

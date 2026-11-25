@@ -23,9 +23,9 @@
 //! [`ParsedNetlist::options`]; [`ParsedNetlist::solver`] runs the deck's
 //! analyses with them.
 //!
-//! Enable the optional `spice` feature to pull this module in
-//! (`sindr = { version = "0.2", features = ["spice"] }`); it is off by
-//! default so the parser dependencies stay out of the baseline build.
+//! The module is the `spice` feature, on by default like every feature.
+//! A build that turns the defaults off (`default-features = false`) keeps
+//! it by listing it: `features = ["spice"]`.
 //!
 //! # Quick start
 //!
@@ -71,9 +71,7 @@
 //!                     println!("dc sweep of {source}: {} curves", sweep.curves.len());
 //!                 }
 //!                 (axis, None) => {
-//!                     let sweep = sindr::dc_sweep(
-//!                         &netlist.circuit, &axis.source_id, axis.start, axis.stop, axis.num_points,
-//!                     )?;
+//!                     let sweep = sindr::dc_sweep(&netlist.circuit, &axis)?;
 //!                     println!("dc sweep of {source}: {} points", sweep.points.len());
 //!                 }
 //!             }
@@ -282,7 +280,7 @@ mod analysis;
 mod ast;
 mod build;
 mod error;
-mod export;
+pub(crate) mod export;
 mod flatten;
 mod param_eval;
 mod parser;
@@ -291,7 +289,8 @@ mod si;
 mod source_map;
 
 pub use analysis::{
-    AcStimulus, AcSweep, AnalysisRequest, DcSweepSpec, MeasureAnalysis, MeasureRequest,
+    AcStimulus, AcSweep, AnalysisRequest, DcSweepSpec, FourierRequest, MeasureAnalysis,
+    MeasureRequest,
 };
 pub use error::{ParseWarning, SpiceParseError};
 pub use export::{to_netlist, ExportError};
@@ -340,6 +339,9 @@ pub struct ParsedNetlist {
     /// `.meas` / `.measure` cards, in source order. Only top-level cards are
     /// read.
     pub measurements: Vec<MeasureRequest>,
+    /// `.four` cards, one request per signal, in source order: run each
+    /// on the deck's `.tran` result. Only top-level cards are read.
+    pub fourier: Vec<FourierRequest>,
     /// The `AC` specs on the deck's `V` and `I` lines, in source order,
     /// those inside `.subckt` bodies included under their flattened ids.
     /// [`Self::ac_config`] drives `.ac` from them.
@@ -422,7 +424,7 @@ impl ParsedNetlist {
     ///
     /// # Errors
     ///
-    /// The inner `Result` is [`SimError::InvalidComponent`](crate::SimError)
+    /// The inner `Result` is [`SimError::InvalidConfig`](crate::SimError::InvalidConfig)
     /// unless exactly one source carries an `AC` spec and it's a `V` line:
     /// sindr's AC analysis drives a single voltage source.
     pub fn ac_config(&self) -> Option<Result<crate::ac_analysis::AcConfig, crate::SimError>> {
@@ -466,7 +468,8 @@ impl ParsedNetlist {
         card: &str,
         sweep: crate::ac_analysis::AcConfig,
     ) -> Result<crate::ac_analysis::AcConfig, crate::SimError> {
-        let invalid = |msg: String| crate::SimError::InvalidComponent(format!("{card}: {msg}"));
+        let invalid =
+            |msg: String| crate::SimError::config(crate::ConfigKind::Ac, format!("{card}: {msg}"));
         match self.ac_stimuli.as_slice() {
             [] => Err(invalid("no V line carries an `AC` spec to drive".into())),
             [one] if one.current => Err(invalid(format!(
@@ -474,7 +477,7 @@ impl ParsedNetlist {
                 one.source
             ))),
             [one] => Ok(crate::ac_analysis::AcConfig {
-                source_id: one.source.clone(),
+                source_id: one.source.clone().into(),
                 ac_magnitude: one.magnitude,
                 ac_phase_deg: one.phase_deg,
                 ..sweep

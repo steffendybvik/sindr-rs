@@ -6,6 +6,8 @@
 //! form here is written as the current from `nodes[0]` to `nodes[1]`
 //! inside the cell, `g·v + i_hist`, which is `−i`.
 
+use crate::element::Battery;
+use crate::node_map::FastMap;
 use std::collections::HashMap;
 
 use sindr_devices::battery::{dc_resistance, open_circuit_voltage, BatteryParams};
@@ -68,15 +70,15 @@ pub(crate) fn initial_histories(
     circuit: &Circuit,
     start: &HashMap<String, f64>,
     settled: bool,
-    histories: &mut HashMap<String, History>,
+    histories: &mut FastMap<History>,
 ) {
     for component in &circuit.components {
-        let CircuitElement::Battery {
+        let CircuitElement::Battery(Battery {
             id,
             nodes,
             params,
             state_of_charge,
-        } = component
+        }) = component
         else {
             continue;
         };
@@ -109,14 +111,14 @@ pub(crate) fn finish_step(
     node_voltages: &HashMap<String, f64>,
     integ: &Integrator,
     dt: f64,
-    histories: &mut HashMap<String, History>,
+    histories: &mut FastMap<History>,
     results: &mut Vec<ComponentResult>,
 ) -> HashMap<String, f64> {
     let mut states = HashMap::new();
     for component in &circuit.components {
-        let CircuitElement::Battery {
+        let CircuitElement::Battery(Battery {
             id, nodes, params, ..
-        } = component
+        }) = component
         else {
             continue;
         };

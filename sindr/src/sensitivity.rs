@@ -14,6 +14,8 @@ mod device;
 
 pub use ac::{solve_ac_sensitivity, AcSensConfig, AcSensEntry, AcSensPoint, AcSensResult};
 
+use crate::element::{Cccs, Ccvs, CurrentSource, Resistor, Vccs, Vcvs, VoltageSource};
+use crate::handle::ComponentId;
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -26,6 +28,7 @@ use crate::transfer_function::{independent_vsource_branch, Port, TfOutput};
 
 /// Sensitivity-analysis configuration. Build one with [`SensConfig::new`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SensConfig {
@@ -50,6 +53,7 @@ impl SensConfig {
 
 /// Which parameter of a component a [`SensEntry`] is for.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SensParameter {
@@ -107,11 +111,12 @@ pub enum SensParameter {
 
 /// The sensitivity of the output to one component parameter.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SensEntry {
     /// Id of the component.
-    pub component_id: String,
+    pub component_id: ComponentId,
     /// Which of its parameters.
     pub parameter: SensParameter,
     /// The parameter's value, in its own unit.
@@ -126,6 +131,7 @@ pub struct SensEntry {
 
 /// Result of a sensitivity analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SensResult {
@@ -139,7 +145,8 @@ pub struct SensResult {
 impl SensResult {
     /// The entry for the component `id`: its first, for a device with
     /// several parameters (see [`get_parameter`](Self::get_parameter)).
-    pub fn get(&self, id: &str) -> Option<&SensEntry> {
+    pub fn get(&self, id: impl AsRef<str>) -> Option<&SensEntry> {
+        let id = id.as_ref();
         self.entries.iter().find(|e| e.component_id == id)
     }
 
@@ -147,27 +154,28 @@ impl SensResult {
     ///
     /// ```
     /// use sindr::{solve_sensitivity, Circuit, CircuitElement, SensConfig, SensParameter, TfOutput};
+    /// use sindr::element::{Diode, Resistor, VoltageSource};
     ///
     /// let circuit = Circuit {
     ///     ground_node: "0".into(),
     ///     components: vec![
-    ///         CircuitElement::VoltageSource {
+    ///         CircuitElement::VoltageSource(VoltageSource {
     ///             id: "V1".into(),
     ///             nodes: ["in".into(), "0".into()],
     ///             voltage: 5.0,
     ///             waveform: None,
-    ///         },
-    ///         CircuitElement::Resistor {
+    ///         }),
+    ///         CircuitElement::Resistor(Resistor {
     ///             id: "R1".into(),
     ///             nodes: ["in".into(), "a".into()],
     ///             resistance: 1_000.0,
-    ///         },
-    ///         CircuitElement::Diode {
+    ///         }),
+    ///         CircuitElement::Diode(Diode {
     ///             id: "D1".into(),
     ///             nodes: ["a".into(), "0".into()],
     ///             temperature: 300.15,
     ///             model: None,
-    ///         },
+    ///         }),
     ///     ],
     ///     ..Default::default()
     /// };
@@ -177,7 +185,13 @@ impl SensResult {
     /// assert!(is.sensitivity < 0.0);
     /// # Ok::<(), sindr::SimError>(())
     /// ```
-    pub fn get_parameter(&self, id: &str, parameter: SensParameter) -> Option<&SensEntry> {
+    ///
+    pub fn get_parameter(
+        &self,
+        id: impl AsRef<str>,
+        parameter: SensParameter,
+    ) -> Option<&SensEntry> {
+        let id = id.as_ref();
         self.entries
             .iter()
             .find(|e| e.component_id == id && e.parameter == parameter)
@@ -193,15 +207,18 @@ impl SensResult {
 /// each; [`SensResult::get_parameter`] picks one out). The derivative is the
 /// total one: the operating point moves with the parameter. Other
 /// components stay in the linearised circuit but get no entry: other
-/// devices (LED, Zener, Schottky, photodiode, JFET, IGBT), a diode's
+/// devices (LED, Schottky, photodiode, JFET, IGBT), a diode's
 /// breakdown `BV`/`IBV`, capacitors and inductors, which have no effect at
 /// DC apart from the 1 TΩ leak a capacitor is given. A self-heated device
-/// is held at the junction temperature its bias balanced at.
+/// is held at the junction temperature its bias balanced at. A zener, and a
+/// MOSFET's body diode (`<id>.body`), are solved as diodes and get a
+/// diode's IS, N and RS.
 ///
 /// # Errors
 ///
-/// - [`SimError::InvalidComponent`] if the output node is not in the circuit,
-///   or a current output does not name an independent voltage source
+/// - [`SimError::UnknownNode`] if the output node is not in the circuit
+/// - [`SimError::InvalidConfig`] if a current output does not name an
+///   independent voltage source
 /// - Any [`SimError`] from the DC operating-point solve
 /// - [`SimError::SingularMatrix`] if the linearised system is singular
 ///
@@ -209,27 +226,28 @@ impl SensResult {
 ///
 /// ```
 /// use sindr::{solve_sensitivity, Circuit, CircuitElement, SensConfig, TfOutput};
+/// use sindr::element::{Resistor, VoltageSource};
 ///
 /// // 4 V over 1 kΩ / 3 kΩ: V(out) = V1 · R2 / (R1 + R2) = 3 V.
 /// let circuit = Circuit {
 ///     ground_node: "0".into(),
 ///     components: vec![
-///         CircuitElement::VoltageSource {
+///         CircuitElement::VoltageSource(VoltageSource {
 ///             id: "V1".into(),
 ///             nodes: ["in".into(), "0".into()],
 ///             voltage: 4.0,
 ///             waveform: None,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R1".into(),
 ///             nodes: ["in".into(), "out".into()],
 ///             resistance: 1_000.0,
-///         },
-///         CircuitElement::Resistor {
+///         }),
+///         CircuitElement::Resistor(Resistor {
 ///             id: "R2".into(),
 ///             nodes: ["out".into(), "0".into()],
 ///             resistance: 3_000.0,
-///         },
+///         }),
 ///     ],
 ///     ..Default::default()
 /// };
@@ -242,6 +260,7 @@ impl SensResult {
 /// assert!((sens.get("R1").unwrap().sensitivity + 0.75e-3).abs() < 1e-12);
 /// # Ok::<(), sindr::SimError>(())
 /// ```
+///
 pub fn solve_sensitivity(circuit: &Circuit, config: &SensConfig) -> Result<SensResult, SimError> {
     let flat = crate::solver_circuit(circuit)?;
     let circuit: &Circuit = &flat;
@@ -266,14 +285,14 @@ pub(crate) fn solve_sensitivity_with(
     let output = Port::output(circuit, &node_map, &system, &config.output)?;
     let adjoint: DVector<Complex64> = system.solve_transpose(&output.excitation(system.size()))?;
 
-    let node = |name: &String| node_map.index(name);
+    let node = |name: &str| node_map.index(name);
     let v = |n: Option<usize>| n.map_or(0.0, |i| dc_solution[i]);
     let lambda = |n: Option<usize>| n.map_or(0.0, |i| adjoint[i].re);
 
     let mut entries = Vec::new();
     let mut push = |id: &str, parameter, value: f64, sensitivity: f64| {
         entries.push(SensEntry {
-            component_id: id.to_string(),
+            component_id: id.into(),
             parameter,
             value,
             sensitivity,
@@ -281,7 +300,7 @@ pub(crate) fn solve_sensitivity_with(
         });
     };
     // The DC current through each controlling source, for CCVS and CCCS.
-    let control = |id: &String| op.branch_currents.get(id).copied().unwrap_or(0.0);
+    let control = |id: &str| op.branch_currents.get(id).copied().unwrap_or(0.0);
     for component in &heated.components {
         let devices = device::dc_parameters(component, &node_map, &dc_solution);
         for d in devices {
@@ -294,36 +313,36 @@ pub(crate) fn solve_sensitivity_with(
             push(component.id(), d.parameter, d.value, s);
         }
         let (id, parameter, value, sensitivity) = match component {
-            CircuitElement::Resistor {
+            CircuitElement::Resistor(Resistor {
                 id,
                 nodes,
                 resistance,
-            } => {
+            }) => {
                 let (p, q) = (node(&nodes[0]), node(&nodes[1]));
                 let dvolts = v(p) - v(q);
                 let dlambda = lambda(p) - lambda(q);
                 let s = dvolts * dlambda / (resistance * resistance);
                 (id, SensParameter::Resistance, *resistance, s)
             }
-            CircuitElement::VoltageSource { id, voltage, .. } => {
+            CircuitElement::VoltageSource(VoltageSource { id, voltage, .. }) => {
                 let Some(branch) = independent_vsource_branch(circuit, &system, id) else {
                     continue;
                 };
                 (id, SensParameter::Voltage, *voltage, adjoint[branch].re)
             }
-            CircuitElement::CurrentSource {
+            CircuitElement::CurrentSource(CurrentSource {
                 id, nodes, current, ..
-            } => {
+            }) => {
                 // Injects into nodes[1] and draws from nodes[0].
                 let s = lambda(node(&nodes[1])) - lambda(node(&nodes[0]));
                 (id, SensParameter::Current, *current, s)
             }
-            CircuitElement::Vcvs {
+            CircuitElement::Vcvs(Vcvs {
                 id,
                 control_nodes,
                 gain,
                 ..
-            } => {
+            }) => {
                 let Some(branch) = dc.vsource_branch_index(id) else {
                     continue;
                 };
@@ -331,34 +350,34 @@ pub(crate) fn solve_sensitivity_with(
                 let s = adjoint[node_map.num_nodes() + branch].re * control;
                 (id, SensParameter::VoltageGain, *gain, s)
             }
-            CircuitElement::Vccs {
+            CircuitElement::Vccs(Vccs {
                 id,
                 nodes,
                 control_nodes,
                 gm,
-            } => {
+            }) => {
                 let control = v(node(&control_nodes[0])) - v(node(&control_nodes[1]));
                 let s = (lambda(node(&nodes[1])) - lambda(node(&nodes[0]))) * control;
                 (id, SensParameter::Transconductance, *gm, s)
             }
-            CircuitElement::Ccvs {
+            CircuitElement::Ccvs(Ccvs {
                 id,
                 control_source,
                 rm,
                 ..
-            } => {
+            }) => {
                 let Some(branch) = dc.vsource_branch_index(id) else {
                     continue;
                 };
                 let s = adjoint[node_map.num_nodes() + branch].re * control(control_source);
                 (id, SensParameter::Transresistance, *rm, s)
             }
-            CircuitElement::Cccs {
+            CircuitElement::Cccs(Cccs {
                 id,
                 nodes,
                 control_source,
                 alpha,
-            } => {
+            }) => {
                 let s =
                     (lambda(node(&nodes[1])) - lambda(node(&nodes[0]))) * control(control_source);
                 (id, SensParameter::CurrentGain, *alpha, s)

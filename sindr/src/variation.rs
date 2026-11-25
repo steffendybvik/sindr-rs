@@ -23,21 +23,22 @@
 //! use sindr::measure::{Measure, Measurement, Signal, Stat};
 //! use sindr::variation::{monte_carlo, MonteCarloConfig, Parameter, Tolerance};
 //! use sindr::{solve_op, Circuit, CircuitElement};
+//! use sindr::element::{Resistor, VoltageSource};
 //!
-//! let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+//! let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor(Resistor {
 //!     id: id.into(),
 //!     nodes: [a.into(), b.into()],
 //!     resistance: 10e3,
-//! };
+//! });
 //! let divider = Circuit::new(
 //!     "0",
 //!     vec![
-//!         CircuitElement::VoltageSource {
+//!         CircuitElement::VoltageSource(VoltageSource {
 //!             id: "v1".into(),
 //!             nodes: ["in".into(), "0".into()],
 //!             voltage: 10.0,
 //!             waveform: None,
-//!         },
+//!         }),
 //!         r("r1", "in", "out"),
 //!         r("r2", "out", "0"),
 //!     ],
@@ -52,13 +53,16 @@
 //! assert!(stats.min > 4.9 && stats.max < 5.1);
 //! # Ok::<(), sindr::SimError>(())
 //! ```
+//!
 
+use crate::element::{Capacitor, CurrentSource, Inductor, Resistor, VoltageSource};
 use crate::measure::{Measurable, Measurement, Spec, SpecStatus};
 use crate::ratings::{check_ratings, RatingKind, RatingStatus};
-use crate::{Circuit, CircuitElement, SimError, SimulationResult};
+use crate::{Circuit, CircuitElement, ConfigKind, SimError, SimulationResult};
 
 /// Which parameter of a component a [`Tolerance`] varies.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -79,36 +83,40 @@ impl Parameter {
     /// The parameter on `element`, if it has it.
     fn get(self, element: &CircuitElement) -> Option<f64> {
         match (self, element) {
-            (Parameter::Resistance, CircuitElement::Resistor { resistance, .. }) => {
+            (Parameter::Resistance, CircuitElement::Resistor(Resistor { resistance, .. })) => {
                 Some(*resistance)
             }
-            (Parameter::Capacitance, CircuitElement::Capacitor { capacitance, .. }) => {
+            (Parameter::Capacitance, CircuitElement::Capacitor(Capacitor { capacitance, .. })) => {
                 Some(*capacitance)
             }
-            (Parameter::Inductance, CircuitElement::Inductor { inductance, .. }) => {
+            (Parameter::Inductance, CircuitElement::Inductor(Inductor { inductance, .. })) => {
                 Some(*inductance)
             }
-            (Parameter::Voltage, CircuitElement::VoltageSource { voltage, .. }) => Some(*voltage),
-            (Parameter::Current, CircuitElement::CurrentSource { current, .. }) => Some(*current),
+            (Parameter::Voltage, CircuitElement::VoltageSource(VoltageSource { voltage, .. })) => {
+                Some(*voltage)
+            }
+            (Parameter::Current, CircuitElement::CurrentSource(CurrentSource { current, .. })) => {
+                Some(*current)
+            }
             _ => None,
         }
     }
 
     fn set(self, element: &mut CircuitElement, value: f64) {
         match (self, element) {
-            (Parameter::Resistance, CircuitElement::Resistor { resistance, .. }) => {
+            (Parameter::Resistance, CircuitElement::Resistor(Resistor { resistance, .. })) => {
                 *resistance = value;
             }
-            (Parameter::Capacitance, CircuitElement::Capacitor { capacitance, .. }) => {
+            (Parameter::Capacitance, CircuitElement::Capacitor(Capacitor { capacitance, .. })) => {
                 *capacitance = value;
             }
-            (Parameter::Inductance, CircuitElement::Inductor { inductance, .. }) => {
+            (Parameter::Inductance, CircuitElement::Inductor(Inductor { inductance, .. })) => {
                 *inductance = value;
             }
-            (Parameter::Voltage, CircuitElement::VoltageSource { voltage, .. }) => {
+            (Parameter::Voltage, CircuitElement::VoltageSource(VoltageSource { voltage, .. })) => {
                 *voltage = value;
             }
-            (Parameter::Current, CircuitElement::CurrentSource { current, .. }) => {
+            (Parameter::Current, CircuitElement::CurrentSource(CurrentSource { current, .. })) => {
                 *current = value;
             }
             _ => {}
@@ -118,6 +126,7 @@ impl Parameter {
 
 /// How a [`Tolerance`]'s parameter is drawn in [`monte_carlo`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
@@ -135,6 +144,7 @@ pub enum Distribution {
 
 /// How one parameter of one component varies.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Tolerance {
@@ -190,6 +200,7 @@ impl Tolerance {
 
 /// Configuration of a [`monte_carlo`] analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct MonteCarloConfig {
@@ -220,6 +231,7 @@ impl MonteCarloConfig {
 
 /// Where a [`Tolerance`] sits in one corner of a [`corners`] analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Corner {
@@ -233,6 +245,7 @@ pub enum Corner {
 
 /// Which corners a [`corners`] analysis runs.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -249,6 +262,7 @@ pub const MAX_CORNER_TOLERANCES: usize = 16;
 
 /// One run of a [`monte_carlo`] or [`corners`] analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct VariationRun {
@@ -261,6 +275,7 @@ pub struct VariationRun {
 
 /// One measurement's spread over the runs it could be taken on.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct MeasurementStats {
@@ -282,6 +297,7 @@ pub struct MeasurementStats {
 
 /// Result of a [`monte_carlo`] or [`corners`] analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct VariationResult {
@@ -380,6 +396,7 @@ fn spec_margin(spec: &Spec, value: f64) -> (Option<f64>, SpecStatus) {
 /// One run picked out of a variation analysis: which, and the condition
 /// behind it.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct WorstRun {
@@ -396,6 +413,7 @@ pub struct WorstRun {
 
 /// One spec over the runs of a variation analysis.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct SpecSpread {
@@ -416,6 +434,7 @@ pub struct SpecSpread {
 
 /// Which runs a [`ratings_over`] analysis makes.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Sampling {
@@ -432,6 +451,7 @@ pub enum Sampling {
 
 /// One part's rating at its worst over the runs of [`ratings_over`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct WorstRating {
@@ -461,6 +481,7 @@ pub struct WorstRating {
 
 /// Result of [`ratings_over`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RatingsSpread {
@@ -508,8 +529,9 @@ impl RatingsSpread {
 ///
 /// # Errors
 ///
-/// [`SimError::InvalidComponent`] for a tolerance on a component that
-/// isn't there or doesn't have its parameter, a relative band outside
+/// [`SimError::UnknownComponent`] for a tolerance on a component that
+/// isn't there, and [`SimError::InvalidConfig`] for one on a component
+/// that doesn't have its parameter, a relative band outside
 /// `[0, 1)`, a Gaussian whose `sigmas` isn't above 0, or no runs. A run
 /// that fails isn't an error: see [`VariationRun::measurements`].
 pub fn monte_carlo<R, F>(
@@ -531,8 +553,9 @@ where
 /// Each run's deviation of each tolerance, as fractions of its nominal.
 fn monte_carlo_plan(config: &MonteCarloConfig) -> Result<Vec<Vec<f64>>, SimError> {
     if config.runs == 0 {
-        return Err(SimError::InvalidComponent(
-            "Monte Carlo needs at least one run".to_string(),
+        return Err(SimError::config(
+            ConfigKind::Variation,
+            "Monte Carlo needs at least one run",
         ));
     }
     Ok((0..config.runs)
@@ -583,10 +606,13 @@ fn corner_plan(tolerances: &[Tolerance], which: &Corners) -> Result<Vec<Vec<f64>
     let list: Vec<Vec<Corner>> = match which {
         Corners::All => {
             if n > MAX_CORNER_TOLERANCES {
-                return Err(SimError::InvalidComponent(format!(
-                    "every corner of {n} tolerances is 2^{n} runs; list the corners, or take at \
-                     most {MAX_CORNER_TOLERANCES}"
-                )));
+                return Err(SimError::config(
+                    ConfigKind::Variation,
+                    format!(
+                        "every corner of {n} tolerances is 2^{n} runs; list the corners, or \
+                         take at most {MAX_CORNER_TOLERANCES}"
+                    ),
+                ));
             }
             (0..1usize << n)
                 .map(|bits| {
@@ -604,10 +630,10 @@ fn corner_plan(tolerances: &[Tolerance], which: &Corners) -> Result<Vec<Vec<f64>
         }
         Corners::List(list) => {
             if let Some(bad) = list.iter().find(|c| c.len() != n) {
-                return Err(SimError::InvalidComponent(format!(
-                    "a corner names {} tolerances, not {n}",
-                    bad.len()
-                )));
+                return Err(SimError::config(
+                    ConfigKind::Variation,
+                    format!("a corner names {} tolerances, not {n}", bad.len()),
+                ));
             }
             list.clone()
         }
@@ -739,34 +765,35 @@ impl Base {
         let mut targets = Vec::with_capacity(tolerances.len());
         for t in tolerances {
             if !(t.relative.is_finite() && (0.0..1.0).contains(&t.relative)) {
-                return Err(SimError::InvalidComponent(format!(
-                    "`{}`: tolerance {} must be in [0, 1)",
-                    t.component, t.relative
-                )));
+                return Err(SimError::config(
+                    ConfigKind::Variation,
+                    format!(
+                        "`{}`: tolerance {} must be in [0, 1)",
+                        t.component, t.relative
+                    ),
+                ));
             }
             if let Distribution::Gaussian { sigmas } = t.distribution {
                 if !(sigmas.is_finite() && sigmas > 0.0) {
-                    return Err(SimError::InvalidComponent(format!(
-                        "`{}`: a Gaussian tolerance needs sigmas above 0, not {sigmas}",
-                        t.component
-                    )));
+                    return Err(SimError::config(
+                        ConfigKind::Variation,
+                        format!(
+                            "`{}`: a Gaussian tolerance needs sigmas above 0, not {sigmas}",
+                            t.component
+                        ),
+                    ));
                 }
             }
             let index = circuit
                 .components
                 .iter()
                 .position(|c| c.id() == t.component)
-                .ok_or_else(|| {
-                    SimError::InvalidComponent(format!(
-                        "tolerance on `{}`, which isn't in the circuit",
-                        t.component
-                    ))
-                })?;
+                .ok_or_else(|| SimError::UnknownComponent(t.component.to_string()))?;
             let nominal = t.parameter.get(&circuit.components[index]).ok_or_else(|| {
-                SimError::InvalidComponent(format!(
-                    "`{}` has no {:?} to vary",
-                    t.component, t.parameter
-                ))
+                SimError::config(
+                    ConfigKind::Variation,
+                    format!("`{}` has no {:?} to vary", t.component, t.parameter),
+                )
             })?;
             targets.push((index, t.parameter, nominal));
         }

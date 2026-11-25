@@ -1,0 +1,75 @@
+//! A light-dependent resistor.
+
+use crate::handle::NodeId;
+use sindr_devices::photoresistor::{ldr_resistance as rs_ldr_resistance, PhotoresistorParams};
+
+use crate::error::SimError;
+use crate::stamp::stamp_resistor_at;
+
+use super::{AcStamp, Check, DcStamp, Device, Report};
+use crate::noise::NoiseSources;
+use crate::ratings::RatingKind;
+
+#[cfg(feature = "spice")]
+use crate::spice::export::{num, Deck, ExportError};
+
+/// Photoresistor (LDR): resistance varies logarithmically with light.
+/// light_level = 0.0 → ~1 MΩ (dark), 1.0 → ~1 kΩ (bright).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Photoresistor {
+    /// Unique component identifier.
+    pub id: String,
+    /// Terminals `[a, b]`.
+    pub nodes: [NodeId; 2],
+    /// Incident light level, 0.0 (dark, ~1 MΩ) to 1.0 (bright, ~1 kΩ).
+    pub light_level: f64,
+}
+
+impl Device for Photoresistor {
+    device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, v / ldr_resistance(self.light_level));
+    }
+
+    fn stamp_ac(&self, s: &mut AcStamp<'_>) {
+        let r = ldr_resistance(self.light_level);
+        let nodes = s.nodes();
+        s.conductance(nodes, 1.0 / r);
+    }
+
+    fn noise(&self, n: &mut NoiseSources<'_>) {
+        let [a, b] = &self.nodes;
+        n.thermal_27c(&self.id, "", [a, b], ldr_resistance(self.light_level));
+    }
+
+    fn needed_ratings(&self) -> &'static [RatingKind] {
+        &[RatingKind::Power]
+    }
+
+    fn stamp_dc(&self, s: &mut DcStamp<'_>) -> Result<(), SimError> {
+        let nodes = s.nodes();
+        stamp_resistor_at(s.system, nodes, ldr_resistance(self.light_level));
+        Ok(())
+    }
+
+    /// The model clamps the light level into range, so only a non-finite
+    /// value is refused.
+    fn validate(&self) -> Result<(), SimError> {
+        Check::new(&self.id).finite("light_level", self.light_level, "")
+    }
+
+    #[cfg(feature = "spice")]
+    fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
+        let r = ldr_resistance(self.light_level);
+        deck.two_terminal(name, &self.nodes, num(&self.id, "resistance", r)?)
+    }
+}
+
+/// Compute LDR (photoresistor) resistance from light level.
+pub(crate) fn ldr_resistance(light_level: f64) -> f64 {
+    rs_ldr_resistance(light_level, &PhotoresistorParams::default())
+}

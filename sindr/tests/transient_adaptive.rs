@@ -1,7 +1,11 @@
 //! Timestep control: steps land on waveform breakpoints, shrink where the
 //! local truncation error demands, and grow on smooth stretches.
 
-use sindr::{solve_transient, Circuit, CircuitElement, TransientConfig, TransientData, Waveform};
+use sindr::element::{Capacitor, CurrentSource, FerriteBead, Resistor, VoltageSource};
+use sindr::{
+    solve_transient, Circuit, CircuitElement, SimError, Solver, SolverOptions, TransientConfig,
+    TransientData, Waveform,
+};
 
 /// 0 → 1 V pulse at 10 µs with 1 ns edges, 40 µs wide, into RC with τ = 1 µs.
 const DELAY: f64 = 10e-6;
@@ -13,7 +17,7 @@ fn pulse_rc() -> Circuit {
     Circuit {
         ground_node: "0".into(),
         components: vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
@@ -26,17 +30,17 @@ fn pulse_rc() -> Circuit {
                     pulse_width: WIDTH,
                     period: 1.0,
                 }),
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "R1".into(),
                 nodes: ["in".into(), "out".into()],
                 resistance: 1e3,
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "C1".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: TAU / 1e3,
-            },
+            }),
         ],
         ..Default::default()
     }
@@ -144,4 +148,106 @@ fn fixed_step_runs_land_on_breakpoints() {
         assert!(has_snapshot_at(&tran, corner), "no snapshot at {corner}");
     }
     assert_eq!(tran.stats.lte_rejections, 0);
+}
+
+/// 1 A driven into a ferrite bead whose far end is open: no DC path to
+/// ground, so the driven node ramps without limit and no step follows it.
+/// The run stops with `TimestepTooSmall` instead of taking millions of
+/// steps of 0.1 ps (it took 43 million, three minutes, for 4 µs).
+#[test]
+fn a_node_that_ramps_without_limit_stops_with_timestep_too_small() {
+    let circuit = sindr::Circuit::new(
+        "0",
+        vec![
+            sindr::CircuitElement::CurrentSource(CurrentSource {
+                id: "I1".into(),
+                nodes: ["0".into(), "a".into()],
+                current: 1.0,
+                waveform: None,
+            }),
+            sindr::CircuitElement::FerriteBead(FerriteBead {
+                id: "FB1".into(),
+                nodes: ["a".into(), "open".into()],
+                params: sindr::FerriteBeadParams::from_datasheet(1e3, 0.1),
+            }),
+        ],
+    );
+    let started = std::time::Instant::now();
+    let err = sindr::solve_transient(&circuit, &sindr::TransientConfig::new(4e-6, 1e-7))
+        .expect_err("can't be followed");
+    assert!(
+        matches!(err, sindr::SimError::TimestepTooSmall { time, step } if time < 4e-6 && step < 1e-10),
+        "{err:?}"
+    );
+    assert!(
+        started.elapsed().as_secs() < 30,
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+/// 137 MHz into RC with τ = 1 ns.
+fn fast_rc() -> Circuit {
+    Circuit {
+        ground_node: "0".into(),
+        components: vec![
+            CircuitElement::VoltageSource(VoltageSource {
+                id: "V1".into(),
+                nodes: ["in".into(), "0".into()],
+                voltage: 0.0,
+                waveform: Some(Waveform::Sine {
+                    amplitude: 1.0,
+                    frequency: 137e6,
+                    offset: 0.0,
+                    phase: 0.0,
+                }),
+            }),
+            CircuitElement::Resistor(Resistor {
+                id: "R1".into(),
+                nodes: ["in".into(), "out".into()],
+                resistance: 1e3,
+            }),
+            CircuitElement::Capacitor(Capacitor {
+                id: "C1".into(),
+                nodes: ["out".into(), "0".into()],
+                capacitance: 1e-12,
+            }),
+        ],
+        ..Default::default()
+    }
+}
+
+/// [`fast_rc`] written out only every 1 µs. Following the sine takes steps
+/// four decades below `tstep` for the whole run, every one accepted: a fast
+/// circuit with a coarse `tstep`, not a stuck one.
+#[test]
+fn a_fast_circuit_with_a_coarse_tstep_runs_to_the_end() {
+    let tran = solve_transient(&fast_rc(), &TransientConfig::new(3e-6, 1e-6))
+        .expect("runs")
+        .transient
+        .unwrap();
+    let last = tran.timesteps.last().expect("steps");
+    assert!((last.time - 3e-6).abs() < 1e-12, "{}", last.time);
+    assert!(
+        tran.stats.accepted_steps > 10_000,
+        "{}",
+        tran.stats.accepted_steps
+    );
+}
+
+/// The same run with a budget of 2 000 steps: its step settles well above
+/// the floor, so only the budget stops it, short of `tstop`.
+#[test]
+fn a_run_whose_step_settles_above_the_floor_stops_at_the_step_budget() {
+    let mut options = SolverOptions::default();
+    options.max_transient_steps = 2_000;
+    let err = Solver::new(options)
+        .transient(&fast_rc(), &TransientConfig::new(3e-6, 1e-6))
+        .unwrap_err();
+    let SimError::TimestepTooSmall { time, step } = err else {
+        panic!("{err}")
+    };
+    assert!(time < 3e-6, "{time}");
+    // Above ten times the floor (1e-6 · tstep).
+    assert!(step > 1e-11, "{step}");
 }

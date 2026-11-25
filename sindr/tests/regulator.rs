@@ -1,6 +1,9 @@
 //! Linear regulator model against LM7805 and AMS1117 datasheet points.
 
 use sindr::ac_analysis::{solve_ac, AcConfig, FrequencySpacing};
+use sindr::element::{
+    Capacitor, CurrentSource, Inductor, Resistor, VoltageRegulator, VoltageSource,
+};
 use sindr::regulator::RegulatorParams;
 use sindr::{
     check_ratings, solve_circuit, Circuit, CircuitElement, Part, RatingKind, RatingStatus, Ratings,
@@ -11,38 +14,38 @@ fn regulator(vin: f64, vout: f64, model: RegulatorParams, load: CircuitElement) 
     Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "VIN".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: vin,
                 waveform: None,
-            },
-            CircuitElement::VoltageRegulator {
+            }),
+            CircuitElement::VoltageRegulator(VoltageRegulator {
                 id: "U1".into(),
                 nodes: ["in".into(), "out".into(), "0".into()],
                 voltage: vout,
                 model: Some(model),
-            },
+            }),
             load,
         ],
     )
 }
 
 fn load_r(ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: "RL".into(),
         nodes: ["out".into(), "0".into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn load_i(amps: f64) -> CircuitElement {
-    CircuitElement::CurrentSource {
+    CircuitElement::CurrentSource(CurrentSource {
         id: "IL".into(),
         nodes: ["out".into(), "0".into()],
         current: amps,
         waveform: None,
-    }
+    })
 }
 
 fn u1(r: &SimulationResult) -> &sindr::ComponentResult {
@@ -203,7 +206,7 @@ fn ams1117_current_limit() {
 #[test]
 fn ideal_regulator_still_draws_its_output_from_the_input() {
     let mut c = regulator(12.0, 5.0, RegulatorParams::default(), load_r(100.0));
-    if let CircuitElement::VoltageRegulator { model, .. } = &mut c.components[1] {
+    if let CircuitElement::VoltageRegulator(VoltageRegulator { model, .. }) = &mut c.components[1] {
         *model = None;
     }
     let r = solve_circuit(&c).unwrap();
@@ -330,11 +333,11 @@ fn unpowered_regulator_outputs_nothing() {
 #[test]
 fn input_pulled_to_ground_stays_there() {
     let mut c = regulator(0.0, 5.0, RegulatorParams::lm7805(), load_r(1e3));
-    c.components[0] = CircuitElement::Resistor {
+    c.components[0] = CircuitElement::Resistor(Resistor {
         id: "RIN".into(),
         nodes: ["in".into(), "0".into()],
         resistance: 1e3,
-    };
+    });
     let r = solve_circuit(&c).unwrap();
     assert!(
         r.node_voltages["in"].abs() < 1e-9,
@@ -408,36 +411,36 @@ fn ramped_start_up_leaves_the_floor_without_a_current_spike() {
     let c = Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "VIN".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
                 waveform: Some(sindr::Waveform::Pwl {
                     points: vec![(0.0, 0.0), (1e-3, 12.0)],
                 }),
-            },
-            CircuitElement::VoltageRegulator {
+            }),
+            CircuitElement::VoltageRegulator(VoltageRegulator {
                 id: "U1".into(),
                 nodes: ["in".into(), "mid".into(), "0".into()],
                 voltage: 5.0,
                 model: Some(RegulatorParams::lm7805()),
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "CMID".into(),
                 nodes: ["mid".into(), "0".into()],
                 capacitance: 10e-6,
-            },
-            CircuitElement::VoltageRegulator {
+            }),
+            CircuitElement::VoltageRegulator(VoltageRegulator {
                 id: "U2".into(),
                 nodes: ["mid".into(), "out".into(), "0".into()],
                 voltage: 3.3,
                 model: Some(RegulatorParams::ams1117()),
-            },
-            CircuitElement::Capacitor {
+            }),
+            CircuitElement::Capacitor(Capacitor {
                 id: "COUT".into(),
                 nodes: ["out".into(), "0".into()],
                 capacitance: 22e-6,
-            },
+            }),
             load_r(6.6),
         ],
     );
@@ -473,45 +476,45 @@ fn fed_through_an_inductor(
     let mut parts = vec![src];
     let l_from = match rs {
         Some(ohms) => {
-            parts.push(CircuitElement::Resistor {
+            parts.push(CircuitElement::Resistor(Resistor {
                 id: "RS".into(),
                 nodes: ["in".into(), "s".into()],
                 resistance: ohms,
-            });
+            }));
             "s"
         }
         None => "in",
     };
-    parts.push(CircuitElement::Inductor {
+    parts.push(CircuitElement::Inductor(Inductor {
         id: "L1".into(),
         nodes: [l_from.into(), "a".into()],
         inductance: l,
         saturation: None,
-    });
+    }));
     if let Some(farads) = cin {
-        parts.push(CircuitElement::Capacitor {
+        parts.push(CircuitElement::Capacitor(Capacitor {
             id: "CIN".into(),
             nodes: ["a".into(), "0".into()],
             capacitance: farads,
-        });
+        }));
     }
-    parts.push(CircuitElement::VoltageRegulator {
+    parts.push(CircuitElement::VoltageRegulator(VoltageRegulator {
         id: "U1".into(),
         nodes: ["a".into(), "out".into(), "0".into()],
         voltage,
         model: Some(RegulatorParams::lm7805()),
-    });
+    }));
     parts.push(load_r(10.0));
     Circuit::new("0", parts)
 }
 
 fn vsrc(voltage: f64, waveform: Option<sindr::Waveform>) -> CircuitElement {
-    CircuitElement::VoltageSource {
+    CircuitElement::VoltageSource(VoltageSource {
         id: "V1".into(),
         nodes: ["in".into(), "0".into()],
         voltage,
         waveform,
-    }
+    })
 }
 
 fn current_of(step: &sindr::TimestepSnapshot, id: &str) -> f64 {

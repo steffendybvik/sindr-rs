@@ -3,6 +3,7 @@
 //! `dSoC/dt = −i/(3600·capacity)`.
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
+use sindr::element::{Battery, CurrentSource, Resistor, VoltageSource};
 use sindr::{
     solve_circuit, solve_transient, validate_circuit, Circuit, CircuitElement, SimError,
     SimulationResult, TransientConfig, TransientStart,
@@ -10,29 +11,29 @@ use sindr::{
 use sindr_devices::battery::{open_circuit_voltage, BatteryParams, BatteryRc};
 
 fn battery(params: BatteryParams, soc: f64) -> CircuitElement {
-    CircuitElement::Battery {
+    CircuitElement::Battery(Battery {
         id: "B1".into(),
         nodes: ["p".into(), "0".into()],
         params,
         state_of_charge: soc,
-    }
+    })
 }
 
 fn load(ohms: f64) -> CircuitElement {
-    CircuitElement::Resistor {
+    CircuitElement::Resistor(Resistor {
         id: "RL".into(),
         nodes: ["p".into(), "0".into()],
         resistance: ohms,
-    }
+    })
 }
 
 fn sink(amps: f64) -> CircuitElement {
-    CircuitElement::CurrentSource {
+    CircuitElement::CurrentSource(CurrentSource {
         id: "I1".into(),
         nodes: ["p".into(), "0".into()],
         current: amps,
         waveform: None,
-    }
+    })
 }
 
 fn battery_result(r: &sindr::TimestepSnapshot) -> (f64, f64) {
@@ -157,17 +158,17 @@ fn ac_impedance_is_r0_plus_r1_parallel_c1() {
     let circuit = Circuit::new(
         "0",
         vec![
-            CircuitElement::VoltageSource {
+            CircuitElement::VoltageSource(VoltageSource {
                 id: "V1".into(),
                 nodes: ["in".into(), "0".into()],
                 voltage: 0.0,
                 waveform: None,
-            },
-            CircuitElement::Resistor {
+            }),
+            CircuitElement::Resistor(Resistor {
                 id: "Rs".into(),
                 nodes: ["in".into(), "p".into()],
                 resistance: 1.0,
-            },
+            }),
             battery(params, 1.0),
         ],
     );
@@ -237,7 +238,9 @@ fn bad_parameters_are_refused() {
     for (params, soc, needle) in cases {
         let circuit = Circuit::new("0", vec![battery(params, soc), load(10.0)]);
         match validate_circuit(&circuit) {
-            Err(SimError::InvalidComponent(m)) => assert!(m.contains(needle), "{m}"),
+            Err(SimError::InvalidComponent { reason, .. }) => {
+                assert!(reason.contains(needle), "{reason}")
+            }
             other => panic!("expected InvalidComponent for {needle}, got {other:?}"),
         }
     }

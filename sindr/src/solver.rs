@@ -7,11 +7,12 @@
 //!
 //! ```
 //! use sindr::{Circuit, CircuitElement, Solver, SolverOptions};
+//! use sindr::element::{Diode, Resistor, VoltageSource};
 //!
 //! let circuit = Circuit::new("0", vec![
-//!     CircuitElement::VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "0".into()], voltage: 5.0, waveform: None },
-//!     CircuitElement::Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 1_000.0 },
-//!     CircuitElement::Diode { id: "D1".into(), nodes: ["a".into(), "0".into()], temperature: 300.15, model: None },
+//!     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["vcc".into(), "0".into()], voltage: 5.0, waveform: None }),
+//!     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["vcc".into(), "a".into()], resistance: 1_000.0 }),
+//!     CircuitElement::Diode(Diode { id: "D1".into(), nodes: ["a".into(), "0".into()], temperature: 300.15, model: None }),
 //! ]);
 //!
 //! let mut options = SolverOptions::default();
@@ -33,7 +34,7 @@ use std::collections::HashMap;
 use crate::ac_analysis::{AcConfig, AcResult};
 use crate::circuit::Circuit;
 use crate::dc_sweep::{DcSweepAxis, DcSweepResult, NestedDcSweepResult};
-use crate::error::SimError;
+use crate::error::{ConfigKind, SimError};
 use crate::noise::{NoiseConfig, NoiseResult};
 use crate::results::SimulationResult;
 use crate::sensitivity::{AcSensConfig, AcSensResult, SensConfig, SensResult};
@@ -48,6 +49,7 @@ use crate::transient::TransientConfig;
 /// so the struct can't be built with a literal outside this crate.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[non_exhaustive]
 pub struct SolverOptions {
@@ -77,7 +79,9 @@ pub struct SolverOptions {
     /// Transient truncation-error factor (SPICE `TRTOL`, default `7`).
     pub trtol: f64,
     /// Most timesteps a transient may take, counting the `tstep` grid and
-    /// every waveform breakpoint (default `10_000_000`).
+    /// every waveform breakpoint (default `10_000_000`). A config whose grid
+    /// alone needs more is rejected up front; a run that takes more stops
+    /// with [`SimError::TimestepTooSmall`].
     pub max_transient_steps: u64,
     /// Starting guess for the DC operating point in volts, keyed by node
     /// name (SPICE `.nodeset`). Unknown node names are skipped. Only
@@ -114,13 +118,12 @@ impl SolverOptions {
     ///
     /// # Errors
     ///
-    /// [`SimError::InvalidComponent`] naming the first field that isn't:
+    /// [`SimError::InvalidConfig`] naming the first field that isn't:
     /// a tolerance that isn't finite and positive, no iterations, a gmin
     /// step that isn't finite and positive, a `min_source_step` outside
     /// `(0, 1)`, no transient steps, or a `nodeset` voltage that isn't finite.
     pub fn validate(&self) -> Result<(), SimError> {
-        let invalid =
-            |msg: String| Err(SimError::InvalidComponent(format!("solver options: {msg}")));
+        let invalid = |msg: String| Err(SimError::config(ConfigKind::SolverOptions, msg));
         for (name, value) in [
             ("reltol", self.reltol),
             ("vntol", self.vntol),
@@ -214,6 +217,43 @@ impl Solver {
     ) -> Result<SimulationResult, SimError> {
         self.options.validate()?;
         crate::transient::solve_transient_with(circuit, config, &self.options)
+    }
+
+    /// As [`solve_transient_with_progress`](crate::solve_transient_with_progress).
+    ///
+    /// # Errors
+    ///
+    /// As [`transient`](Self::transient), and
+    /// [`SimError::Cancelled`] when the hook returns
+    /// [`Flow::Stop`](crate::Flow::Stop).
+    pub fn transient_with_progress(
+        &self,
+        circuit: &Circuit,
+        config: &TransientConfig,
+        mut progress: impl FnMut(&crate::TransientProgress<'_>) -> crate::Flow,
+    ) -> Result<SimulationResult, SimError> {
+        self.options.validate()?;
+        crate::transient::solve_transient_hooked(
+            circuit,
+            config,
+            &self.options,
+            Some(&mut progress),
+        )
+    }
+
+    /// As [`TransientSession::new`](crate::TransientSession::new).
+    ///
+    /// # Errors
+    ///
+    /// As [`TransientSession::new`](crate::TransientSession::new), and
+    /// [`SolverOptions::validate`].
+    pub fn transient_session(
+        &self,
+        circuit: &Circuit,
+        config: &TransientConfig,
+    ) -> Result<crate::TransientSession, SimError> {
+        self.options.validate()?;
+        crate::TransientSession::with_options(circuit, config, &self.options)
     }
 
     /// As [`solve_ac`](crate::solve_ac).
@@ -313,13 +353,10 @@ impl Solver {
     pub fn dc_sweep(
         &self,
         circuit: &Circuit,
-        source_id: &str,
-        start: f64,
-        stop: f64,
-        num_points: usize,
+        axis: &DcSweepAxis,
     ) -> Result<DcSweepResult, SimError> {
         self.options.validate()?;
-        crate::dc_sweep::dc_sweep_with(circuit, source_id, start, stop, num_points, &self.options)
+        crate::dc_sweep::dc_sweep_with(circuit, axis, &self.options)
     }
 
     /// As [`dc_sweep_nested`](crate::dc_sweep_nested). The nodeset seeds the
@@ -348,17 +385,9 @@ impl Solver {
     pub fn temperature_sweep(
         &self,
         circuit: &Circuit,
-        temp_start: f64,
-        temp_end: f64,
-        num_steps: usize,
+        config: &crate::temp_sweep::TempSweepConfig,
     ) -> Result<TempSweepResult, SimError> {
         self.options.validate()?;
-        crate::temp_sweep::temperature_sweep_with(
-            circuit,
-            temp_start,
-            temp_end,
-            num_steps,
-            &self.options,
-        )
+        crate::temp_sweep::temperature_sweep_with(circuit, config, &self.options)
     }
 }

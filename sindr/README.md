@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain with stability margins, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain with stability margins, DC sweep, temperature sweep, and Fourier (`.four`) and FFT of a transient. A `TransientSession` holds a transient open between calls, for a circuit paired with firmware or a user. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -10,30 +10,26 @@ Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-d
 
 ```toml
 [dependencies]
-sindr = "0.2"
+sindr = "0.3"
 ```
 
-Serde support is on by default. To disable:
+Every feature is on by default: `serde`, `schemars` (JSON Schema), `spice` (netlist parsing and export), `examples` (the named example circuits) and `parallel` (Monte Carlo and corners across threads, serial on wasm). To keep only some, turn the defaults off and list them:
 
 ```toml
-sindr = { version = "0.2", default-features = false }
+sindr = { version = "0.3", default-features = false, features = ["serde", "spice"] }
 ```
 
-To parse SPICE netlists, enable the optional `spice` feature (off by default):
-
-```toml
-sindr = { version = "0.2", features = ["spice"] }
-```
+Parsing a SPICE netlist:
 
 ```rust,ignore
 let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.four`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
-cargo run --example parse_netlist --features spice
+cargo run --example parse_netlist
 ```
 
 `sindr::spice::to_netlist` goes the other way: it writes a `Circuit` as a SPICE deck (R, L, C, V, I with waveforms, D and Q with `.model` cards, E/G/F/H, transformers as L–L–K, and exact R/D equivalents for switches, fuses, potentiometers, LEDs and the like) that ngspice runs, and that `parse_str` reads back. Elements with no SPICE equivalent are an `ExportError`.
@@ -43,26 +39,27 @@ cargo run --example parse_netlist --features spice
 ```rust,no_run
 # use sindr::*;
 use sindr::{Circuit, CircuitElement, solve_circuit};
+use sindr::element::{Resistor, VoltageSource};
 
 let circuit = Circuit {
     ground_node: "gnd".into(),
     components: vec![
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: "V1".into(),
             nodes: ["n1".into(), "gnd".into()],
             voltage: 10.0,
             waveform: None,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: "R1".into(),
             nodes: ["n1".into(), "n2".into()],
             resistance: 1_000.0,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: "R2".into(),
             nodes: ["n2".into(), "gnd".into()],
             resistance: 2_000.0,
-        },
+        }),
     ],
     ..Default::default()
 };
@@ -76,38 +73,61 @@ println!("R1 current = {:.3} mA", result.current("R1").unwrap() * 1e3); // 3.333
 
 ## Building circuits
 
-Every component has an `id` (arbitrary string) and `nodes` (node names as strings). One node must match `ground_node` — it is held at 0 V.
+Every component has an `id` (arbitrary string) and `nodes`, an array of `NodeId` handles. A `NodeId` is a net's name underneath: `"out".into()` makes one, and two elements share a net when their handles name the same net. One node must match `ground_node` — it is held at 0 V.
+
+`CircuitBuilder` hands the handles out and checks them: declare each net once with `node`, and `build` fails with `SimError::UnknownNode` on an element that names a net nobody declared, so a typo is an error rather than a new floating net. Analysis configs take handles too (`NodeId` for an output net, `ComponentId` for a source), and result accessors take either a handle or a name.
+
+```rust
+use sindr::element::{Resistor, VoltageSource};
+use sindr::{solve_circuit, CircuitBuilder};
+
+let mut b = CircuitBuilder::new(); // ground is "0"
+let gnd = b.ground();
+let n1 = b.node("n1");
+let n2 = b.node("n2");
+b.add(VoltageSource::dc("V1", [n1.clone(), gnd.clone()], 10.0));
+b.add(Resistor { id: "R1".into(), nodes: [n1, n2.clone()], resistance: 1_000.0 });
+b.add(Resistor { id: "R2".into(), nodes: [n2.clone(), gnd], resistance: 2_000.0 });
+let circuit = b.build()?;
+
+let result = solve_circuit(&circuit)?;
+assert!((result.voltage(&n2).unwrap() - 6.667).abs() < 1e-3);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
 ### Passive components
 
 ```rust,ignore
-CircuitElement::Resistor   { id, nodes: [String; 2], resistance: f64 }
-CircuitElement::Capacitor  { id, nodes: [String; 2], capacitance: f64 }
-CircuitElement::Inductor   { id, nodes: [String; 2], inductance: f64, saturation: Option<InductorSaturation> }
+use sindr::element::{Capacitor, Inductor, Resistor};
+CircuitElement::Resistor(Resistor { id, nodes: [NodeId; 2], resistance: f64 })
+CircuitElement::Capacitor(Capacitor { id, nodes: [NodeId; 2], capacitance: f64 })
+CircuitElement::Inductor(Inductor { id, nodes: [NodeId; 2], inductance: f64, saturation: Option<InductorSaturation> })
 ```
 
-Capacitors and inductors trigger transient analysis automatically. In pure DC (no reactive elements, no waveforms), they are treated as open circuits.
+Capacitors and inductors trigger transient analysis automatically. In the DC analyses (`solve_op`, DC sweeps, the bias point of AC), capacitors are open circuits and inductors short circuits.
 
-An inductor with `saturation: Some(InductorSaturation { i_sat, l_sat })` has a core that saturates: its flux is `λ(i) = l_sat·i + (inductance − l_sat)·i_sat·tanh(i/i_sat)`, so its inductance falls from `inductance` at zero current towards `l_sat` past `i_sat` (to 42 % of the way at `i_sat`, 7 % at `2·i_sat`). A datasheet's saturation current, where L has dropped 20–30 %, is about `0.6·i_sat`. The transient integrates the flux, and AC and noise use the incremental inductance `dλ/di` at the DC current. There's no hysteresis or core loss; add a resistor for loss.
+An inductor with `saturation: Some(InductorSaturation { i_sat, l_sat })` has a core that saturates: its flux is `λ(i) = l_sat·i + (inductance − l_sat)·i_sat·tanh(i/i_sat)`, so its inductance falls from `inductance` at zero current towards `l_sat` past `i_sat` (at `i_sat` it keeps 42 % of its excess over `l_sat`, at `2·i_sat` 7 %). A datasheet's saturation current, where L has dropped 20–30 %, is about `0.6·i_sat`. The transient integrates the flux, and AC and noise use the incremental inductance `dλ/di` at the DC current. There's no hysteresis or core loss; add a resistor for loss.
 
 ```rust,no_run
 # use sindr::*;
+# use sindr::element::Inductor;
 use sindr_devices::inductor::InductorSaturation;
 
 // 10 µH that saturates around 3 A, keeping 1 µH when saturated.
-let l1 = CircuitElement::Inductor {
+let l1 = CircuitElement::Inductor(Inductor {
     id: "L1".into(),
     nodes: ["sw".into(), "out".into()],
     inductance: 10e-6,
     saturation: Some(InductorSaturation { i_sat: 3.0 / 0.6, l_sat: 1e-6 }),
-};
+});
 ```
 
 ### Sources
 
 ```rust,ignore
-CircuitElement::VoltageSource { id, nodes: [String; 2], voltage: f64, waveform: Option<Waveform> }
-CircuitElement::CurrentSource { id, nodes: [String; 2], current: f64, waveform: Option<Waveform> }
+use sindr::element::{CurrentSource, VoltageSource};
+CircuitElement::VoltageSource(VoltageSource { id, nodes: [NodeId; 2], voltage: f64, waveform: Option<Waveform> })
+CircuitElement::CurrentSource(CurrentSource { id, nodes: [NodeId; 2], current: f64, waveform: Option<Waveform> })
 ```
 
 `nodes[0]` is the positive terminal for voltage sources. A current source's current flows through it from `nodes[0]` to `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`, as SPICE's `I` does.
@@ -117,7 +137,8 @@ A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers tr
 ### Battery
 
 ```rust,ignore
-CircuitElement::Battery { id, nodes: [String; 2], params: BatteryParams, state_of_charge: f64 }
+use sindr::element::Battery;
+CircuitElement::Battery(Battery { id, nodes: [NodeId; 2], params: BatteryParams, state_of_charge: f64 })
 ```
 
 `nodes` are `[positive, negative]`. The cell is an equivalent circuit: open-circuit voltage by state of charge (`params.ocv`, interpolated), behind a series resistance `r_series` and an optional RC pair (`params.rc`) for the slow sag after a load step and the recovery after it. Its terminal voltage is `OCV(SoC) − R0·i − v1`.
@@ -131,27 +152,30 @@ CircuitElement::Battery { id, nodes: [String; 2], params: BatteryParams, state_o
 ```rust,no_run
 # use sindr::*;
 use sindr::battery::BatteryParams;
+use sindr::element::Battery;
 
 // A 500 mAh LiPo at 80 %, 0.15 Ω.
-let cell = CircuitElement::Battery {
+let cell = CircuitElement::Battery(Battery {
     id: "B1".into(),
     nodes: ["vbat".into(), "0".into()],
     params: BatteryParams::lithium_ion(0.5, 0.15),
     state_of_charge: 0.8,
-};
+});
 ```
 
 ### Switches
 
 ```rust,ignore
-CircuitElement::Switch     { id, nodes: [String; 2], closed: bool }
-CircuitElement::Pushbutton { id, nodes: [String; 2], closed: bool }
+use sindr::element::{Pushbutton, Switch};
+CircuitElement::Switch(Switch { id, nodes: [NodeId; 2], closed: bool })
+CircuitElement::Pushbutton(Pushbutton { id, nodes: [NodeId; 2], closed: bool })
 ```
 
 Modeled as a 0.01 Ω resistor when closed, 1 GΩ when open.
 
 ```rust,ignore
-CircuitElement::SwitchSpdt { id, nodes: [String; 3], position: SpdtPosition }  // [common, a, b]
+use sindr::element::SwitchSpdt;
+CircuitElement::SwitchSpdt(SwitchSpdt { id, nodes: [NodeId; 3], position: SpdtPosition })  // [common, a, b]
 ```
 
 A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default) or to `b`, each path a `Switch`. Its result is the path in use: common minus the selected throw, and the current from common into it.
@@ -159,8 +183,9 @@ A single-pole double-throw switch: common to `a` (`SpdtPosition::A`, the default
 ### Crystal and ferrite bead
 
 ```rust,ignore
-CircuitElement::Crystal     { id, nodes: [String; 2], params: CrystalParams }
-CircuitElement::FerriteBead { id, nodes: [String; 2], params: FerriteBeadParams }
+use sindr::element::{Crystal, FerriteBead};
+CircuitElement::Crystal(Crystal { id, nodes: [NodeId; 2], params: CrystalParams })
+CircuitElement::FerriteBead(FerriteBead { id, nodes: [NodeId; 2], params: FerriteBeadParams })
 ```
 
 - **Crystal:** the Butterworth–Van Dyke model, `Rm`–`Lm`–`Cm` in series beside `C0`, with `Lm` set by the series-resonant `frequency`. `CrystalParams::from_datasheet(frequency, esr, c0)` takes `Cm = C0/250`, typical of AT-cut crystals; set `cm` when you know it. Open at DC. Its result's `power` is what `Rm` dissipates, the drive level, which `Ratings::power` limits. The load capacitance a datasheet names is the two capacitors on your board, not part of the crystal.
@@ -168,26 +193,83 @@ CircuitElement::FerriteBead { id, nodes: [String; 2], params: FerriteBeadParams 
 
 Both, and the SPDT switch, are solved as those networks: results and ratings come back under the element's own id, and `to_netlist` writes the network.
 
+### Digital I/O pin
+
+```rust,ignore
+use sindr::element::{DigitalPin, PinMode, PinModel, Pull};
+CircuitElement::DigitalPin(DigitalPin {
+    id, nodes: [pad, vdd, gnd], mode: PinMode, level: bool, pull: Pull,
+    port: Option<String>, model: PinModel,
+})
+```
+
+The electrical side of a microcontroller or logic-IC pin, after the IBIS I/O buffer, in place of an ideal voltage source standing in for it. `vdd` and `gnd` are the rails the buffer returns to, so a driven pin draws its current from the supply.
+
+- **Modes:** `PinMode::Input` (high impedance, the default), `PushPull` (`r_high` to `vdd` when `level` is high, `r_low` to `gnd` when low) and `OpenDrain` (`r_low` when low, released when high). `Pull::Up` or `Pull::Down` adds the weak `r_pull`.
+- **`PinModel`:** the output resistances (from the datasheet's VOH at IOH and VOL at IOL: `r_high = (VDD − VOH)/IOH`), `r_pull`, the power and ground clamp diodes (`clamp`, a `DiodeModel`), the die capacitance `c_comp`, input `leakage`, and the input thresholds `vil` < `vih` (volts from `gnd`). `PinModel::cmos(vdd)` is a CMOS pin with thresholds at 30 % and 70 % of `vdd`, 50 Ω outputs, 40 kΩ pull, clamps with 10 Ω series resistance and no `c_comp`; it's the `Default` at 3.3 V. A `c_comp` makes the circuit reactive.
+- **Results:** `voltage_across` is `v(pad) − v(gnd)`, `current_through` the current into the pin (negative while it sources), `power` what the buffer dissipates. `DigitalPin::reads(volts, previous)` is what its input buffer reads, with hysteresis between `vil` and `vih`; a transient session reads it with `logic_level(id)`.
+- **Ratings:** `Ratings::current` on the pin's part limits its current. Pins with the same `port` are also checked as a port: `Ratings::current` on a part named for the port limits the larger of what its pins source and sink together.
+
+It's solved as its parts (`#up` and `#down` resistors, `#pc` and `#gc` clamp diodes, `#c`, `#leak`), and `to_netlist` writes them, so ngspice can run the same pin.
+
+### Logic gate
+
+```rust,ignore
+use sindr::element::{GateKind, LogicGate, PinModel};
+LogicGate::new("U1A", GateKind::Nand, [a, b], [y, vcc, gnd])
+    .with_model(PinModel::cmos(5.0))  // thresholds and output stage
+    .with_tpd(9e-9)                   // propagation delay (s)
+    .with_c_in(3.5e-12)               // each input to gnd (F)
+    .with_schmitt()                   // hysteresis, as a 74HC14 or 74HC132
+```
+
+A gate as a CMOS part behaves electrically, not digital simulation: `GateKind::Buffer`, `Not`, `And`, `Or`, `Nand`, `Nor`, `Xor` and `Xnor`, one input for the first two and two or more for the rest. `nodes` are `[inputs…, out, vdd, gnd]`.
+
+- **Inputs** switch steeply at the midpoint of the `PinModel`'s `vil` and `vih`, fully switched at each. Schmitt inputs turn high at `vih` and low at `vil`, through a state that settles in about 1 ns, which makes the circuit reactive.
+- **The output stage** is a push-pull digital pin's: `r_high` to `vdd`, `r_low` to `gnd`, the clamps and `c_comp`. It draws its current from the supply.
+- **`tpd`** delays the output: it slews to its new level and passes half way `tpd` after the inputs do, so three inverters in a ring oscillate at about 1/(6·`tpd`). `tpd`, `c_in`, `c_comp` and `schmitt` default to off, which keeps a gate's circuit DC-only.
+- **Results:** `voltage_across` is `v(out) − v(gnd)`, `current_through` the current into the output (negative while it sources), `power` what the output stage dissipates. `GateKind::eval` is the truth table.
+
+It's solved as its parts (behavioural sources for the inputs, the function and the output stage, a slew-limited delay, clamp diodes, resistors and capacitors), and `to_netlist` writes them, the behavioural ones as B lines, so ngspice can run the same gate.
+
+### DC motor
+
+```rust,ignore
+use sindr::element::{DcMotor, DcMotorParams};
+CircuitElement::DcMotor(DcMotor { id, nodes: [a, b], params: DcMotorParams })
+```
+
+A brushed DC motor: `V = R·i + L·di/dt + ke·ω` across its terminals, and `J·dω/dt = kt·i − B·ω − T_load` on its shaft, in SI units (ω in rad/s). Current into `a` turns it forwards.
+
+- **`DcMotorParams`:** `resistance`, `inductance`, `ke`, `kt`, `inertia`, `friction` and `load_torque`. `DcMotorParams::new(r, k)` takes `ke = kt = k`, and `with_inductance`, `with_inertia`, `with_friction` and `with_load` add the rest. `DcMotorParams::from_datasheet(volts, no_load_rpm, no_load_current, stall_torque, stall_current)` fits `R`, `ke`, `kt` and `B` so the motor runs at exactly the no-load speed and current, and stalls at exactly the stall torque and current; set `inductance` and `inertia` when you know them. `steady_state(volts)` is the closed-form speed and current.
+- **Results:** its `ComponentResult` is the electrical side: `current_through` the armature current, `power` the `V·I` it draws. `SimulationResult::motors` and each step's `motors` hold the shaft, by id: `speed` (rad/s, `rpm()`), `torque` (`kt·i`) and `mechanical_power` (`torque · speed`). A transient from rest shows the start-up surge; a load above `kt·V/R` stalls it.
+- **In a session:** `Param::LoadTorque` changes the load from the time reached on.
+- **Ratings:** `Ratings::voltage`, `current` and `power`.
+
+It's solved as its parts: the armature `#r`, `#l`, a 0 V `#sense` and the back-EMF `#emf`, and the shaft as an analogue circuit whose node `#w`, over terminal `b`, is the speed: `#kt` (a CCCS), `#j` (a capacitor of `J` farads), `#b` (a conductance of `B` siemens) and `#load` (a current source). `to_netlist` writes those, so ngspice can run the same motor. AC sees the armature plus the shaft reflected through it, `R + sL + ke·kt/(sJ + B)`.
+
 ### Diodes
 
 ```rust,ignore
-CircuitElement::Diode         { id, nodes: [String; 2], model: Option<DiodeModel> } // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
-CircuitElement::Led           { id, nodes: [String; 2], color: String } // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
-CircuitElement::ZenerDiode    { id, nodes: [String; 2], vz: f64 }   // breakdown voltage at 5 mA
-CircuitElement::SchottkyDiode { id, nodes: [String; 2] }            // Vf ≈ 0.3 V
-CircuitElement::Photodiode    { id, nodes: [String; 2], irradiance: f64 } // irradiance in W
+use sindr::element::{Diode, Led, Photodiode, SchottkyDiode, ZenerDiode};
+CircuitElement::Diode(Diode { id, nodes: [NodeId; 2], temperature: f64, model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
+CircuitElement::Led(Led { id, nodes: [NodeId; 2], color: String, temperature: f64 }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
+CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [NodeId; 2], vz: f64, temperature: f64 }) // breakdown voltage at 5 mA
+CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [NodeId; 2], temperature: f64 }) // Vf ≈ 0.3 V
+CircuitElement::Photodiode(Photodiode { id, nodes: [NodeId; 2], irradiance: f64, temperature: f64 }) // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
+All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant has a `temperature: f64` field, the junction temperature in K (300.15 K is 27 °C, the nominal; JSON may leave it out for that default): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 ### Varactor diode
 
 ```rust,ignore
-CircuitElement::Varactor {
+use sindr::element::Varactor;
+CircuitElement::Varactor(Varactor {
     id: String,
-    nodes: [String; 2],  // [anode, cathode]
+    nodes: [NodeId; 2],  // [anode, cathode]
     params: VaractorParams, // { cj0, phi, m }
-}
+})
 ```
 
 Varactors are purely reactive — treated as open circuit in DC, as their junction capacitance at the bias point in AC, and stamped as a voltage-dependent capacitor `C_j(V) = cj0 / (1 - V/phi)^m` each transient timestep. Always triggers transient analysis.
@@ -195,72 +277,74 @@ Varactors are purely reactive — treated as open circuit in DC, as their juncti
 ### Transistors
 
 ```rust,ignore
+use sindr::element::{Bjt, Igbt, Jfet, Mosfet};
 // BJT — nodes: [base, collector, emitter]
-CircuitElement::Bjt {
+CircuitElement::Bjt(Bjt {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     kind: BjtKind,                          // BjtKind::Npn or BjtKind::Pnp
     bf: f64,                                // forward beta, default 100
     temperature: f64,                       // junction temp (K), default 300.15 K
     parasitic_caps: Option<BjtParasiticCaps>, // { cbe, cbc } in Farads; None = disabled
     model: Option<BjtModel>,                // IS, BR, NF, NR, VAF; None = built-in defaults
-}
+})
 
 // MOSFET — nodes: [gate, drain, source]; body tied to source
-CircuitElement::Mosfet {
+CircuitElement::Mosfet(Mosfet {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     kind: MosfetKind,                          // MosfetKind::Nmos or MosfetKind::Pmos
     params: MosfetParams,                      // KP, VTO, LAMBDA, GAMMA, PHI; VTO SPICE-signed (negative for PMOS)
     parasitic_caps: Option<MosfetParasiticCaps>, // { cgs, cgd } in Farads; None = disabled
     body_diode: Option<DiodeModel>,            // power MOSFET's body diode; None = none
-}
+})
 
 // IGBT — nodes: [gate, collector, emitter]
-CircuitElement::Igbt {
+CircuitElement::Igbt(Igbt {
     id,
-    nodes: [String; 3],
-    params: IgbtParams, // { vth, k, vce_sat }
-}
+    nodes: [NodeId; 3],
+    params: IgbtParams, // { vth, k, vce_sat }; vce_sat is unused
+})
 
 // JFET — nodes: [gate, drain, source]
-CircuitElement::Jfet {
+CircuitElement::Jfet(Jfet {
     id,
-    nodes: [String; 3],
+    nodes: [NodeId; 3],
     kind: JfetKind, // JfetKind::NChannel or JfetKind::PChannel
     idss: f64,      // drain saturation current at Vgs = 0 (A)
     vp: f64,        // pinch-off voltage (V), negative for N-channel
     parasitic_caps: Option<JfetParasiticCaps>, // { cgs, cgd, pb, m, fc } gate junctions; None = disabled
-}
+})
 ```
 
 A JFET's `parasitic_caps` are SPICE's gate junctions: CGS and CGD at zero bias, each `C0/(1 − v/PB)^M` at its junction voltage and continued linearly above `FC·PB`, with SPICE's defaults `PB = 1`, `M = 0.5`, `FC = 0.5`. Transient integrates their charge; AC and noise take the capacitance at the bias point.
 
 A MOSFET's `body_diode` is a SPICE diode card (`DiodeModel`) from source to drain for NMOS, drain to source for PMOS. It conducts when a bridge or inductive load pulls the drain past the source with the channel off. Every analysis solves it as a `Diode` named `<id>.body`, which is where its current shows in the results; `bv` on it sets the part's avalanche voltage.
 
-`BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
+`BjtKind`, `BjtRegion`, `MosfetKind`, `MosfetRegion`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
-When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC; a JFET's CGS/CGD as charge companions, with per-junction charge state. This automatically triggers transient analysis.
+When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC; a JFET's CGS/CGD as charge companions, with per-junction charge state. A non-zero capacitance automatically triggers transient analysis.
 
 **NPN common-emitter example:**
 
 ```rust,no_run
 # use sindr::*;
 use sindr::{Circuit, CircuitElement, BjtKind, solve_circuit};
+use sindr::element::{Bjt, Resistor, VoltageSource};
 
 let circuit = Circuit {
     ground_node: "0".into(),
     components: vec![
-        CircuitElement::VoltageSource {
+        CircuitElement::VoltageSource(VoltageSource {
             id: "Vcc".into(), nodes: ["vcc".into(), "0".into()], voltage: 10.0, waveform: None,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: "Rc".into(), nodes: ["vcc".into(), "collector".into()], resistance: 1_000.0,
-        },
-        CircuitElement::Resistor {
+        }),
+        CircuitElement::Resistor(Resistor {
             id: "Rb".into(), nodes: ["vcc".into(), "base".into()], resistance: 470_000.0,
-        },
-        CircuitElement::Bjt {
+        }),
+        CircuitElement::Bjt(Bjt {
             id: "Q1".into(),
             nodes: ["base".into(), "collector".into(), "0".into()],
             kind: BjtKind::Npn,
@@ -268,7 +352,7 @@ let circuit = Circuit {
             temperature: 300.15,
             parasitic_caps: None,
             model: None,
-        },
+        }),
     ],
     ..Default::default()
 };
@@ -284,13 +368,15 @@ println!("Vbe = {:.3} V, Vce = {:.3} V, Ic = {:.3} mA, region = {}",
 ### Transformer (coupled inductors)
 
 ```rust,ignore
-CircuitElement::Transformer {
+use sindr::element::Transformer;
+CircuitElement::Transformer(Transformer {
     id: String,
-    nodes: [String; 4],  // [p1, q1, p2, q2] — primary (p1,q1), secondary (p2,q2)
+    nodes: [NodeId; 4],  // [p1, q1, p2, q2] — primary (p1,q1), secondary (p2,q2)
     l1: f64,             // primary inductance (H)
     l2: f64,             // secondary inductance (H)
     k: f64,              // coupling coefficient [0, 0.999]; default 0.999 (near-ideal)
-}
+    saturation: Option<InductorSaturation>, // saturating core; None = linear
+})
 ```
 
 Mutual inductance M = k·√(L1·L2). In DC analysis both windings are short circuits. In AC and transient, two branch current unknowns (one per winding) are added to the MNA system, so the windings are coupled through M. k=1 is mathematically singular — use k≤0.999.
@@ -298,20 +384,21 @@ Mutual inductance M = k·√(L1·L2). In DC analysis both windings are short cir
 ### Controlled sources
 
 ```rust,ignore
+use sindr::element::{Behavioural, Cccs, Ccvs, Vccs, Vcvs};
 // Voltage-controlled voltage source: V_out = gain × V_ctrl
-CircuitElement::Vcvs { id, nodes: [out+, out-], control_nodes: [ctrl+, ctrl-], gain: f64 }
+CircuitElement::Vcvs(Vcvs { id, nodes: [out+, out-], control_nodes: [ctrl+, ctrl-], gain: f64 })
 
 // Voltage-controlled current source: I_out = gm × V_ctrl
-CircuitElement::Vccs { id, nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-], gm: f64 }
+CircuitElement::Vccs(Vccs { id, nodes: [out_from, out_to], control_nodes: [ctrl+, ctrl-], gm: f64 })
 
 // Current-controlled voltage source: V_out = rm × I_ctrl
-CircuitElement::Ccvs { id, nodes: [out+, out-], control_source: String, rm: f64 }
+CircuitElement::Ccvs(Ccvs { id, nodes: [out+, out-], control_source: ComponentId, rm: f64 })
 
 // Current-controlled current source: I_out = alpha × I_ctrl
-CircuitElement::Cccs { id, nodes: [out_from, out_to], control_source: String, alpha: f64 }
+CircuitElement::Cccs(Cccs { id, nodes: [out_from, out_to], control_source: ComponentId, alpha: f64 })
 
 // Behavioural source (SPICE's B): a voltage or current set by an expression
-CircuitElement::Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression }
+CircuitElement::Behavioural(Behavioural { id, nodes: [n+, n-], output: BehaviouralOutput, expr: Expression })
 ```
 
 A behavioural source's `expr` is `Expression::parse("v(a)*v(b)")?` and the like: `v(n)`, `v(n,m)`, `i(source)` (the branch current of a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source), `time`, arithmetic, comparisons, `c ? a : b` and ngspice's functions (`exp`, `tanh`, `limit`, `min`, `u`, …). `BehaviouralOutput::Voltage` holds `V(n+) − V(n-)` at the expression; `Current` drives it from `n+` to `n-`. Newton gets the exact Jacobian by automatic differentiation; AC linearises at the bias point. In JSON the expression is its text: `{"type": "behavioural", "output": "voltage", "expr": "v(a)*v(b)", …}`.
@@ -323,23 +410,25 @@ The current sources follow SPICE's `G` and `F` and sindr's own `CurrentSource`: 
 ### Op-amp / Comparator
 
 ```rust,ignore
+use sindr::element::{Comparator, OpAmp};
 // nodes: [in_plus, in_minus, out]
-CircuitElement::OpAmp      { id, nodes: [String; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> } // rails, default ±15 V
-CircuitElement::Comparator { id, nodes: [String; 3], v_pos: f64, v_neg: f64 } // output high / low, default ±15 V
+CircuitElement::OpAmp(OpAmp { id, nodes: [NodeId; 3], v_pos: f64, v_neg: f64, model: Option<OpAmpModel> }) // rails, default ±15 V
+CircuitElement::Comparator(Comparator { id, nodes: [NodeId; 3], v_pos: f64, v_neg: f64 }) // output high / low, default ±15 V
 ```
 
 With `model: None` the op-amp is a high-gain VCVS (gain 1×10⁵) with no frequency response, and the rails aren't enforced. A comparator has the same gain and no frequency response, but its output is clamped to `v_neg`/`v_pos`, so overdrive beyond `v_pos / 1e5` (50 µV for a 5 V rail) pins it to a rail in DC, transient and AC (where its gain at a rail is zero). It has no hysteresis or open-collector output; `v_pos` must be above `v_neg`. An `OpAmpModel` turns the op-amp into a macromodel. It has open-loop `gain` (default 1e5), a dominant pole from `gbw` (default 1 MHz), a `slew_rate` limit (default 0.5 V/µs), `r_out`, `offset_voltage` and `bias_current`, and its output clamps to `v_pos`/`v_neg` with anti-windup. A non-inverting stage of gain G then has its −3 dB point near `gbw / G`, and a large step rises at the slew rate:
 
 ```rust
 use sindr::{CircuitElement, OpAmpModel};
+use sindr::element::OpAmp;
 
-let u1 = CircuitElement::OpAmp {
+let u1 = CircuitElement::OpAmp(OpAmp {
     id: "U1".into(),
     nodes: ["in".into(), "fb".into(), "out".into()],
     v_pos: 12.0,
     v_neg: -12.0,
     model: Some(OpAmpModel { gbw: Some(3e6), slew_rate: Some(13e6), r_out: 50.0, ..OpAmpModel::default() }),
-};
+});
 ```
 
 The pole and slew limit act in transient and AC runs. An op-amp doesn't count as reactive, so `solve_circuit` still runs DC for a circuit whose only dynamics are op-amps; call `solve_transient` to see them.
@@ -347,23 +436,35 @@ The pole and slew limit act in transient and AC runs. An op-amp doesn't count as
 ### Sensors / misc
 
 ```rust,ignore
-CircuitElement::Photoresistor { id, nodes: [String; 2], light_level: f64 } // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
-CircuitElement::Thermistor    { id, nodes: [String; 2], temperature: f64 } // Kelvin, default 298.15 K (25 °C)
-CircuitElement::Potentiometer { id, nodes: [top, wiper, bottom], resistance: f64, position: f64 } // position 0.0–1.0
-CircuitElement::Relay {
+use sindr::element::{
+    Fuse, Photoresistor, Potentiometer, Relay, SwitchingRegulator, Thermistor, VoltageRegulator,
+};
+CircuitElement::Photoresistor(Photoresistor { id, nodes: [NodeId; 2], light_level: f64 }) // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
+CircuitElement::Thermistor(Thermistor { id, nodes: [NodeId; 2], temperature: f64 }) // Kelvin, default 298.15 K (25 °C)
+CircuitElement::Potentiometer(Potentiometer { id, nodes: [top, wiper, bottom], resistance: f64, position: f64 }) // position 0.0–1.0
+CircuitElement::Relay(Relay {
     id,
-    nodes: [String; 4],     // [coil+, coil-, contact1, contact2]
+    nodes: [NodeId; 4],     // [coil+, coil-, contact1, contact2]
     coil_resistance: f64,
     pickup_voltage: f64,
     inductance: f64,        // coil inductance (H); 0.0 = purely resistive (default)
-}
-CircuitElement::Fuse             { id, nodes: [String; 2], rating: f64, blown: bool } // 1 mΩ intact, 1 GΩ blown; rating is display-only
-CircuitElement::VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> }
+})
+CircuitElement::Fuse(Fuse { id, nodes: [NodeId; 2], rating: f64, blown: bool }) // 1 mΩ intact, 1 GΩ blown; rating is display-only
+CircuitElement::VoltageRegulator(VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> })
+CircuitElement::SwitchingRegulator(SwitchingRegulator {
+    id,
+    nodes: [input, output, gnd],
+    topology: ConverterTopology, // Buck (default) or Boost
+    voltage: f64,                // set output (V), positive
+    model: ConverterParams,      // default ideal
+})
 ```
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
 
 `VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin (a negative `voltage` is a negative regulator such as a 7905: the same characteristic mirrored, with the input below ground and the output current flowing in at the output pin); without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
+
+`SwitchingRegulator` is an averaged buck or boost converter: its behaviour over a switching period, with no switching edges, so a "5 V buck module" solves as fast as a linear regulator. It holds `voltage` above its ground pin and draws what power balance asks from the input, `Iin = Vout·Iout / (η·Vin)` plus `quiescent_current`. A buck out of headroom follows its input down by `dropout` (plus `dropout_resistance`·Iout). A boost whose input is above its set point passes the input through, less the same drop. Past `current_limit` the output falls, so the current stays within 1 % of the limit. Below `uvlo` it's off: output open and nothing drawn. `ConverterParams` sets `efficiency` (constant) or `efficiency_curve` (`[output current, efficiency]` points, interpolated), and `switching_frequency` and `inductance` only for `ripple_current`, the inductor's peak-to-peak ripple estimate. `converter::feedback_voltage(vref, r_top, r_bottom)` gives the set voltage from a feedback divider. Its result is the output: `voltage_across` is `Vout`, `current_through` the output current, and `power` the loss `Vin·Iin − Vout·Iout`, which the ratings checks and self-heating use. Its voltage rating is checked against the input. In AC it rejects input ripple while regulating, and its input is the negative resistance `−Pin/Vin²` of a constant-power load. There's no output ripple, control loop or soft start, and it has no SPICE export.
 
 ## Hierarchy and part data
 
@@ -371,21 +472,22 @@ A `Block` is a reusable definition, what `.subckt` is in SPICE. An `Instance` pl
 
 ```rust,ignore
 use sindr::{Block, Circuit, CircuitElement, Instance, Part};
+use sindr::element::{Resistor, VoltageSource};
 
-let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor {
+let r = |id: &str, a: &str, b: &str| CircuitElement::Resistor(Resistor {
     id: id.into(),
     nodes: [a.into(), b.into()],
     resistance: 1e3,
-};
+});
 
 let mut circuit = Circuit::new(
     "0",
-    vec![CircuitElement::VoltageSource {
+    vec![CircuitElement::VoltageSource(VoltageSource {
         id: "V1".into(),
         nodes: ["in".into(), "0".into()],
         voltage: 10.0,
         waveform: None,
-    }],
+    })],
 );
 circuit.blocks.insert(
     "divider".into(),
@@ -406,7 +508,9 @@ let ids: Vec<&str> = flat.components.iter().map(|c| c.id()).collect();
 assert_eq!(ids, ["V1", "X1.R1", "X1.R2"]);
 ```
 
-`Part` data is ignored by the simulator, except `Part::ratings`: absolute maximum `Ratings` that `check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
+The simulator ignores `Part` data, except `Part::thermal`, which heats the part's junction by the power it dissipates. `Part::ratings` holds absolute maximum `Ratings`, which `check_ratings` compares a simulation against. Empty hierarchy and part fields are left out of JSON, so a flat circuit serialises exactly as before.
+
+**Variants.** A block can hold more than one implementation of the same ports, such as an ideal supply and the real regulator circuit. The block's own body is one variant, named by `Block::base_variant` (`"base"` when unset). `Block::variants` holds the others as `Variant { ports, components, instances, parts }`. An instance picks one with `Instance::with_variant("detailed")`, or gets `Block::default_variant`. The picked body is flattened under the same instance path, so `X1.out` reads back whichever one runs. A variant whose ports differ from the block's, in name or order, is `DesignError::VariantPorts` naming the block. An unknown variant is `DesignError::UnknownVariant`. SPICE export writes the block's own body as `.subckt name` and each variant as `.subckt name_<variant>`, and each `X` line names the one its instance picked.
 
 ## Reading results
 
@@ -435,7 +539,7 @@ Every accessor returns `None` for a name the result doesn't have. Names are exac
 |--------|---------|
 | `TimestepSnapshot` | `voltage(node)`, `current(id)`, `component(id)` |
 | `TransientData` | `node_voltage_curve(node)` and `component_current_curve(id)` as `(t, value)`; `voltage_at(node, t)`, `current_at(id, t)`, interpolated |
-| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, ref)` |
+| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, source_magnitude)` |
 | `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°) as `(Hz, value)` |
 | `DcSweepResult`, `TempSweepResult` | `node_voltage_curve(node)`, `component_current_curve(id)` as `(sweep value, value)`; each point's `result` has the accessors above |
 
@@ -444,13 +548,17 @@ The fields behind them stay public:
 ```rust,ignore
 pub struct SimulationResult {
     pub node_voltages:    HashMap<String, f64>,  // every node including ground (0.0)
-    pub branch_currents:  HashMap<String, f64>,  // voltage source branch currents by id
+    pub branch_currents:  HashMap<String, f64>,  // branch currents by id: voltage sources, controlled sources, op-amps, regulators
     pub component_results: Vec<ComponentResult>, // V, I, P for every component
     pub bjt_results:      Vec<BjtResult>,        // present only if circuit has BJTs
     pub mosfet_results:   Vec<MosfetResult>,     // present only if circuit has MOSFETs
-    pub op_amp_results:   Vec<OpAmpResult>,      // present only if circuit has op-amps
+    pub op_amp_results:   Vec<OpAmpResult>,      // present only if circuit has op-amps or comparators
     pub relay_results:    Vec<RelayResult>,      // present only if circuit has relays
     pub transient:        Option<TransientData>, // present only for reactive/waveform circuits
+    pub convergence_aid:  Option<ConvergenceAid>, // gmin or source stepping, when Newton needed it
+    pub junction_temperatures: HashMap<String, f64>, // parts with `Part::thermal`, K
+    pub state_of_charge:  HashMap<String, f64>,  // batteries, by id
+    pub motors:           HashMap<String, MotorResult>, // DC motors' shafts, by id
 }
 
 pub struct ComponentResult {
@@ -463,16 +571,16 @@ pub struct ComponentResult {
 pub struct BjtResult {
     pub id: String, pub vbe: f64, pub vce: f64,
     pub ib: f64, pub ic: f64, pub ie: f64,
-    pub power: f64, pub region: String, // "active" | "saturation" | "cutoff"
+    pub power: f64, pub region: BjtRegion, // Active | Saturation | Cutoff
 }
 
 pub struct MosfetResult {
     pub id: String, pub vgs: f64, pub vds: f64,
-    pub id_current: f64, pub power: f64, pub region: String, // "cutoff" | "triode" | "saturation"
+    pub id_current: f64, pub power: f64, pub region: MosfetRegion, // Cutoff | Triode | Saturation
 }
 ```
 
-For transient circuits, `result.transient` contains a time series. `solve_circuit` picks the duration (5 τ) and step (τ/50) from the circuit's time constants; to set them yourself, as SPICE's `.tran tstep tstop` does, use `solve_transient`:
+For transient circuits, `result.transient` contains a time series. `solve_circuit` picks the duration (5 τ, and at least three periods of any periodic source) and step (τ/50, at most a hundredth of a period, and no less than 1 µs) from the circuit's time constants; to set them yourself, as SPICE's `.tran tstep tstop` does, use `solve_transient`:
 
 ```rust,ignore
 use sindr::{solve_transient, TransientConfig};
@@ -493,12 +601,16 @@ pub struct TransientData {
     pub timesteps: Vec<TimestepSnapshot>,
     pub time_step: f64,
     pub duration:  f64,
+    pub stats:     TransientStats, // accepted, rejected and jumped steps
 }
 
 pub struct TimestepSnapshot {
     pub time:              f64,
     pub node_voltages:     HashMap<String, f64>,
     pub component_results: Vec<ComponentResult>,
+    pub junction_temperatures: HashMap<String, f64>,
+    pub state_of_charge:   HashMap<String, f64>,
+    pub motors:            HashMap<String, MotorResult>,
 }
 ```
 
@@ -512,6 +624,51 @@ pub struct TimestepSnapshot {
 std::fs::write("rc.csv", result.transient.unwrap().to_csv())?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+### Progress and cancel
+
+`solve_transient_with_progress` calls a hook after every accepted step with the time reached, the fraction done, and the step's snapshot, so a caller can show a long run's progress and its waveforms as they grow. Returning `Flow::Stop` ends the run with `SimError::Cancelled`. The hook runs on the solving thread; in a browser, solve in a web worker and stop when the page's cancel flag is set.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+let result = solve_transient_with_progress(&circuit, &TransientConfig::new(1.0, 1e-4), |p| {
+    if p.accepted_steps % 1000 == 0 {
+        println!("{:.0}%", 100.0 * p.fraction());
+    }
+    Flow::Continue
+});
+```
+
+### Transient sessions
+
+`solve_transient` runs to `tstop` in one call. A `TransientSession` holds the run open, for a circuit paired with something outside it: firmware on an emulated microcontroller, a user turning a knob, a sensor whose surroundings change. It follows FMI 3.0 co-simulation: `advance_to(t)` integrates to `t` (FMI's `doStep`), `set_source(id, value)` and `set_param(id, Param::…)` change an input at the time reached, and `run_until(t_max, &[Event])` stops early at the first event, located to its tolerance.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+let mut sim = TransientSession::new(&circuit, &TransientConfig::new(10.0, 100e-6))?;
+sim.keep_steps(false); // read voltages, don't build up 10 s of snapshots
+for k in 1..=10_000 {
+    sim.advance_to(k as f64 * 1e-3)?;                 // one firmware tick
+    let adc = sim.voltage("adc0").unwrap();
+    sim.set_param("D13", Param::Level(adc > 2.5))?;  // a DigitalPin
+}
+let hit = sim.run_until(10.0, &[Event::crosses("int0", 2.5, Edge::Rising)])?;
+# Ok::<(), SimError>(())
+```
+
+- **A change is a breakpoint.** The step that reached the time saw the old value, the next sees the new, and the integration restarts there with a short backward-Euler step, as at a waveform's corner. Writing a value a source already has changes nothing.
+- **What can change:** a voltage or current source's value (a waveform it had is dropped), and with `Param` a resistance, a potentiometer's wiper, a switch, pushbutton or SPDT throw, a photoresistor's light level, a photodiode's irradiance, the temperature of a thermistor or a junction device that isn't self-heated, a digital pin's mode, level and pull (`Param::PinMode`, `Level`, `Pull`), and a DC motor's load torque (`Param::LoadTorque`).
+- **Pins read back:** `logic_level(id)` is what a digital pin's input reads at the time reached, `LogicLevel::High` or `Low` against its `vil` and `vih` with hysteresis. It's taken after each step, so to catch an edge, `run_until` an event at the threshold.
+- **Events** are a node crossing a level (`Edge::Rising`, `Falling`, `Either`). The session steps back and re-steps until the crossing is inside the event's tolerance (`Event::within`, default 10⁻⁴ of `tstep`), and stops just after it with the node past the level. Steps tried and undone along the way aren't kept.
+- **State survives between calls:** the flat circuit, node map, matrix layout and histories are set up once. Each step still assembles and factors its matrix.
+- **Results stream:** `drain_steps()` takes the steps kept since the last call; `voltage(node)` reads the solution directly, and `current(id)` and `last_step()` the latest step. `advance_to_with_progress` takes the same hook as `solve_transient_with_progress`, and a cancelled session carries on from where it stopped. No threads are needed, so it runs as is in `wasm32`.
+- The session ends at the config's `tstop` and records from its `tstart`. After an error other than `Cancelled` it refuses to go on.
+
+### Which engine produced a result
+
+`sindr::VERSION` (and `sindr::devices::VERSION`) is the crate's version as a string, such as `"0.3.0"`. Store it with saved results, so a rerun can tell a change in the design from a change in the engine.
 
 ## AC analysis
 
@@ -533,7 +690,7 @@ let phase = result.phase_curve("n_out"); // (Hz, degrees)
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidComponent`.
+`num_points` counts both endpoints; with 1, only `f_start` is solved. Invalid configs (0 points, non-finite values, `f_start > f_stop`, `f_start <= 0` with logarithmic spacing) return `SimError::InvalidConfig`.
 
 ## Transfer function
 
@@ -571,7 +728,7 @@ for e in &sens.entries {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Entries cover resistance, voltage and current source values, the gains of all four controlled sources (VCVS, VCCS, CCVS, CCCS), and device-model parameters: a diode's IS, N and RS, a BJT's BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA. A device has an entry per parameter; `sens.get_parameter("D1", SensParameter::SaturationCurrent)` picks one. Each is the total derivative, the operating point moving with the parameter. Capacitors, inductors and the other devices (LED, Zener, Schottky, photodiode, JFET, IGBT) get no entry.
+Entries cover resistance, voltage and current source values, the gains of all four controlled sources (VCVS, VCCS, CCVS, CCCS), and device-model parameters: a diode's IS, N and RS, a BJT's BF, IS, BR, NF, NR and VAF, and a MOSFET's KP, VTO and LAMBDA. A device has an entry per parameter; `sens.get_parameter("D1", SensParameter::SaturationCurrent)` picks one. Each is the total derivative, the operating point moving with the parameter. Capacitors, inductors and the other devices (LED, Schottky, photodiode, JFET, IGBT) get no entry. A zener, and a MOSFET's body diode (`<id>.body`), are solved as diodes and get a diode's IS, N and RS.
 
 `.sens v(out) ac dec 10 1 1meg` is the AC form: at each frequency, the derivative of the output phasor with respect to R, C, L, the controlled-source gains, the stimulus's AC magnitude and the same device parameters, plus a diode's CJO and TT. One adjoint solve per frequency. As in ngspice, the DC operating point is held fixed: a device parameter's entry is its effect on that device's small-signal conductances and capacitances, not through a shift of the bias, so a source's DC value has no AC entry.
 
@@ -610,7 +767,7 @@ for (source, total) in noise.sources.iter().zip(&noise.source_totals) {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C. Sources, controlled sources, op-amps, comparators, regulators and a diode's series resistance are noiseless.
+Each point has the output and input-referred densities (`output_density()`, `input_density()`, per √Hz) and each source's contribution. The totals integrate over the band as ngspice does. Noise is at 27 °C, except a thermistor's, which is at its own temperature. Sources, controlled sources, op-amps, comparators, regulators, switches, fuses, IGBTs and a diode's series resistance are noiseless.
 
 ## Pole-zero
 
@@ -630,7 +787,7 @@ println!("stable: {}", pz.is_stable());
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Roots are in rad/s, finite ones only, sorted by magnitude. They are the generalised eigenvalues of the linearised `G + sC` pencil (and of its bordered form for the zeros): sindr deflates the infinite ones exactly, by orthogonal reductions, then runs QZ, so a well-separated root is accurate to about 1e-12 relative and a repeated one to about √ε. `with_find(PzFind::Poles)` or `PzFind::Zeros` skips the other half. A transimpedance into a pair a voltage source shorts has no response, and is an error.
+Roots are in rad/s, finite ones only, sorted by magnitude. They are the generalised eigenvalues of the linearised `G + sC` pencil (and of its bordered form for the zeros): sindr deflates the infinite ones exactly, by orthogonal reductions, then runs QZ, so a well-separated root is accurate to about 1e-12 relative a double one to about √ε (~1e-8), and one of multiplicity k to about ε^(1/k). `with_find(PzFind::Poles)` or `PzFind::Zeros` skips the other half. A transimpedance into a pair a voltage source shorts has no response, and is an error.
 
 ## Loop gain and stability margins
 
@@ -659,7 +816,7 @@ Sweep a voltage or current source across a range and collect operating points at
 # let mut circuit = Circuit::default();
 use sindr::{Circuit, CircuitElement, dc_sweep};
 
-let sweep = dc_sweep(&circuit, "V1", 0.0, 5.0, 51)?;
+let sweep = dc_sweep(&circuit, &DcSweepAxis::new("V1", 0.0, 5.0, 51))?;
 
 let v_curve = sweep.node_voltage_curve("n2");
 let i_curve = sweep.component_current_curve("D1");
@@ -689,7 +846,7 @@ A parsed `.dc` card gives its axes with `analysis.dc_axes()`.
 
 ## Temperature sweep
 
-Solve a circuit at a series of junction temperatures and collect operating points. Useful for BJT Ic vs. temperature curves and thermal characterisation.
+Solve a circuit at a series of junction temperatures and collect `solve_circuit`'s result at each: for a circuit with capacitors, inductors or waveforms that's a transient's end state, not the DC operating point. Useful for BJT Ic vs. temperature curves and thermal characterisation.
 
 ```rust,no_run
 # use sindr::*;
@@ -698,29 +855,29 @@ use sindr::{Circuit, temperature_sweep, TempSweepResult};
 
 // All junction devices (BJT, diode, LED, Zener, Schottky, Photodiode) have their
 // temperature field overridden at each step.
-let result = temperature_sweep(&circuit, 250.0, 350.0, 11)?; // 250 K → 350 K, 11 points
+let result = temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 350.0, 11))?; // 250 K → 350 K, 11 points
 
 for point in &result.points {
     let ic = point.result.bjt("Q1").map_or(0.0, |b| b.ic);
-    println!("T = {:.1} K, Ic = {:.3} mA", point.temperature_kelvin, ic * 1000.0);
+    println!("T = {:.1} K, Ic = {:.3} mA", point.temperature, ic * 1000.0);
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ```rust,ignore
 pub struct TempSweepResult {
-    pub temp_start: f64,              // K
-    pub temp_end:   f64,              // K
-    pub points:     Vec<TempSweepPoint>,
+    pub start:  f64,                 // K
+    pub stop:   f64,                 // K
+    pub points: Vec<TempSweepPoint>,
 }
 
 pub struct TempSweepPoint {
-    pub temperature_kelvin: f64,
-    pub result:             SimulationResult, // the full operating point at this temperature
+    pub temperature: f64,              // K
+    pub result:      SimulationResult, // solve_circuit's result at this temperature
 }
 ```
 
-`num_steps` must be ≥ 2, and both temperatures finite and above 0 K.
+`num_points` must be ≥ 2, and both temperatures finite and above 0 K.
 
 ## Self-heating
 
@@ -806,6 +963,10 @@ Each component kind has ratings it needs, checked whether set or not; a missing 
 | BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
 | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+| crystal | `power` (drive level) |
+| ferrite bead | `current`, `power` |
+| voltage regulator, switching regulator, DC motor | `voltage`, `current`, `power` |
+| digital pin | `current` |
 | anything with `Part::thermal` | also `tj_max` |
 
 Any other rating set on a part is checked too: `power`, `voltage` and `current` on any component (on the port its `ComponentResult` reports), the rest on the devices they belong to. All limits are magnitudes, so PNP and PMOS parts use the same positive numbers. Transistor power is `|V·I|` on the Vce/Ic or Vds/Id port, without base or gate dissipation.
@@ -847,6 +1008,29 @@ assert!(report.passed()); // every spec passed and every part is within its rati
 
 A measurement that can't be taken (an unknown node, a level never crossed, a phase on a transient) is `SpecStatus::Unmeasured` with a reason, never a pass; `Measurement::on` returns it as `SimError::Measurement`. Average and RMS are weighted by step width, so the transient's uneven steps don't skew them. With the `spice` feature, `.meas tran|ac|dc` cards land in `ParsedNetlist::measurements`, each with the analysis it measures.
 
+## Fourier analysis and FFT
+
+`sindr::fourier` takes the spectrum of a transient signal. `Fourier` is SPICE's `.four`: the harmonics of the last period at a fundamental, each with its magnitude and phase, and the THD, computed as ngspice computes them (a 200-point linear resample of the last period). `Fft` resamples a span onto a power of two of points, applies a window and returns one-sided bins scaled to peak amplitude, so a bin-centred sine reads its own amplitude.
+
+```rust,no_run
+# use sindr::*;
+# let circuit = Circuit::default();
+use sindr::fourier::{Fft, Fourier, Window};
+use sindr::measure::Signal;
+
+let result = solve_transient(&circuit, &TransientConfig::new(5e-3, 5e-6))?;
+let four = Fourier::new(1e3).on(&result, &Signal::v("out"))?;
+println!("THD {:.2} %, 3rd harmonic {:.3} V", four.thd_percent, four.harmonic(3).unwrap().magnitude);
+
+let spectrum = Fft::new().window(Window::Hann).span(1e-3, 5e-3).on(&result, &Signal::v("out"))?;
+for bin in spectrum.bins.iter().filter(|b| b.magnitude > 1e-3) {
+    println!("{:>8.0} Hz  {:.4} V", bin.frequency, bin.magnitude);
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+A deck's `.four 1k v(out) i(r1)` card parses into `ParsedNetlist::fourier`, one `FourierRequest` per signal: run each as `req.fourier.on(&result, &req.signal)`. The run should have settled by the span analysed: a start-up transient leaks into every bin. `Fourier::of` and `Fft::of` take a `(time, value)` trace you already have. A bin-centred tone stays within `Window::half_width` bins of its own (0 for rectangular, 1 for Hann and Hamming, 2 for Blackman, 4 for flat-top); see the module docs for the windows' coefficients.
+
 ## Importing a schematic netlist
 
 `sindr::import` is for editors: map your netlist onto it and simulate a schematic without writing a SPICE deck. A `Netlist` holds components (your id, a `ComponentKind`, a value as a number or text, named parameters, an optional model and `Part`) and nets (your id, an optional display name, and the `(component, terminal)` pins on it). A `Bench` adds what the schematic leaves out: the ground net, sources and loads attached to nets or terminals (a connector pin, a test point), nets to tie together (an analog ground to ground), and the analysis to run.
@@ -876,11 +1060,13 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Terminals by name, never pin number:** `anode`/`cathode` (or `A`/`K`), `B`/`C`/`E`, `G`/`D`/`S`, `in+`/`in-`/`out` (or `Non-inverting`, `Inverting`, `Output`, `Positive supply`, `Negative supply`), case ignored and `-`, `_` and spaces alike. Unpolarised two-terminal parts also take `1` and `2`. `ComponentKind::terminals` lists each kind's names. A MOSFET's `body` must sit on its source's net; an op-amp's `V+`/`V-` pins set its rails from the bench supplies on those nets.
 - **Netlists as an editor exports them.** `ComponentKind::from_name` reads symbol ids (`resistor-iec`, `capacitor-polarized`, `op-amp`, `push-button`, `switch-spst`, `test-point`, `header-4`). When nets name terminals by id and the names sit in a table on each component, pass the table with `ImportOptions::with_terminal_names` to `Netlist::to_circuit_with` or `import::simulate_with`: a named terminal matches by its name, an unnamed one by its id, so pin `1` of an LED still needs its `Anode` name.
 - **Dual and quad op-amps and comparators.** `dual_op_amp`, `quad_op_amp`, `dual_comparator` and `quad_comparator` (or `op-amp-dual` and the like) are one package whose units share its `V+`/`V-` pins. Each unit becomes its own element, `<id>.a`, `<id>.b` …, with terminals tagged by unit as datasheets write them: `1IN+`, `IN1-`, `INA+`, `-IN B`, `OUT A`, `2OUT`. A spare unit with nothing connected adds no element.
-- **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently.
+- **Black boxes for what sindr can't simulate.** A `ComponentKind::BlackBox` (an IC) adds no element, but its terminals stay bench attach points. Unknown kinds are refused by default; `ImportOptions::with_unknown_kinds(UnknownKinds::BlackBox)` keeps them as black boxes instead. Every black box is listed in `ImportedCircuit::black_boxes` with the nets it's on, so none is skipped silently. A net a black box leaves with one element or no DC path to ground (a capacitor or a MOSFET's gate isn't one), such as a pull-up into an MCU input or a resistor between two IC pins, is tied to ground through 1 TΩ (`HIGH_IMPEDANCE_OHMS`, an input's leakage and SPICE's gmin) so the rest solves, and listed in `ImportedCircuit::high_impedance`.
+- **Vendor subcircuits as models** (feature `spice`). `Model::Subckt(SubcktModel::new(text, name, pins))` simulates a part with a vendor's `.subckt`: the text as shipped, which subcircuit, and the part's terminal for each of its ports. The part becomes an instance under its own id (internal nodes `U1.…`), parse warnings come back as import warnings, and a bad pin map is an error naming the pin.
+- **Schematics still being drawn.** A required terminal on no net refuses the import by default. `ImportOptions::with_unconnected(UnconnectedTerminals::Skip)` leaves that component out instead (its connected nets stay), warns about it, and lists it in `ImportedCircuit::skipped`; open ends (a net only one element reaches, parts not yet wired to ground) get the 1 TΩ tie. The finished part of a design simulates. An editor's "exclude from simulation" attribute maps onto `ComponentKind::BlackBox`.
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Bench loads** are resistors, capacitors and inductors, plus `LoadKind::CurrentSink` (a constant current drawn from `a` into `b`, such as an IC's supply current; for one that changes with time, use a current `BenchSource` with a waveform) and `LoadKind::TimedSwitch`, which is closed through `on_resistance` until `at` and then open at `off_resistance`, or open then closed with `starts_closed: false`. `LoadKind::released_at(1e-6, 25.0)` is an open-drain output holding a bus line low and letting go at 1 µs, for its rise time through the pull-ups and bus capacitance. The operating point, DC sweeps and AC see it at t = 0; a transient lands a step on `at`, which still sees the old state, as a waveform's jump does.
-- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only.
+- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only. Decorated names (`3V3_A`, `12V_IN`) get none, since they're often rails derived through a filter or a switch. A net the bench already drives, or ties to one it drives, gets no second supply, and tied nets get one between them. `import::supply_names` reports what that assumes, which supply-like names (`VCC`, `VBAT`, `3V3_A`) were left for you to set, and which nets are named like grounds. A net named `0V` is a ground, not a 0 V supply: unless it's the bench's ground, tie it to it with `with_tie`, or validation reports it floating.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
 
 ### What sindr reads from part data
@@ -918,8 +1104,10 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `temperature_sweep` | Temperature sweep |
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
 | `import_netlist` | Importing a schematic netlist with a test bench |
-| `parse_netlist` | SPICE input (`--features spice`) |
-| `list_examples`, `run_example` | The built-in named circuits (`--features examples`) |
+| `parse_netlist` | SPICE input |
+| `fourier` | Harmonics, THD and an FFT of a clipped sine (`.four`) |
+| `vs_ngspice` | Timing against ngspice on the same decks (needs `ngspice` on the PATH) |
+| `list_examples`, `run_example` | The built-in named circuits |
 
 ## Error handling
 
@@ -931,8 +1119,11 @@ pub enum SimError {
     FloatingNode(String),
     SingularMatrix,
     InvalidSolution,
-    InvalidComponent(String),
-    InvalidResistance(String),
+    InvalidComponent { id: String, reason: String },
+    InvalidConfig { config: ConfigKind, reason: String },
+    DuplicateId { id: String, lowered: bool },
+    UnknownNode { node: String, component: Option<String> },
+    UnknownComponent(String),
     ConvergenceFailed {
         iterations: usize,
         max_step_volts: f64,
@@ -941,9 +1132,15 @@ pub enum SimError {
         at: SolvePoint,
     },
     ThermalRunaway { part: String, temperature: f64 },
+    TimestepTooSmall { time: f64, step: f64 },
+    Cancelled { time: f64 },
     Measurement { name: String, reason: String },
+    Spectrum { reason: String },
+    NotFinite { component: String, expression: String, inputs: String },
 }
 ```
+
+A definition the solver refuses carries its cause as fields, so match on the variant, not the message. `InvalidComponent` is a component's value out of range (a zero resistance, a `bf` that isn't positive), with the component's `id` and a `reason` naming the field. `InvalidConfig` is an analysis setting it can't use, and `config` says which settings: `ConfigKind::Ac`, `Transient`, `DcSweep`, `SolverOptions` and so on. `DuplicateId` is two components with one id, `UnknownNode` a net nothing in the circuit has, and `UnknownComponent` an id nothing has, such as a sweep's source or a tolerance's component.
 
 `ConvergenceFailed` means Newton-Raphson did not converge — usually caused by a nonlinear circuit with no DC path to ground, or component values far outside typical operating ranges. The `max_step_volts` field gives the largest per-node Newton step (V) on the final iteration, useful for distinguishing slow convergence from genuine divergence. `node` is the node that took it, `components` the parts on that node, and `at` where the analysis failed (`SolvePoint::OperatingPoint`, `DcSweep`, `Temperature` or `Transient { time }`), so the message points at the part to fix. (Note: this is a step magnitude `max_i |V_new[i] − V_prev[i]|`, not a KCL residual `|F(x)|`.)
 
@@ -968,13 +1165,26 @@ Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple
 
 | Case | 10 | 100 | 1 000 |
 |---|---:|---:|---:|
-| DC, diode–resistor chain (devices) | 37 µs | 0.93 ms | 8.7 ms |
-| DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
-| Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
+| DC, diode–resistor chain (devices) | 30 µs | 0.31 ms | 3.3 ms |
+| DC, cascaded BJT common-emitter stages (devices) | 0.15 ms | 1.4 ms | 14 ms |
+| Transient, RC ladder over 200 steps (stages) | 0.74 ms | 6.6 ms | 66 ms |
 
-A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 8 ms. A transient session a microcontroller drives for 10 s, writing a pin and reading the filtered output every millisecond (10 000 updates, 130 000 steps at a 100 µs `tstep`), takes 80 ms. The cascaded BJT row grows about linearly: the shared supply rail is substituted out before the sparse factorisation, so it doesn't fill the LU in. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
 
 Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
+
+### In the browser
+
+The same solves built for `wasm32-unknown-unknown` (release) take 1.3–1.8× as long as native, on the same Apple M1 Pro:
+
+| Case | Native | Chrome 157 | Ratio | Node 24 | Ratio |
+|---|---:|---:|---:|---:|---:|
+| Operating point, 50 resistors and 50 diodes | 0.30 ms | 0.55 ms | 1.8× | 0.54 ms | 1.8× |
+| Transient, the rectifier over 5 000 steps | 5.3 ms | 8.5 ms | 1.6× | 9.5 ms | 1.8× |
+| AC, 100 RC stages at 100 frequencies | 5.1 ms | 6.4 ms | 1.3× | 6.4 ms | 1.3× |
+| Transient session, a pin written every 1 ms for 10 s (130 000 steps) | 73 ms | — | — | 134 ms | 1.8× |
+
+`sindr/tests/wasm_speed.rs` times them; its header has the commands for native, Node and a browser.
 
 ## Serde
 
@@ -993,4 +1203,13 @@ With the default `serde` feature, `Circuit` and `SimulationResult` (and all nest
 }
 ```
 
-Fields with defaults (`bf`, `temperature`, `k`, `coil_resistance`, `position`, `v_pos`, `v_neg`, `parasitic_caps`) can be omitted from JSON and will take their defaults.
+Fields with defaults (`bf`, `temperature`, `k`, `coil_resistance`, an SPDT switch's `position`, `v_pos`, `v_neg`, `parasitic_caps`) can be omitted from JSON and will take their defaults. A potentiometer's `position` is required.
+
+### JSON Schema
+
+The `schemars` feature (on by default) derives `schemars::JsonSchema` on every type that has serde, so an app that describes its tools to others (an MCP server, a form, an API) can publish the exact shape of a netlist, bench, circuit, config or result instead of writing it by hand. Complex numbers are `[re, im]` pairs, as serde writes them.
+
+```rust,ignore
+let schema = schemars::schema_for!(sindr::import::Netlist);
+println!("{}", serde_json::to_string_pretty(&schema)?);
+```

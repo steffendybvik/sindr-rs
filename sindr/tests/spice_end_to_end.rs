@@ -7,6 +7,7 @@
 //! Only compiled when the `spice` feature is enabled.
 #![cfg(feature = "spice")]
 
+use sindr::element::{Bjt, CurrentSource, Resistor, VoltageSource};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -29,13 +30,13 @@ fn find_resistor<'a>(circuit: &'a Circuit, id: &str) -> &'a CircuitElement {
     circuit
         .components
         .iter()
-        .find(|c| matches!(c, CircuitElement::Resistor { id: cid, .. } if cid.eq_ignore_ascii_case(&id_lc)))
+        .find(|c| matches!(c, CircuitElement::Resistor(Resistor { id: cid, .. }) if cid.eq_ignore_ascii_case(&id_lc)))
         .unwrap_or_else(|| panic!("no resistor with id {id}"))
 }
 
 fn resistor_value(c: &CircuitElement) -> f64 {
     match c {
-        CircuitElement::Resistor { resistance, .. } => *resistance,
+        CircuitElement::Resistor(Resistor { resistance, .. }) => *resistance,
         _ => panic!("not a resistor"),
     }
 }
@@ -194,7 +195,7 @@ fn bjt_node_order_transpose() {
         .components
         .iter()
         .find_map(|c| match c {
-            CircuitElement::Bjt { nodes, .. } => Some(nodes),
+            CircuitElement::Bjt(Bjt { nodes, .. }) => Some(nodes),
             _ => None,
         })
         .expect("bjt present");
@@ -440,8 +441,8 @@ fn source_specs(line: &str) -> (f64, Vec<(f64, f64)>) {
     let deck = format!("* specs\n{line}\nR1 a 0 1k\n.end\n");
     let netlist = parse_str(&deck).unwrap_or_else(|e| panic!("{line}: {e}"));
     let dc = match &netlist.circuit.components[0] {
-        CircuitElement::VoltageSource { voltage, .. } => *voltage,
-        CircuitElement::CurrentSource { current, .. } => *current,
+        CircuitElement::VoltageSource(VoltageSource { voltage, .. }) => *voltage,
+        CircuitElement::CurrentSource(CurrentSource { current, .. }) => *current,
         other => panic!("{line}: expected a source, got {other:?}"),
     };
     let ac = netlist
@@ -486,9 +487,9 @@ fn source_waveform_with_ac_spec() {
     ] {
         let deck = format!("* wf\n{line}\nR1 a 0 1k\n.end\n");
         let netlist = parse_str(&deck).unwrap_or_else(|e| panic!("{line}: {e}"));
-        let CircuitElement::VoltageSource {
+        let CircuitElement::VoltageSource(VoltageSource {
             voltage, waveform, ..
-        } = &netlist.circuit.components[0]
+        }) = &netlist.circuit.components[0]
         else {
             panic!("{line}: expected a voltage source");
         };

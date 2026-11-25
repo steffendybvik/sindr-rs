@@ -21,7 +21,7 @@
 //! | [`bjt`] | BJT (NPN/PNP) | Ebers–Moll with Early voltage |
 //! | [`mosfet`] | MOSFET (NMOS/PMOS) | Level-1 |
 //! | [`jfet`] | JFET (N/P-channel) | Shichman–Hodges |
-//! | [`igbt`] | IGBT | MOSFET gate control + BJT output conductance |
+//! | [`igbt`] | IGBT | MOSFET Level-1 square law from gate to collector, blocks reverse V_CE |
 //! | [`led`] | LED | Diode with colour-dependent forward voltage |
 //! | [`zener`] | Zener diode | Shockley + piecewise `1/rz` reverse-breakdown branch (sindr itself stamps a zener as a [`diode`] with `Breakdown`) |
 //! | [`schottky`] | Schottky diode | Shockley with low-N, low-IS parameters |
@@ -32,6 +32,7 @@
 //! | [`photoresistor`] | Photoresistor (LDR) | Light-level-dependent resistance |
 //! | [`datasheet`] | Datasheet figures | Min/typ/max figures at test conditions that `from_datasheet` constructors fit models to |
 //! | [`regulator`] | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation, positive or negative; LM7805 and AMS1117 presets |
+//! | [`converter`] | Switching regulator (buck, boost) | Averaged over a switching period: dropout or pass-through, current limit, UVLO, input current from power balance with constant or load-dependent efficiency |
 //!
 //! # Quick example
 //!
@@ -43,7 +44,7 @@
 //! let (g_eq, i_eq) = diode_companion(v_applied, &params);
 //!
 //! // Stamp g_eq into Y(p,p), Y(q,q), -g_eq into Y(p,q)/Y(q,p),
-//! // and i_eq into b(p)/-i_eq into b(q) in your MNA system.
+//! // and -i_eq into b(p), i_eq into b(q) in your MNA system.
 //! assert!(g_eq > 0.0);
 //! ```
 //!
@@ -56,8 +57,9 @@
 //!   so scale it with [`diode::temperature_scale_is`] away from
 //!   [`diode::T_NOM`].
 //! - **Sign convention** for two-terminal companions: `v_applied` is the
-//!   voltage from `nodes[0]` to `nodes[1]`, and `i_eq` is the current
-//!   flowing into `nodes[0]`.
+//!   voltage from `nodes[0]` to `nodes[1]`, and `g_eq·v + i_eq` is the
+//!   current through the device from `nodes[0]` to `nodes[1]`, so `i_eq`
+//!   leaves `nodes[0]` and enters `nodes[1]`.
 //! - **Companion form**: each `*_companion` function returns the linearised
 //!   `(g_eq, i_eq)` at the operating point — the form Newton–Raphson stamps
 //!   directly.
@@ -67,8 +69,16 @@
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::missing_crate_level_docs)]
 #![warn(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
+/// This crate's version, as in its `Cargo.toml`.
+///
+/// ```
+/// assert_eq!(sindr_devices::VERSION, env!("CARGO_PKG_VERSION"));
+/// ```
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod battery;
 pub mod bjt;
+pub mod converter;
 pub mod datasheet;
 pub mod diode;
 pub mod igbt;

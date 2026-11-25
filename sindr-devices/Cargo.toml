@@ -1,6 +1,6 @@
 [package]
 name = "sindr-devices"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 rust-version = "1.89"
 description = "Device physics for the sindr circuit simulator: diode family, LED, BJT, MOSFET, JFET, IGBT, varactor, thermistor, photoresistor, regulator, battery and saturating inductor models, with no solver."
@@ -17,9 +17,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
 
 [features]
-default = ["serde"]
+default = ["serde", "schemars"]
+# JSON Schema for every serde type (`schemars::JsonSchema`), for apps that
+# describe sindr's inputs and outputs to other tools.
+schemars = ["serde", "dep:schemars"]
 
 [dev-dependencies]
 approx = "0.5"
