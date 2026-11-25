@@ -9716,7 +9716,7 @@ pub struct TransientSession {
     /// Steps taken and not yet drained.
     steps: Vec<TimestepSnapshot>,
     /// The latest step, when it isn't the last of `steps`.
-    last: Option<TimestepSnapshot>,
+    last: Option<Latest>,
     keep: bool,
     /// Set by an error the session can't step past.
     failed: Option<f64>,
