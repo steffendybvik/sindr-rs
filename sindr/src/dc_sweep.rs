@@ -259,6 +259,15 @@ fn sweep_curve(
     opts: &SolverOptions,
 ) -> Result<DcSweepResult, SimError> {
     let mut work = crate::dc_equivalent(circuit);
+    // Only a source value changes from point to point: the nodes and the
+    // heated parts stay as they are.
+    let at = |value| crate::SolvePoint::DcSweep {
+        source: axis.source_id.to_string(),
+        value,
+    };
+    let node_map = crate::node_map::NodeMap::from_circuit(&work);
+    let heated =
+        crate::thermal::Heated::from_circuit(&work).map_err(|e| e.at(at(axis.value(0))))?;
     let mut points: Vec<DcSweepPoint> = Vec::with_capacity(axis.num_points);
     let mut point_opts = opts.clone();
     if let Some(seed) = seed {
@@ -272,15 +281,12 @@ fn sweep_curve(
                 .nodeset
                 .clone_from(&previous.result.node_voltages);
         }
-        let mut result =
-            crate::solve_dc_heated(&work, |dc| crate::solve_dc_circuit(dc, &point_opts)).map_err(
-                |e| {
-                    e.at(crate::SolvePoint::DcSweep {
-                        source: axis.source_id.to_string(),
-                        value: sweep_value,
-                    })
-                },
-            )?;
+        let solve = |dc: &Circuit| crate::solve_dc_circuit_on(dc, &node_map, &point_opts);
+        let mut result = match &heated {
+            Some(heated) => crate::thermal::solve_dc(&work, heated, solve),
+            None => solve(&work),
+        }
+        .map_err(|e| e.at(at(sweep_value)))?;
         crate::strip_secondary_windings(&mut result);
         points.push(DcSweepPoint {
             sweep_value,
@@ -745,5 +751,57 @@ mod tests {
         assert_eq!(i_curve.len(), 6);
         // At 5V, I = 5/1000 = 5mA
         assert_relative_eq!(i_curve.last().unwrap().1, 0.005, epsilon = 1e-6);
+    }
+
+    /// The sweep reuses one node map and one table of heated parts; each
+    /// point must match a solve that builds its own, bit for bit.
+    #[test]
+    fn points_match_a_solve_built_per_point() {
+        let mut circuit = Circuit::new(
+            "0",
+            vec![
+                CircuitElement::VoltageSource(VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["n1".into(), "0".into()],
+                    voltage: 0.0,
+                    waveform: None,
+                }),
+                CircuitElement::Resistor(Resistor {
+                    id: "R1".into(),
+                    nodes: ["n1".into(), "n2".into()],
+                    resistance: 10.0,
+                }),
+                CircuitElement::Diode(Diode {
+                    id: "D1".into(),
+                    nodes: ["n2".into(), "0".into()],
+                    temperature: 300.15,
+                    model: None,
+                }),
+            ],
+        );
+        circuit.parts.insert(
+            "D1".into(),
+            crate::Part {
+                thermal: Some(crate::Thermal::junction_to_ambient(200.0)),
+                ..Default::default()
+            },
+        );
+        let axis = DcSweepAxis::new("V1", 0.0, 2.0, 9);
+        let sweep = dc_sweep(&circuit, &axis).unwrap();
+
+        let mut work = crate::dc_equivalent(&circuit);
+        let mut opts = SolverOptions::default();
+        for (k, point) in sweep.points.iter().enumerate() {
+            set_source(&mut work, "V1", axis.value(k));
+            let want =
+                crate::solve_dc_heated(&work, |dc| crate::solve_dc_circuit(dc, &opts)).unwrap();
+            assert_eq!(point.result.node_voltages, want.node_voltages);
+            assert_eq!(
+                point.result.junction_temperatures,
+                want.junction_temperatures
+            );
+            assert!(!want.junction_temperatures.is_empty());
+            opts.nodeset.clone_from(&want.node_voltages);
+        }
     }
 }
