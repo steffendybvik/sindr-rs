@@ -775,7 +775,6 @@ pub(crate) fn solve_ac_with(
                 node_voltages.insert(name.to_string(), solution[i]);
             }
         }
-        crate::composite::strip_nodes(original, &mut node_voltages);
 
         points.push(AcPoint {
             frequency: freq,
@@ -783,6 +782,7 @@ pub(crate) fn solve_ac_with(
         });
     }
 
+    crate::composite::strip_nodes(original, points.iter_mut().map(|p| &mut p.node_voltages));
     Ok(AcResult {
         points,
         config: config.clone(),
