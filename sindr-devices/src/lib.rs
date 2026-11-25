@@ -21,7 +21,7 @@
 //! | [`bjt`] | BJT (NPN/PNP) | Ebers–Moll with Early voltage |
 //! | [`mosfet`] | MOSFET (NMOS/PMOS) | Level-1 |
 //! | [`jfet`] | JFET (N/P-channel) | Shichman–Hodges |
-//! | [`igbt`] | IGBT | MOSFET gate control + BJT output conductance |
+//! | [`igbt`] | IGBT | MOSFET Level-1 square law from gate to collector, blocks reverse V_CE |
 //! | [`led`] | LED | Diode with colour-dependent forward voltage |
 //! | [`zener`] | Zener diode | Shockley + piecewise `1/rz` reverse-breakdown branch (sindr itself stamps a zener as a [`diode`] with `Breakdown`) |
 //! | [`schottky`] | Schottky diode | Shockley with low-N, low-IS parameters |

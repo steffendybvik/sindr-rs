@@ -463,14 +463,14 @@ It's solved as its parts: the armature `#r`, `#l`, a 0 V `#sense` and the back-E
 
 ```rust,ignore
 use sindr::element::{Diode, Led, Photodiode, SchottkyDiode, ZenerDiode};
-CircuitElement::Diode(Diode { id, nodes: [NodeId; 2], model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
-CircuitElement::Led(Led { id, nodes: [NodeId; 2], color: String }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
-CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [NodeId; 2], vz: f64 })   // breakdown voltage at 5 mA
-CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [NodeId; 2] })            // Vf ≈ 0.3 V
-CircuitElement::Photodiode(Photodiode { id, nodes: [NodeId; 2], irradiance: f64 }) // irradiance in W
+CircuitElement::Diode(Diode { id, nodes: [NodeId; 2], temperature: f64, model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
+CircuitElement::Led(Led { id, nodes: [NodeId; 2], color: String, temperature: f64 }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
+CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [NodeId; 2], vz: f64, temperature: f64 }) // breakdown voltage at 5 mA
+CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [NodeId; 2], temperature: f64 }) // Vf ≈ 0.3 V
+CircuitElement::Photodiode(Photodiode { id, nodes: [NodeId; 2], irradiance: f64, temperature: f64 }) // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
+All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant has a `temperature: f64` field, the junction temperature in K (300.15 K is 27 °C, the nominal; JSON may leave it out for that default): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 #### Varactor diode
 
@@ -514,7 +514,7 @@ CircuitElement::Mosfet(Mosfet {
 CircuitElement::Igbt(Igbt {
     id,
     nodes: [NodeId; 3],
-    params: IgbtParams, // { vth, k, vce_sat }
+    params: IgbtParams, // { vth, k, vce_sat }; vce_sat is unused
 })
 
 // JFET — nodes: [gate, drain, source]
@@ -1657,6 +1657,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
 - **JFET gate capacitances are depletion charge only, at 27 °C.** `parasitic_caps` gives CGS and CGD as SPICE's graded junctions (`PB`, `M`, `FC`), but the gate junction conducts no current, and `PB` and the capacitances don't follow temperature. ngspice's JFET grades at `M = 0.5` whatever the card says, so a deck with another `M` solves differently there.
 - **A MOSFET's body diode is DC and junction charge only.** `body_diode` takes a full diode card (IS, N, RS, CJO, TT, BV), solved as a diode `<id>.body`; there's no separate reverse-recovery model beyond TT, and no body diode on IGBTs.
+- **IGBT is a MOSFET square law.** `Igbt` is the Level-1 MOSFET current from gate to collector, cut off for reverse V_CE. There's no bipolar output stage, so no ~0.7 V on-state knee, no tail current at turn-off and no output conductance in saturation, and it has no gate or junction capacitances, so it switches as fast as its drive and load allow. `IgbtParams::vce_sat` is kept for old circuits but unused. Its conduction loss misses the knee's share, and its switching loss is what external capacitors give it, with no tail.
 - **No SiC / GaN device models.**
 - **Digital pins are IBIS's parametric buffer, DC plus `c_comp`.** A pin's output stage is a resistance to each rail and its clamps are Shockley diodes: no `.ibs` V-I or V-t tables, so a driver doesn't current-limit as a real one does into a short, and edges are only the RC of the output resistance and `c_comp`, with no ramp rate. There's no package R, L or C, no slew-rate control or drive-strength setting, no supply current from the chip's core, and the thresholds are fixed volts that don't follow a sagging supply. A session reads the input once per step.
 - **Logic gates are a smooth input stage, a slew-limited delay and a pin's output stage.** Inputs switch over a tenth of the `vil`–`vih` band, at fixed volts that don't follow a sagging supply. `tpd` is one number for both edges, independent of load and supply, and the output's edge is the delay's slew plus the RC of the output resistance and the load. There's no quiescent or shoot-through supply current, no output enable or tri-state, and no flip-flops or latches; a Schmitt input's hysteresis is a 1 ns internal state.
@@ -13416,15 +13417,17 @@ pub fn diode_derivatives(v_d: f64, params: &DiodeParams) -> DiodeDerivatives { �
 
 IGBT (Insulated Gate Bipolar Transistor) simplified model.
 
-An IGBT combines MOSFET gate control with BJT output characteristics.
-This educational model uses the MOSFET Level-1 square law for the
-collector current, and blocks reverse collector-emitter voltage.
+A real IGBT is a MOSFET driving a bipolar output stage. This model keeps
+only the MOSFET part: the collector current follows the Level-1 square
+law in the gate–emitter overdrive (triode and saturation), and a
+reverse collector–emitter voltage blocks. There is no bipolar output
+stage, so no on-state junction drop (the ~0.7 V knee before current
+flows), no tail current at turn-off and no output conductance in
+saturation.
 
-Nodes: [gate, collector, emitter] — same ordering convention as BJT.
-Gate controls current like a MOSFET; collector/emitter behave like BJT.
+Nodes: [gate, collector, emitter], the BJT's ordering.
 
-Simplified model is appropriate for educational simulation.
-Full IGBT models (IGBTv3) have 20+ parameters — out of scope.
+Full IGBT models (IGBTv3) have 20+ parameters and are out of scope.
 
 ```rust
 /// IGBT parameters (simplified model).
@@ -13682,7 +13685,7 @@ end-to-end simulator.
 | [`bjt`] | BJT (NPN/PNP) | Ebers–Moll with Early voltage |
 | [`mosfet`] | MOSFET (NMOS/PMOS) | Level-1 |
 | [`jfet`] | JFET (N/P-channel) | Shichman–Hodges |
-| [`igbt`] | IGBT | MOSFET gate control + BJT output conductance |
+| [`igbt`] | IGBT | MOSFET Level-1 square law from gate to collector, blocks reverse V_CE |
 | [`led`] | LED | Diode with colour-dependent forward voltage |
 | [`zener`] | Zener diode | Shockley + piecewise `1/rz` reverse-breakdown branch (sindr itself stamps a zener as a [`diode`] with `Breakdown`) |
 | [`schottky`] | Schottky diode | Shockley with low-N, low-IS parameters |

@@ -250,14 +250,14 @@ It's solved as its parts: the armature `#r`, `#l`, a 0 V `#sense` and the back-E
 
 ```rust,ignore
 use sindr::element::{Diode, Led, Photodiode, SchottkyDiode, ZenerDiode};
-CircuitElement::Diode(Diode { id, nodes: [NodeId; 2], model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
-CircuitElement::Led(Led { id, nodes: [NodeId; 2], color: String }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
-CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [NodeId; 2], vz: f64 })   // breakdown voltage at 5 mA
-CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [NodeId; 2] })            // Vf ≈ 0.3 V
-CircuitElement::Photodiode(Photodiode { id, nodes: [NodeId; 2], irradiance: f64 }) // irradiance in W
+CircuitElement::Diode(Diode { id, nodes: [NodeId; 2], temperature: f64, model: Option<DiodeModel> }) // silicon (Vf ≈ 0.7 V) unless a SPICE-style model is set
+CircuitElement::Led(Led { id, nodes: [NodeId; 2], color: String, temperature: f64 }) // "red"|"orange"|"amber"|"yellow"|"green"|"blue"|"white", any case
+CircuitElement::ZenerDiode(ZenerDiode { id, nodes: [NodeId; 2], vz: f64, temperature: f64 }) // breakdown voltage at 5 mA
+CircuitElement::SchottkyDiode(SchottkyDiode { id, nodes: [NodeId; 2], temperature: f64 }) // Vf ≈ 0.3 V
+CircuitElement::Photodiode(Photodiode { id, nodes: [NodeId; 2], irradiance: f64, temperature: f64 }) // irradiance in W
 ```
 
-All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant accepts an optional `temperature: f64` field (K, default 300.15 K): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
+All diodes use Newton-Raphson automatically when present. `Diode`'s optional `model` is what a SPICE `.model D` card fills in: `DiodeModel { is, n, rs }` (defaults `1e-14`, `1`, `0`), the junction charge `cjo`, `vj`, `m`, `fc`, `tt` (defaults `0`, `1`, `0.5`, `0.5`, `0`) and breakdown `bv`, `ibv` (defaults none, 1 mA). With `cjo` or `tt` set the diode stores charge, so it shows reverse recovery in transient and a capacitance in AC, and the circuit takes the transient path; its `current_through` then includes the charging current, while `power` stays the dissipation. `bv` adds SPICE's exponential reverse breakdown, fitted to pass `ibv` near `−bv` as ngspice does. A `ZenerDiode` is exactly such a diode: `bv = vz`, `ibv` = 5 mA (a small zener's test current) and `rs` = 1 Ω, so it matches ngspice with the card `D(IS=1e-14 N=1 RS=1 BV=vz IBV=5m)`. Each diode variant has a `temperature: f64` field, the junction temperature in K (300.15 K is 27 °C, the nominal; JSON may leave it out for that default): IS scales with the SPICE temperature formula and the thermal voltage is kT/q at that temperature.
 
 ### Varactor diode
 
@@ -301,7 +301,7 @@ CircuitElement::Mosfet(Mosfet {
 CircuitElement::Igbt(Igbt {
     id,
     nodes: [NodeId; 3],
-    params: IgbtParams, // { vth, k, vce_sat }
+    params: IgbtParams, // { vth, k, vce_sat }; vce_sat is unused
 })
 
 // JFET — nodes: [gate, drain, source]
