@@ -5,7 +5,7 @@ use crate::handle::NodeId;
 use crate::stamp::stamp_voltage_source_at;
 use crate::waveform::Waveform;
 
-use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{Deck, ExportError};
@@ -52,6 +52,23 @@ impl VoltageSource {
 
 impl Device for VoltageSource {
     device_identity!();
+
+    /// At a transient step the voltage includes the waveform's value.
+    fn report(&self, r: &mut Report<'_>) {
+        let v = match r.step() {
+            Some(step) => {
+                self.voltage
+                    + self
+                        .waveform
+                        .as_ref()
+                        .map_or(0.0, |w| w.evaluate(step.source_time))
+            }
+            None => self.voltage,
+        };
+        let i = r.branch_current(0);
+        r.branch_current_of(&self.id, i);
+        r.port(&self.id, v, i);
+    }
 
     /// Zero in AC (a short), with its branch row where an AC sweep puts
     /// its excitation.

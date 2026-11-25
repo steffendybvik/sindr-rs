@@ -6,7 +6,7 @@ use sindr_devices::inductor;
 use crate::error::SimError;
 use crate::stamp::stamp_companion_at;
 
-use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
 use crate::ratings::RatingKind;
 use num_complex::Complex64;
 
@@ -41,6 +41,31 @@ pub struct Inductor {
 
 impl Device for Inductor {
     device_identity!();
+
+    /// A short at DC, where it reports nothing across or through it. A
+    /// saturating core's history holds its flux.
+    fn report(&self, r: &mut Report<'_>) {
+        let Some(step) = r.step() else {
+            r.component(&self.id, 0.0, 0.0, 0.0);
+            return;
+        };
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let history = r.inductor(0);
+        let i = match &self.saturation {
+            None => {
+                let (g, i_hist) = step.integ.inductor(self.inductance, &history);
+                let i = g * v + i_hist;
+                r.set_inductor(0, history.push(i, v));
+                i
+            }
+            Some(sat) => {
+                let lambda = step.integ.flux(v, &history);
+                r.set_inductor(0, history.push(lambda, v));
+                inductor::current_from_flux(lambda, self.inductance, sat)
+            }
+        };
+        r.port(&self.id, v, i);
+    }
 
     /// `1/(sL)`, or in the pencil form the branch `V_p − V_q = sL·i`,
     /// which is affine in `s`. At `s = 0` a short.

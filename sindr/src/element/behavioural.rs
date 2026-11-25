@@ -10,7 +10,7 @@ use crate::mna::MnaSystem;
 use crate::node_map::{NodeMap, Read, Sensed, Terminals};
 use crate::stamp::stamp_voltage_source_at;
 
-use super::{AcStamp, DcStamp, Device, TranStamp};
+use super::{AcStamp, DcStamp, Device, Report, TranStamp};
 use num_complex::Complex64;
 
 #[cfg(feature = "spice")]
@@ -63,6 +63,33 @@ pub struct Behavioural {
 
 impl Device for Behavioural {
     device_identity!();
+
+    /// A voltage output's current is its branch current; a current
+    /// output's is its expression's value, NaN where it can't be
+    /// evaluated.
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let i = match self.output {
+            BehaviouralOutput::Current => behavioural_linearisation(
+                &self.id,
+                &self.expr,
+                &resolve(r.circuit, r.node_map, &self.expr),
+                r.solution,
+                r.time(),
+            )
+            .map_or(f64::NAN, |(jacobian, c)| {
+                c + jacobian
+                    .iter()
+                    .map(|(k, j)| j * r.solution[*k])
+                    .sum::<f64>()
+            }),
+            _ => r.branch_current(0),
+        };
+        if self.branches() > 0 {
+            r.branch_current_of(&self.id, i);
+        }
+        r.port(&self.id, v, i);
+    }
 
     /// Its Jacobian at the bias point; the constant term is a DC source
     /// and drops out of the small-signal system. The bias solve checked

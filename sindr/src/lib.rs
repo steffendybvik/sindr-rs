@@ -112,6 +112,7 @@
 //! | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
 //! | Crystal | Butterworth–Van Dyke: `Rm`–`Lm`–`Cm` beside `C0` ([`CrystalParams`]) |
 //! | Ferrite bead | `R_dc` into `L ∥ R_ac` (∥ `C`) ([`FerriteBeadParams`]) |
+//! | DC motor | Brushed: armature `R`, `L` and back-EMF `ke·ω`; shaft with torque `kt·i`, inertia, viscous friction and a load torque ([`element::DcMotorParams`]) |
 //!
 //! Parameters are Rust structs, not SPICE `.model` cards.
 //!
@@ -376,8 +377,8 @@ pub use noise::{solve_noise, NoiseConfig, NoiseResult};
 pub use pole_zero::{solve_pz, PzConfig, PzFind, PzResult, PzTransfer};
 pub use ratings::{check_ratings, RatingCheck, RatingKind, RatingStatus, RatingsReport};
 pub use results::{
-    BjtResult, ComponentResult, ConvergenceAid, InstanceResult, MosfetResult, OpAmpResult,
-    RelayResult, SimulationResult, TimestepSnapshot, TransientData, TransientStats,
+    BjtResult, ComponentResult, ConvergenceAid, InstanceResult, MosfetResult, MotorResult,
+    OpAmpResult, RelayResult, SimulationResult, TimestepSnapshot, TransientData, TransientStats,
 };
 pub use sensitivity::{
     solve_ac_sensitivity, solve_sensitivity, AcSensConfig, AcSensEntry, AcSensPoint, AcSensResult,

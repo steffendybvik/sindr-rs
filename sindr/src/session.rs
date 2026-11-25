@@ -144,6 +144,8 @@ pub enum Param {
     Level(bool),
     /// A digital pin's weak pull resistor.
     Pull(Pull),
+    /// A DC motor's load torque (N·m), opposing rotation when positive.
+    LoadTorque(f64),
 }
 
 /// Which way a signal must cross an [`Event`]'s level.
@@ -495,6 +497,27 @@ impl TransientSession {
             }
             self.pins[p].pin = pin;
             return Ok(());
+        }
+
+        if let Param::LoadTorque(torque) = param {
+            // A motor is solved as its parts; the load is `#load`.
+            let Some(&k) = self.index.get(&format!("{id}#load")) else {
+                return match self.index.contains_key(id) {
+                    true => wrong(),
+                    false => self.element_index(id).map(|_| ()),
+                };
+            };
+            if !torque.is_finite() {
+                return Err(SimError::component(
+                    id,
+                    format!("params.load_torque {torque} N·m must be finite"),
+                ));
+            }
+            let mut element = self.stepper.circuit.components[k].clone();
+            if let CircuitElement::CurrentSource(CurrentSource { current, .. }) = &mut element {
+                *current = torque;
+            }
+            return self.replace(k, element);
         }
 
         let k = self.element_index(id)?;

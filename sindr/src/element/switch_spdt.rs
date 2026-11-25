@@ -5,7 +5,7 @@ use crate::circuit::SpdtPosition;
 use crate::error::SimError;
 use crate::handle::NodeId;
 
-use super::{stamped_as_parts, AcStamp, DcStamp, Device, TranStamp};
+use super::{stamped_as_parts, AcStamp, DcStamp, Device, Report, TranStamp};
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{Deck, ExportError};
@@ -32,6 +32,9 @@ pub struct SwitchSpdt {
 
 impl Device for SwitchSpdt {
     device_identity!();
+
+    /// Lowered to its parts before any solve, and they report.
+    fn report(&self, _: &mut Report<'_>) {}
 
     /// Split into its parts by `solver_circuit` first.
     fn stamp_ac(&self, _: &mut AcStamp<'_>) {}

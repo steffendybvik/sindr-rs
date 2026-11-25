@@ -5,7 +5,7 @@ use crate::handle::NodeId;
 use crate::mna::MnaSystem;
 use crate::node_map::{Read, Sensed};
 
-use super::{AcStamp, Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device, Report};
 use num_complex::Complex64;
 
 #[cfg(feature = "spice")]
@@ -35,6 +35,12 @@ pub struct Vccs {
 
 impl Device for Vccs {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let i = self.gm * r.across(&self.control_nodes[0], &self.control_nodes[1]);
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, i);
+    }
 
     /// The same direction as the DC stamp: out of `from`, into `to`.
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {

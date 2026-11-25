@@ -4,7 +4,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::{stamp_resistor_at, SWITCH_R_CLOSED, SWITCH_R_OPEN};
 
-use super::{AcStamp, DcStamp, Device};
+use super::{AcStamp, DcStamp, Device, Report};
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{num, switch_resistance, Deck, ExportError};
@@ -25,6 +25,16 @@ pub struct Switch {
 
 impl Device for Switch {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let resistance = if self.closed {
+            SWITCH_R_CLOSED
+        } else {
+            SWITCH_R_OPEN
+        };
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, v / resistance);
+    }
 
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let r = if self.closed { 0.01 } else { 1e9 };

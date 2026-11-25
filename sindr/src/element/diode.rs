@@ -6,7 +6,7 @@ use crate::error::SimError;
 use crate::handle::NodeId;
 use crate::stamp::{stamp_companion_at, stamp_diode_companion_at};
 
-use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, TranStamp};
+use super::{AcBias, AcStamp, Check, Conductance, DcStamp, Device, Report, TranStamp};
 use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 use num_complex::Complex64;
@@ -47,6 +47,12 @@ pub(crate) const DIODE_CHARGE: &str = "q";
 
 impl Device for Diode {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let params = crate::device_params::diode(self.model.as_ref(), self.temperature);
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        r.port(&self.id, v, sindr_devices::diode::diode_current(v, &params));
+    }
 
     fn linearise(&self, b: &AcBias<'_>) -> Vec<Conductance> {
         let params = device_params::diode(self.model.as_ref(), self.temperature);

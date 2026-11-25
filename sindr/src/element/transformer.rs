@@ -7,7 +7,7 @@ use crate::error::SimError;
 use crate::mna::MnaSystem;
 use crate::stamp::stamp_voltage_source_at;
 
-use super::{AcStamp, Check, DcStamp, Device, TranStamp};
+use super::{AcStamp, Check, DcStamp, Device, Report, TranStamp};
 
 #[cfg(feature = "spice")]
 use crate::spice::export::{num, unsupported, Deck, ExportError};
@@ -65,6 +65,33 @@ pub struct Transformer {
 
 impl Device for Transformer {
     device_identity!();
+
+    /// The primary's voltage and current, and the power through both
+    /// windings. DC stamps the windings as near-shorts, so there it reports
+    /// no current. A saturating core's histories hold fluxes.
+    fn report(&self, r: &mut Report<'_>) {
+        let v_primary = r.across(&self.nodes[0], &self.nodes[1]);
+        let Some(step) = r.step() else {
+            r.component(&self.id, v_primary, 0.0, 0.0);
+            return;
+        };
+        let v_secondary = r.across(&self.nodes[2], &self.nodes[3]);
+        let (i1, i2) = (r.branch_current(0), r.branch_current(1));
+        let (h1, h2) = (r.inductor(0), r.inductor(1));
+        // Winding rate is the branch-convention voltage (see
+        // Integrator::coupled).
+        let (x1, x2) = match &self.saturation {
+            None => (i1, i2),
+            Some(_) => (
+                step.integ.flux(v_primary, &h1),
+                step.integ.flux(v_secondary, &h2),
+            ),
+        };
+        r.set_inductor(0, h1.push(x1, v_primary));
+        r.set_inductor(1, h2.push(x2, v_secondary));
+        let power = (v_primary * i1 + v_secondary * i2).abs();
+        r.component(&self.id, v_primary, i1, power);
+    }
 
     /// Coupled inductors with a branch current per winding (I1 into p1,
     /// I2 into p2), as in transient:

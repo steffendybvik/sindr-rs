@@ -5,7 +5,7 @@ use crate::handle::NodeId;
 use crate::node_map::{Read, Sensed};
 use crate::stamp::stamp_vcvs_at;
 
-use super::{AcStamp, Check, DcStamp, Device};
+use super::{AcStamp, Check, DcStamp, Device, Report};
 use num_complex::Complex64;
 
 #[cfg(feature = "spice")]
@@ -29,6 +29,13 @@ pub struct Vcvs {
 
 impl Device for Vcvs {
     device_identity!();
+
+    fn report(&self, r: &mut Report<'_>) {
+        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let i = r.branch_current(0);
+        r.branch_current_of(&self.id, i);
+        r.port(&self.id, v, i);
+    }
 
     fn stamp_ac(&self, s: &mut AcStamp<'_>) {
         let (branch, nodes) = (s.branch, s.nodes());

@@ -101,7 +101,7 @@ pub enum SimError {
     },
 
     /// Two components have one id, as declared or once the solver splits
-    /// switches, crystals, beads, digital pins and MOSFET body diodes into
+    /// switches, crystals, beads, digital pins, DC motors and MOSFET body diodes into
     /// their parts.
     #[error("`{id}`: {}", duplicate_message(*.lowered))]
     DuplicateId {
@@ -427,8 +427,8 @@ fn stuck(node: &Option<String>, components: &[String], step: &f64) -> String {
 
 fn duplicate_message(lowered: bool) -> &'static str {
     if lowered {
-        "two components share this id once switches, crystals, beads, digital pins \
-         and body diodes are split into their parts"
+        "two components share this id once switches, crystals, beads, digital pins, \
+         DC motors and body diodes are split into their parts"
     } else {
         "more than one component has this id"
     }

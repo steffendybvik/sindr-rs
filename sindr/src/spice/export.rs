@@ -1,6 +1,8 @@
 //! Write a [`Circuit`] as a SPICE deck: [`to_netlist`].
 
-use crate::element::{Capacitor, CurrentSource, Diode, Inductor, Resistor, Switch, VoltageSource};
+use crate::element::{
+    Capacitor, Cccs, CurrentSource, Diode, Inductor, Resistor, Switch, Vcvs, VoltageSource,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::f64::consts::PI;
 
@@ -75,6 +77,7 @@ pub enum ExportError {
 /// | `SwitchSpdt` | two `R`, common to each throw |
 /// | `Crystal` | `R`, `L`, `C` in series (the motional arm) beside `C` (C0) |
 /// | `FerriteBead` | `R` (DC) into `L` ∥ `R` (∥ `C`) |
+/// | `DcMotor` | the armature `R`, `L`, a 0 V `V` sensing its current and the back-EMF `E`; the shaft as `F` (`kt·i`), `C` (J), `R` (1/B) and `I` (the load) on a node whose voltage over `b` is the speed |
 /// | `Potentiometer` | two `R`, top–wiper and wiper–bottom |
 /// | `Photoresistor`, `Thermistor` | `R` at their resistance |
 /// | `Led`, `SchottkyDiode` | `D` with their Shockley parameters |
@@ -434,13 +437,43 @@ impl<'a> Deck<'a> {
         // `<id>#m1` → `<id>_m1`: one SPICE-safe spelling for the parts'
         // names and the internal nodes.
         let local = |s: &str| s.replace('#', "_");
+        // Each part's SPICE name, for an `F` part to name its sensing source.
+        let mut written: HashMap<&str, String> = HashMap::new();
         for part in &parts {
             let suffix = part.id().rsplit('#').next().unwrap_or("");
             let letter = part.device().spice_letter();
             let base = name.strip_prefix(['R', 'r']).unwrap_or(name);
             let part_name = self.extra_name(id, format!("{letter}{base}_{suffix}"))?;
+            written.insert(part.id(), part_name.clone());
             let nodes = [local(&part.nodes()[0]), local(&part.nodes()[1])].map(NodeId::from);
             let value = match part {
+                CircuitElement::VoltageSource(VoltageSource { voltage, .. }) => {
+                    format!("DC {}", num(id, "voltage", *voltage)?)
+                }
+                CircuitElement::Vcvs(Vcvs {
+                    control_nodes,
+                    gain,
+                    ..
+                }) => {
+                    let control = control_nodes.each_ref().map(|n| NodeId::from(local(n)));
+                    let gain = num(id, "gain", *gain)?;
+                    self.controlled(&part_name, &nodes, &control, gain)?;
+                    continue;
+                }
+                CircuitElement::Cccs(Cccs {
+                    control_source,
+                    alpha,
+                    ..
+                }) => {
+                    let Some(control) = written.get(control_source.as_str()) else {
+                        return Err(unsupported(id, "a part sensing a later part"));
+                    };
+                    let control = control.clone();
+                    let out = self.nodes(&nodes)?;
+                    let alpha = num(id, "alpha", *alpha)?;
+                    self.line(format!("{part_name} {out} {control} {alpha}"));
+                    continue;
+                }
                 CircuitElement::Resistor(Resistor { resistance, .. }) => {
                     num(id, "resistance", *resistance)?
                 }
