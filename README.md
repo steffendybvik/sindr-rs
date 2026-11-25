@@ -127,15 +127,15 @@ spawned per run with `ngspice -b`, or driven by one `.control` loop.
 
 | Size | sindr | ngspice, solve only |
 |---|---:|---:|
-| Operating point, 1 000-diode chain | 8.6 ms | 16 ms |
-| Operating point, 3 000-diode chain | 27 ms | 82 ms |
-| Transient, 1 000-stage RC ladder, 200 steps | 151 ms | 29 ms |
-| Transient, 3 000-stage RC ladder, 200 steps | 462 ms | 85 ms |
+| Operating point, 1 000-diode chain | 3.2 ms | 17 ms |
+| Operating point, 3 000-diode chain | 9.6 ms | 87 ms |
+| Transient, 1 000-stage RC ladder, 200 steps | 72 ms | 32 ms |
+| Transient, 3 000-stage RC ladder, 200 steps | 213 ms | 91 ms |
 
 Embedded, a small solve costs microseconds against ngspice's 14 ms start,
 and sindr has no global state, so solves run in parallel threads. ngspice
-solves large transients about five times faster: past a few hundred nodes,
-a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics)).
+solves large transients a little over twice as fast: past several hundred
+nodes, a long transient is ngspice's ground ([limits](./LIMITATIONS.md#solver--numerics)).
 
 ## When to use sindr
 
