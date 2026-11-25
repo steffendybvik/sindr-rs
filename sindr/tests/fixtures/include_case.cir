@@ -1,0 +1,7 @@
+include case title
+.include Models/Diode.lib
+.LIB 'Models/Corners.lib' TT
+V1 a 0 1
+R1 a k 1k
+D1 k 0 DMOD
+.end
