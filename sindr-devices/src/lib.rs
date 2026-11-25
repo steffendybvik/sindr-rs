@@ -32,6 +32,7 @@
 //! | [`photoresistor`] | Photoresistor (LDR) | Light-level-dependent resistance |
 //! | [`datasheet`] | Datasheet figures | Min/typ/max figures at test conditions that `from_datasheet` constructors fit models to |
 //! | [`regulator`] | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation, positive or negative; LM7805 and AMS1117 presets |
+//! | [`converter`] | Switching regulator (buck, boost) | Averaged over a switching period: dropout or pass-through, current limit, UVLO, input current from power balance with constant or load-dependent efficiency |
 //!
 //! # Quick example
 //!

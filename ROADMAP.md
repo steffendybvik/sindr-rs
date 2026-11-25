@@ -1,6 +1,6 @@
 # Roadmap
 
-Where sindr is heading from 0.2.0 to 1.0. It's a plan, not a promise of
+Where sindr is heading from 0.3.0 to 1.0. It's a plan, not a promise of
 dates. For what sindr does today see [`README.md`](./README.md); for what it
 doesn't, [`LIMITATIONS.md`](./LIMITATIONS.md); for what shipped,
 [`CHANGELOG.md`](./CHANGELOG.md). Contributions are welcome: start with
@@ -43,9 +43,9 @@ Checked in CI, so no release lowers it:
 
 | | Milestone | Version | What it means |
 |---|---|---|---|
-| 1 | **Editor-ready** | 0.2 (shipped), finished in 0.3 | An editor's netlist and part data simulate without the user writing a deck or a model parameter |
-| 2 | **Cheap devices** | 0.3 | Adding a device touches one place in the code |
-| 3 | **Typed and fast** | 0.3 | Wrong circuits are hard to build, errors are typed, and large transients run near ngspice's speed |
+| 1 | **Editor-ready** | 0.2 and 0.3 (shipped), rest after 0.3 | An editor's netlist and part data simulate without the user writing a deck or a model parameter |
+| 2 | **Cheap devices** | 0.3 (shipped) | Adding a device touches one place in the code |
+| 3 | **Typed and fast** | 0.3 (shipped), speed continues | Wrong circuits are hard to build, errors are typed, and large transients run near ngspice's speed |
 | 4 | **Where it will fail** | 0.4 | Design verification good enough to stake a board on |
 | 5 | **Extensible models** | 0.4 | Devices from outside the crate, and the models boards need |
 | 6 | **1.0** | 1.0 | Stable for the whole of 1.x |
@@ -60,13 +60,15 @@ editors export them, multi-unit parts, ICs as black boxes, models from
 datasheet figures with a warning for every default, and bench loads for IC
 pins (current sinks, timed switches).
 
-Still to come, in 0.3:
+Shipped in 0.3.0: a half-wired schematic simulates with its loose ends
+reported (`UnconnectedTerminals::Skip`), nets that only reach an IC's pins
+are tied high-impedance, supply rails come from power-port net names
+(opt-in, with `supply_names` saying what it assumed), a vendor subcircuit
+can be a part's model, long runs report progress and can be cancelled, and
+an MCU pin's electrical side is an element (`DigitalPin`, after IBIS).
 
-- Simulating a half-wired schematic, with its loose ends reported, and nets
-  that only reach an IC's pins treated as high impedance.
-- Supply rails from power-port net names, opt-in.
-- A vendor subcircuit as a part's model, mapped to its pins.
-- Progress and cancellation for long runs, natively and in the browser.
+Still to come:
+
 - Real boards, expressed as an editor exports them (components, values as
   text, nets) plus a test bench, simulated end to end through
   `sindr::import` and kept as reference designs in the test suite.
@@ -75,29 +77,28 @@ Still to come, in 0.3:
   on-resistance. Each is checked to reproduce its datasheet points.
 - Results say when a component fell back to a default model, the way a part
   with no ratings reports *Unverified*, so nothing defaults silently.
-- A way to describe what an IC pin looks like electrically (a driven level, a
-  supply current), and clear errors for what sindr can't simulate.
+- Clear errors for what sindr can't simulate.
 
 **Done when** example boards simulate from a netlist and a bench with no model
 parameter in the input, checked against ngspice or a closed form.
 
-### 2. Cheap devices (0.3)
+### 2. Cheap devices (shipped in 0.3.0)
 
-Each device's behaviour (DC, AC, transient, results, ratings, export) in one
-place, internal only, with every numerical result unchanged.
+Each device's behaviour (DC, AC, transient, results, ratings, export) lives in
+its own file in `sindr::element`, internal only, with every numerical result
+unchanged. A new device is its module plus one registration line.
 
-### 3. Typed and fast (0.3)
+Shipped in 0.3.0: typed node and component handles (names stay as labels,
+and `CircuitBuilder` refuses an unknown name), typed error causes, sweeps
+configured like every other analysis, a migration guide in the CHANGELOG, and
+names resolved once with the matrix stamped into a fixed sparse layout. Against
+0.2.0's published figures, an operating point of 1 000 diode stages is 2.6×
+as fast, 1 000 BJT stages on one rail 30×, and a 1 000-node RC-ladder
+transient 2.2×.
 
-- Typed node and component handles; names stay as labels, and an unknown name
-  is an error at build time instead of a silent new node.
-- Typed error causes instead of message strings.
-- Sweeps configured the same way as every other analysis.
-- Names resolved once and the matrix stamped into a fixed sparse layout, so a
-  step no longer rebuilds it; a linear transient reuses its factorisation.
-
-**Done when** no public error is a bare string, a 1 000-node RC-ladder
-transient is at least 3× faster than in 0.2, and a migration guide is in the
-CHANGELOG.
+Still to come: the 3× on that transient. Most of what's left is recording
+each step's results by name; then a linear transient reusing its
+factorisation.
 
 ### 4. Where it will fail (0.4)
 

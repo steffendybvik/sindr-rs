@@ -21,8 +21,10 @@ Pure electronics device physics companion models for MNA circuit simulation.
 | `inductor` | Saturating inductor core | `λ(i) = L_sat·i + (L₀ − L_sat)·I_sat·tanh(i/I_sat)` |
 | `thermistor` | NTC thermistor | Beta model R(T) = R₀·exp(β·(1/T − 1/T₀)) |
 | `regulator` | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation; LM7805 and AMS1117 presets |
+| `converter` | Switching regulator (buck, boost) | Averaged over a switching period: dropout or pass-through, current limit, UVLO, input current from power balance with constant or load-dependent efficiency; inductor ripple estimate and feedback-divider set point |
 | `photodiode` | Photodiode | Diode + photocurrent offset |
 | `photoresistor` | Photoresistor (LDR) | Light-level-dependent resistance |
+| `datasheet` | Datasheet figures | Min/typ/max figures at test conditions that `from_datasheet` constructors fit models to |
 
 ## Usage
 
@@ -138,8 +140,9 @@ assert!(r_85c < 10_000.0 && r_dim > 1_000.0);
 | Feature | Enables |
 |---------|---------|
 | `serde` *(default)* | `Serialize`/`Deserialize` on all param structs |
+| `schemars` *(default)* | `JsonSchema` on every serde type; turns on `serde` |
 
 ```toml
-# Without serde:
+# Without serde or JSON Schema:
 sindr-devices = { version = "0.3", default-features = false }
 ```

@@ -75,12 +75,15 @@
 //! | Analysis | Entry point | Notes |
 //! |---|---|---|
 //! | Operating point (linear or nonlinear DC) | [`solve_op`], [`solve_circuit`] | Newton–Raphson for nonlinear devices. [`solve_op`] is SPICE's `.op` (C open, L shorted, sources at t = 0); [`solve_circuit`] runs a transient when the circuit has C, L or waveforms |
-//! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
+//! | Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself. [`solve_transient_with_progress`] calls a hook after each step, which can stop the run with [`Flow::Stop`] |
+//! | Transient session | [`TransientSession`] | A transient held open between calls, after FMI 3.0 co-simulation: `advance_to` a time, `set_source` and `set_param` there, and `run_until` an [`Event`] (a node crossing a level). For a circuit paired with firmware, a user or a changing environment |
 //! | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 //! | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 //! | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS, VCCS, CCVS and CCCS gains, and diode (IS, N, RS), BJT (BF, IS, BR, NF, NR, VAF) and MOSFET (KP, VTO, LAMBDA) model parameters |
 //! | AC sensitivity (`.sens ... ac`) | [`solve_ac_sensitivity`] | One adjoint solve per frequency: d(output phasor)/d(parameter) for R, C, L, the four controlled-source gains, the stimulus's AC magnitude and the device-model parameters (diode CJO and TT too), with the bias point held fixed, as in ngspice |
 //! | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
+//! | Pole-zero (`.pz`) | [`solve_pz`] | Poles and zeros of a voltage gain or transimpedance at the operating point ([`PzConfig`]) |
+//! | Loop gain | [`solve_loop_gain`] | Return ratio of a feedback loop at a 0 V probe, by double injection, with gain and phase margins ([`LoopGainConfig`]) |
 //! | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`); each point an operating point as [`solve_op`] solves it |
 //! | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 //! | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
@@ -91,7 +94,7 @@
 //! | Fourier (`.four`) and FFT | [`Fourier`], [`Fft`] | Harmonics and THD of a transient signal at a fundamental, as ngspice's `.four` (last period, 200-point linear resample); a windowed (Hann, Hamming, Blackman, flat-top or none) radix-2 FFT of a uniform resample, scaled to peak amplitude |
 //! | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 //!
-//! Not available: distortion, pole-zero,
+//! Not available: distortion,
 //! periodic steady state, S-parameters, variable-order integration.
 //!
 //! ## Device models
@@ -110,9 +113,12 @@
 //! | Transformer | Coupled inductors; optional saturating core |
 //! | Battery | Open-circuit voltage by state of charge behind R0 and an optional R1‖C1; state of charge falls with charge drawn ([`battery::BatteryParams`]; Li-ion and CR2032 presets) |
 //! | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
+//! | Switching regulator | Averaged buck or boost: holds its set voltage and draws `Vout·Iout/(η·Vin)` from its input; dropout, current limit, UVLO ([`ConverterParams`]) |
 //! | Crystal | Butterworth–Van Dyke: `Rm`–`Lm`–`Cm` beside `C0` ([`CrystalParams`]) |
 //! | Ferrite bead | `R_dc` into `L ∥ R_ac` (∥ `C`) ([`FerriteBeadParams`]) |
 //! | DC motor | Brushed: armature `R`, `L` and back-EMF `ke·ω`; shaft with torque `kt·i`, inertia, viscous friction and a load torque ([`element::DcMotorParams`]) |
+//! | Digital I/O pin | After the IBIS I/O buffer: push-pull or open-drain driver, pull-up or pull-down, clamp diodes, pin capacitance and input thresholds with hysteresis ([`element::PinModel`]) |
+//! | Logic gate | A CMOS gate at the analog level: steep or Schmitt inputs, a digital pin's output stage and a propagation delay ([`element::LogicGate`]) |
 //!
 //! Parameters are Rust structs, not SPICE `.model` cards.
 //!
@@ -138,7 +144,11 @@
 //! [`import::ImportError`] names the part, net or bench item at fault.
 //! Symbol ids (`resistor-iec`, `op-amp`) name kinds, a component's
 //! terminal-name table comes in through [`import::ImportOptions`], and
-//! parts sindr can't simulate import as listed black boxes.
+//! parts sindr can't simulate import as listed black boxes. A schematic
+//! still being drawn simulates: [`import::UnconnectedTerminals::Skip`]
+//! leaves out parts with unwired terminals, and nets that only reach IC
+//! pins are tied to ground through 1 TΩ. A vendor `.subckt` can be a part's
+//! model (`import::Model::Subckt`, feature `spice`).
 //!
 //! ## SPICE input (feature `spice`)
 //!
@@ -148,7 +158,8 @@
 //! `AC mag [phase]` and a waveform on V and I lines in any order;
 //! `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 //! `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
-//! `.ac`, `.tf`, `.sens`, `.noise` and `.tran`. `.model` cards fill in what
+//! `.ac`, `.tf`, `.sens`, `.noise`, `.pz` and `.tran`, and `.four` (onto
+//! [`Fourier`]). `.model` cards fill in what
 //! sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 //! `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
 //! `NR`, `VAF`, `KF`, `AF`; level-1 MOSFETs: `KP`, `VTO`, `LAMBDA`, `GAMMA`,

@@ -2,7 +2,7 @@
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain with stability margins, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain with stability margins, DC sweep, temperature sweep, and Fourier (`.four`) and FFT of a transient. A `TransientSession` holds a transient open between calls, for a circuit paired with firmware or a user. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -26,7 +26,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.four`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist
@@ -319,7 +319,7 @@ A JFET's `parasitic_caps` are SPICE's gate junctions: CGS and CGD at zero bias, 
 
 A MOSFET's `body_diode` is a SPICE diode card (`DiodeModel`) from source to drain for NMOS, drain to source for PMOS. It conducts when a bridge or inductive load pulls the drain past the source with the channel off. Every analysis solves it as a `Diode` named `<id>.body`, which is where its current shows in the results; `bv` on it sets the part's avalanche voltage.
 
-`BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
+`BjtKind`, `BjtRegion`, `MosfetKind`, `MosfetRegion`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
 When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC; a JFET's CGS/CGD as charge companions, with per-junction charge state. This automatically triggers transient analysis.
 
@@ -373,6 +373,7 @@ CircuitElement::Transformer(Transformer {
     l1: f64,             // primary inductance (H)
     l2: f64,             // secondary inductance (H)
     k: f64,              // coupling coefficient [0, 0.999]; default 0.999 (near-ideal)
+    saturation: Option<InductorSaturation>, // saturating core; None = linear
 })
 ```
 
@@ -552,6 +553,10 @@ pub struct SimulationResult {
     pub op_amp_results:   Vec<OpAmpResult>,      // present only if circuit has op-amps
     pub relay_results:    Vec<RelayResult>,      // present only if circuit has relays
     pub transient:        Option<TransientData>, // present only for reactive/waveform circuits
+    pub convergence_aid:  Option<ConvergenceAid>, // gmin or source stepping, when Newton needed it
+    pub junction_temperatures: HashMap<String, f64>, // parts with `Part::thermal`, K
+    pub state_of_charge:  HashMap<String, f64>,  // batteries, by id
+    pub motors:           HashMap<String, MotorResult>, // DC motors' shafts, by id
 }
 
 pub struct ComponentResult {
@@ -594,12 +599,16 @@ pub struct TransientData {
     pub timesteps: Vec<TimestepSnapshot>,
     pub time_step: f64,
     pub duration:  f64,
+    pub stats:     TransientStats, // accepted, rejected and jumped steps
 }
 
 pub struct TimestepSnapshot {
     pub time:              f64,
     pub node_voltages:     HashMap<String, f64>,
     pub component_results: Vec<ComponentResult>,
+    pub junction_temperatures: HashMap<String, f64>,
+    pub state_of_charge:   HashMap<String, f64>,
+    pub motors:            HashMap<String, MotorResult>,
 }
 ```
 
@@ -952,6 +961,10 @@ Each component kind has ratings it needs, checked whether set or not; a missing 
 | BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
 | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+| crystal | `power` (drive level) |
+| ferrite bead | `current`, `power` |
+| voltage regulator, switching regulator, DC motor | `voltage`, `current`, `power` |
+| digital pin | `current` |
 | anything with `Part::thermal` | also `tj_max` |
 
 Any other rating set on a part is checked too: `power`, `voltage` and `current` on any component (on the port its `ComponentResult` reports), the rest on the devices they belong to. All limits are magnitudes, so PNP and PMOS parts use the same positive numbers. Transistor power is `|V·I|` on the Vce/Ic or Vds/Id port, without base or gate dissipation.
@@ -1051,7 +1064,7 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Bench loads** are resistors, capacitors and inductors, plus `LoadKind::CurrentSink` (a constant current drawn from `a` into `b`, such as an IC's supply current; for one that changes with time, use a current `BenchSource` with a waveform) and `LoadKind::TimedSwitch`, which is closed through `on_resistance` until `at` and then open at `off_resistance`, or open then closed with `starts_closed: false`. `LoadKind::released_at(1e-6, 25.0)` is an open-drain output holding a bus line low and letting go at 1 µs, for its rise time through the pull-ups and bus capacitance. The operating point, DC sweeps and AC see it at t = 0; a transient lands a step on `at`, which still sees the old state, as a waveform's jump does.
-- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only. Decorated names (`3V3_A`, `12V_IN`) get none, since they're often rails derived through a filter or a switch. A net the bench already drives, or ties to one it drives, gets no second supply, and tied nets get one between them. `import::supply_names` reports what that assumes, which supply-like names (`VCC`, `VBAT`, `3V3_A`) were left for you to set, and which nets are named like grounds.
+- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only. Decorated names (`3V3_A`, `12V_IN`) get none, since they're often rails derived through a filter or a switch. A net the bench already drives, or ties to one it drives, gets no second supply, and tied nets get one between them. `import::supply_names` reports what that assumes, which supply-like names (`VCC`, `VBAT`, `3V3_A`) were left for you to set, and which nets are named like grounds. A net named `0V` is a ground, not a 0 V supply: unless it's the bench's ground, tie it to it with `with_tie`, or validation reports it floating.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
 
 ### What sindr reads from part data
@@ -1090,6 +1103,8 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
 | `import_netlist` | Importing a schematic netlist with a test bench |
 | `parse_netlist` | SPICE input |
+| `fourier` | Harmonics, THD and an FFT of a clipped sine (`.four`) |
+| `vs_ngspice` | Timing against ngspice on the same decks (needs `ngspice` on the PATH) |
 | `list_examples`, `run_example` | The built-in named circuits |
 
 ## Error handling
@@ -1148,11 +1163,11 @@ Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple
 
 | Case | 10 | 100 | 1 000 |
 |---|---:|---:|---:|
-| DC, diode–resistor chain (devices) | 37 µs | 0.93 ms | 8.7 ms |
-| DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
-| Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
+| DC, diode–resistor chain (devices) | 30 µs | 0.31 ms | 3.3 ms |
+| DC, cascaded BJT common-emitter stages (devices) | 0.15 ms | 1.4 ms | 14 ms |
+| Transient, RC ladder over 200 steps (stages) | 0.74 ms | 6.6 ms | 66 ms |
 
-A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. A transient session a microcontroller drives for 10 s, writing a pin and reading the filtered output every millisecond (10 000 updates, 130 000 steps at a 100 µs `tstep`), takes 73 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 8 ms. A transient session a microcontroller drives for 10 s, writing a pin and reading the filtered output every millisecond (10 000 updates, 130 000 steps at a 100 µs `tstep`), takes 80 ms. The cascaded BJT row grows about linearly: the shared supply rail is substituted out before the sparse factorisation, so it doesn't fill the LU in. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
 
 Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
 

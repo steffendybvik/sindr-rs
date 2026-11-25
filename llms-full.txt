@@ -20,7 +20,7 @@ A circuit simulator you embed in Rust: build a circuit as a typed value, solve i
 - **Pure Rust, no C.** No `unsafe` in any crate (each has `#![forbid(unsafe_code)]`), no libngspice to install, no global state: run as many simulations in parallel threads as you like.
 - **Builds for WebAssembly.** `wasm32-unknown-unknown` with every feature on, so the same engine runs in a web app.
 - **Answers design questions.** `check_ratings` says whether each part stays inside its absolute maximum ratings, self-heating flags thermal runaway, and `check_specs` turns `.meas`-style measurements into pass/fail with margins.
-- **Real parts as primitives.** 34 element types: the usual R, L, C, sources and semiconductors, plus LEDs, zeners, regulators, op-amps, comparators, relays, fuses, switches, potentiometers, thermistors, photoresistors, transformers, batteries, crystals and ferrite beads.
+- **Real parts as primitives.** 39 element types: the usual R, L, C, sources and semiconductors, plus LEDs, zeners, linear and switching regulators, op-amps, comparators, relays, fuses, switches, potentiometers, thermistors, photoresistors, transformers, batteries, crystals, ferrite beads, DC motors, MCU pins and logic gates.
 - **Checked against ngspice.** Every analysis has golden cases solved by both (below).
 
 ### Quick start
@@ -74,8 +74,8 @@ More in [`sindr/examples/`](./sindr/examples): RC transient, BJT amplifier, Bode
 
 | Crate | Purpose |
 |-------|---------|
-| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.pz`, loop gain, `.meas`, ratings checks, SPICE front end |
-| [`sindr-devices`](./sindr-devices) | Device physics: diode family, BJT, MOSFET, JFET, IGBT, varactor, thermistor and photoresistor models |
+| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient (also stepped from outside, as a session), AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.pz`, loop gain, `.four` and FFT, `.meas`, ratings checks, SPICE front end |
+| [`sindr-devices`](./sindr-devices) | Device physics: diode family, BJT, MOSFET, JFET, IGBT, varactor, thermistor, photoresistor, regulator and switching-converter models |
 
 `sindr` depends on `sindr-devices`. The split lets you use the device-physics models with your own solver, without the `nalgebra` linear-algebra stack.
 
@@ -89,16 +89,16 @@ Each analysis is checked against [ngspice](https://ngspice.sourceforge.io/) 47 o
 | Analysis | Cases | Worst relative error | Worst other |
 |---|---|---|---|
 | Operating point | 22 | 7e-6 | — |
-| DC sweep | 8 | 4e-5 | — |
+| DC sweep | 9 | 4e-5 | — |
 | Temperature sweep | 4 | 8e-7 | — |
 | AC | 15 | 3e-6 | 1e-4° phase |
 | Diode charge (AC) | 2 | 2e-4 | — |
 | Noise | 4 | 7e-7 | — |
 | Pole-zero | 2 | 1e-9 | — |
-| Transient | 12 | 3e-4 | 2.6 % of full scale |
+| Transient | 15 | 3e-3 | 2.6 % of full scale |
 <!-- accuracy:end -->
 
-The transient's worst is a switching BJT's collector on a 3 µs edge, where a 0.4 mV base error becomes 2.6 % of the current; its other cases stay under 0.15 %. Every case, and the tolerance its test holds it to, is in [`docs/ACCURACY.md`](./docs/ACCURACY.md); how the cases are built is in [`sindr/tests/golden/README.md`](./sindr/tests/golden/README.md). Both tables come from the test suite (`scripts/accuracy_table.py`).
+The transient's worst is a switching BJT's collector on a 3 µs edge, where a 0.4 mV base error becomes 2.6 % of the current; its other cases stay under 0.15 %. Its worst relative error, 3e-3, is the averaged buck converter's inductor-ripple estimate against a switched buck in ngspice: a model against a different circuit, not the solver's error. Every case, and the tolerance its test holds it to, is in [`docs/ACCURACY.md`](./docs/ACCURACY.md); how the cases are built is in [`sindr/tests/golden/README.md`](./sindr/tests/golden/README.md). Both tables come from the test suite (`scripts/accuracy_table.py`).
 
 ### Speed
 
@@ -106,9 +106,9 @@ Medians on an Apple M1 Pro, release build, one thread ([details](./sindr/README.
 
 | Circuit | Time |
 |---|---:|
-| Operating point, 100 diodes and resistors | 0.93 ms |
-| Transient, 100-stage RC ladder, 200 steps | 15 ms |
-| Half-wave rectifier, five 50 Hz cycles (5 000 steps) | 9 ms |
+| Operating point, 100 diodes and resistors | 0.31 ms |
+| Transient, 100-stage RC ladder, 200 steps | 6.6 ms |
+| Half-wave rectifier, five 50 Hz cycles (5 000 steps) | 8 ms |
 
 CI fails a pull request that makes any benchmark more than 25 % slower.
 
@@ -188,7 +188,7 @@ cargo run --example parse_netlist
 
 ### Scope & limitations
 
-sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, pole-zero analysis, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
+sindr is an analog circuit simulator. Digital logic (beyond gates at the analog level), HDL ingestion, MCU simulation (pair your own with a `TransientSession`), schematic capture, BSIM-class and Gummel–Poon device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. Vendor models load only as level-1 cards or subcircuits built from sindr's elements. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
 Where it's heading on the way to 1.0 is in [`ROADMAP.md`](./ROADMAP.md). To work on sindr itself, see [`CONTRIBUTING.md`](./CONTRIBUTING.md). AI coding agents (Claude Code, Codex, Cursor, etc.) should also read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
 
@@ -215,7 +215,7 @@ conditions.
 
 MNA (Modified Nodal Analysis) circuit solver. Build a circuit, call `solve_circuit`, get voltages, currents, and power for every component.
 
-Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain with stability margins, DC sweep, and temperature sweep. The solver picks the right path automatically based on what components are in the circuit.
+Supports: resistive DC, nonlinear DC (Newton-Raphson), transient (Gear-2, trapezoidal or backward Euler), AC analysis, noise (`.noise`), transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain with stability margins, DC sweep, temperature sweep, and Fourier (`.four`) and FFT of a transient. A `TransientSession` holds a transient open between calls, for a circuit paired with firmware or a user. The solver picks the right path automatically based on what components are in the circuit.
 
 Device physics (BJT, MOSFET, diode models) live in the companion crate [`sindr-devices`](../sindr-devices).
 
@@ -239,7 +239,7 @@ let netlist = sindr::spice::parse_file("amp.cir")?;
 let result = sindr::solve_circuit(&netlist.circuit)?;
 ```
 
-It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
+It reads a practical subset of Berkeley SPICE3f5 decks (R, L, C, V, I, D, Q, M, J, B, X, linear E/G/F/H (and `VALUE`, `POLY`), K coupling, `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.four`, `.meas`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib`), keeping `.subckt` hierarchy as blocks and instances, which are flattened with `.`-separated naming when simulated. See the `sindr::spice` module docs for the supported subset and strictness options, or run the worked example:
 
 ```bash
 cargo run --example parse_netlist
@@ -532,7 +532,7 @@ A JFET's `parasitic_caps` are SPICE's gate junctions: CGS and CGD at zero bias, 
 
 A MOSFET's `body_diode` is a SPICE diode card (`DiodeModel`) from source to drain for NMOS, drain to source for PMOS. It conducts when a bridge or inductive load pulls the drain past the source with the channel off. Every analysis solves it as a `Diode` named `<id>.body`, which is where its current shows in the results; `bv` on it sets the part's avalanche voltage.
 
-`BjtKind`, `MosfetKind`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
+`BjtKind`, `BjtRegion`, `MosfetKind`, `MosfetRegion`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
 
 When `parasitic_caps` is set, Cbe/Cbc (BJT) or Cgs/Cgd (MOSFET) are stamped as capacitor companions each transient timestep, with per-junction voltage state tracked internally, and as jωC in AC; a JFET's CGS/CGD as charge companions, with per-junction charge state. This automatically triggers transient analysis.
 
@@ -586,6 +586,7 @@ CircuitElement::Transformer(Transformer {
     l1: f64,             // primary inductance (H)
     l2: f64,             // secondary inductance (H)
     k: f64,              // coupling coefficient [0, 0.999]; default 0.999 (near-ideal)
+    saturation: Option<InductorSaturation>, // saturating core; None = linear
 })
 ```
 
@@ -765,6 +766,10 @@ pub struct SimulationResult {
     pub op_amp_results:   Vec<OpAmpResult>,      // present only if circuit has op-amps
     pub relay_results:    Vec<RelayResult>,      // present only if circuit has relays
     pub transient:        Option<TransientData>, // present only for reactive/waveform circuits
+    pub convergence_aid:  Option<ConvergenceAid>, // gmin or source stepping, when Newton needed it
+    pub junction_temperatures: HashMap<String, f64>, // parts with `Part::thermal`, K
+    pub state_of_charge:  HashMap<String, f64>,  // batteries, by id
+    pub motors:           HashMap<String, MotorResult>, // DC motors' shafts, by id
 }
 
 pub struct ComponentResult {
@@ -807,12 +812,16 @@ pub struct TransientData {
     pub timesteps: Vec<TimestepSnapshot>,
     pub time_step: f64,
     pub duration:  f64,
+    pub stats:     TransientStats, // accepted, rejected and jumped steps
 }
 
 pub struct TimestepSnapshot {
     pub time:              f64,
     pub node_voltages:     HashMap<String, f64>,
     pub component_results: Vec<ComponentResult>,
+    pub junction_temperatures: HashMap<String, f64>,
+    pub state_of_charge:   HashMap<String, f64>,
+    pub motors:            HashMap<String, MotorResult>,
 }
 ```
 
@@ -1165,6 +1174,10 @@ Each component kind has ratings it needs, checked whether set or not; a missing 
 | BJT | `vce`, `vcb`, `veb`, `ic`, `power` |
 | MOSFET, JFET | `vds`, `vgs`, `id`, `power` |
 | IGBT | `vce`, `vgs` (gate–emitter), `ic`, `power` |
+| crystal | `power` (drive level) |
+| ferrite bead | `current`, `power` |
+| voltage regulator, switching regulator, DC motor | `voltage`, `current`, `power` |
+| digital pin | `current` |
 | anything with `Part::thermal` | also `tj_max` |
 
 Any other rating set on a part is checked too: `power`, `voltage` and `current` on any component (on the port its `ComponentResult` reports), the rest on the devices they belong to. All limits are magnitudes, so PNP and PMOS parts use the same positive numbers. Transistor power is `|V·I|` on the Vce/Ic or Vds/Id port, without base or gate dissipation.
@@ -1264,7 +1277,7 @@ println!("vout = {:.3} V", op.voltage("vout").unwrap());
 - **Values as schematics write them**, through `import::parse_value`: `4k7`, `4R7`, `2M2`, `100nF`, `4.7 µF`, `10 kΩ`, `300 K`. Case matters as on a schematic, so `1M` is a megohm (SPICE would read a milliohm).
 - **Connectors, test points, net ties and mounting holes** add no element; a bench attaches to their terminals. Crystals (`16MHz`, with `esr` and `c0`) and ferrite beads (`600` Ω at 100 MHz, with `r_dc`) import as their equivalent circuits.
 - **Bench loads** are resistors, capacitors and inductors, plus `LoadKind::CurrentSink` (a constant current drawn from `a` into `b`, such as an IC's supply current; for one that changes with time, use a current `BenchSource` with a waveform) and `LoadKind::TimedSwitch`, which is closed through `on_resistance` until `at` and then open at `off_resistance`, or open then closed with `starts_closed: false`. `LoadKind::released_at(1e-6, 25.0)` is an open-drain output holding a bus line low and letting go at 1 µs, for its rise time through the pull-ups and bus capacitance. The operating point, DC sweeps and AC see it at t = 0; a transient lands a step on `at`, which still sees the old state, as a waveform's jump does.
-- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only. Decorated names (`3V3_A`, `12V_IN`) get none, since they're often rails derived through a filter or a switch. A net the bench already drives, or ties to one it drives, gets no second supply, and tied nets get one between them. `import::supply_names` reports what that assumes, which supply-like names (`VCC`, `VBAT`, `3V3_A`) were left for you to set, and which nets are named like grounds.
+- **Power ports are only names.** A net called `3V3` isn't driven unless the bench says so. `Bench::with_supplies_from_net_names` adds a supply for every net whose name states a voltage (`3V3`, `+5V`, `-12V`), on request only. Decorated names (`3V3_A`, `12V_IN`) get none, since they're often rails derived through a filter or a switch. A net the bench already drives, or ties to one it drives, gets no second supply, and tied nets get one between them. `import::supply_names` reports what that assumes, which supply-like names (`VCC`, `VBAT`, `3V3_A`) were left for you to set, and which nets are named like grounds. A net named `0V` is a ground, not a 0 V supply: unless it's the bench's ground, tie it to it with `with_tie`, or validation reports it floating.
 - Everything is serde, so a netlist and bench can come in as JSON. The `ComponentKind` docs list each kind's value, parameters and model.
 
 #### What sindr reads from part data
@@ -1303,6 +1316,8 @@ One small program per capability in [`examples/`](./examples), run with `cargo r
 | `initial_voltages` | Seeding Newton–Raphson (`.nodeset`) |
 | `import_netlist` | Importing a schematic netlist with a test bench |
 | `parse_netlist` | SPICE input |
+| `fourier` | Harmonics, THD and an FFT of a clipped sine (`.four`) |
+| `vs_ngspice` | Timing against ngspice on the same decks (needs `ngspice` on the PATH) |
 | `list_examples`, `run_example` | The built-in named circuits |
 
 ### Error handling
@@ -1361,11 +1376,11 @@ Medians from `cargo bench -p sindr --bench transient --bench newton` on an Apple
 
 | Case | 10 | 100 | 1 000 |
 |---|---:|---:|---:|
-| DC, diode–resistor chain (devices) | 37 µs | 0.93 ms | 8.7 ms |
-| DC, cascaded BJT common-emitter stages (devices) | 0.18 ms | 6.7 ms | 440 ms |
-| Transient, RC ladder over 200 steps (stages) | 0.95 ms | 15 ms | 143 ms |
+| DC, diode–resistor chain (devices) | 30 µs | 0.31 ms | 3.3 ms |
+| DC, cascaded BJT common-emitter stages (devices) | 0.15 ms | 1.4 ms | 14 ms |
+| Transient, RC ladder over 200 steps (stages) | 0.74 ms | 6.6 ms | 66 ms |
 
-A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 9 ms. A transient session a microcontroller drives for 10 s, writing a pin and reading the filtered output every millisecond (10 000 updates, 130 000 steps at a 100 µs `tstep`), takes 73 ms. The cascaded BJT row grows faster than linearly, because each stage's bias depends on the one before it and Newton needs more iterations as the chain lengthens. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
+A 50 Hz half-wave rectifier with a filter cap over five cycles (5 000 steps) takes 8 ms. A transient session a microcontroller drives for 10 s, writing a pin and reading the filtered output every millisecond (10 000 updates, 130 000 steps at a 100 µs `tstep`), takes 80 ms. The cascaded BJT row grows about linearly: the shared supply rail is substituted out before the sparse factorisation, so it doesn't fill the LU in. `benches/mna_solve.rs` has the raw dense and sparse solve times up to 10 000 nodes (`--features internals`).
 
 Pull requests run these benchmarks against their base on the same runner, and CI fails if any case is more than 25 % slower.
 
@@ -1436,8 +1451,10 @@ Pure electronics device physics companion models for MNA circuit simulation.
 | `inductor` | Saturating inductor core | `λ(i) = L_sat·i + (L₀ − L_sat)·I_sat·tanh(i/I_sat)` |
 | `thermistor` | NTC thermistor | Beta model R(T) = R₀·exp(β·(1/T − 1/T₀)) |
 | `regulator` | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation; LM7805 and AMS1117 presets |
+| `converter` | Switching regulator (buck, boost) | Averaged over a switching period: dropout or pass-through, current limit, UVLO, input current from power balance with constant or load-dependent efficiency; inductor ripple estimate and feedback-divider set point |
 | `photodiode` | Photodiode | Diode + photocurrent offset |
 | `photoresistor` | Photoresistor (LDR) | Light-level-dependent resistance |
+| `datasheet` | Datasheet figures | Min/typ/max figures at test conditions that `from_datasheet` constructors fit models to |
 
 ### Usage
 
@@ -1553,9 +1570,10 @@ assert!(r_85c < 10_000.0 && r_dim > 1_000.0);
 | Feature | Enables |
 |---------|---------|
 | `serde` *(default)* | `Serialize`/`Deserialize` on all param structs |
+| `schemars` *(default)* | `JsonSchema` on every serde type; turns on `serde` |
 
 ```toml
-# Without serde:
+# Without serde or JSON Schema:
 sindr-devices = { version = "0.3", default-features = false }
 ```
 
@@ -1570,7 +1588,7 @@ Status: `0.3.0`, before 1.0. Anything below may change.
 
 ### What sindr is
 
-- DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain and stability margins, DC sweep, temperature sweep
+- DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain and stability margins, DC sweep, temperature sweep, Fourier (`.four`) and FFT of transients, and a transient stepped from outside (`TransientSession`)
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead, digital I/O pin (IBIS parametric buffer), logic gates at the analog level (thresholds, a pin's output stage, propagation delay)
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
 - Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), averaged buck and boost converter (power balance, efficiency over load, current limit, dropout, UVLO), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
@@ -1602,7 +1620,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **SPICE netlist import: partial.** The `spice` feature (`sindr::spice`, on by default) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, M, J, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.four`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`, `EG`, `XTI` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF`, `EG`, `XTI` on BJTs. `EG` and `XTI` set how `IS` follows temperature, as SPICE's `IS(T)`; `TNOM` is read only at 27 °C, the temperature sindr's values are at. Temperature moves `IS` and the thermal voltage only: `VJ`, `CJO` and `BF` (`XTB`) stay at their 27 °C values. Anything else (BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
 - **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, M, J, B, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. A MOSFET with flicker noise, IGBT, zener, op-amp, comparator, relay, photodiode, varactor, regulator and switching regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
-- **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation.
+- **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks (each with optional variants of its body, which an instance picks), instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, MOSFET and JFET take level-1 `NMOS`/`PMOS` and `NJF`/`PJF` cards (a JFET's `VTO`, `BETA` and gate capacitances `CGS`, `CGD`, `PB`, `M`, `FC`), and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
 - **Behavioural sources are expressions, not a device language.** `CircuitElement::Behavioural` (SPICE's `B`) is one voltage or current set by an expression of node voltages, branch currents and time. There is no Verilog-A, no internal state or charge (`ddt`, `idt`), and no XSPICE code models; a new device with its own state means writing a Rust companion model. Steps and comparisons in an expression have zero slope, so a hard switch can stall Newton where a smooth one (`tanh`) converges. An expression has no device limiting (SPICE's `pnjlim`): an exponential written as a `B` source is reached by halving steps that overflow and then source stepping, so it takes more iterations than the built-in diode, and an expression's value is good to the solver's `reltol` rather than to rounding.
 
@@ -1652,7 +1670,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 #### Solver & numerics
 
 - **Fixed-order integrators only:** Gear-2 (the default), trapezoidal and backward Euler, chosen with `TransientConfig::with_method`. No variable-order Gear. Gear-2 damps lightly-damped LC tanks slightly over many periods; trapezoidal keeps their amplitude but can ring on time constants much shorter than the step; backward Euler damps strongly.
-- **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. No KLU-style partial refactorisation.
+- **Sparse LU above 100 unknowns** (`faer`), dense below. A 10 000-node resistor ladder solves in about 4 ms and a 100×100 RC mesh in about 15 ms per solve. The pattern is recorded and analysed once, and each later Newton iteration or step refactors numerically into it; a step that changes the pattern records it again. There's no partial refactorisation of only the columns that changed, and a linear transient still refactors at every step.
 - **Convergence aids: gmin stepping, then source stepping.** When plain Newton–Raphson fails on a nonlinear DC solve, sindr retries with a gmin-stepping homotopy (`1e-2` S down to the `1e-12` floor), then by ramping every source up from zero, warm-starting between steps. `SimulationResult::convergence_aid` says which one was needed. No pseudo-transient continuation. `ConvergenceFailed` names the node that won't settle, the components on it and the point of the analysis (`SolvePoint`), with the last Newton step (not a KCL residual).
 - **`.nodeset`** (`SolverOptions::nodeset`) seeds the DC operating point and the bias point of AC, noise, `.tf`, `.sens` and every sweep, through a `Solver`.
 - **A transient starts switched on at t = 0 unless asked otherwise:** `TransientConfig::new` starts from the initial conditions alone (SPICE's `UIC`), where SPICE starts from the DC operating point. `TransientStart::OperatingPoint` does what SPICE does, and a deck's `.tran` maps onto it (`uic` onto the other). The operating point it starts from is solved without self-heating. Initial winding currents on a transformer can't be set, and inductor `IC=` on SPICE element lines isn't parsed. With `tstart`, sindr's first snapshot is at `tstart` itself, where ngspice's is its first step past it.
@@ -7263,12 +7281,15 @@ hierarchy is [`SimError::Design`].
 | Analysis | Entry point | Notes |
 |---|---|---|
 | Operating point (linear or nonlinear DC) | [`solve_op`], [`solve_circuit`] | Newton–Raphson for nonlinear devices. [`solve_op`] is SPICE's `.op` (C open, L shorted, sources at t = 0); [`solve_circuit`] runs a transient when the circuit has C, L or waveforms |
-| Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself |
+| Transient | [`solve_transient`] | Gear-2 (default), trapezoidal or backward Euler ([`IntegrationMethod`]), steps up to the [`TransientConfig`]'s `tstep`, shortened by truncation-error control and landing on waveform breakpoints. [`solve_circuit`] also takes this path when the circuit has C, L or waveform sources, choosing 5 τ and τ/50 itself. [`solve_transient_with_progress`] calls a hook after each step, which can stop the run with [`Flow::Stop`] |
+| Transient session | [`TransientSession`] | A transient held open between calls, after FMI 3.0 co-simulation: `advance_to` a time, `set_source` and `set_param` there, and `run_until` an [`Event`] (a node crossing a level). For a circuit paired with firmware, a user or a changing environment |
 | AC small-signal | [`ac_analysis::solve_ac`] | Needs an [`ac_analysis::AcConfig`]. [`solve_circuit`] **never** runs AC |
 | Transfer function (`.tf`) | [`solve_tf`] | DC small-signal gain, input and output resistance at the operating point. Input: a voltage or current source; output: a node voltage or a voltage source's current ([`TfOutput`]) |
 | DC sensitivity (`.sens`) | [`solve_sensitivity`] | Adjoint method: d(output)/d(parameter) for resistances, source values, VCVS, VCCS, CCVS and CCCS gains, and diode (IS, N, RS), BJT (BF, IS, BR, NF, NR, VAF) and MOSFET (KP, VTO, LAMBDA) model parameters |
 | AC sensitivity (`.sens ... ac`) | [`solve_ac_sensitivity`] | One adjoint solve per frequency: d(output phasor)/d(parameter) for R, C, L, the four controlled-source gains, the stimulus's AC magnitude and the device-model parameters (diode CJO and TT too), with the bias point held fixed, as in ngspice |
 | Noise (`.noise`) | [`solve_noise`] | Thermal, shot and flicker noise at an output voltage, referred to an input source, with a per-source breakdown and band totals |
+| Pole-zero (`.pz`) | [`solve_pz`] | Poles and zeros of a voltage gain or transimpedance at the operating point ([`PzConfig`]) |
+| Loop gain | [`solve_loop_gain`] | Return ratio of a feedback loop at a 0 V probe, by double injection, with gain and phase margins ([`LoopGainConfig`]) |
 | DC sweep | [`fn@dc_sweep`], [`dc_sweep_nested`] | One voltage or current source, or two nested (`.dc V1 … V2 …`); each point an operating point as [`solve_op`] solves it |
 | Temperature sweep | [`temperature_sweep`] | Re-solves the operating point at each junction temperature |
 | Solver options (`.options`, `.nodeset`) | [`Solver`], [`SolverOptions`] | Tolerances, iteration budget, gmin and source stepping, and a nodeset seeding Newton for every analysis's bias point. The free functions use the defaults |
@@ -7279,7 +7300,7 @@ hierarchy is [`SimError::Design`].
 | Fourier (`.four`) and FFT | [`Fourier`], [`Fft`] | Harmonics and THD of a transient signal at a fundamental, as ngspice's `.four` (last period, 200-point linear resample); a windowed (Hann, Hamming, Blackman, flat-top or none) radix-2 FFT of a uniform resample, scaled to peak amplitude |
 | Initial conditions (`.ic`, `UIC`) | [`TransientConfig::with_initial_voltages`], [`TransientConfig::with_initial_current`], [`TransientConfig::with_start`] | The state a transient starts from: switched on at t = 0 (default) or the DC operating point ([`TransientStart`]) |
 
-Not available: distortion, pole-zero,
+Not available: distortion,
 periodic steady state, S-parameters, variable-order integration.
 
 #### Device models
@@ -7298,9 +7319,12 @@ periodic steady state, S-parameters, variable-order integration.
 | Transformer | Coupled inductors; optional saturating core |
 | Battery | Open-circuit voltage by state of charge behind R0 and an optional R1‖C1; state of charge falls with charge drawn ([`battery::BatteryParams`]; Li-ion and CR2032 presets) |
 | Voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation ([`RegulatorParams`]; LM7805 and AMS1117 presets) |
+| Switching regulator | Averaged buck or boost: holds its set voltage and draws `Vout·Iout/(η·Vin)` from its input; dropout, current limit, UVLO ([`ConverterParams`]) |
 | Crystal | Butterworth–Van Dyke: `Rm`–`Lm`–`Cm` beside `C0` ([`CrystalParams`]) |
 | Ferrite bead | `R_dc` into `L ∥ R_ac` (∥ `C`) ([`FerriteBeadParams`]) |
 | DC motor | Brushed: armature `R`, `L` and back-EMF `ke·ω`; shaft with torque `kt·i`, inertia, viscous friction and a load torque ([`element::DcMotorParams`]) |
+| Digital I/O pin | After the IBIS I/O buffer: push-pull or open-drain driver, pull-up or pull-down, clamp diodes, pin capacitance and input thresholds with hysteresis ([`element::PinModel`]) |
+| Logic gate | A CMOS gate at the analog level: steep or Schmitt inputs, a digital pin's output stage and a propagation delay ([`element::LogicGate`]) |
 
 Parameters are Rust structs, not SPICE `.model` cards.
 
@@ -7326,7 +7350,11 @@ keyed by the caller's component and net ids, and every
 [`import::ImportError`] names the part, net or bench item at fault.
 Symbol ids (`resistor-iec`, `op-amp`) name kinds, a component's
 terminal-name table comes in through [`import::ImportOptions`], and
-parts sindr can't simulate import as listed black boxes.
+parts sindr can't simulate import as listed black boxes. A schematic
+still being drawn simulates: [`import::UnconnectedTerminals::Skip`]
+leaves out parts with unwired terminals, and nets that only reach IC
+pins are tied to ground through 1 TΩ. A vendor `.subckt` can be a part's
+model (`import::Model::Subckt`, feature `spice`).
 
 #### SPICE input (feature `spice`)
 
@@ -7336,7 +7364,8 @@ K (two coupled `L` lines) and X elements, with `[DC] v`,
 `AC mag [phase]` and a waveform on V and I lines in any order;
 `.subckt`, `.global`, `.model`, `.param`, `.include`, `.lib`,
 `.ic`, `.nodeset`, `.options` and `.meas`; and the analysis cards `.op`, `.dc`,
-`.ac`, `.tf`, `.sens`, `.noise` and `.tran`. `.model` cards fill in what
+`.ac`, `.tf`, `.sens`, `.noise`, `.pz` and `.tran`, and `.four` (onto
+[`Fourier`]). `.model` cards fill in what
 sindr's diode and BJT models have (diodes: `IS`, `N`, `RS`, `CJO`, `VJ`,
 `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`; BJTs: `IS`, `BF`, `BR`, `NF`,
 `NR`, `VAF`, `KF`, `AF`; level-1 MOSFETs: `KP`, `VTO`, `LAMBDA`, `GAMMA`,
@@ -13664,6 +13693,7 @@ end-to-end simulator.
 | [`photoresistor`] | Photoresistor (LDR) | Light-level-dependent resistance |
 | [`datasheet`] | Datasheet figures | Min/typ/max figures at test conditions that `from_datasheet` constructors fit models to |
 | [`regulator`] | Linear voltage regulator | Piecewise linear: dropout, quiescent current, current limit, line and load regulation, positive or negative; LM7805 and AMS1117 presets |
+| [`converter`] | Switching regulator (buck, boost) | Averaged over a switching period: dropout or pass-through, current limit, UVLO, input current from power balance with constant or load-dependent efficiency |
 
 ### Quick example
 

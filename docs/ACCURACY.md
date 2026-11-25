@@ -38,6 +38,7 @@ largest deviation over every quantity and point the case checks;
 | `dc_diode_1n4148` | DC sweep | 4e-6 | 1e-5 |
 | `dc_diode_breakdown` | DC sweep | 4e-5 | 1e-4 |
 | `dc_diode_iv` | DC sweep | 8e-6 | 1e-5 |
+| `dc_exported_digital_pin` | DC sweep | 4e-6 | 1e-5 |
 | `dc_mosfet_body_diode` | DC sweep | 5e-6 | 1e-4 |
 | `dc_power_mosfet_body` | DC sweep | 6e-6 | 1e-4 |
 | `dc_power_mosfet_subckt` | DC sweep | 4e-9 | 1e-4 |
@@ -73,6 +74,7 @@ largest deviation over every quantity and point the case checks;
 | `tran_behavioural` | Transient | 0.022 % FS | 0.1 % FS |
 | `tran_bjt_switch` | Transient | 2.6 % FS | 3 % FS |
 | `tran_diode_recovery` | Transient | 0.15 % FS | 2 % FS |
+| `tran_exported_dc_motor` | Transient | 0.024 % FS | 0.1 % FS |
 | `tran_flasher` | Transient | 3e-4 | 5e-3 |
 | `tran_halfwave` | Transient | 0.065 % FS | 0.1 % FS |
 | `tran_ic_op` | Transient | < 0.001 % FS | 0.1 % FS |
@@ -81,6 +83,8 @@ largest deviation over every quantity and point the case checks;
 | `tran_rc_step` | Transient | 0.0048 % FS | 0.1 % FS |
 | `tran_rl_step` | Transient | 0.0048 % FS | 0.1 % FS |
 | `tran_rlc_ring` | Transient | < 0.001 % FS | 0.1 % FS |
+| `tran_session_square` | Transient | 0.0017 % FS | 0.1 % FS |
+| `tran_switched_buck` | Transient | 3e-3 | 1e-2 |
 | `tran_tstart` | Transient | 0.0013 % FS | 0.1 % FS |
 | `sens_ac_linear` | Other | 0 | 1e-12 |
 | `sens_dc_bjt` | Other | 1e-6 | 1e-5 |

@@ -13,7 +13,7 @@ A circuit simulator you embed in Rust: build a circuit as a typed value, solve i
 - **Pure Rust, no C.** No `unsafe` in any crate (each has `#![forbid(unsafe_code)]`), no libngspice to install, no global state: run as many simulations in parallel threads as you like.
 - **Builds for WebAssembly.** `wasm32-unknown-unknown` with every feature on, so the same engine runs in a web app.
 - **Answers design questions.** `check_ratings` says whether each part stays inside its absolute maximum ratings, self-heating flags thermal runaway, and `check_specs` turns `.meas`-style measurements into pass/fail with margins.
-- **Real parts as primitives.** 34 element types: the usual R, L, C, sources and semiconductors, plus LEDs, zeners, regulators, op-amps, comparators, relays, fuses, switches, potentiometers, thermistors, photoresistors, transformers, batteries, crystals and ferrite beads.
+- **Real parts as primitives.** 39 element types: the usual R, L, C, sources and semiconductors, plus LEDs, zeners, linear and switching regulators, op-amps, comparators, relays, fuses, switches, potentiometers, thermistors, photoresistors, transformers, batteries, crystals, ferrite beads, DC motors, MCU pins and logic gates.
 - **Checked against ngspice.** Every analysis has golden cases solved by both (below).
 
 ## Quick start
@@ -67,8 +67,8 @@ More in [`sindr/examples/`](./sindr/examples): RC transient, BJT amplifier, Bode
 
 | Crate | Purpose |
 |-------|---------|
-| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient, AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.pz`, loop gain, `.meas`, ratings checks, SPICE front end |
-| [`sindr-devices`](./sindr-devices) | Device physics: diode family, BJT, MOSFET, JFET, IGBT, varactor, thermistor and photoresistor models |
+| [`sindr`](./sindr) | The simulator and its data model (`Circuit`, elements, waveforms, design hierarchy, part data): operating point, transient (also stepped from outside, as a session), AC, DC and temperature sweeps, `.tf`, `.sens`, `.noise`, `.pz`, loop gain, `.four` and FFT, `.meas`, ratings checks, SPICE front end |
+| [`sindr-devices`](./sindr-devices) | Device physics: diode family, BJT, MOSFET, JFET, IGBT, varactor, thermistor, photoresistor, regulator and switching-converter models |
 
 `sindr` depends on `sindr-devices`. The split lets you use the device-physics models with your own solver, without the `nalgebra` linear-algebra stack.
 
@@ -82,16 +82,16 @@ Each analysis is checked against [ngspice](https://ngspice.sourceforge.io/) 47 o
 | Analysis | Cases | Worst relative error | Worst other |
 |---|---|---|---|
 | Operating point | 22 | 7e-6 | — |
-| DC sweep | 8 | 4e-5 | — |
+| DC sweep | 9 | 4e-5 | — |
 | Temperature sweep | 4 | 8e-7 | — |
 | AC | 15 | 3e-6 | 1e-4° phase |
 | Diode charge (AC) | 2 | 2e-4 | — |
 | Noise | 4 | 7e-7 | — |
 | Pole-zero | 2 | 1e-9 | — |
-| Transient | 12 | 3e-4 | 2.6 % of full scale |
+| Transient | 15 | 3e-3 | 2.6 % of full scale |
 <!-- accuracy:end -->
 
-The transient's worst is a switching BJT's collector on a 3 µs edge, where a 0.4 mV base error becomes 2.6 % of the current; its other cases stay under 0.15 %. Every case, and the tolerance its test holds it to, is in [`docs/ACCURACY.md`](./docs/ACCURACY.md); how the cases are built is in [`sindr/tests/golden/README.md`](./sindr/tests/golden/README.md). Both tables come from the test suite (`scripts/accuracy_table.py`).
+The transient's worst is a switching BJT's collector on a 3 µs edge, where a 0.4 mV base error becomes 2.6 % of the current; its other cases stay under 0.15 %. Its worst relative error, 3e-3, is the averaged buck converter's inductor-ripple estimate against a switched buck in ngspice: a model against a different circuit, not the solver's error. Every case, and the tolerance its test holds it to, is in [`docs/ACCURACY.md`](./docs/ACCURACY.md); how the cases are built is in [`sindr/tests/golden/README.md`](./sindr/tests/golden/README.md). Both tables come from the test suite (`scripts/accuracy_table.py`).
 
 ## Speed
 
@@ -99,9 +99,9 @@ Medians on an Apple M1 Pro, release build, one thread ([details](./sindr/README.
 
 | Circuit | Time |
 |---|---:|
-| Operating point, 100 diodes and resistors | 0.93 ms |
-| Transient, 100-stage RC ladder, 200 steps | 15 ms |
-| Half-wave rectifier, five 50 Hz cycles (5 000 steps) | 9 ms |
+| Operating point, 100 diodes and resistors | 0.31 ms |
+| Transient, 100-stage RC ladder, 200 steps | 6.6 ms |
+| Half-wave rectifier, five 50 Hz cycles (5 000 steps) | 8 ms |
 
 CI fails a pull request that makes any benchmark more than 25 % slower.
 
@@ -181,7 +181,7 @@ cargo run --example parse_netlist
 
 ## Scope & limitations
 
-sindr is an analog circuit simulator. Digital logic, HDL ingestion, MCU simulation, schematic capture, vendor model cards, pole-zero analysis, BSIM-class device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
+sindr is an analog circuit simulator. Digital logic (beyond gates at the analog level), HDL ingestion, MCU simulation (pair your own with a `TransientSession`), schematic capture, BSIM-class and Gummel–Poon device models, and coupled thermal networks (beyond one thermal RC per part) are **not** supported today. Vendor models load only as level-1 cards or subcircuits built from sindr's elements. SPICE netlist import is available as a parser for a practical subset (see above), not full SPICE3 coverage. See [`LIMITATIONS.md`](./LIMITATIONS.md) for the full breakdown of what's out-of-scope versus not-yet-implemented.
 
 Where it's heading on the way to 1.0 is in [`ROADMAP.md`](./ROADMAP.md). To work on sindr itself, see [`CONTRIBUTING.md`](./CONTRIBUTING.md). AI coding agents (Claude Code, Codex, Cursor, etc.) should also read [`AGENTS.md`](./AGENTS.md) for layout, conventions, and pitfalls.
 
