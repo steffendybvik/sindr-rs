@@ -1,0 +1,12 @@
+* sections that include each other, and one that includes itself
+.lib a
+.lib "section_cycle.cir" b
+Ra a 0 1k
+.endl
+.lib b
+.lib "section_cycle.cir" a
+Rb a 0 1k
+.endl
+.lib c
+.lib "section_cycle.cir" c
+.endl
