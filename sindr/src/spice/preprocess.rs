@@ -330,17 +330,30 @@ fn collect_physical_lines(src: &str) -> Vec<PhysicalLine> {
     out
 }
 
-/// Drop full-line `*` comments and trailing `;` comments.
+/// Drop full-line `*` comments, trailing `;` comments and ngspice's `$`
+/// comments: a `$` at the start of the line or after a space, tab or
+/// comma, outside quotes (`n$1` is a node name).
 fn strip_comments(line: &str) -> String {
     let leading_ws = leading_ws_len(line);
     if line.as_bytes().get(leading_ws).copied() == Some(b'*') {
         return String::new();
     }
-    if let Some(idx) = line.find(';') {
-        line[..idx].to_string()
-    } else {
-        line.to_string()
+    let line = line.find(';').map_or(line, |idx| &line[..idx]);
+    let mut quote = None;
+    let mut prev = None;
+    for (idx, c) in line.char_indices() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '$') if matches!(prev, None | Some(' ' | '\t' | ',')) => {
+                return line[..idx].to_string();
+            }
+            _ => {}
+        }
+        prev = Some(c);
     }
+    line.to_string()
 }
 
 fn leading_ws_len(s: &str) -> usize {
@@ -607,6 +620,20 @@ mod tests {
         let p = pp("title\n* full comment\nR1 a b 1k ; trailing comment\n");
         assert_eq!(p.lines.len(), 1);
         assert_eq!(p.lines[0].text.trim(), "r1 a b 1k");
+    }
+
+    /// ngspice's `$` comment starts at the line's start or after a space,
+    /// tab or comma, and not inside quotes.
+    #[test]
+    fn dollar_comments_stripped() {
+        let text = |line: &str| strip_comments(line).trim_end().to_string();
+        assert_eq!(text("R1 a b 1k $ note"), "R1 a b 1k");
+        assert_eq!(text("R1 a b 1k\t$note"), "R1 a b 1k");
+        assert_eq!(text("R1 a b 1k,$note"), "R1 a b 1k,");
+        assert_eq!(text("$ whole line"), "");
+        assert_eq!(text("R1 n$1 b 1k$x"), "R1 n$1 b 1k$x");
+        assert_eq!(text(".include \"a $b.lib\" $ c"), ".include \"a $b.lib\"");
+        assert_eq!(text(".param x='1 $ 2' $ c"), ".param x='1 $ 2'");
     }
 
     #[test]

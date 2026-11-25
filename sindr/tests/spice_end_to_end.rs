@@ -818,3 +818,38 @@ fn non_ascii_node_names() {
     assert_relative_eq!(op.node_voltages["µ"], 0.5, max_relative = 1e-9);
     assert_relative_eq!(op.node_voltages["å"], 1.0, max_relative = 1e-9);
 }
+
+/// Node names run to a separator, as in ngspice, so a schematic
+/// exporter's `/in` and `Net-_R1-Pad2_` read as written, and `$` after a
+/// space starts a comment. ngspice 47 solves this ladder to the same
+/// voltages.
+#[test]
+fn exported_node_names_and_dollar_comments() {
+    let deck = "* exported\nV1 /in 0 1 $ supply\n\
+                R1 /in Net-_R1-Pad2_ 1k ; another\n\
+                R2 Net-_R1-Pad2_ a+b 1k\n\
+                R3 a+b n$x 1k\t$ tab\n\
+                R4 n$x 0 1k $comment with $ inside\n.op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let op = sindr::solve_circuit(&netlist.circuit).unwrap();
+    for (node, want) in [
+        ("/in", 1.0),
+        ("net-_r1-pad2_", 0.75),
+        ("a+b", 0.5),
+        ("n$x", 0.25),
+    ] {
+        assert_relative_eq!(op.node_voltages[node], want, max_relative = 1e-9);
+    }
+}
+
+/// ngspice's `params:` keyword before a subckt's defaults and an
+/// instance's overrides.
+#[test]
+fn params_keyword_on_subckt_and_instance_lines() {
+    let deck = "* p\n.subckt div top bot params: r=1k\nR1 top mid {r}\nR2 mid bot {r}\n.ends\n\
+                V1 a 0 1\nX1 a 0 div params: r=2k\n.op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let op = sindr::solve_circuit(&netlist.circuit).unwrap();
+    // ngspice 47: i(v1) = -2.5e-4.
+    assert_relative_eq!(op.current("v1").unwrap().abs(), 2.5e-4, max_relative = 1e-9);
+}
