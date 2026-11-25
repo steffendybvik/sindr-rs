@@ -7,9 +7,11 @@
 //!   and emit the matching `CircuitElement`.
 //! * **V / I** — evaluate the optional DC term and translate the optional
 //!   `RawWaveform` (PULSE / SIN / PWL) into `crate::Waveform`. SPICE's
-//!   `td/tr/tf/pw/period` for PULSE map directly. SIN becomes a
-//!   `Waveform::Sine`, or a `Waveform::DampedSine` when it has a delay `td`
-//!   or a damping `theta`; its phase is in degrees, as in ngspice.
+//!   `td/tr/tf/pw/period` for PULSE map directly, missing ones defaulting
+//!   as in ngspice (`td` 0, `tr`/`tf` the `.tran` TSTEP, `pw`/`per` its
+//!   TSTOP). SIN becomes a `Waveform::Sine`, or a `Waveform::DampedSine`
+//!   when it has a delay `td` or a damping `theta`; its phase is in degrees,
+//!   as in ngspice.
 //! * **D** — look up `.model`; kind must be `D`. Other kinds raise
 //!   `UnsupportedModelType`. `IS`, `N`, `RS`, `CJO` (alias `CJ0`, `CJ`),
 //!   `VJ` (alias `PB`), `M` (alias `MJ`), `FC`, `TT`, `BV` and `IBV` fill a
@@ -78,6 +80,7 @@ pub(crate) fn build_netlist(
     let mut scopes: HashMap<&[String], Vec<CircuitElement>> = HashMap::new();
     // `K` lines, applied per scope once all its `L` lines are built.
     let mut couplings: Vec<Coupling<'_>> = Vec::new();
+    let tran = tran_span(&flat);
     for fe in &flat.elements {
         if let RawElementBody::Coupling { inductors, k } = &fe.raw.body {
             let scope = scope_from_snapshot(&fe.scope_snapshot);
@@ -98,7 +101,7 @@ pub(crate) fn build_netlist(
             instance_path: Vec::new(),
             scope_snapshot: fe.scope_snapshot.clone(),
         };
-        let mut element = build_element(&local, &flat.models, strict, warnings)
+        let mut element = build_element(&local, &flat.models, tran, strict, warnings)
             .map_err(|e| e.locate(&fe.raw.span))?;
         *element.id_mut() = local_id(&fe.raw.id, &fe.instance_path);
         scopes
@@ -302,9 +305,24 @@ fn check_control_source(
     .locate(&fe.raw.span))
 }
 
+/// The first `.tran`'s `(tstep, tstop)`, which PULSE's missing arguments
+/// default to. A `.tran` that doesn't evaluate is reported with the
+/// analyses.
+fn tran_span(flat: &Flattened) -> Option<(f64, f64)> {
+    let scope = scope_from_snapshot(&flat.top_params);
+    flat.analyses.iter().find_map(|(raw, _)| match raw {
+        RawAnalysis::Tran { args, .. } if args.len() >= 2 => Some((
+            eval_or_lift(&args[0], &scope).ok()?,
+            eval_or_lift(&args[1], &scope).ok()?,
+        )),
+        _ => None,
+    })
+}
+
 fn build_element(
     fe: &FlatElement,
     models: &HashMap<String, RawModel>,
+    tran: Option<(f64, f64)>,
     strict: bool,
     warnings: &mut Vec<ParseWarning>,
 ) -> Result<CircuitElement, SpiceParseError> {
@@ -348,7 +366,7 @@ fn build_element(
                 None => 0.0,
             };
             let waveform = match waveform {
-                Some(rw) => Some(translate_waveform(rw, &scope)?),
+                Some(rw) => Some(translate_waveform(rw, &scope, tran)?),
                 None => None,
             };
             // If a waveform is present, the static `voltage`/`current`
@@ -617,14 +635,18 @@ fn build_element(
     }
 }
 
-fn translate_waveform(rw: &RawWaveform, scope: &ParamScope) -> Result<Waveform, SpiceParseError> {
+fn translate_waveform(
+    rw: &RawWaveform,
+    scope: &ParamScope,
+    tran: Option<(f64, f64)>,
+) -> Result<Waveform, SpiceParseError> {
     match rw {
         RawWaveform::Pulse(args) => {
-            // SPICE PULSE: v1 v2 td tr tf pw per
-            if args.len() != 7 {
+            // SPICE PULSE: v1 v2 [td [tr [tf [pw [per]]]]]
+            if !(2..=7).contains(&args.len()) {
                 return Err(SpiceParseError::ArityMismatch {
                     card: "PULSE".to_string(),
-                    expected: "7 args (v1 v2 td tr tf pw per)".to_string(),
+                    expected: "2..=7 args (v1 v2 [td] [tr] [tf] [pw] [per])".to_string(),
                     got: args.len(),
                     src: NamedSource::new("<build>", String::new()),
                     bad_span: (0, 0).into(),
@@ -634,14 +656,22 @@ fn translate_waveform(rw: &RawWaveform, scope: &ParamScope) -> Result<Waveform, 
                 .iter()
                 .map(|e| eval_or_lift(e, scope))
                 .collect::<Result<Vec<_>, _>>()?;
+            // As ngspice: edges of TSTEP, and a width and period of TSTOP,
+            // which hold v2 to the end of the run. With no `.tran` to take
+            // them from, edges are ideal and the pulse stays high.
+            let (edge, width, period) = match tran {
+                Some((tstep, tstop)) => (tstep, tstop, tstop),
+                None => (0.0, f64::INFINITY, 0.0),
+            };
+            let arg = |i: usize, default: f64| evals.get(i).copied().unwrap_or(default);
             Ok(Waveform::Pulse {
                 v1: evals[0],
                 v2: evals[1],
-                delay: evals[2],
-                rise_time: evals[3],
-                fall_time: evals[4],
-                pulse_width: evals[5],
-                period: evals[6],
+                delay: arg(2, 0.0),
+                rise_time: arg(3, edge),
+                fall_time: arg(4, edge),
+                pulse_width: arg(5, width),
+                period: arg(6, period),
             })
         }
         RawWaveform::Sin(args) => {

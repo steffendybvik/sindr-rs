@@ -565,7 +565,7 @@ fn parse_waveform(input: &mut Input<'_>) -> ModalResult<Option<RawWaveform>> {
     if keyword("pulse").parse_next(input).is_ok() {
         ws(input)?;
         let args = paren_value_list(input)?;
-        if args.len() != 7 {
+        if !(2..=7).contains(&args.len()) {
             return Err(ErrMode::from_input(input));
         }
         return Ok(Some(RawWaveform::Pulse(args)));
@@ -2225,8 +2225,8 @@ mod tests {
 
     #[test]
     fn elements_pulse_arity_error() {
-        // 3 args instead of 7 — should fail.
-        let result = parse_one_card_local("vclk clk 0 pulse(0 5 0)");
+        // PULSE needs at least v1 and v2.
+        let result = parse_one_card_local("vclk clk 0 pulse(0)");
         assert!(result.is_err(), "expected arity error, got {result:?}");
     }
 

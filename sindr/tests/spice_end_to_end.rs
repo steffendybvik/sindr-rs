@@ -378,6 +378,75 @@ fn delayed_sin_starts_at_its_delay_in_a_parsed_transient() {
     assert_relative_eq!(v_at("b", 0.5e-3), 1.0, epsilon = 1e-9);
 }
 
+/// PULSE's missing arguments default as in ngspice: no delay, edges of the
+/// `.tran` TSTEP, and a width and period of its TSTOP.
+#[test]
+fn pulse_defaults_its_missing_arguments_from_the_tran() {
+    let src = "* short pulses\n\
+               V1 a 0 PULSE(0 1 0.1m)\n\
+               V2 b 0 PULSE(0 1)\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               .tran 10u 1m\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let waveform = |i: usize| match &nl.circuit.components[i] {
+        CircuitElement::VoltageSource(VoltageSource {
+            waveform: Some(w), ..
+        }) => w.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        waveform(0),
+        sindr::Waveform::Pulse {
+            v1: 0.0,
+            v2: 1.0,
+            delay: 0.1e-3,
+            // `10u`, as the SI suffix scales it.
+            rise_time: 10.0 * 1e-6,
+            fall_time: 10.0 * 1e-6,
+            pulse_width: 1e-3,
+            period: 1e-3,
+        }
+    );
+    let config = nl.analyses[0].transient_config().expect(".tran config");
+    let tran = sindr::solve_transient(&nl.circuit, &config)
+        .expect("solve")
+        .transient
+        .expect("transient data");
+    let v_at = |node: &str, t: f64| tran.voltage_at(node, t).unwrap();
+    // Values ngspice 47 reports for the same deck.
+    assert_eq!(v_at("a", 0.05e-3), 0.0);
+    assert_relative_eq!(v_at("a", 0.105e-3), 0.5, epsilon = 1e-9);
+    assert_relative_eq!(v_at("a", 0.5e-3), 1.0, epsilon = 1e-12);
+    assert_relative_eq!(v_at("a", 0.999e-3), 1.0, epsilon = 1e-12);
+    assert_relative_eq!(v_at("b", 0.05e-3), 1.0, epsilon = 1e-12);
+    assert_relative_eq!(v_at("b", 0.999e-3), 1.0, epsilon = 1e-12);
+
+    // With no `.tran`, the edges are ideal and the pulse stays high.
+    let nl = parse_str("* no tran\nV1 a 0 PULSE(0 1 0.1m)\nR1 a 0 1k\n.op\n.end\n").unwrap();
+    let CircuitElement::VoltageSource(VoltageSource {
+        waveform: Some(w), ..
+    }) = &nl.circuit.components[0]
+    else {
+        panic!("expected a voltage source");
+    };
+    assert_eq!(
+        *w,
+        sindr::Waveform::Pulse {
+            v1: 0.0,
+            v2: 1.0,
+            delay: 0.1e-3,
+            rise_time: 0.0,
+            fall_time: 0.0,
+            pulse_width: f64::INFINITY,
+            period: 0.0,
+        }
+    );
+    assert_eq!(w.evaluate(0.05e-3), 0.0);
+    assert_eq!(w.evaluate(1.0), 1.0);
+}
+
 #[test]
 fn subckt_structure_survives_parsing() {
     let nl = parse_file(fixture_path("subckt_filter.cir")).expect("parse subckt_filter");
