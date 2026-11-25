@@ -1818,13 +1818,16 @@ pub struct AcPoint {
     /// node (always 0).
     #[cfg_attr(feature = "schemars", schemars(with = "HashMap<String, [f64; 2]>"))]
     pub node_voltages: HashMap<String, Complex64>,
-    /// Complex branch currents (A) of the components that introduce a
+    /// Complex branch currents (A) of every component that introduces a
     /// current unknown (voltage sources, controlled voltage sources,
-    /// op-amps, regulators), keyed by component id: the small-signal
-    /// counterpart of [`SimulationResult::branch_currents`], with its sign
-    /// convention. A source delivering power reads negative.
+    /// op-amps, comparators, behavioural voltage sources, regulators),
+    /// keyed by component id, with [`SimulationResult::branch_currents`]'
+    /// sign convention: a source delivering power reads negative. It lists
+    /// the same components as [`solve_op`]'s `branch_currents`; a
+    /// transient's lists independent voltage sources only.
     ///
     /// [`SimulationResult::branch_currents`]: crate::SimulationResult::branch_currents
+    /// [`solve_op`]: crate::solve_op
     #[cfg_attr(feature = "serde", serde(default))]
     #[cfg_attr(feature = "schemars", schemars(with = "HashMap<String, [f64; 2]>"))]
     pub branch_currents: HashMap<String, Complex64>,
