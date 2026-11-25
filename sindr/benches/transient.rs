@@ -1,8 +1,9 @@
 //! Transient cost: an RC ladder at 10 to 1 000 stages over a fixed span,
 //! a 50 Hz half-wave rectifier with a filter cap over five cycles
 //! (diode switching each cycle, so step control and Newton both work), 100
-//! and 1 000 charge-storing diodes switching off one source, and a transient
-//! session a microcontroller drives for 10 s at 1 kHz.
+//! and 1 000 charge-storing diodes switching off one source, a transient
+//! session a microcontroller drives for 10 s at 1 kHz, and CSV export of the
+//! ladder's waveforms.
 //!
 //!     cargo bench -p sindr --bench transient
 
@@ -196,5 +197,20 @@ fn bench_session(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench, bench_session);
+fn bench_to_csv(c: &mut Criterion) {
+    let mut group = c.benchmark_group("transient_to_csv");
+    group.sample_size(10);
+    for stages in [100, 1_000] {
+        let data = solve_transient(&rc_ladder(stages), &TransientConfig::new(20e-6, 100e-9))
+            .unwrap()
+            .transient
+            .unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(stages), &stages, |b, _| {
+            b.iter(|| data.to_csv())
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench, bench_session, bench_to_csv);
 criterion_main!(benches);
