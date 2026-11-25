@@ -9,6 +9,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.1]
 
+Correctness fixes across the solver, the FET models and the SPICE front
+end, and faster sweeps, AC and transients. Nothing breaks: the three
+additions are to non-exhaustive types.
+
+### Added
+
+- AC results carry branch currents: `AcPoint::branch_currents`, read
+  with `AcPoint::branch_current(id)` and `AcResult::branch_current_curve(id)`,
+  with `SimulationResult::branch_currents`' sign convention.
+- `Waveform::DampedSine`: a sine with a delay, an exponential damping and
+  a phase, as SPICE's SIN with all six arguments.
+- `ParsedNetlist::uic_voltages` and `uic_currents`: a deck's `IC=` on
+  capacitors and inductors, applied by `transient_config` under
+  `.tran … uic`.
+
+### Changed
+
+- Each temperature sweep point is the DC operating point at that
+  temperature (capacitors open, inductors shorted, sources at t = 0),
+  started from the previous point, as `.dc` does.
+  `TempSweepPoint::result.transient` is always `None`: it held a
+  power-on transient, not the bias point.
+- `threshold_voltage` follows SPICE Level 1's tangent for a forward-
+  biased body (`vbs > 0`), which a FET in reverse mode now reaches.
+- Faster, with the same results: a DC sweep about 30 % (the node map is
+  reused across points), AC up to 23 % and sensitivity about 11 % (the MNA
+  system is reused, and the noise and sensitivity adjoint is solved from
+  the forward LU instead of a second factorisation), a transient session
+  about 24 % (steps are built only when read), a temperature sweep
+  60–67 %, and nested SPICE subcircuits 83 %. CSV export, netlist import
+  and worst-case rating checks are linear in the component count.
+- Newton's first guess stamps every linear element, so rails and
+  buffers start at their values, and a reverse-biased junction moving
+  toward zero is no longer clamped: BJT circuits converge in far fewer
+  iterations (a common-emitter deck in 5 instead of 9).
+
+### Fixed
+
+- MOSFETs and JFETs conduct with drain and source swapped (SPICE's
+  reverse mode). A pass gate, a bidirectional level shifter or a
+  synchronous rectifier used to sit in cutoff, and gave a different
+  answer depending on which end was labelled the drain.
+- A CCCS or CCVS whose control source doesn't exist, or has no branch
+  current, is refused by `validate_circuit` instead of solving with zero
+  output.
+- A temperature sweep of a circuit with a capacitor, an inductor or a
+  waveform source reported the end of a power-on transient, up to 1.7 %
+  off the bias point.
+- The loop-gain phase margin is wrapped into (−180°, 180°].
+- SPICE decks that ngspice reads and sindr refused now parse:
+  - model and subcircuit names that start with a digit (`1n4148`,
+    `2n3904`);
+  - `m`, `scale`, `tc1`/`tc2`, `temp`/`dtemp` and `IC=` on R, L and C
+    lines, and a diode's area, `m` and `temp`; what sindr can't model is
+    an error in strict mode and a warning in lenient mode;
+  - `.control … .endc` blocks, which are skipped, and anything after the
+    deck's `.end`;
+  - node names with `-`, `/`, `+` and other characters up to a
+    separator, `$` inline comments and `params:` on `.subckt` and X
+    lines;
+  - SIN's phase and damping, and PULSE with fewer than seven arguments,
+    the missing ones defaulting from `.tran` as in ngspice.
+- SIN holds `VO + VA·sin(phase)` until its delay, as SPICE does, instead
+  of starting at t = 0 phase-shifted, so a transient starts from the
+  right operating point.
+- `.param` binds `^` tighter than unary minus: `-2^2` is −4, as in
+  ngspice and B-source expressions.
+- `.include` and `.lib` paths keep their case, so `Models/Diode.lib`
+  opens on case-sensitive file systems.
+- A `.lib` section that includes another section of the same file (a
+  corner library) is no longer reported as an include cycle.
+
 ## [0.3.0] - 2026-11-25
 
 A typed API (element structs, node and component handles, error causes,
