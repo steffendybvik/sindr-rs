@@ -80,6 +80,7 @@ pub(crate) fn preprocess_str(
         src_arc.clone(),
         file_arc,
         true, // is_top_level → extract title
+        None,
         base_dir,
         strict,
         0,
@@ -111,20 +112,32 @@ pub(crate) fn preprocess_file(
     )
 }
 
+/// A file and, for `.lib file section`, the section: what the include
+/// cycle check keys on, so a library's sections can `.lib` each other.
+type IncludeKey = (PathBuf, Option<String>);
+
+/// The `.lib` section a library file is read for, and whether it was found.
+struct Section<'a> {
+    name: &'a str,
+    found: bool,
+}
+
 /// Recursive worker.
 ///
 /// Returns `(title, lines)`. `title` is empty for non-top-level calls
 /// (included files do not contribute a title — their first line is a
-/// regular card).
+/// regular card). With a `section`, only the lines between its
+/// `.lib <name>` and `.endl` are kept, and only their includes followed.
 #[allow(clippy::too_many_arguments)]
 fn preprocess_inner(
     src: Arc<String>,
     file: Arc<str>,
     is_top_level: bool,
+    mut section: Option<&mut Section<'_>>,
     base_dir: Option<&Path>,
     strict: bool,
     depth: usize,
-    visited: &mut HashSet<PathBuf>,
+    visited: &mut HashSet<IncludeKey>,
     warnings: &mut Vec<ParseWarning>,
 ) -> Result<(String, Vec<LogicalLine>), SpiceParseError> {
     if depth > MAX_INCLUDE_DEPTH {
@@ -146,6 +159,8 @@ fn preprocess_inner(
     // the prior one (continuation), or splice in an include.
     let mut out_lines: Vec<LogicalLine> = Vec::new();
     let mut current: Option<PendingLine> = None;
+    // Outside the wanted section: the line and its continuations are dropped.
+    let mut skipping = false;
 
     for phys in physical {
         // Title detection (top-level only).
@@ -171,6 +186,9 @@ fn preprocess_inner(
         // Continuation line: `+` as first non-whitespace char appends to
         // the current logical line.
         if first_non_ws == Some(b'+') {
+            if skipping {
+                continue;
+            }
             if let Some(cur) = current.as_mut() {
                 let after_plus = body_trim_start + 1;
                 let extra = phys.body[after_plus..].trim();
@@ -199,6 +217,18 @@ fn preprocess_inner(
         }
 
         let folded = phys.body.trim().to_ascii_lowercase();
+
+        if let Some(section) = section.as_deref_mut() {
+            if !section.found {
+                section.found = opens_section(&folded, section.name);
+                skipping = true;
+                continue;
+            }
+            if folded.starts_with(".endl") {
+                break;
+            }
+        }
+        skipping = false;
 
         // Detect include / lib directives. Paths keep their case: file
         // systems other than macOS's and Windows' tell `Models/` from
@@ -428,7 +458,7 @@ fn handle_include(
     base_dir: Option<&Path>,
     strict: bool,
     depth: usize,
-    visited: &mut HashSet<PathBuf>,
+    visited: &mut HashSet<IncludeKey>,
     warnings: &mut Vec<ParseWarning>,
     out_lines: &mut Vec<LogicalLine>,
 ) -> Result<(), SpiceParseError> {
@@ -441,7 +471,8 @@ fn handle_include(
 
     // Cycle detection: canonicalize when possible, else use as-is.
     let canon = fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
-    if !visited.insert(canon.clone()) {
+    let key = (canon, section.as_ref().map(|s| s.to_ascii_lowercase()));
+    if !visited.insert(key.clone()) {
         return Err(SpiceParseError::Syntax {
             message: format!("include cycle detected at {}", resolved.display()),
             src: NamedSource::new(file.as_ref(), src.as_ref().clone()),
@@ -468,10 +499,13 @@ fn handle_include(
     let included_src_arc: Arc<String> = Arc::new(included_src);
     let inner_base = resolved.parent().map(Path::to_path_buf);
 
+    let target = section.as_ref().map(|s| s.to_ascii_lowercase());
+    let mut wanted = target.as_deref().map(|name| Section { name, found: false });
     let (_inner_title, inner_lines) = preprocess_inner(
         included_src_arc,
         included_file_arc,
         false, // included files have no title
+        wanted.as_mut(),
         inner_base.as_deref(),
         strict,
         depth + 1,
@@ -481,24 +515,18 @@ fn handle_include(
 
     // Pop ourselves from the visited set so siblings can include the same
     // file later (the cycle invariant is per-path, not per-tree-traversal).
-    visited.remove(&canon);
+    visited.remove(&key);
 
-    let to_splice = match section {
-        None => inner_lines,
-        Some(section_name) => match extract_lib_section(&inner_lines, &section_name) {
-            Some(lines) => lines,
-            None => {
-                return Err(SpiceParseError::LibSectionNotFound {
-                    section: section_name,
-                    file: resolved,
-                    src: NamedSource::new(file.as_ref(), src.as_ref().clone()),
-                    bad_span: SourceSpan::from(phys.range.clone()),
-                });
-            }
-        },
-    };
+    if let (Some(section), Some(Section { found: false, .. })) = (section, wanted) {
+        return Err(SpiceParseError::LibSectionNotFound {
+            section,
+            file: resolved,
+            src: NamedSource::new(file.as_ref(), src.as_ref().clone()),
+            bad_span: SourceSpan::from(phys.range.clone()),
+        });
+    }
 
-    out_lines.extend(to_splice);
+    out_lines.extend(inner_lines);
     Ok(())
 }
 
@@ -540,37 +568,13 @@ fn resolve_include_path(
     Ok(cwd.join(p))
 }
 
-/// Pull out the lines bounded by `.lib <section>` ... `.endl` in an
-/// already-preprocessed (lowercased) line stream.
-fn extract_lib_section(lines: &[LogicalLine], section: &str) -> Option<Vec<LogicalLine>> {
-    let target = section.to_ascii_lowercase();
-    let mut out = Vec::new();
-    let mut inside = false;
-    for line in lines {
-        let t = line.text.trim_start();
-        if !inside {
-            // `.lib <name>` opens a section.
-            if let Some(rest) = t.strip_prefix(".lib") {
-                let arg = rest.trim();
-                // Must be a single identifier (no path), case-insensitive match.
-                if !arg.is_empty() && !arg.contains(char::is_whitespace) && arg == target {
-                    inside = true;
-                }
-            }
-        } else {
-            // `.endl` closes the current section.
-            if t.starts_with(".endl") {
-                return Some(out);
-            }
-            out.push(line.clone());
-        }
-    }
-    if inside {
-        // Section opened but never closed — accept what we have.
-        Some(out)
-    } else {
-        None
-    }
+/// Whether a folded line is the `.lib <section>` that opens `section`
+/// (lowercase) in a library file.
+fn opens_section(folded: &str, section: &str) -> bool {
+    folded
+        .strip_prefix(".lib")
+        .map(str::trim)
+        .is_some_and(|arg| arg == section)
 }
 
 #[cfg(test)]
@@ -720,6 +724,46 @@ mod tests {
                 assert!(path.ends_with("Models/Missing.lib"), "{}", path.display())
             }
             other => panic!("expected IncludeNotFound, got {other:?}"),
+        }
+    }
+
+    fn pp_fixture(src: &str) -> Result<Preprocessed, SpiceParseError> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        preprocess_str(src, "<test>", Some(&dir), true, &mut Vec::new())
+    }
+
+    /// A corner section that `.lib`s another section of its own file is
+    /// the usual corner-library layout, not a cycle.
+    #[test]
+    fn lib_section_can_pull_in_a_sibling_section() {
+        let p = pp_fixture("title\n.lib corner_lib.cir TT\n").expect("no cycle here");
+        let texts: Vec<&str> = p.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [".model nch nmos (vto=0.7 kp=1e-4)", "rtt a 0 1k"],
+            "only `tt` and the `mos` it pulls in"
+        );
+    }
+
+    /// A section that comes back to itself, directly or through another
+    /// section, is still a cycle.
+    #[test]
+    fn lib_section_cycle_is_caught() {
+        for section in ["a", "c"] {
+            match pp_fixture(&format!("title\n.lib section_cycle.cir {section}\n")) {
+                Err(SpiceParseError::Syntax { message, .. }) => {
+                    assert!(message.contains("include cycle"), "{section}: {message}")
+                }
+                other => panic!("{section}: expected a cycle error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn missing_lib_section_is_reported() {
+        match pp_fixture("title\n.lib corner_lib.cir ss\n") {
+            Err(SpiceParseError::LibSectionNotFound { section, .. }) => assert_eq!(section, "ss"),
+            other => panic!("expected LibSectionNotFound, got {other:?}"),
         }
     }
 
