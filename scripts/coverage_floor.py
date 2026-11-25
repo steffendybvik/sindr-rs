@@ -126,7 +126,7 @@ FLOORS = {
     "sindr/src/spice/si.rs": 98.5,  # 100.00% when set
     "sindr/src/spice/source_map.rs": 96.0,  # 97.87% when set
     "sindr/src/stamp.rs": 96.5,  # 98.04% when set
-    "sindr/src/temp_sweep.rs": 96.5,  # 98.32% when set
+    "sindr/src/temp_sweep.rs": 98.5,  # 100.00% when set
     "sindr/src/thermal.rs": 94.5,  # 96.02% when set
     "sindr/src/transfer_function.rs": 94.5,  # 96.32% when set
     "sindr/src/transient.rs": 97.5,  # 99.06% when set

@@ -51,7 +51,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 | `.tran` (transient) | ✅ | Gear-2, trapezoidal or backward Euler (`solve_transient`). Steps up to `tstep`, shortened by local truncation error and landing on waveform breakpoints. `tstart` keeps the result from there on |
 | `.ac` (small-signal AC) | ✅ | swept frequency response |
 | `.tf` (transfer function) | ✅ | DC small-signal gain, input and output resistance (`solve_tf`) |
-| Temperature sweep (`temperature_sweep`) | ✅ | each junction device's `temperature`; no `.temp` card |
+| Temperature sweep (`temperature_sweep`) | ✅ | each junction device's `temperature`; each point an operating point, as `.op`; no `.temp` card |
 | `.noise` (noise analysis) | ✅ | thermal, shot and flicker (`solve_noise`), at 27 °C. Op-amps, regulators, controlled sources and a diode's `RS` are noiseless; no BJT base-resistance noise |
 | `.disto` / harmonic distortion | ❌ | |
 | `.pz` (pole-zero) | ✅ | poles and zeros of a voltage gain or transimpedance between node pairs (`solve_pz`). A repeated root is only accurate to about √ε; a root more than ~1e13 times the circuit's own frequency scale counts as infinite |
