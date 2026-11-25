@@ -1059,9 +1059,19 @@ impl MnaSystem {
     }
 
     /// Total dimension of the system (n + m).
-    #[cfg(test)]
     pub fn size(&self) -> usize {
         self.b.len()
+    }
+
+    /// Zeros the system for the next assembly, as [`MnaSystem::new`] of
+    /// its size would, keeping a dense matrix's memory.
+    pub(crate) fn clear(&mut self) {
+        match &mut self.a.storage {
+            // Through the slice, a memset: nalgebra's `fill` goes entry by entry.
+            Storage::Dense(m) => m.as_mut_slice().fill(0.0),
+            _ => self.a = MnaMatrix::sparse(self.a.size),
+        }
+        self.b.as_mut_slice().fill(0.0);
     }
 
     /// Solve Ax = b: LU with partial pivoting, dense or sparse.
@@ -1391,6 +1401,48 @@ mod tests {
                 assert_relative_eq!(reference[i], y[i], max_relative = 1e-10, epsilon = 1e-14);
             }
         }
+    }
+
+    /// A cleared system is a fresh one: refilled, it solves to the same
+    /// bits, dense or sparse.
+    #[test]
+    fn a_cleared_system_solves_as_a_fresh_one() {
+        let fill = |sys: &mut MnaSystem, k: f64| {
+            let n = sys.size();
+            for i in 0..n {
+                for j in 0..n {
+                    let v = ((i * 31 + j * 17) as f64).sin() + k;
+                    sys.a[(i, j)] += if i == j { 1e-3 * v } else { v };
+                }
+                sys.b[i] = (i as f64).sin() + k;
+            }
+        };
+        let mut reused = MnaSystem::new(40, 2);
+        for k in [0.0, 0.25, 1.5] {
+            reused.clear();
+            fill(&mut reused, k);
+            let mut fresh = MnaSystem::new(40, 2);
+            fill(&mut fresh, k);
+            assert_eq!(reused.solve().unwrap(), fresh.solve().unwrap());
+        }
+        reused.clear();
+        assert_eq!(reused.a.to_dense(), DMatrix::zeros(42, 42));
+        assert!(reused.b.iter().all(|&v| v == 0.0));
+        let (a, b) = ladder(150, 1e-3);
+        let expected = a.solve(&b).unwrap();
+        let mut sparse = MnaSystem::new(150, 1);
+        for _ in 0..2 {
+            sparse.clear();
+            let (a, b) = ladder(150, 1e-3);
+            sparse.a = a;
+            sparse.b = b;
+            assert_eq!(sparse.solve().unwrap(), expected);
+        }
+        sparse.clear();
+        assert!(matches!(
+            sparse.a.storage,
+            Storage::Replay { cursor: 0, .. }
+        ));
     }
 
     /// Two sources fixing one node over-determine it: still singular, not

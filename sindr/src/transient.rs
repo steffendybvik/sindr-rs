@@ -8,6 +8,7 @@ use crate::element::{
     OpAmp, Relay, Resistor, Switch, Transformer, Varactor, VoltageSource,
 };
 use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 use nalgebra::DVector;
 
@@ -924,6 +925,9 @@ pub(crate) struct Stepper {
     /// Waveform breakpoints ahead, sorted.
     pub(crate) breakpoints: Vec<f64>,
     pub(crate) state: StepState,
+    /// The MNA system every step stamps into, kept to reuse its memory.
+    // A mutex, not a cell, so a session stays `Sync`.
+    system: Mutex<Option<MnaSystem>>,
 }
 
 impl Stepper {
@@ -1022,6 +1026,7 @@ impl Stepper {
             work,
             breakpoints: Vec::new(),
             state,
+            system: Mutex::new(None),
         })
     }
 
@@ -1090,6 +1095,7 @@ impl Stepper {
             None => (&self.circuit, &self.prep),
         };
         let solver = StepSolver {
+            system: &self.system,
             circuit: stepped,
             node_map: &self.node_map,
             placement: &self.placement,
@@ -1826,6 +1832,8 @@ impl StepPrep {
 /// Solves one transient step: a single linear solve, or Newton–Raphson when
 /// the circuit has nonlinear devices.
 struct StepSolver<'a> {
+    /// The run's system, cleared for every Newton iteration and step.
+    system: &'a Mutex<Option<MnaSystem>>,
     circuit: &'a Circuit,
     node_map: &'a NodeMap,
     placement: &'a Placement,
@@ -1929,11 +1937,17 @@ impl StepSolver<'_> {
         start: &DVector<f64>,
         pseudo: Option<(f64, &DVector<f64>)>,
     ) -> Result<DVector<f64>, SimError> {
-        let stamp = |v_prev: &DVector<f64>| -> Result<MnaSystem, SimError> {
-            let mut system = MnaSystem::new(self.num_nodes, self.num_vsources);
+        let mut kept = self.system.lock().unwrap_or_else(PoisonError::into_inner);
+        let size = self.num_nodes + self.num_vsources;
+        let system = match &mut *kept {
+            Some(system) if system.size() == size => system,
+            slot => slot.insert(MnaSystem::new(self.num_nodes, self.num_vsources)),
+        };
+        let stamp = |system: &mut MnaSystem, v_prev: &DVector<f64>| -> Result<(), SimError> {
+            system.clear();
             stamp_circuit_transient(
                 self.circuit,
-                &mut system,
+                system,
                 self.node_map,
                 self.placement,
                 integ,
@@ -1942,19 +1956,19 @@ impl StepSolver<'_> {
                 inds,
                 v_prev,
                 parasitic,
-            )?;
-            Ok(system)
+            )
         };
 
         if !self.prep.nonlinear {
-            return stamp(start)?.solve();
+            stamp(system, start)?;
+            return system.solve();
         }
 
         let mut v_prev = start.clone();
         let mut last_step = (f64::INFINITY, None);
         for _ in 0..self.opts.max_iterations {
-            let mut system = stamp(&v_prev)?;
-            newton_raphson::add_gmin_shunts(&mut system, self.num_nodes);
+            stamp(system, &v_prev)?;
+            newton_raphson::add_gmin_shunts(system, self.num_nodes);
             if let Some((g, anchor)) = pseudo {
                 for i in 0..self.num_nodes {
                     system.a[(i, i)] += g;
