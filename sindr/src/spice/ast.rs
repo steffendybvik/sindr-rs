@@ -74,8 +74,14 @@ pub(crate) struct RawElement {
 /// Element-specific tail of a [`RawElement`].
 #[derive(Debug, Clone)]
 pub(crate) enum RawElementBody {
-    /// R / L / C — a single value expression.
-    Passive { value: ParamExpr },
+    /// R / L / C — `n+ n- value [name=value ...] [flag ...]`: the value,
+    /// then instance parameters (`m`, `ic`, `tc1`, …) and bare flags as
+    /// written.
+    Passive {
+        value: ParamExpr,
+        params: Vec<(String, ParamExpr)>,
+        flags: Vec<String>,
+    },
     /// V / I — DC value, optional AC small-signal spec and optional
     /// time-domain waveform, written in any order.
     Source {
@@ -84,8 +90,15 @@ pub(crate) enum RawElementBody {
         ac: Option<RawAcSpec>,
         waveform: Option<RawWaveform>,
     },
-    /// D — references a `.model` declaration.
-    Diode { model: String },
+    /// D — `n+ n- model [area] [name=value ...] [flag ...]`: the `.model`
+    /// it references, the optional area factor, instance parameters
+    /// (`m`, `temp`, …) and bare flags (`OFF`).
+    Diode {
+        model: String,
+        area: Option<ParamExpr>,
+        params: Vec<(String, ParamExpr)>,
+        flags: Vec<String>,
+    },
     /// Q — references a `.model` declaration; optional substrate node.
     Bjt {
         model: String,

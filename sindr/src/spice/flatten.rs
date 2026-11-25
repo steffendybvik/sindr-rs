@@ -277,7 +277,7 @@ fn scope_local_models(subckt: &mut RawSubckt, models: &mut HashMap<String, RawMo
             continue;
         };
         let model = match &mut el.body {
-            RawElementBody::Diode { model }
+            RawElementBody::Diode { model, .. }
             | RawElementBody::Bjt { model, .. }
             | RawElementBody::Mosfet { model, .. }
             | RawElementBody::Jfet { model, .. } => model,
@@ -547,6 +547,8 @@ mod tests {
             nodes: vec![n0.to_string(), n1.to_string()],
             body: RawElementBody::Passive {
                 value: ParamExpr::Number(value),
+                params: Vec::new(),
+                flags: Vec::new(),
             },
             span: span(),
         }
@@ -557,7 +559,11 @@ mod tests {
             id: id.to_string(),
             prefix: 'r',
             nodes: vec![n0.to_string(), n1.to_string()],
-            body: RawElementBody::Passive { value: expr },
+            body: RawElementBody::Passive {
+                value: expr,
+                params: Vec::new(),
+                flags: Vec::new(),
+            },
             span: span(),
         }
     }

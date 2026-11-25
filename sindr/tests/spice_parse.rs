@@ -540,3 +540,143 @@ fn another_nominal_temperature_is_refused() {
         ]
     );
 }
+
+// ----- instance parameters ---------------------------------------------------
+
+/// `m`, `scale` and `tc1`/`tc2` at an instance `temp` or `dtemp` set an R
+/// line's value as ngspice does; these are the resistances ngspice 47
+/// reports for the same lines (`temp` wins over `dtemp`).
+#[test]
+fn resistor_instance_parameters_set_its_value() {
+    let deck = "* r\nV1 a 0 1\n\
+                R1 a 0 1k m=2\n\
+                R2 a 0 1k tc1=0.01 tc2=1e-4 temp=77\n\
+                R3 a 0 1k tc1=0.01 dtemp=10\n\
+                R4 a 0 1k scale=3\n\
+                R5 a 0 1k tc1=0.01 temp=77 dtemp=10\n\
+                R6 a 0 1k tc1=0.01\n\
+                .op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    for (id, want) in [
+        ("r1", 500.0),
+        ("r2", 1750.0),
+        ("r3", 1100.0),
+        ("r4", 3000.0),
+        ("r5", 1500.0),
+        ("r6", 1000.0),
+    ] {
+        assert!(
+            (resistance(&netlist, id) - want).abs() < 1e-9,
+            "{id}: {}",
+            resistance(&netlist, id)
+        );
+    }
+}
+
+/// A D line's area, `m`, `temp` and `dtemp`, against the currents ngspice
+/// 47 solves for the same lines across 1 V.
+#[test]
+fn diode_area_multiplier_and_temperature() {
+    let deck = "* d\nV2 d 0 1\n\
+                D1 d 0 dmod 2\n\
+                D2 d 0 dmod m=3\n\
+                D3 d 0 dmod temp=77\n\
+                D4 d 0 dmod dtemp=50\n\
+                D5 d 0 dmod area=2 pj=1u\n\
+                .model dmod d(is=1e-14 rs=10 ibv=1e-3 bv=50)\n.op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let op = sindr::solve_op(&netlist.circuit).unwrap();
+    for (id, want) in [
+        ("d1", 0.052_113_7),
+        ("d2", 0.078_166_9),
+        ("d3", 0.032_917_8),
+        ("d4", 0.032_917_8),
+        ("d5", 0.052_113_7),
+    ] {
+        let got = op.current(id).unwrap();
+        assert!(
+            (got - want).abs() < 1e-4 * want,
+            "{id}: {got} A, ngspice {want} A"
+        );
+    }
+    match element(&netlist, "d1") {
+        CircuitElement::Diode(Diode { model: Some(m), .. }) => {
+            assert_eq!((m.is, m.rs, m.ibv), (2e-14, 5.0, 2e-3));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// `IC=` on C and L lines, with `m` and `scale`, start a `uic` transient
+/// where ngspice 47 starts it: at 1 ms v(a) = 1.43306, i(l1) = 5.13417e-4
+/// and v(c) = 0.367879. Without `uic` ngspice ignores them, and so does
+/// sindr.
+#[test]
+fn capacitor_and_inductor_initial_conditions_apply_with_uic() {
+    let lines = "C1 a 0 1u ic=2 m=2 tc1=0.01 dtemp=50\nR1 a 0 1k\n\
+                 L1 b 0 1m ic=1m m=2 scale=3\nR2 b 0 1\n\
+                 C2 0 c 1u ic=-1\nR3 c 0 1k\n";
+    let run = |tran: &str| {
+        let deck = format!("* ic\n{lines}{tran}\n.end\n");
+        let netlist = parse_str(&deck).unwrap();
+        let config = netlist.transient_config().unwrap();
+        let result = sindr::solve_transient(&netlist.circuit, &config).unwrap();
+        let tran = result.transient.unwrap();
+        (
+            tran.voltage_at("a", 1e-3).unwrap(),
+            tran.current_at("l1", 1e-3).unwrap(),
+            tran.voltage_at("c", 1e-3).unwrap(),
+        )
+    };
+    let (va, il, vc) = run(".tran 1u 2m uic");
+    assert!((va - 1.433_06).abs() < 2e-3, "v(a) {va}");
+    assert!((il.abs() - 5.134_17e-4).abs() < 2e-6, "i(l1) {il}");
+    assert!((vc - 0.367_879).abs() < 1e-3, "v(c) {vc}");
+    let (va, il, vc) = run(".tran 1u 2m");
+    assert!(va.abs() < 1e-9 && il.abs() < 1e-9 && vc.abs() < 1e-9);
+}
+
+/// What sindr can't honour on an instance line is an error naming it in
+/// strict mode and a warning in lenient mode.
+#[test]
+fn unsupported_instance_parameters_are_named() {
+    for (line, name) in [
+        ("R1 a 0 1k noisy=0", "NOISY"),
+        ("R1 a 0 1k ic=1", "IC"),
+        ("C1 a 0 1u cmod", "CMOD"),
+        ("D1 a 0 dmod off", "OFF"),
+        ("D1 a 0 dmod ic=0.6", "IC"),
+        ("C1 a b 1u ic=1\nR2 b 0 1k", "neither end"),
+        (
+            "L1 a 0 1m ic=1\nL2 b 0 1m\nR2 b 0 1\nK1 l1 l2 0.9",
+            "coupled",
+        ),
+    ] {
+        let deck = format!("* u\nV1 a 0 1\nR9 a 0 1k\n{line}\n.model dmod d\n.end\n");
+        let err = parse_str(&deck).unwrap_err().to_string();
+        assert!(err.contains(name), "{line}: {err}");
+        let netlist = parse_str_with_options(&deck, lenient()).unwrap();
+        assert!(
+            warnings(&netlist).iter().any(|w| w.contains(name)),
+            "{line}: {:?}",
+            warnings(&netlist)
+        );
+    }
+    for line in ["R1 a 0 1k m=0", "D1 a 0 dmod -1", "D1 a 0 dmod temp=-300"] {
+        let deck = format!("* u\nV1 a 0 1\nR9 a 0 1k\n{line}\n.model dmod d\n.end\n");
+        assert!(parse_str_with_options(&deck, lenient()).is_err(), "{line}");
+    }
+}
+
+/// `IC=` inside a subckt lands under the flattened names.
+#[test]
+fn initial_conditions_inside_a_subckt_use_flattened_names() {
+    let deck = "* s\n.subckt cell p\nR1 p n 1k\nC1 n 0 1u ic=2\nL1 n 0 1m ic=1m\n.ends\n\
+                V1 a 0 1\nX1 a cell\n.tran 1u 1m uic\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert_eq!(netlist.uic_voltages.get("x1.n"), Some(&2.0));
+    assert_eq!(netlist.uic_currents.get("x1.l1"), Some(&1e-3));
+    let config = netlist.transient_config().unwrap();
+    assert_eq!(config.initial_voltages.get("x1.n"), Some(&2.0));
+    assert_eq!(config.initial_currents.get("x1.l1"), Some(&1e-3));
+}

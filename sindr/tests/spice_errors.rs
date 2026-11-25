@@ -375,7 +375,7 @@ fn malformed_lines_are_syntax_errors_over_the_line() {
     for (line, what) in [
         // Trailing tokens after the value or model.
         ("R2 a 0 1k 2k", "malformed `r` element"),
-        ("D2 a 0 dm extra", "malformed `d` element"),
+        ("D2 a 0 dm 1 2", "malformed `d` element"),
         ("E1 a 0 a 0 2 extra", "malformed `e` element"),
         // Too few nodes for the letter.
         ("R2 a 1k", "malformed `r` element"),
