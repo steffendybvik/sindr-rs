@@ -30,7 +30,7 @@ impl Device for Ccvs {
     device_identity!();
 
     fn report(&self, r: &mut Report<'_>) {
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         let i = r.branch_current(0);
         r.branch_current_of(&self.id, i);
         r.port(&self.id, v, i);

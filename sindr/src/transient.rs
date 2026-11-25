@@ -213,14 +213,16 @@ fn stamp_circuit_transient(
 
 /// Extract per-timestep results from solution vector, and the reactive
 /// histories after this step (`caps_prev`/`inds_prev` are those before it,
-/// in `layout`'s slots), each element's from its
+/// in `placement`'s slots), each element's from its
 /// [`Device::report`](crate::element::Device::report). Sources report
 /// their value at `source_time`, the time the step was solved with.
+/// Without `build` the snapshot has only its time: the histories are all
+/// the step needs.
 #[allow(clippy::too_many_arguments)]
 fn extract_timestep_results(
     circuit: &Circuit,
     node_map: &NodeMap,
-    layout: &Layout,
+    placement: &Placement,
     solution: &DVector<f64>,
     num_nodes: usize,
     time: f64,
@@ -228,18 +230,28 @@ fn extract_timestep_results(
     integ: &Integrator,
     caps_prev: &[History],
     inds_prev: &[History],
+    build: bool,
 ) -> (TimestepSnapshot, Vec<History>, Vec<History>) {
     // Node voltages
     let mut node_voltages = HashMap::new();
-    for i in 0..num_nodes {
-        if let Some(name) = node_map.node_name(i) {
-            node_voltages.insert(name.to_string(), solution[i]);
+    if build {
+        for i in 0..num_nodes {
+            if let Some(name) = node_map.node_name(i) {
+                node_voltages.insert(name.to_string(), solution[i]);
+            }
         }
+        node_voltages.insert(circuit.ground_node.clone(), 0.0);
     }
-    node_voltages.insert(circuit.ground_node.clone(), 0.0);
 
     let step = Step::new(source_time, integ, caps_prev, inds_prev);
-    let reported = Reported::collect(circuit, node_map, layout, solution, Some(step));
+    let reported = Reported::collect_as(
+        circuit,
+        node_map,
+        (&placement.layout, &placement.terminals),
+        solution,
+        Some(step),
+        build,
+    );
     let snapshot = TimestepSnapshot {
         time,
         node_voltages,
@@ -845,10 +857,10 @@ pub(crate) fn run_transient(
 
     let mut timesteps = Vec::new();
     while !stepper.reached(tstop) {
-        let snapshot = stepper.step(tstop)?;
+        let stepped = stepper.step(tstop)?;
         let recorded = stepper.recording();
         if recorded {
-            timesteps.push(snapshot);
+            timesteps.push(stepper.snapshot(stepped));
         }
         if let Some(hook) = progress.as_mut() {
             let report = TransientProgress {
@@ -898,6 +910,19 @@ pub(crate) struct StepState {
     pub(crate) stats: TransientStats,
 }
 
+/// An accepted step, and what its snapshot is built from when the step
+/// didn't build it.
+pub(crate) struct Stepped {
+    /// Only its time, unless `built`.
+    snapshot: TimestepSnapshot,
+    pub(crate) built: bool,
+    source_time: f64,
+    integ: Integrator,
+    /// The histories at the step's start.
+    caps: Vec<History>,
+    inds: Vec<History>,
+}
+
 /// A transient run, one accepted step at a time. It owns its circuit, so a
 /// session can change a source or a part between steps.
 pub(crate) struct Stepper {
@@ -921,6 +946,10 @@ pub(crate) struct Stepper {
     /// `circuit`'s do and share `placement`.
     heated: Option<Heated>,
     work: Option<Circuit>,
+    /// Whether every step builds its snapshot: self-heating reads the
+    /// step's powers, and a battery's state moves on with its result, so a
+    /// snapshot of either can't be built later.
+    eager: bool,
     /// Waveform breakpoints ahead, sorted.
     pub(crate) breakpoints: Vec<f64>,
     pub(crate) state: StepState,
@@ -1007,6 +1036,11 @@ impl Stepper {
             grid: 0,
             stats: TransientStats::default(),
         };
+        let eager = heated.is_some()
+            || circuit
+                .components
+                .iter()
+                .any(|c| matches!(c, CircuitElement::Battery(_)));
         Ok(Self {
             circuit,
             node_map,
@@ -1018,6 +1052,7 @@ impl Stepper {
             config: config.clone(),
             h_max,
             h_min: h_max * 1e-6,
+            eager,
             heated,
             work,
             breakpoints: Vec::new(),
@@ -1073,9 +1108,10 @@ impl Stepper {
         }
     }
 
-    /// Take one accepted step, ending no later than `until`, and return
-    /// its snapshot. After an error the run can't go on.
-    pub(crate) fn step(&mut self, until: f64) -> Result<TimestepSnapshot, SimError> {
+    /// Take one accepted step, ending no later than `until`. Its snapshot
+    /// comes from [`snapshot`](Self::snapshot), before the next step or
+    /// [`edit`](Self::edit). After an error the run can't go on.
+    pub(crate) fn step(&mut self, until: f64) -> Result<Stepped, SimError> {
         let h_max = self.h_max;
         let h_min = self.h_min;
         let eps = self.eps();
@@ -1232,7 +1268,7 @@ impl Stepper {
         let (mut snapshot, new_caps, new_inds) = extract_timestep_results(
             stepped,
             &self.node_map,
-            &self.placement.layout,
+            &self.placement,
             &next,
             self.num_nodes,
             t_next,
@@ -1240,6 +1276,7 @@ impl Stepper {
             &integ,
             &s.caps,
             &s.inds,
+            self.eager,
         );
         // At the temperatures this step solved at, before self-heating
         // moves them.
@@ -1260,8 +1297,8 @@ impl Stepper {
             snapshot.junction_temperatures = heated.report(&s.temps);
         }
         s.stats.accepted_steps += 1;
-        s.caps = new_caps;
-        s.inds = new_inds;
+        let caps = std::mem::replace(&mut s.caps, new_caps);
+        let inds = std::mem::replace(&mut s.inds, new_inds);
         s.time = t_next;
         // A landing step was cut short; size the next from the step wanted.
         let base = if landing { s.h.max(dt) } else { dt };
@@ -1288,7 +1325,50 @@ impl Stepper {
             s.recent.remove(0);
         }
         s.solution = next;
-        Ok(snapshot)
+        Ok(Stepped {
+            snapshot,
+            built: self.eager,
+            source_time: t_src,
+            integ,
+            caps,
+            inds,
+        })
+    }
+
+    /// The snapshot of `stepped`, the step just taken.
+    pub(crate) fn snapshot(&self, stepped: Stepped) -> TimestepSnapshot {
+        if stepped.built {
+            stepped.snapshot
+        } else {
+            self.build_snapshot(&stepped)
+        }
+    }
+
+    /// The snapshot of `stepped`, the step just taken, which didn't build
+    /// it.
+    pub(crate) fn build_snapshot(&self, stepped: &Stepped) -> TimestepSnapshot {
+        debug_assert!(!stepped.built);
+        // Not eager, so not self-heated: the step solved `circuit`, and
+        // nothing has moved the state on from it since.
+        let (mut snapshot, _, _) = extract_timestep_results(
+            &self.circuit,
+            &self.node_map,
+            &self.placement,
+            &self.state.solution,
+            self.num_nodes,
+            stepped.snapshot.time,
+            stepped.source_time,
+            &stepped.integ,
+            &stepped.caps,
+            &stepped.inds,
+            true,
+        );
+        add_diode_charge_currents(
+            &self.circuit,
+            &self.state.parasitic,
+            &mut snapshot.component_results,
+        );
+        snapshot
     }
 
     /// The run's result, from the steps it recorded.
@@ -1325,7 +1405,13 @@ impl Stepper {
                     .unwrap_or(0.0);
             }
         }
-        let at_last = Reported::collect(last, &self.node_map, layout, &voltages, None);
+        let at_last = Reported::collect(
+            last,
+            &self.node_map,
+            (layout, &self.placement.terminals),
+            &voltages,
+            None,
+        );
 
         Ok(SimulationResult {
             node_voltages: final_snapshot.node_voltages.clone(),
@@ -2929,6 +3015,103 @@ mod tests {
             v_coll_with_caps.is_finite(),
             "With-caps collector voltage should be finite"
         );
+    }
+
+    /// A step built when it's read is the step built as it's taken, to the
+    /// bit, and leaving it unbuilt doesn't change the steps after it.
+    #[test]
+    fn a_snapshot_built_later_is_the_one_built_in_the_step() {
+        use crate::element::Vccs;
+        let circuit = circuit_of(vec![
+            CircuitElement::VoltageSource(VoltageSource {
+                id: "V1".into(),
+                nodes: ["in".into(), "0".into()],
+                voltage: 0.0,
+                waveform: Some(Waveform::Sine {
+                    amplitude: 5.0,
+                    frequency: 1e3,
+                    offset: 0.0,
+                    phase: 0.0,
+                }),
+            }),
+            CircuitElement::Resistor(Resistor {
+                id: "R1".into(),
+                nodes: ["in".into(), "a".into()],
+                resistance: 1e3,
+            }),
+            capacitor("C1", "a", 100e-9),
+            CircuitElement::Inductor(Inductor {
+                id: "L1".into(),
+                nodes: ["a".into(), "b".into()],
+                inductance: 1e-3,
+                saturation: None,
+            }),
+            CircuitElement::Resistor(Resistor {
+                id: "R2".into(),
+                nodes: ["b".into(), "0".into()],
+                resistance: 100.0,
+            }),
+            CircuitElement::Diode(Diode {
+                id: "D1".into(),
+                nodes: ["a".into(), "0".into()],
+                temperature: 300.15,
+                model: Some(crate::circuit::DiodeModel {
+                    cjo: 1e-9,
+                    tt: 1e-6,
+                    ..Default::default()
+                }),
+            }),
+            CircuitElement::Vccs(Vccs {
+                id: "G1".into(),
+                nodes: ["g".into(), "0".into()],
+                control_nodes: ["a".into(), "b".into()],
+                gm: 1e-3,
+            }),
+            CircuitElement::Resistor(Resistor {
+                id: "RG".into(),
+                nodes: ["g".into(), "0".into()],
+                resistance: 1e3,
+            }),
+        ]);
+        let config = TransientConfig::new(2e-3, 10e-6);
+        let opts = SolverOptions::default();
+        let stepper = || {
+            let mut s = Stepper::new(circuit.clone(), &config, &opts).unwrap();
+            s.breakpoints = waveform_breakpoints(&circuit, 0.0, config.tstop).unwrap();
+            s
+        };
+        let (mut eager, mut lazy) = (stepper(), stepper());
+        assert!(!lazy.eager);
+        eager.eager = true;
+        let flat = |s: &TimestepSnapshot| {
+            let mut v: Vec<_> = s
+                .node_voltages
+                .iter()
+                .map(|(k, x)| (k.clone(), *x))
+                .collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            let c: Vec<_> = s
+                .component_results
+                .iter()
+                .map(|c| (c.id.clone(), c.voltage_across, c.current_through, c.power))
+                .collect();
+            (s.time, v, c)
+        };
+        let mut steps = 0;
+        while !lazy.reached(config.tstop) {
+            let (a, b) = (
+                eager.step(config.tstop).unwrap(),
+                lazy.step(config.tstop).unwrap(),
+            );
+            assert!(a.built && !b.built);
+            assert!(b.snapshot.component_results.is_empty() && b.snapshot.node_voltages.is_empty());
+            let (a, b) = (eager.snapshot(a), lazy.snapshot(b));
+            assert!(a.component_results.iter().any(|c| c.id == "D1"));
+            assert_eq!(flat(&a), flat(&b));
+            steps += 1;
+        }
+        assert!(eager.reached(config.tstop));
+        assert!(steps > 100);
     }
 
     fn circuit_of(components: Vec<CircuitElement>) -> Circuit {

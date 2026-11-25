@@ -36,7 +36,7 @@ impl Device for CurrentSource {
 
     /// At a transient step the current includes the waveform's value.
     fn report(&self, r: &mut Report<'_>) {
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         let i = match r.step() {
             Some(step) => {
                 self.current

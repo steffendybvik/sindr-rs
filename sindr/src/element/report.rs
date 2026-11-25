@@ -6,9 +6,8 @@ use std::collections::HashMap;
 use nalgebra::DVector;
 
 use crate::circuit::Circuit;
-use crate::handle::NodeId;
 use crate::integration::{History, Integrator};
-use crate::node_map::NodeMap;
+use crate::node_map::{NodeMap, Sensed, Terminals};
 use crate::results::{BjtResult, ComponentResult, MosfetResult, OpAmpResult, RelayResult};
 
 use super::layout::Layout;
@@ -34,6 +33,8 @@ pub(crate) struct Report<'a> {
     pub(crate) branch: usize,
     step: Option<Step<'a>>,
     layout: &'a Layout,
+    terminals: &'a [Option<usize>],
+    sensed: &'a [Sensed],
     k: usize,
     out: &'a mut Reported,
 }
@@ -71,6 +72,7 @@ impl<'a> Step<'a> {
 /// The results the elements of a circuit report, in circuit order.
 #[derive(Default)]
 pub(crate) struct Reported {
+    /// Empty when collected without them.
     pub(crate) components: Vec<ComponentResult>,
     pub(crate) branch_currents: HashMap<String, f64>,
     pub(crate) bjts: Vec<BjtResult>,
@@ -82,19 +84,38 @@ pub(crate) struct Reported {
     /// end, in [`Layout`] slot order.
     pub(crate) caps: Vec<History>,
     pub(crate) inds: Vec<History>,
+    keep_components: bool,
 }
 
 impl Reported {
     /// Every element of `circuit` reported at `solution`: after a DC solve
     /// when `step` is `None`, otherwise after that transient step.
+    /// `terminals` and `layout` are `circuit`'s, over `node_map`.
     pub(crate) fn collect(
         circuit: &Circuit,
         node_map: &NodeMap,
-        layout: &Layout,
+        (layout, terminals): (&Layout, &Terminals),
         solution: &DVector<f64>,
         step: Option<Step<'_>>,
     ) -> Self {
-        let mut out = Self::default();
+        Self::collect_as(circuit, node_map, (layout, terminals), solution, step, true)
+    }
+
+    /// [`collect`](Self::collect), leaving out the [`ComponentResult`]s
+    /// unless `keep_components`: a transient step nobody reads only needs
+    /// its histories moved on.
+    pub(crate) fn collect_as(
+        circuit: &Circuit,
+        node_map: &NodeMap,
+        (layout, terminals): (&Layout, &Terminals),
+        solution: &DVector<f64>,
+        step: Option<Step<'_>>,
+        keep_components: bool,
+    ) -> Self {
+        let mut out = Self {
+            keep_components,
+            ..Self::default()
+        };
         if let Some(step) = step {
             out.caps = step.caps.to_vec();
             out.inds = step.inds.to_vec();
@@ -107,6 +128,8 @@ impl Reported {
                 branch: node_map.num_nodes() + layout.branch(k),
                 step,
                 layout,
+                terminals: terminals.of(k),
+                sensed: terminals.sensed(k),
                 k,
                 out: &mut out,
             };
@@ -117,14 +140,22 @@ impl Reported {
 }
 
 impl Report<'_> {
-    /// The voltage at `node` (0 V for ground).
-    pub(crate) fn v(&self, node: &NodeId) -> f64 {
-        self.node_map.index(node).map_or(0.0, |i| self.solution[i])
+    /// The voltage at the element's terminal `i`, in
+    /// [`nodes`](super::Device::nodes) order (0 V for ground).
+    pub(crate) fn v(&self, i: usize) -> f64 {
+        self.terminals[i].map_or(0.0, |row| self.solution[row])
     }
 
-    /// The voltage from `a` to `b`.
-    pub(crate) fn across(&self, a: &NodeId, b: &NodeId) -> f64 {
+    /// The voltage from the element's terminal `a` to its terminal `b`.
+    pub(crate) fn across(&self, a: usize, b: usize) -> f64 {
         self.v(a) - self.v(b)
+    }
+
+    /// The voltage across the control pair of a VCVS or VCCS.
+    pub(crate) fn control_voltage(&self) -> f64 {
+        let v = |row: Option<usize>| row.map_or(0.0, |i| self.solution[i]);
+        let [p, q] = Sensed::control_pair(self.sensed);
+        v(p) - v(q)
     }
 
     /// The element's `i`-th branch current.
@@ -159,6 +190,9 @@ impl Report<'_> {
 
     /// Reports the element's port with a `power` other than `v · i`.
     pub(crate) fn component(&mut self, id: &str, v: f64, i: f64, power: f64) {
+        if !self.out.keep_components {
+            return;
+        }
         self.out.components.push(ComponentResult {
             id: id.to_string(),
             voltage_across: v,

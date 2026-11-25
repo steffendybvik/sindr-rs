@@ -30,7 +30,7 @@ impl Device for Thermistor {
     device_identity!();
 
     fn report(&self, r: &mut Report<'_>) {
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         r.port(
             &self.id,
             v,
