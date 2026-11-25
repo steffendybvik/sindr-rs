@@ -7705,11 +7705,13 @@ pub struct LoopGainResult {
     /// Frequencies (Hz) where the unwrapped phase of `T` crosses −180°
     /// (or −540°, …), lowest first.
     pub phase_crossovers: Vec<f64>,
-    /// Phase margin (degrees): `180° + ∠T` at the gain crossover, wrapped
-    /// into (−180°, 180°], the smallest over all of them. A crossover past
+    /// Phase margin (degrees): at each gain crossover, how far `∠T` is from
+    /// −180° (or another odd multiple of 180°), positive on the stable side,
+    /// in (−180°, 180°]; the smallest over all of them. A crossover past
     /// −540° of unwrapped phase is a margin of a few degrees either side of
-    /// zero, not one below −360°. `None` when `|T|` never crosses 1 in the
-    /// sweep.
+    /// zero, not one below −360°, and a crossover with a phase lead (the
+    /// low one of an AC-coupled loop) is measured to +180°. `None` when
+    /// `|T|` never crosses 1 in the sweep.
     pub phase_margin_deg: Option<f64>,
     /// Gain margin (dB): `−20·log₁₀|T|` at the phase crossover, the
     /// smallest over all of them. `None` when the phase never reaches

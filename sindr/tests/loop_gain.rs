@@ -227,6 +227,56 @@ fn phase_margin_past_minus_540_degrees_wraps_into_one_turn() {
     assert!(lg.gain_margin_db.unwrap() < 0.0);
 }
 
+/// An AC-coupled loop crosses unity gain twice: low, with a phase lead
+/// of nearly 90°, and high, with a lag of nearly 90°. Each is about 90°
+/// from instability, so the margin is that, not the −90° that adding 180°
+/// to the lead and wrapping it gives.
+#[test]
+fn a_band_pass_loop_has_its_margin_at_both_crossovers() {
+    // High-pass at 1 Hz, gain −1000, low-pass at 1 kHz.
+    let (r1, c1) = (1e3, 1.0 / (2.0 * PI * 1e3));
+    let (r2, c2) = (1e3, 1.0 / (2.0 * PI * 1e6));
+    let parts = vec![
+        probe("fb", "drv"),
+        c("C1", "fb", "hp", c1),
+        r("R1", "hp", "0", r1),
+        CircuitElement::Vcvs(Vcvs {
+            id: "E1".into(),
+            nodes: ["x".into(), "0".into()],
+            control_nodes: ["hp".into(), "0".into()],
+            gain: -1000.0,
+        }),
+        r("R2", "x", "lp", r2),
+        c("C2", "lp", "0", c2),
+        CircuitElement::Vcvs(Vcvs {
+            id: "E2".into(),
+            nodes: ["drv".into(), "0".into()],
+            control_nodes: ["lp".into(), "0".into()],
+            gain: 1.0,
+        }),
+    ];
+    let lg = solve_loop_gain(
+        &circuit(parts),
+        &LoopGainConfig::new("Vprobe", 1e-5, 1e8, 1301),
+    )
+    .unwrap();
+    assert_eq!(lg.gain_crossovers.len(), 2, "{:?}", lg.gain_crossovers);
+    // T = 1000·(s·τ1)/(1 + s·τ1)/(1 + s·τ2); its phase at each crossover.
+    let phase = |f: f64| {
+        let (w1, w2) = (2.0 * PI * f * r1 * c1, 2.0 * PI * f * r2 * c2);
+        90.0 - w1.atan().to_degrees() - w2.atan().to_degrees()
+    };
+    let margins: Vec<f64> = lg
+        .gain_crossovers
+        .iter()
+        .map(|&f| 180.0 - phase(f).abs())
+        .collect();
+    let want = margins.iter().copied().fold(f64::INFINITY, f64::min);
+    assert!((want - 90.06).abs() < 0.01, "{want}");
+    let got = lg.phase_margin_deg.unwrap();
+    assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+}
+
 #[test]
 fn probe_must_be_a_floating_voltage_source() {
     let parts = vec![opamp(0.0), probe("fb", "out"), r("RL", "out", "0", 10e3)];
