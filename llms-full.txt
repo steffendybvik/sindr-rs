@@ -11697,7 +11697,8 @@ continuation joining, case folding, and `.include` / `.lib` resolution.
 
 This stage runs before the winnow grammar so that the grammar only ever
 sees one logical line at a time, in lowercase, with no comments and
-with all transitively included files already spliced in.
+with all transitively included files already spliced in. Include and
+library paths are taken before folding, so they keep their case.
 
 Three SPICE traps are handled here:
 - **Title line**: SPICE3 *unconditionally* treats the first non-blank

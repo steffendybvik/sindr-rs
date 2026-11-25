@@ -3,7 +3,8 @@
 //!
 //! This stage runs before the winnow grammar so that the grammar only ever
 //! sees one logical line at a time, in lowercase, with no comments and
-//! with all transitively included files already spliced in.
+//! with all transitively included files already spliced in. Include and
+//! library paths are taken before folding, so they keep their case.
 //!
 //! Three SPICE traps are handled here:
 //! - **Title line**: SPICE3 *unconditionally* treats the first non-blank
@@ -199,8 +200,10 @@ fn preprocess_inner(
 
         let folded = phys.body.trim().to_ascii_lowercase();
 
-        // Detect include / lib directives.
-        if let Some(directive) = parse_include_or_lib(&folded) {
+        // Detect include / lib directives. Paths keep their case: file
+        // systems other than macOS's and Windows' tell `Models/` from
+        // `models/`.
+        if let Some(directive) = parse_include_or_lib(phys.body.trim()) {
             // Splice the included file in place.
             handle_include(
                 directive,
@@ -325,17 +328,24 @@ enum IncludeDirective {
     },
 }
 
-/// Parse `.include <path>` / `.lib <path> [section]` from a folded line.
+/// Parse `.include <path>` / `.lib <path> [section]` from a line as
+/// written. The keywords and the section name are case-insensitive; the
+/// path keeps its case.
 ///
 /// Returns `None` if the line is not one of these directives.
-fn parse_include_or_lib(folded: &str) -> Option<IncludeDirective> {
-    if let Some(r) = folded.strip_prefix(".lib") {
+fn parse_include_or_lib(line: &str) -> Option<IncludeDirective> {
+    let strip = |keyword: &str| {
+        line.get(..keyword.len())
+            .filter(|head| head.eq_ignore_ascii_case(keyword))
+            .map(|_| &line[keyword.len()..])
+    };
+    if let Some(r) = strip(".lib") {
         // Two-arg `.lib` is the include form; one-arg too. The card-form
         // `.lib name` (declaration) does not appear in the SPICE3 subset
         // we support, so any `.lib` is an include.
         return parse_lib_args(r);
     }
-    let rest = folded.strip_prefix(".include")?;
+    let rest = strip(".include")?;
 
     // `.include` requires exactly one quoted-or-bare path.
     let trimmed = rest.trim();
@@ -361,7 +371,11 @@ fn parse_lib_args(rest: &str) -> Option<IncludeDirective> {
     let section = if section_part.is_empty() {
         None
     } else {
-        Some(unquote_one(section_part).unwrap_or_else(|| section_part.to_string()))
+        Some(
+            unquote_one(section_part)
+                .unwrap_or_else(|| section_part.to_string())
+                .to_ascii_lowercase(),
+        )
     };
     Some(IncludeDirective::Lib {
         path: first,
@@ -670,6 +684,43 @@ mod tests {
             !texts.iter().any(|t| t.contains("rfast")),
             "did not expect fast-section line in {texts:?}"
         );
+    }
+
+    /// Include paths keep their case, so `Models/Diode.lib` opens that
+    /// file and not `models/diode.lib`, which on a case-sensitive file
+    /// system doesn't exist. The section name stays case-insensitive.
+    #[test]
+    fn include_paths_keep_their_case() {
+        let main = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/include_case.cir");
+        let mut warnings = Vec::new();
+        let p = preprocess_file(&main, true, &mut warnings).expect("includes should resolve");
+        let from = |needle: &str| {
+            p.lines
+                .iter()
+                .find(|l| l.text.contains(needle))
+                .unwrap_or_else(|| panic!("no `{needle}` line"))
+                .file
+                .to_string()
+        };
+        assert!(from(".model dmod").ends_with("Models/Diode.lib"));
+        assert!(from("rtt").ends_with("Models/Corners.lib"));
+        assert!(!p.lines.iter().any(|l| l.text.contains("rff")));
+
+        let err = preprocess_str(
+            "title\n.include Models/Missing.lib\n",
+            "<test>",
+            main.parent(),
+            true,
+            &mut warnings,
+        )
+        .expect_err("no such file");
+        match err {
+            SpiceParseError::IncludeNotFound { path, .. } => {
+                assert!(path.ends_with("Models/Missing.lib"), "{}", path.display())
+            }
+            other => panic!("expected IncludeNotFound, got {other:?}"),
+        }
     }
 
     #[test]
