@@ -8,6 +8,7 @@ use crate::element::{
     OpAmp, Relay, Resistor, Switch, Transformer, Varactor, VoltageSource,
 };
 use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 use nalgebra::DVector;
 
@@ -924,6 +925,9 @@ pub(crate) struct Stepper {
     /// Waveform breakpoints ahead, sorted.
     pub(crate) breakpoints: Vec<f64>,
     pub(crate) state: StepState,
+    /// The MNA system every step stamps into, kept to reuse its memory.
+    // A mutex, not a cell, so a session stays `Sync`.
+    system: Mutex<Option<MnaSystem>>,
 }
 
 impl Stepper {
@@ -972,17 +976,14 @@ impl Stepper {
                 solution[i] = *v;
             }
         }
-        for component in &circuit.components {
+        for (k, component) in circuit.components.iter().enumerate() {
             if let CircuitElement::OpAmp(OpAmp {
                 id, model: Some(_), ..
             })
             | CircuitElement::Comparator(Comparator { id, .. }) = component
             {
-                if let (Some(branch), Some(stage)) = (
-                    circuit.vsource_branch_index(id),
-                    parasitic.get(&format!("{id}-{OP_AMP_STAGE}")),
-                ) {
-                    solution[num_nodes + branch + 1] = stage.x1;
+                if let Some(stage) = parasitic.get(&format!("{id}-{OP_AMP_STAGE}")) {
+                    solution[num_nodes + placement.layout.branch(k) + 1] = stage.x1;
                 }
             }
         }
@@ -1022,6 +1023,7 @@ impl Stepper {
             work,
             breakpoints: Vec::new(),
             state,
+            system: Mutex::new(None),
         })
     }
 
@@ -1090,6 +1092,7 @@ impl Stepper {
             None => (&self.circuit, &self.prep),
         };
         let solver = StepSolver {
+            system: &self.system,
             circuit: stepped,
             node_map: &self.node_map,
             placement: &self.placement,
@@ -1243,7 +1246,14 @@ impl Stepper {
         );
         // At the temperatures this step solved at, before self-heating
         // moves them.
-        update_parasitic_histories(stepped, &self.node_map, &next, &integ, &mut s.parasitic);
+        update_parasitic_histories(
+            stepped,
+            &self.node_map,
+            &self.placement.layout,
+            &next,
+            &integ,
+            &mut s.parasitic,
+        );
         add_diode_charge_currents(stepped, &s.parasitic, &mut snapshot.component_results);
         snapshot.state_of_charge = crate::battery_state::finish_step(
             stepped,
@@ -1826,6 +1836,8 @@ impl StepPrep {
 /// Solves one transient step: a single linear solve, or Newton–Raphson when
 /// the circuit has nonlinear devices.
 struct StepSolver<'a> {
+    /// The run's system, cleared for every Newton iteration and step.
+    system: &'a Mutex<Option<MnaSystem>>,
     circuit: &'a Circuit,
     node_map: &'a NodeMap,
     placement: &'a Placement,
@@ -1929,11 +1941,17 @@ impl StepSolver<'_> {
         start: &DVector<f64>,
         pseudo: Option<(f64, &DVector<f64>)>,
     ) -> Result<DVector<f64>, SimError> {
-        let stamp = |v_prev: &DVector<f64>| -> Result<MnaSystem, SimError> {
-            let mut system = MnaSystem::new(self.num_nodes, self.num_vsources);
+        let mut kept = self.system.lock().unwrap_or_else(PoisonError::into_inner);
+        let size = self.num_nodes + self.num_vsources;
+        let system = match &mut *kept {
+            Some(system) if system.size() == size => system,
+            slot => slot.insert(MnaSystem::new(self.num_nodes, self.num_vsources)),
+        };
+        let stamp = |system: &mut MnaSystem, v_prev: &DVector<f64>| -> Result<(), SimError> {
+            system.clear();
             stamp_circuit_transient(
                 self.circuit,
-                &mut system,
+                system,
                 self.node_map,
                 self.placement,
                 integ,
@@ -1942,19 +1960,19 @@ impl StepSolver<'_> {
                 inds,
                 v_prev,
                 parasitic,
-            )?;
-            Ok(system)
+            )
         };
 
         if !self.prep.nonlinear {
-            return stamp(start)?.solve();
+            stamp(system, start)?;
+            return system.solve();
         }
 
         let mut v_prev = start.clone();
         let mut last_step = (f64::INFINITY, None);
         for _ in 0..self.opts.max_iterations {
-            let mut system = stamp(&v_prev)?;
-            newton_raphson::add_gmin_shunts(&mut system, self.num_nodes);
+            stamp(system, &v_prev)?;
+            newton_raphson::add_gmin_shunts(system, self.num_nodes);
             if let Some((g, anchor)) = pseudo {
                 for i in 0..self.num_nodes {
                     system.a[(i, i)] += g;
@@ -2018,22 +2036,16 @@ impl StepSolver<'_> {
 fn update_parasitic_histories(
     circuit: &Circuit,
     node_map: &NodeMap,
+    layout: &Layout,
     solution: &DVector<f64>,
     integ: &Integrator,
     parasitic: &mut FastMap<History>,
 ) {
     let v = |n: &str| node_map.index(n).map_or(0.0, |i| solution[i]);
     let num_nodes = node_map.num_nodes();
-    for component in &circuit.components {
-        if let Some(op) = crate::op_amp::OpAmpStamp::of(component, 0) {
+    for (k, component) in circuit.components.iter().enumerate() {
+        if let Some(op) = crate::op_amp::OpAmpStamp::of(component, num_nodes + layout.branch(k)) {
             let id = component.id();
-            let Some(branch) = circuit.vsource_branch_index(id) else {
-                continue;
-            };
-            let op = crate::op_amp::OpAmpStamp {
-                branch: num_nodes + branch,
-                ..op
-            };
             let history = parasitic_history(parasitic, id, OP_AMP_STAGE);
             parasitic.insert(
                 format!("{id}-{OP_AMP_STAGE}"),
@@ -2117,6 +2129,9 @@ fn add_diode_charge_currents(
     parasitic: &FastMap<History>,
     results: &mut [ComponentResult],
 ) {
+    // Results come in circuit order, so each diode's is at or past the
+    // previous one's: one walk over them, not a search per diode.
+    let mut from = 0;
     for component in &circuit.components {
         let CircuitElement::Diode(Diode { id, .. }) = component else {
             continue;
@@ -2124,8 +2139,9 @@ fn add_diode_charge_currents(
         let Some(history) = parasitic.get(&format!("{id}-{DIODE_CHARGE}")) else {
             continue;
         };
-        if let Some(result) = results.iter_mut().find(|r| &r.id == id) {
-            result.current_through += history.y1;
+        if let Some(k) = results[from..].iter().position(|r| &r.id == id) {
+            results[from + k].current_through += history.y1;
+            from += k + 1;
         }
     }
 }
@@ -3089,5 +3105,77 @@ mod tests {
         let (duration, dt) = calculate_duration(&circuit);
         assert_relative_eq!(duration, 30e-3, max_relative = 1e-12);
         assert_relative_eq!(dt, 0.1e-3, max_relative = 1e-12);
+    }
+
+    /// Each charge-storing diode's rate lands on its own result, whatever
+    /// other elements report around it; one without charge, or without a
+    /// result, is left alone.
+    #[test]
+    fn diode_charge_currents_land_on_their_own_results() {
+        let diode = |id: &str, charge: bool| {
+            CircuitElement::Diode(Diode {
+                id: id.into(),
+                nodes: ["a".into(), "0".into()],
+                temperature: 300.15,
+                model: charge.then(|| crate::circuit::DiodeModel {
+                    tt: 1e-9,
+                    ..Default::default()
+                }),
+            })
+        };
+        let resistor = CircuitElement::Resistor(Resistor {
+            id: "R1".into(),
+            nodes: ["a".into(), "0".into()],
+            resistance: 1e3,
+        });
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                diode("D1", true),
+                resistor,
+                diode("D2", false),
+                diode("D3", true),
+                diode("D4", true),
+                diode("D5", true),
+            ],
+        );
+        let result = |id: &str| ComponentResult {
+            id: id.into(),
+            voltage_across: 0.0,
+            current_through: 1.0,
+            power: 0.0,
+        };
+        // D4 reports nothing; an extra result sits between D3 and D5.
+        let mut results = vec![
+            result("D1"),
+            result("R1"),
+            result("D2"),
+            result("D3"),
+            result("X"),
+            result("D5"),
+        ];
+        let mut parasitic = FastMap::default();
+        for (id, rate) in [("D1", 0.5), ("D3", 0.25), ("D4", 8.0), ("D5", 0.125)] {
+            parasitic.insert(
+                format!("{id}-{DIODE_CHARGE}"),
+                History::at(0.0).push(0.0, rate),
+            );
+        }
+        add_diode_charge_currents(&circuit, &parasitic, &mut results);
+        let currents: Vec<(&str, f64)> = results
+            .iter()
+            .map(|r| (r.id.as_str(), r.current_through))
+            .collect();
+        assert_eq!(
+            currents,
+            [
+                ("D1", 1.5),
+                ("R1", 1.0),
+                ("D2", 1.0),
+                ("D3", 1.25),
+                ("X", 1.0),
+                ("D5", 1.125),
+            ]
+        );
     }
 }

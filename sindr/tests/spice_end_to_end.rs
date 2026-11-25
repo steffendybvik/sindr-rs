@@ -355,6 +355,121 @@ fn identical_instances_share_one_block() {
 }
 
 #[test]
+fn numbered_blocks_skip_a_subckt_of_that_name() {
+    let src = "* names\n\
+               X1 a 0 s v=1\n\
+               X2 b 0 s_2\n\
+               X3 c 0 s v=2\n\
+               X4 d 0 s v=3\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               R4 d 0 1k\n\
+               .subckt s p q v=1\n\
+               V1 p q {v}\n\
+               .ends\n\
+               .subckt s_2 p q\n\
+               R1 p q 1k\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let placed: Vec<&str> = nl
+        .circuit
+        .instances
+        .iter()
+        .map(|i| i.block.as_str())
+        .collect();
+    assert_eq!(placed, ["s", "s_2", "s_3", "s_4"]);
+}
+
+#[test]
+fn zero_and_minus_zero_bodies_share_one_block() {
+    let src = "* signed zero\n\
+               X1 a 0 src v=0\n\
+               X2 b 0 src v=-0\n\
+               X3 c 0 src v=1\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               .subckt src p q v=1\n\
+               V1 p q {v}\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let placed: Vec<&str> = nl
+        .circuit
+        .instances
+        .iter()
+        .map(|i| i.block.as_str())
+        .collect();
+    assert_eq!(placed, ["src", "src", "src_2"]);
+}
+
+/// `1` and `-1` print alike once the sign is dropped, so their bodies land
+/// in one hash bucket; they still differ, and get a block each.
+#[test]
+fn bodies_that_differ_only_in_sign_get_their_own_blocks() {
+    let src = "* signed\n\
+               X1 a 0 src v=1\n\
+               X2 b 0 src v=-1\n\
+               X3 c 0 src v=1\n\
+               X4 d 0 src v=-1\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               R4 d 0 1k\n\
+               .subckt src p q v=1\n\
+               V1 p q {v}\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let placed: Vec<&str> = nl
+        .circuit
+        .instances
+        .iter()
+        .map(|i| i.block.as_str())
+        .collect();
+    assert_eq!(placed, ["src", "src_2", "src", "src_2"]);
+    assert_eq!(nl.circuit.blocks.len(), 2);
+}
+
+/// Each block lists only its own instance's children, in deck order;
+/// outer bodies with equal children share a block, and the inner body
+/// both outers bind alike is one block.
+#[test]
+fn nested_instances_group_under_their_own_parent() {
+    let src = "* nested sharing\n\
+               X1 a 0 outer v=1\n\
+               X2 b 0 outer v=1\n\
+               X3 c 0 outer v=2\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               .subckt outer p q v=1\n\
+               XA p m inner w={v}\n\
+               XB m q inner w=5\n\
+               .ends\n\
+               .subckt inner p q w=1\n\
+               R1 p q {w}\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let c = &nl.circuit;
+    let placed: Vec<&str> = c.instances.iter().map(|i| i.block.as_str()).collect();
+    assert_eq!(placed[0], placed[1]);
+    assert_ne!(placed[0], placed[2]);
+    let (shared, other) = (&c.blocks[placed[0]], &c.blocks[placed[2]]);
+    for block in [shared, other] {
+        let ids: Vec<&str> = block.instances.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["xa", "xb"]);
+    }
+    assert_eq!(shared.instances[1].block, other.instances[1].block);
+    assert_ne!(shared.instances[0].block, other.instances[0].block);
+    // Two outer bodies and three inner ones (w = 1, 2 and 5).
+    assert_eq!(c.blocks.len(), 5);
+}
+
+#[test]
 fn nested_subckts_keep_their_nesting() {
     let src = "* nested\n\
                V1 in 0 1\n\

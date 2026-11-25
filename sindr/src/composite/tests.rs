@@ -309,9 +309,9 @@ fn a_circuit_that_cannot_flatten_is_left_as_it_is() {
     assert_eq!(res.node_voltages.get("s1#x"), Some(&1.0));
     assert_eq!(res.component_results.len(), before);
 
-    strip_nodes(&broken, &mut res.node_voltages);
+    strip_nodes(&broken, [&mut res.node_voltages]);
     assert!(res.node_voltages.contains_key("s1#x"));
-    strip_nodes(&spdt(SpdtPosition::A), &mut res.node_voltages);
+    strip_nodes(&spdt(SpdtPosition::A), [&mut res.node_voltages]);
     assert!(!res.node_voltages.contains_key("s1#x"));
 }
 
@@ -355,4 +355,86 @@ fn serde_round_trip() {
     let back: Vec<CircuitElement> =
         serde_json::from_str(&serde_json::to_string(&elements).unwrap()).unwrap();
     assert_eq!(back, elements);
+}
+
+/// An SPDT inside a block, so the sweeps fold an instance's composite.
+fn spdt_in_a_block(volts: f64) -> Circuit {
+    let inner = spdt(SpdtPosition::A);
+    let block = crate::design::Block {
+        ports: vec!["in".into()],
+        components: inner.components[1..].to_vec(),
+        ..Default::default()
+    };
+    let mut c = Circuit::new("0", vec![v("v1", "in", "0", volts)]);
+    c.blocks.insert("sw".into(), block);
+    c.instances
+        .push(crate::design::Instance::new("x1", "sw", ["in"]));
+    c
+}
+
+fn assert_folded_like(point: &SimulationResult, want: &SimulationResult) {
+    let mut ids: Vec<_> = point.component_results.iter().map(|c| &c.id).collect();
+    let mut want_ids: Vec<_> = want.component_results.iter().map(|c| &c.id).collect();
+    ids.sort();
+    want_ids.sort();
+    assert_eq!(ids, want_ids);
+    let mut nodes: Vec<_> = point.node_voltages.keys().collect();
+    let mut want_nodes: Vec<_> = want.node_voltages.keys().collect();
+    nodes.sort();
+    want_nodes.sort();
+    assert_eq!(nodes, want_nodes);
+    for c in &want.component_results {
+        let got = result(point, &c.id);
+        assert!((got.current_through - c.current_through).abs() < 1e-12);
+        assert!((got.voltage_across - c.voltage_across).abs() < 1e-9);
+        assert!((got.power - c.power).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn sweeps_fold_every_point_of_a_hierarchical_composite() {
+    use crate::{dc_sweep, dc_sweep_nested, solve_op, temperature_sweep};
+    use crate::{DcSweepAxis, TempSweepConfig};
+
+    let circuit = spdt_in_a_block(0.0);
+    let sweep = dc_sweep(&circuit, &DcSweepAxis::new("v1", 0.0, 10.0, 6)).unwrap();
+    for point in &sweep.points {
+        let want = solve_op(&spdt_in_a_block(point.sweep_value)).unwrap();
+        assert!(want.component_results.iter().all(|c| !c.id.contains('#')));
+        assert_folded_like(&point.result, &want);
+    }
+
+    let mut two = circuit.clone();
+    two.components.push(v("v2", "in2", "0", 0.0));
+    two.components.push(r("r2", "in2", "0", 1e3));
+    let nested = dc_sweep_nested(
+        &two,
+        &DcSweepAxis::new("v1", 0.0, 10.0, 3),
+        &DcSweepAxis::new("v2", 0.0, 1.0, 2),
+    )
+    .unwrap();
+    for curve in &nested.curves {
+        for point in &curve.sweep.points {
+            let mut at = two.clone();
+            at.components[0] = v("v1", "in", "0", point.sweep_value);
+            at.components[1] = v("v2", "in2", "0", curve.outer_value);
+            assert_folded_like(&point.result, &solve_op(&at).unwrap());
+        }
+    }
+
+    let circuit = spdt_in_a_block(5.0);
+    let want = solve_op(&circuit).unwrap();
+    let temps = temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 350.0, 3)).unwrap();
+    for point in &temps.points {
+        assert_folded_like(&point.result, &want);
+    }
+
+    let ac = solve_ac(&circuit, &AcConfig::new("v1", 1.0, 1e3, 4)).unwrap();
+    for point in &ac.points {
+        let mut nodes: Vec<_> = point.node_voltages.keys().collect();
+        let mut want_nodes: Vec<_> = want.node_voltages.keys().collect();
+        nodes.sort();
+        want_nodes.sort();
+        assert_eq!(nodes, want_nodes);
+    }
 }
