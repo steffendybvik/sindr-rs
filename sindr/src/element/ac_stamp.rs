@@ -1,7 +1,5 @@
 //! What an element's small-signal (AC) stamp writes into and reads from.
 
-use std::collections::HashMap;
-
 use nalgebra::DVector;
 use num_complex::Complex64;
 
@@ -88,13 +86,11 @@ pub(crate) struct AcStamp<'a> {
     sensed: &'a [Sensed],
     layout: &'a Layout,
     next_aux: &'a mut usize,
-    vsource_branches: &'a mut HashMap<String, usize>,
 }
 
 impl<'a> AcStamp<'a> {
     /// The stamp of `circuit`'s element `k` at `s`. `next_aux` is the
-    /// pencil form's next free extra unknown, `vsource_branches` where an
-    /// independent voltage source records its branch row.
+    /// pencil form's next free extra unknown.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         a: &'a mut MnaMatrix<Complex64>,
@@ -107,7 +103,6 @@ impl<'a> AcStamp<'a> {
         s: Complex64,
         pencil: bool,
         next_aux: &'a mut usize,
-        vsource_branches: &'a mut HashMap<String, usize>,
     ) -> Self {
         Self {
             a,
@@ -121,7 +116,6 @@ impl<'a> AcStamp<'a> {
             sensed: terminals.sensed(k),
             layout,
             next_aux,
-            vsource_branches,
         }
     }
 
@@ -189,12 +183,6 @@ impl<'a> AcStamp<'a> {
         let row = *self.next_aux;
         *self.next_aux += 1;
         row
-    }
-
-    /// Records the element's first branch row as the independent voltage
-    /// source `id`'s, where an excitation goes.
-    pub(crate) fn expose_vsource(&mut self, id: &str) {
-        self.vsource_branches.insert(id.to_string(), self.branch);
     }
 
     /// The matrix row of the branch current of the element `source` names,

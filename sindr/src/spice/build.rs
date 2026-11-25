@@ -7,9 +7,11 @@
 //!   and emit the matching `CircuitElement`.
 //! * **V / I** — evaluate the optional DC term and translate the optional
 //!   `RawWaveform` (PULSE / SIN / PWL) into `crate::Waveform`. SPICE's
-//!   `td/tr/tf/pw/period` for PULSE map directly; SIN's `theta` (damping)
-//!   is dropped with a warning in lenient mode and an error in strict mode
-//!   when non-zero.
+//!   `td/tr/tf/pw/period` for PULSE map directly, missing ones defaulting
+//!   as in ngspice (`td` 0, `tr`/`tf` the `.tran` TSTEP, `pw`/`per` its
+//!   TSTOP). SIN becomes a `Waveform::Sine`, or a `Waveform::DampedSine`
+//!   when it has a delay `td` or a damping `theta`; its phase is in degrees,
+//!   as in ngspice.
 //! * **D** — look up `.model`; kind must be `D`. Other kinds raise
 //!   `UnsupportedModelType`. `IS`, `N`, `RS`, `CJO` (alias `CJ0`, `CJ`),
 //!   `VJ` (alias `PB`), `M` (alias `MJ`), `FC`, `TT`, `BV` and `IBV` fill a
@@ -33,7 +35,10 @@ use crate::element::{
     Resistor, Transformer, Vccs, Vcvs, VoltageSource,
 };
 use crate::handle::{ComponentId, NodeId};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
 
 use crate::circuit::{
     BjtModel, BjtParasiticCaps, DiodeModel, JfetParasiticCaps, MosfetParasiticCaps,
@@ -75,6 +80,7 @@ pub(crate) fn build_netlist(
     let mut scopes: HashMap<&[String], Vec<CircuitElement>> = HashMap::new();
     // `K` lines, applied per scope once all its `L` lines are built.
     let mut couplings: Vec<Coupling<'_>> = Vec::new();
+    let tran = tran_span(&flat);
     for fe in &flat.elements {
         if let RawElementBody::Coupling { inductors, k } = &fe.raw.body {
             let scope = scope_from_snapshot(&fe.scope_snapshot);
@@ -95,7 +101,7 @@ pub(crate) fn build_netlist(
             instance_path: Vec::new(),
             scope_snapshot: fe.scope_snapshot.clone(),
         };
-        let mut element = build_element(&local, &flat.models, strict, warnings)
+        let mut element = build_element(&local, &flat.models, tran, strict, warnings)
             .map_err(|e| e.locate(&fe.raw.span))?;
         *element.id_mut() = local_id(&fe.raw.id, &fe.instance_path);
         scopes
@@ -142,6 +148,7 @@ pub(crate) fn build_netlist(
         .map_err(|e| card_error(format!("internal: {e}")))?
         .into_owned()
         .components;
+    let (uic_voltages, uic_currents) = element_ics(&flat.elements, &components, strict, warnings)?;
 
     let mut analyses: Vec<AnalysisRequest> = Vec::with_capacity(flat.analyses.len());
     let top_scope = scope_from_snapshot(&flat.top_params);
@@ -202,10 +209,68 @@ pub(crate) fn build_netlist(
         measurements,
         fourier,
         ac_stimuli,
+        uic_voltages,
+        uic_currents,
         warnings: warnings.clone(),
         source_map: flat.source_map,
         title,
     })
+}
+
+/// `IC=` on C and L lines: a capacitor's as the voltage of its node that
+/// isn't ground, an inductor's as its current, both under flattened names.
+/// A capacitor with neither end at ground, or an inductor a `K` line
+/// coupled, can't start that way in sindr, so its `IC=` is unsupported.
+#[allow(clippy::type_complexity)]
+fn element_ics(
+    elements: &[FlatElement],
+    components: &[CircuitElement],
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<(HashMap<String, f64>, HashMap<String, f64>), SpiceParseError> {
+    let mut voltages = HashMap::new();
+    let mut currents = HashMap::new();
+    for fe in elements {
+        let RawElementBody::Passive { params, .. } = &fe.raw.body else {
+            continue;
+        };
+        let Some((_, expr)) = params.iter().rev().find(|(name, _)| name == "ic") else {
+            continue;
+        };
+        let scope = scope_from_snapshot(&fe.scope_snapshot);
+        let ic = eval_or_lift(expr, &scope).map_err(|e| e.locate(&fe.raw.span))?;
+        let cant = match (fe.raw.prefix, fe.raw.nodes.as_slice()) {
+            ('c', [a, b]) if b == "0" => {
+                voltages.insert(a.clone(), ic);
+                None
+            }
+            ('c', [a, b]) if a == "0" => {
+                voltages.insert(b.clone(), -ic);
+                None
+            }
+            ('c', _) => Some("neither end is at ground"),
+            ('l', _)
+                if components
+                    .iter()
+                    .any(|c| matches!(c, CircuitElement::Inductor(l) if l.id == fe.raw.id)) =>
+            {
+                currents.insert(fe.raw.id.clone(), ic);
+                None
+            }
+            ('l', _) => Some("it's coupled into a transformer"),
+            _ => None,
+        };
+        if let Some(why) = cant {
+            unsupported(
+                format!("`{}`: `IC={ic}` can't be set: {why}", fe.raw.id),
+                &fe.raw.span.file,
+                strict,
+                warnings,
+            )
+            .map_err(|e| e.locate(&fe.raw.span))?;
+        }
+    }
+    Ok((voltages, currents))
 }
 
 /// An element's id inside its subckt body: `x1.x2.r3` → `r3`.
@@ -299,17 +364,37 @@ fn check_control_source(
     .locate(&fe.raw.span))
 }
 
+/// The first `.tran`'s `(tstep, tstop)`, which PULSE's missing arguments
+/// default to. A `.tran` that doesn't evaluate is reported with the
+/// analyses.
+fn tran_span(flat: &Flattened) -> Option<(f64, f64)> {
+    let scope = scope_from_snapshot(&flat.top_params);
+    flat.analyses.iter().find_map(|(raw, _)| match raw {
+        RawAnalysis::Tran { args, .. } if args.len() >= 2 => Some((
+            eval_or_lift(&args[0], &scope).ok()?,
+            eval_or_lift(&args[1], &scope).ok()?,
+        )),
+        _ => None,
+    })
+}
+
 fn build_element(
     fe: &FlatElement,
     models: &HashMap<String, RawModel>,
+    tran: Option<(f64, f64)>,
     strict: bool,
     warnings: &mut Vec<ParseWarning>,
 ) -> Result<CircuitElement, SpiceParseError> {
     let scope = scope_from_snapshot(&fe.scope_snapshot);
     let raw = &fe.raw;
     match &raw.body {
-        RawElementBody::Passive { value } => {
+        RawElementBody::Passive {
+            value,
+            params,
+            flags,
+        } => {
             let v = eval_or_lift(value, &scope)?;
+            let v = passive_value(raw, v, params, flags, &scope, strict, warnings)?;
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
             match raw.prefix {
                 'r' => Ok(CircuitElement::Resistor(Resistor {
@@ -345,7 +430,7 @@ fn build_element(
                 None => 0.0,
             };
             let waveform = match waveform {
-                Some(rw) => Some(translate_waveform(rw, &scope, strict, warnings)?),
+                Some(rw) => Some(translate_waveform(rw, &scope, tran)?),
                 None => None,
             };
             // If a waveform is present, the static `voltage`/`current`
@@ -367,7 +452,12 @@ fn build_element(
             }
         }
 
-        RawElementBody::Diode { model } => {
+        RawElementBody::Diode {
+            model,
+            area,
+            params: instance,
+            flags,
+        } => {
             let m = lookup_model(model, models, raw)?;
             let kind_lc = m.kind.to_ascii_lowercase();
             if kind_lc != "d" {
@@ -380,7 +470,16 @@ fn build_element(
             }
             let params = model_params(m, DIODE_KEYS, JUNCTION_NEUTRAL, &scope, strict, warnings)?;
             let nodes = two_nodes(&raw.nodes, &raw.id)?;
-            let model = (!params.is_empty()).then(|| {
+            let (scale, temperature) = diode_instance(
+                raw,
+                area.as_ref(),
+                instance,
+                flags,
+                &scope,
+                strict,
+                warnings,
+            )?;
+            let model = (!params.is_empty() || scale != 1.0).then(|| {
                 let mut model = DiodeModel::default();
                 for (key, value) in params {
                     match key {
@@ -400,12 +499,17 @@ fn build_element(
                         _ => model.ibv = value,
                     }
                 }
+                // Area and `m` are parallel junctions, as in ngspice.
+                model.is *= scale;
+                model.cjo *= scale;
+                model.ibv *= scale;
+                model.rs /= scale;
                 model
             });
             Ok(CircuitElement::Diode(Diode {
                 id: raw.id.clone(),
                 nodes,
-                temperature: 300.15,
+                temperature,
                 model,
             }))
         }
@@ -617,16 +721,15 @@ fn build_element(
 fn translate_waveform(
     rw: &RawWaveform,
     scope: &ParamScope,
-    strict: bool,
-    warnings: &mut Vec<ParseWarning>,
+    tran: Option<(f64, f64)>,
 ) -> Result<Waveform, SpiceParseError> {
     match rw {
         RawWaveform::Pulse(args) => {
-            // SPICE PULSE: v1 v2 td tr tf pw per
-            if args.len() != 7 {
+            // SPICE PULSE: v1 v2 [td [tr [tf [pw [per]]]]]
+            if !(2..=7).contains(&args.len()) {
                 return Err(SpiceParseError::ArityMismatch {
                     card: "PULSE".to_string(),
-                    expected: "7 args (v1 v2 td tr tf pw per)".to_string(),
+                    expected: "2..=7 args (v1 v2 [td] [tr] [tf] [pw] [per])".to_string(),
                     got: args.len(),
                     src: NamedSource::new("<build>", String::new()),
                     bad_span: (0, 0).into(),
@@ -636,22 +739,30 @@ fn translate_waveform(
                 .iter()
                 .map(|e| eval_or_lift(e, scope))
                 .collect::<Result<Vec<_>, _>>()?;
+            // As ngspice: edges of TSTEP, and a width and period of TSTOP,
+            // which hold v2 to the end of the run. With no `.tran` to take
+            // them from, edges are ideal and the pulse stays high.
+            let (edge, width, period) = match tran {
+                Some((tstep, tstop)) => (tstep, tstop, tstop),
+                None => (0.0, f64::INFINITY, 0.0),
+            };
+            let arg = |i: usize, default: f64| evals.get(i).copied().unwrap_or(default);
             Ok(Waveform::Pulse {
                 v1: evals[0],
                 v2: evals[1],
-                delay: evals[2],
-                rise_time: evals[3],
-                fall_time: evals[4],
-                pulse_width: evals[5],
-                period: evals[6],
+                delay: arg(2, 0.0),
+                rise_time: arg(3, edge),
+                fall_time: arg(4, edge),
+                pulse_width: arg(5, width),
+                period: arg(6, period),
             })
         }
         RawWaveform::Sin(args) => {
-            // SPICE SIN: vo va freq [td] [theta]
-            if !(3..=5).contains(&args.len()) {
+            // SPICE SIN: vo va freq [td [theta [phase]]], phase in degrees.
+            if !(3..=6).contains(&args.len()) {
                 return Err(SpiceParseError::ArityMismatch {
                     card: "SIN".to_string(),
-                    expected: "3..=5 args (vo va freq [td] [theta])".to_string(),
+                    expected: "3..=6 args (vo va freq [td] [theta] [phase])".to_string(),
                     got: args.len(),
                     src: NamedSource::new("<build>", String::new()),
                     bad_span: (0, 0).into(),
@@ -661,37 +772,25 @@ fn translate_waveform(
                 .iter()
                 .map(|e| eval_or_lift(e, scope))
                 .collect::<Result<Vec<_>, _>>()?;
-            let offset = evals[0];
-            let amplitude = evals[1];
-            let frequency = evals[2];
-            // td (delay) is dropped today — crate::Waveform::Sine has no
-            // delay field. Phase carries radians, td would need to be
-            // converted to phase = -2*pi*f*td. Do that conversion so we
-            // do not silently lose the value.
-            let phase = if evals.len() >= 4 {
-                -2.0 * std::f64::consts::PI * frequency * evals[3]
-            } else {
-                0.0
-            };
-            if evals.len() == 5 && evals[4] != 0.0 {
-                if strict {
-                    return Err(SpiceParseError::Syntax {
-                        message: "SIN damping factor (theta) is not supported".to_string(),
-                        src: NamedSource::new("<build>", String::new()),
-                        bad_span: (0, 0).into(),
-                    });
+            let arg = |i: usize| evals.get(i).copied().unwrap_or(0.0);
+            let (offset, amplitude, frequency) = (evals[0], evals[1], evals[2]);
+            let (delay, damping, phase) = (arg(3), arg(4), arg(5).to_radians());
+            Ok(if delay == 0.0 && damping == 0.0 {
+                Waveform::Sine {
+                    amplitude,
+                    frequency,
+                    offset,
+                    phase,
                 }
-                warnings.push(ParseWarning {
-                    message: "SIN damping factor (theta) ignored".to_string(),
-                    span: None,
-                    file: None,
-                });
-            }
-            Ok(Waveform::Sine {
-                amplitude,
-                frequency,
-                offset,
-                phase,
+            } else {
+                Waveform::DampedSine {
+                    amplitude,
+                    frequency,
+                    offset,
+                    delay,
+                    damping,
+                    phase,
+                }
             })
         }
         RawWaveform::Pwl(pairs) => {
@@ -836,6 +935,134 @@ fn unsupported(
     Ok(())
 }
 
+/// Each instance parameter's value, the last one written winning. Any name
+/// outside `known` is unsupported.
+fn instance_params(
+    raw: &crate::spice::ast::RawElement,
+    params: &[(String, ParamExpr)],
+    known: &[&'static str],
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<HashMap<&'static str, f64>, SpiceParseError> {
+    let mut values = HashMap::new();
+    for (name, expr) in params {
+        match known.iter().find(|k| **k == name.as_str()) {
+            Some(key) => {
+                let value = eval_or_lift(expr, scope)?;
+                values.insert(*key, value);
+            }
+            None => unsupported(
+                format!(
+                    "`{}`: instance parameter `{}` not supported",
+                    raw.id,
+                    name.to_ascii_uppercase()
+                ),
+                &raw.span.file,
+                strict,
+                warnings,
+            )?,
+        }
+    }
+    Ok(values)
+}
+
+/// The temperature difference from 27 °C an instance sits at: `temp`
+/// (°C) if given, else `dtemp`, as ngspice reads them (`dtemp` is ignored
+/// beside a `temp`).
+fn instance_delta_t(values: &HashMap<&'static str, f64>) -> f64 {
+    match (values.get("temp"), values.get("dtemp")) {
+        (Some(temp), _) => temp - 27.0,
+        (None, Some(dtemp)) => *dtemp,
+        (None, None) => 0.0,
+    }
+}
+
+/// An `m` or area factor, which must be positive.
+fn positive_factor(
+    raw: &crate::spice::ast::RawElement,
+    name: &str,
+    value: f64,
+) -> Result<f64, SpiceParseError> {
+    if value > 0.0 && value.is_finite() {
+        Ok(value)
+    } else {
+        Err(card_error(format!(
+            "`{}`: `{name}` must be positive, not {value}",
+            raw.id
+        )))
+    }
+}
+
+/// An R, L or C line's value with its instance parameters applied as
+/// ngspice applies them: `scale` multiplies it, `tc1` and `tc2` scale it
+/// by `1 + tc1·ΔT + tc2·ΔT²` at the instance's `temp` or `dtemp`, and `m`
+/// parallel copies divide R and L and multiply C. A C or L line's `ic` is
+/// read with the deck's initial conditions; any other parameter or flag is
+/// unsupported.
+fn passive_value(
+    raw: &crate::spice::ast::RawElement,
+    value: f64,
+    params: &[(String, ParamExpr)],
+    flags: &[String],
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<f64, SpiceParseError> {
+    const R_KEYS: &[&str] = &["m", "scale", "tc1", "tc2", "temp", "dtemp"];
+    const LC_KEYS: &[&str] = &["m", "scale", "tc1", "tc2", "temp", "dtemp", "ic"];
+    let known = if raw.prefix == 'r' { R_KEYS } else { LC_KEYS };
+    let values = instance_params(raw, params, known, scope, strict, warnings)?;
+    fet_flags(raw, flags, strict, warnings)?;
+    let get = |key: &str, default: f64| values.get(key).copied().unwrap_or(default);
+    let m = positive_factor(raw, "m", get("m", 1.0))?;
+    let dt = instance_delta_t(&values);
+    let value =
+        value * get("scale", 1.0) * (1.0 + get("tc1", 0.0) * dt + get("tc2", 0.0) * dt * dt);
+    Ok(if raw.prefix == 'c' {
+        value * m
+    } else {
+        value / m
+    })
+}
+
+/// A D line's area (the positional one or `area=`, times `m`) and the
+/// junction temperature (K) its `temp` or `dtemp` sets. `pj` scales only
+/// sidewall parameters sindr's diode doesn't have, so it's dropped; `OFF`,
+/// `ic` and any other parameter are unsupported.
+fn diode_instance(
+    raw: &crate::spice::ast::RawElement,
+    area: Option<&ParamExpr>,
+    params: &[(String, ParamExpr)],
+    flags: &[String],
+    scope: &ParamScope,
+    strict: bool,
+    warnings: &mut Vec<ParseWarning>,
+) -> Result<(f64, f64), SpiceParseError> {
+    const KEYS: &[&str] = &["area", "m", "temp", "dtemp", "pj"];
+    let values = instance_params(raw, params, KEYS, scope, strict, warnings)?;
+    fet_flags(raw, flags, strict, warnings)?;
+    let area = match area {
+        Some(expr) => eval_or_lift(expr, scope)?,
+        None => values.get("area").copied().unwrap_or(1.0),
+    };
+    let area = positive_factor(raw, "area", area)?;
+    let m = positive_factor(raw, "m", values.get("m").copied().unwrap_or(1.0))?;
+    // `temp` is °C; reading it as `temp + 273.15` lets the exporter write a
+    // temperature that reads back as the same kelvin.
+    let temperature = match values.get("temp") {
+        Some(temp) => temp + crate::spice::export::KELVIN_AT_0C,
+        None => 300.15 + instance_delta_t(&values),
+    };
+    if !(temperature > 0.0 && temperature.is_finite()) {
+        return Err(card_error(format!(
+            "`{}`: the junction temperature must be above absolute zero, not {temperature} K",
+            raw.id
+        )));
+    }
+    Ok((area * m, temperature))
+}
+
 /// The model card of a FET line, checked against the kinds it may be.
 fn fet_model<'a>(
     raw: &crate::spice::ast::RawElement,
@@ -887,7 +1114,7 @@ fn fet_params(
     Ok(params)
 }
 
-/// Bare flags on a FET line (`OFF`) have no meaning to sindr.
+/// Bare flags on a device line (`OFF`) have no meaning to sindr.
 fn fet_flags(
     raw: &crate::spice::ast::RawElement,
     flags: &[String],
@@ -1175,15 +1402,23 @@ fn assemble(
     // Instances refer to their block by class index until pass 2.
     let mut class_of: Vec<usize> = vec![0; records.len()];
     let mut classes: Vec<(&str, Block)> = Vec::new();
+    // Class indices by body hash, in the order the classes were made.
+    let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut children_of: HashMap<&[String], Vec<usize>> = HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        if let Some((_, parent)) = r.path.split_last() {
+            children_of.entry(parent).or_default().push(i);
+        }
+    }
     let children = |path: &[String], class_of: &[usize]| -> Vec<Instance> {
-        records
-            .iter()
-            .zip(class_of)
-            .filter(|(r, _)| r.path.len() == path.len() + 1 && r.path.starts_with(path))
-            .map(|(r, class)| Instance {
-                id: r.path.last().cloned().unwrap_or_default(),
-                block: class.to_string(),
-                nodes: r.local_nodes.clone(),
+        children_of
+            .get(path)
+            .into_iter()
+            .flatten()
+            .map(|&i| Instance {
+                id: records[i].path.last().cloned().unwrap_or_default(),
+                block: class_of[i].to_string(),
+                nodes: records[i].local_nodes.clone(),
                 variant: None,
             })
             .collect()
@@ -1195,13 +1430,17 @@ fn assemble(
             instances: children(&record.path, &class_of),
             ..Block::default()
         };
-        class_of[i] = match classes
-            .iter()
-            .position(|(name, b)| *name == record.subckt && *b == block)
-        {
+        let bucket = buckets
+            .entry(body_hash(&record.subckt, &block))
+            .or_default();
+        class_of[i] = match bucket.iter().copied().find(|&c| {
+            let (name, b) = &classes[c];
+            *name == record.subckt && *b == block
+        }) {
             Some(class) => class,
             None => {
                 classes.push((&record.subckt, block));
+                bucket.push(classes.len() - 1);
                 classes.len() - 1
             }
         };
@@ -1211,15 +1450,23 @@ fn assemble(
     let subckt_names: HashSet<&str> = records.iter().map(|r| r.subckt.as_str()).collect();
     let mut names: Vec<Option<String>> = vec![None; classes.len()];
     let mut taken: HashSet<String> = HashSet::new();
+    // The suffix each subckt's last class took. Only its own classes take
+    // `name_k` names (a subckt called that is skipped by name), so every
+    // suffix below it is taken.
+    let mut last_k: HashMap<&str, usize> = HashMap::new();
     for &class in &class_of {
         if names[class].is_some() {
             continue;
         }
         let subckt = classes[class].0;
-        let mut name = subckt.to_string();
-        let mut k = 1;
-        while taken.contains(&name) || (k > 1 && subckt_names.contains(name.as_str())) {
-            k += 1;
+        let k = last_k.entry(subckt).or_insert(1);
+        let mut name = if *k == 1 {
+            subckt.to_string()
+        } else {
+            format!("{subckt}_{k}")
+        };
+        while taken.contains(&name) || (*k > 1 && subckt_names.contains(name.as_str())) {
+            *k += 1;
             name = format!("{subckt}_{k}");
         }
         taken.insert(name.clone());
@@ -1255,6 +1502,25 @@ fn assemble(
         blocks,
         ..Circuit::default()
     }
+}
+
+/// A hash of a subckt name and body that equal pairs share. It reads the
+/// body's `Debug` text without its `-` signs: equal values print alike but
+/// for the sign of a zero.
+fn body_hash(subckt: &str, block: &Block) -> u64 {
+    struct Unsigned(DefaultHasher);
+    impl std::fmt::Write for Unsigned {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            for part in s.split('-') {
+                self.0.write(part.as_bytes());
+            }
+            Ok(())
+        }
+    }
+    let mut h = Unsigned(DefaultHasher::new());
+    subckt.hash(&mut h.0);
+    let _ = write!(h, "{block:?}");
+    h.0.finish()
 }
 
 /// The [`SolverOptions`](crate::SolverOptions) the deck's `.options`
@@ -1717,6 +1983,8 @@ mod tests {
             nodes: vec![n0.to_string(), n1.to_string()],
             body: RawElementBody::Passive {
                 value: ParamExpr::Number(value),
+                params: Vec::new(),
+                flags: Vec::new(),
             },
             span: span(),
         })
@@ -1793,6 +2061,9 @@ mod tests {
             nodes: vec!["a".to_string(), "k".to_string()],
             body: RawElementBody::Diode {
                 model: "ghost".to_string(),
+                area: None,
+                params: Vec::new(),
+                flags: Vec::new(),
             },
             span: span(),
         })];
@@ -1816,6 +2087,9 @@ mod tests {
                 nodes: vec!["a".to_string(), "k".to_string()],
                 body: RawElementBody::Diode {
                     model: "nmos1".to_string(),
+                    area: None,
+                    params: Vec::new(),
+                    flags: Vec::new(),
                 },
                 span: span(),
             }),
@@ -1987,6 +2261,8 @@ mod tests {
             nodes: vec!["a".to_string(), "0".to_string()],
             body: RawElementBody::Passive {
                 value: ParamExpr::Ref("missing".to_string()),
+                params: Vec::new(),
+                flags: Vec::new(),
             },
             span: span(),
         })];
@@ -2026,6 +2302,8 @@ mod tests {
                 nodes: vec!["a".to_string(), "0".to_string()],
                 body: RawElementBody::Passive {
                     value: ParamExpr::Ref("r".to_string()),
+                    params: Vec::new(),
+                    flags: Vec::new(),
                 },
                 span: span(),
             }),
@@ -2238,6 +2516,8 @@ mod tests {
                     BinOp::Add,
                     Box::new(ParamExpr::Number(500.0)),
                 ),
+                params: Vec::new(),
+                flags: Vec::new(),
             },
             span: span(),
         })];
@@ -2276,6 +2556,9 @@ mod tests {
             nodes: vec!["a".to_string(), "0".to_string()],
             body: RawElementBody::Diode {
                 model: model.to_string(),
+                area: None,
+                params: Vec::new(),
+                flags: Vec::new(),
             },
             span: span(),
         })

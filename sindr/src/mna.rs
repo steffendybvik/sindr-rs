@@ -28,7 +28,8 @@
 //! is exact.
 
 use std::any::{Any, TypeId};
-use std::cell::RefCell;
+use std::borrow::Cow;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use std::ops::{Index, IndexMut};
@@ -36,10 +37,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
-use faer::sparse::linalg::lu::{factorize_symbolic_lu, NumericLu, SymbolicLu};
+use faer::sparse::linalg::lu::{factorize_symbolic_lu, LuRef, NumericLu, SymbolicLu};
 use faer::sparse::{SparseColMatRef, SymbolicSparseColMat};
 use faer::Conj;
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Dyn, LU};
 use num_complex::Complex64;
 
 use crate::error::SimError;
@@ -97,9 +98,6 @@ enum Storage<T: MnaScalar> {
         entries: Vec<(usize, usize, T)>,
         index: EntryIndex,
         writes: Vec<usize>,
-        /// Whether its layout is kept for the next assembly: not for a
-        /// transposed matrix, which would push out its forward one.
-        share: bool,
     },
     /// Replaying a layout: write `cursor` goes straight into its CSC slot.
     Replay {
@@ -107,17 +105,6 @@ enum Storage<T: MnaScalar> {
         values: Vec<T>,
         cursor: usize,
     },
-}
-
-impl<T: MnaScalar> Storage<T> {
-    fn recording(share: bool) -> Self {
-        Storage::Sparse {
-            entries: Vec::new(),
-            index: EntryIndex::default(),
-            writes: Vec::new(),
-            share,
-        }
-    }
 }
 
 impl<T: MnaScalar> MnaMatrix<T> {
@@ -149,7 +136,11 @@ impl<T: MnaScalar> MnaMatrix<T> {
                 layout,
                 cursor: 0,
             },
-            None => Storage::recording(true),
+            None => Storage::Sparse {
+                entries: Vec::new(),
+                index: EntryIndex::default(),
+                writes: Vec::new(),
+            },
         };
         Self {
             size,
@@ -184,22 +175,6 @@ impl<T: MnaScalar> MnaMatrix<T> {
         }
     }
 
-    /// The transpose of the matrix, in the same storage.
-    pub fn transpose(&self) -> Self {
-        let storage = match &self.storage {
-            Storage::Dense(m) => Storage::Dense(m.transpose()),
-            Storage::Sparse { entries, .. } => transposed(entries.iter().copied()),
-            Storage::Replay { layout, values, .. } => {
-                transposed(layout.entries.iter().map(|&(r, c, s)| (r, c, values[s])))
-            }
-        };
-        Self {
-            size: self.size,
-            storage,
-            zero: T::zero(),
-        }
-    }
-
     /// Solve `self · x = b`.
     ///
     /// # Errors
@@ -207,30 +182,41 @@ impl<T: MnaScalar> MnaMatrix<T> {
     /// [`SimError::SingularMatrix`] if the matrix is singular, or
     /// [`SimError::InvalidSolution`] if the solution contains NaN or Inf.
     pub fn solve(&self, b: &DVector<T>) -> Result<DVector<T>, SimError> {
+        self.factor()?.solve(b)
+    }
+
+    /// The LU factorisation of the matrix, to solve it and its transpose
+    /// for any number of right-hand sides.
+    ///
+    /// # Errors
+    ///
+    /// [`SimError::SingularMatrix`] if a sparse matrix is singular. A
+    /// singular dense matrix fails when solved.
+    pub(crate) fn factor(&self) -> Result<Factor<'_, T>, SimError> {
         // A circuit with nothing but ground (an element from ground to
         // ground) has no unknowns; nalgebra's LU can't take a 0 × 0 matrix.
         if self.size == 0 {
-            return Ok(DVector::from_element(0, T::zero()));
+            return Ok(Factor::Empty);
         }
-        let solution = match &self.storage {
-            Storage::Dense(m) => m.clone().lu().solve(b).ok_or(SimError::SingularMatrix)?,
+        match &self.storage {
+            Storage::Dense(m) => Ok(Factor::Dense {
+                lu: m.clone().lu(),
+                triangles: OnceCell::new(),
+            }),
             Storage::Sparse {
-                entries,
-                writes,
-                share,
-                ..
+                entries, writes, ..
             } => {
                 let (layout, values) = Layout::build(self.size, entries, writes);
-                if *share {
-                    keep_layout::<T>(&layout);
-                }
-                layout.solve(&values, b)?
+                keep_layout::<T>(&layout);
+                SparseFactor::new(layout, Cow::Owned(values)).map(Factor::Sparse)
             }
             Storage::Replay {
                 layout,
                 values,
                 cursor,
-            } if *cursor == layout.writes.len() => layout.solve(values, b)?,
+            } if *cursor == layout.writes.len() => {
+                SparseFactor::new(layout.clone(), Cow::Borrowed(values)).map(Factor::Sparse)
+            }
             // Fewer writes than its layout has: a pattern of its own.
             Storage::Replay {
                 layout,
@@ -240,30 +226,76 @@ impl<T: MnaScalar> MnaMatrix<T> {
                 let (entries, _, writes) = replayed(layout, values, *cursor);
                 let (layout, values) = Layout::build(self.size, &entries, &writes);
                 keep_layout::<T>(&layout);
-                layout.solve(&values, b)?
+                SparseFactor::new(layout, Cow::Owned(values)).map(Factor::Sparse)
             }
-        };
-        if solution.iter().all(MnaScalar::is_finite_value) {
-            Ok(solution)
-        } else {
-            Err(SimError::InvalidSolution)
         }
     }
 }
 
-/// A recording of `entries` with rows and columns swapped.
-fn transposed<T: MnaScalar>(entries: impl Iterator<Item = (usize, usize, T)>) -> Storage<T> {
-    let entries: Vec<_> = entries.map(|(r, c, v)| (c, r, v)).collect();
-    let index = entries
-        .iter()
-        .enumerate()
-        .map(|(k, &(r, c, _))| ((r, c), k))
-        .collect();
-    Storage::Sparse {
-        writes: (0..entries.len()).collect(),
-        entries,
-        index,
-        share: false,
+/// An LU factorisation of an [`MnaMatrix`]: `A` and `Aᵀ` solve from the
+/// same factor, so an adjoint costs a solve, not a second factorisation.
+// Built on the stack for a solve or two: boxing the sparse one would cost
+// an allocation a solve.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum Factor<'a, T: MnaScalar> {
+    /// A system with no unknowns.
+    Empty,
+    Dense {
+        lu: LU<T, Dyn, Dyn>,
+        /// `L` and `U` unpacked, for the transpose solve, on its first use.
+        triangles: OnceCell<(DMatrix<T>, DMatrix<T>)>,
+    },
+    Sparse(SparseFactor<'a, T>),
+}
+
+impl<T: MnaScalar> Factor<'_, T> {
+    /// Solve `A · x = b`.
+    pub(crate) fn solve(&self, b: &DVector<T>) -> Result<DVector<T>, SimError> {
+        let x = match self {
+            Factor::Empty => return Ok(DVector::from_element(0, T::zero())),
+            Factor::Dense { lu, .. } => lu.solve(b).ok_or(SimError::SingularMatrix)?,
+            Factor::Sparse(f) => f.solve(b, false)?,
+        };
+        finite(x)
+    }
+
+    /// Solve `Aᵀ · x = b`.
+    pub(crate) fn solve_transpose(&self, b: &DVector<T>) -> Result<DVector<T>, SimError> {
+        let x = match self {
+            Factor::Empty => return Ok(DVector::from_element(0, T::zero())),
+            // P·A = L·U, so Aᵀ = Uᵀ·Lᵀ·P.
+            Factor::Dense { lu, triangles } => {
+                let (l, u) = triangles.get_or_init(|| (lu.l(), lu.u()));
+                let mut x = b.clone();
+                if !u.tr_solve_upper_triangular_mut(&mut x)
+                    || !l.tr_solve_lower_triangular_mut(&mut x)
+                {
+                    return Err(SimError::SingularMatrix);
+                }
+                lu.p().inv_permute_rows(&mut x);
+                x
+            }
+            Factor::Sparse(f) => f.solve(b, true)?,
+        };
+        finite(x)
+    }
+
+    /// The factor with the matrix values it holds copied, so it outlives
+    /// the matrix.
+    pub(crate) fn into_owned(self) -> Factor<'static, T> {
+        match self {
+            Factor::Empty => Factor::Empty,
+            Factor::Dense { lu, triangles } => Factor::Dense { lu, triangles },
+            Factor::Sparse(f) => Factor::Sparse(f.into_owned()),
+        }
+    }
+}
+
+fn finite<T: MnaScalar>(x: DVector<T>) -> Result<DVector<T>, SimError> {
+    if x.iter().all(MnaScalar::is_finite_value) {
+        Ok(x)
+    } else {
+        Err(SimError::InvalidSolution)
     }
 }
 
@@ -321,7 +353,6 @@ impl<T: MnaScalar> IndexMut<(usize, usize)> for MnaMatrix<T> {
                     entries,
                     index,
                     writes,
-                    share: true,
                 };
             }
         }
@@ -391,8 +422,8 @@ struct Layout {
     pattern: SymbolicSparseColMat<usize>,
     /// The whole system's symbolic LU, `None` if the analysis failed.
     symbolic: OnceLock<Option<Symbolic>>,
-    /// The last reduction its fixed unknowns asked for.
-    reduction: Mutex<Option<Arc<Reduction>>>,
+    /// The fixed unknowns the last values had.
+    fixed: Mutex<Option<Arc<FixedSet>>>,
 }
 
 impl Layout {
@@ -432,7 +463,7 @@ impl Layout {
                 .collect(),
             pattern: SymbolicSparseColMat::new_checked(size, size, col_ptr, None, row_idx),
             symbolic: OnceLock::new(),
-            reduction: Mutex::new(None),
+            fixed: Mutex::new(None),
         };
         (Arc::new(layout), values)
     }
@@ -447,39 +478,50 @@ impl Layout {
             .map(|k| col.start + k)
     }
 
-    fn solve<T: MnaScalar>(&self, values: &[T], b: &DVector<T>) -> Result<DVector<T>, SimError> {
-        let fixed = self.fixed_unknowns(values);
-        if fixed.is_empty() {
-            let symbolic = self
-                .symbolic
-                .get_or_init(|| symbolic_lu(&self.pattern))
-                .as_ref()
-                .ok_or(SimError::SingularMatrix)?;
-            return factor_and_solve(
-                symbolic,
-                SparseColMatRef::new(self.pattern.as_ref(), values),
-                b,
-            );
-        }
-        self.reduction_for(&fixed).solve(self, values, &fixed, b)
-    }
-
     /// The fixed unknowns, each with its own row, none sharing an unknown.
     /// Exact rearrangement only: a second row fixing an unknown already
     /// taken is left in, so a circuit that over-determines a node stays
-    /// singular. An entry holding zero doesn't count.
-    fn fixed_unknowns<T: MnaScalar>(&self, values: &[T]) -> Vec<Fixed<T>> {
+    /// singular. An entry holding zero doesn't count, and which entries
+    /// hold zero is all that decides the set, so the last one found is
+    /// reused for as long as that's unchanged.
+    fn fixed_set<T: MnaScalar>(&self, values: &[T]) -> Arc<FixedSet> {
+        let mut cached = self.fixed.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(set) = cached.as_ref() {
+            if set
+                .zero
+                .iter()
+                .zip(values)
+                .all(|(&zero, &v)| zero == (v == T::zero()))
+            {
+                return set.clone();
+            }
+        }
+        let fixed = self.fixed_unknowns(values);
+        let reduction = match cached.as_ref().and_then(|set| set.reduction.as_ref()) {
+            Some(reduction) if reduction.fixes(&fixed) => Some(reduction.clone()),
+            _ if fixed.is_empty() => None,
+            _ => Some(Arc::new(Reduction::new(self, &fixed))),
+        };
+        let set = Arc::new(FixedSet {
+            zero: values.iter().map(|&v| v == T::zero()).collect(),
+            fixed,
+            reduction,
+        });
+        *cached = Some(set.clone());
+        set
+    }
+
+    fn fixed_unknowns<T: MnaScalar>(&self, values: &[T]) -> Vec<Fixed> {
         let size = self.size;
         // Per row and per column: the number of non-zeros and the last one.
         let mut row_count = vec![0u32; size];
-        let mut row_last = vec![(0usize, T::zero()); size];
+        let mut row_last = vec![(0usize, 0usize); size];
         let mut col_count = vec![0u32; size];
         let mut col_last = vec![0usize; size];
         for &(r, c, s) in &self.entries {
-            let v = values[s];
-            if v != T::zero() {
+            if values[s] != T::zero() {
                 row_count[r] += 1;
-                row_last[r] = (c, v);
+                row_last[r] = (c, s);
                 col_count[c] += 1;
                 col_last[c] = r;
             }
@@ -487,7 +529,7 @@ impl Layout {
         let mut taken = vec![false; size];
         let mut fixed = Vec::new();
         for row in 0..size {
-            let (known, value) = row_last[row];
+            let (known, slot) = row_last[row];
             if row_count[row] == 1
                 && col_count[row] == 1
                 && col_last[row] == known
@@ -497,25 +539,10 @@ impl Layout {
             {
                 taken[known] = true;
                 taken[row] = true;
-                fixed.push(Fixed { known, row, value });
+                fixed.push(Fixed { known, row, slot });
             }
         }
         fixed
-    }
-
-    fn reduction_for<T: MnaScalar>(&self, fixed: &[Fixed<T>]) -> Arc<Reduction> {
-        let mut cached = self
-            .reduction
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(reduction) = cached.as_ref() {
-            if reduction.fixes(fixed) {
-                return reduction.clone();
-            }
-        }
-        let reduction = Arc::new(Reduction::new(self, fixed));
-        *cached = Some(reduction.clone());
-        reduction
     }
 }
 
@@ -530,109 +557,130 @@ impl Layout {
 /// factorising with it fills the sparse LU in; taking it out first keeps
 /// the factor as sparse as the circuit without the rail.
 #[derive(Debug, Clone, Copy)]
-struct Fixed<T> {
+struct Fixed {
     known: usize,
     row: usize,
-    /// The entry at (`row`, `known`).
-    value: T,
+    /// The slot of the entry at (`row`, `known`).
+    slot: usize,
 }
 
 const NONE: usize = usize::MAX;
 
-/// A layout with a set of fixed unknowns substituted out: where each entry
-/// of the full system goes, and the reduced system's pattern.
+/// The fixed unknowns of a layout's values, and which entries held zero
+/// when they were found.
+#[derive(Debug)]
+struct FixedSet {
+    zero: Vec<bool>,
+    fixed: Vec<Fixed>,
+    /// `None` when nothing is fixed.
+    reduction: Option<Arc<Reduction>>,
+}
+
+/// A layout with a set of fixed unknowns substituted out: the reduced
+/// system's pattern, and the entries each step of a solve reads, as slots
+/// in the order first written.
 #[derive(Debug)]
 struct Reduction {
     /// `(known, row)` of each fixed unknown.
     key: Vec<(usize, usize)>,
-    /// For each unknown: its index in the reduced system, or [`NONE`].
-    index: Vec<usize>,
+    /// The full system's unknown for each reduced one.
+    unknowns: Vec<usize>,
     pattern: SymbolicSparseColMat<usize>,
     symbolic: Option<Symbolic>,
-    /// For each layout entry, in the order first written.
-    actions: Vec<Action>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum Action {
-    /// Into this slot of the reduced matrix.
-    Reduced(usize),
-    /// Times the known unknown (column), moved to this reduced row's right.
-    Rhs(usize, usize),
-    /// The coefficient of fixed unknown `i`'s partner in its own row.
-    PartnerCoef(usize),
-    /// Another term of fixed unknown `i`'s row, times the unknown (column).
-    PartnerTerm(usize, usize),
-    /// The fixing entry itself, or one in a column nothing reads.
-    Drop,
+    /// The slot of each reduced-matrix value.
+    reduced: Vec<usize>,
+    /// `(slot, i)`: a term of fixed unknown `i`'s partner's coefficient.
+    partner_coefs: Vec<(usize, usize)>,
+    /// `(slot, reduced row, known column)`: moved to the right.
+    rhs_terms: Vec<(usize, usize, usize)>,
+    /// `(slot, i, column)`: another term of fixed unknown `i`'s row.
+    partner_terms: Vec<(usize, usize, usize)>,
+    /// `(slot, known, reduced column)`: a term of a known unknown's row in
+    /// a reduced column, which in `Aᵀ` moves to the right.
+    transpose_rhs_terms: Vec<(usize, usize, usize)>,
+    /// `(slot, row, i)`: a term in fixed unknown `i`'s known column, but
+    /// for the fixing entry, which in `Aᵀ` is the row its partner solves.
+    transpose_partner_terms: Vec<(usize, usize, usize)>,
 }
 
 impl Reduction {
-    fn new<T: MnaScalar>(layout: &Layout, fixed: &[Fixed<T>]) -> Self {
+    fn new(layout: &Layout, fixed: &[Fixed]) -> Self {
         let size = layout.size;
         let mut index = vec![0usize; size];
-        // For each row that's some `known`'s: which entry of `fixed`.
-        let mut slot = vec![NONE; size];
-        let mut is_known = vec![false; size];
+        // For each unknown that's some fixed one's `known`: which.
+        let mut fixed_of = vec![NONE; size];
         for (i, f) in fixed.iter().enumerate() {
             index[f.known] = NONE;
             index[f.row] = NONE;
-            is_known[f.known] = true;
-            slot[f.known] = i;
+            fixed_of[f.known] = i;
         }
-        let mut m = 0;
-        for j in index.iter_mut() {
-            if *j != NONE {
-                *j = m;
-                m += 1;
+        let mut unknowns = Vec::with_capacity(size);
+        for (j, k) in index.iter_mut().enumerate() {
+            if *k != NONE {
+                *k = unknowns.len();
+                unknowns.push(j);
             }
         }
-        let mut actions = Vec::with_capacity(layout.entries.len());
-        // Reduced row, column and the action to point at its slot.
+        let m = unknowns.len();
+        let mut this = Self {
+            key: fixed.iter().map(|f| (f.known, f.row)).collect(),
+            unknowns,
+            pattern: SymbolicSparseColMat::new_checked(0, 0, vec![0], None, Vec::new()),
+            symbolic: None,
+            reduced: Vec::new(),
+            partner_coefs: Vec::new(),
+            rhs_terms: Vec::new(),
+            partner_terms: Vec::new(),
+            transpose_rhs_terms: Vec::new(),
+            transpose_partner_terms: Vec::new(),
+        };
+        // Reduced row, column and slot of each reduced entry.
         let mut reduced = Vec::new();
-        for &(r, c, _) in &layout.entries {
-            let i = slot[r];
-            let action = if i != NONE {
+        for &(r, c, s) in &layout.entries {
+            let i = fixed_of[r];
+            if i != NONE {
                 if c == fixed[i].row {
-                    Action::PartnerCoef(i)
+                    this.partner_coefs.push((s, i));
                 } else {
-                    Action::PartnerTerm(i, c)
+                    this.partner_terms.push((s, i, c));
+                    if index[c] != NONE {
+                        this.transpose_rhs_terms.push((s, r, index[c]));
+                    }
+                    if fixed_of[c] != NONE {
+                        this.transpose_partner_terms.push((s, r, fixed_of[c]));
+                    }
                 }
             } else if index[r] == NONE {
-                Action::Drop
-            } else if is_known[c] {
-                Action::Rhs(index[r], c)
+                // The fixing entry itself, or a zero in a fixed row.
+            } else if fixed_of[c] != NONE {
+                this.rhs_terms.push((s, index[r], c));
+                this.transpose_partner_terms.push((s, r, fixed_of[c]));
             } else if index[c] != NONE {
-                reduced.push((index[r], index[c], actions.len()));
-                Action::Reduced(0)
-            } else {
-                Action::Drop
-            };
-            actions.push(action);
+                reduced.push((index[r], index[c], s));
+            }
+            // Otherwise a zero in a partner's column.
         }
         reduced.sort_unstable_by_key(|&(r, c, _)| (c, r));
         let mut col_ptr = vec![0usize; m + 1];
         let mut row_idx = Vec::with_capacity(reduced.len());
-        for (s, &(r, c, a)) in reduced.iter().enumerate() {
-            actions[a] = Action::Reduced(s);
+        for &(r, c, s) in &reduced {
+            this.reduced.push(s);
             col_ptr[c + 1] += 1;
             row_idx.push(r);
         }
         for c in 0..m {
             col_ptr[c + 1] += col_ptr[c];
         }
-        let pattern = SymbolicSparseColMat::new_checked(m, m, col_ptr, None, row_idx);
-        let symbolic = if m > 0 { symbolic_lu(&pattern) } else { None };
-        Self {
-            key: fixed.iter().map(|f| (f.known, f.row)).collect(),
-            index,
-            pattern,
-            symbolic,
-            actions,
-        }
+        this.pattern = SymbolicSparseColMat::new_checked(m, m, col_ptr, None, row_idx);
+        this.symbolic = if m > 0 {
+            symbolic_lu(&this.pattern)
+        } else {
+            None
+        };
+        this
     }
 
-    fn fixes<T>(&self, fixed: &[Fixed<T>]) -> bool {
+    fn fixes(&self, fixed: &[Fixed]) -> bool {
         self.key.len() == fixed.len()
             && self
                 .key
@@ -640,62 +688,203 @@ impl Reduction {
                 .zip(fixed)
                 .all(|(&(known, row), f)| known == f.known && row == f.row)
     }
+}
 
-    /// Solves the system with the fixed unknowns substituted first.
-    fn solve<T: MnaScalar>(
-        &self,
-        layout: &Layout,
-        values: &[T],
-        fixed: &[Fixed<T>],
-        b: &DVector<T>,
-    ) -> Result<DVector<T>, SimError> {
-        let m = self.pattern.nrows();
-        let mut x = DVector::from_element(layout.size, T::zero());
-        for f in fixed {
-            x[f.known] = b[f.row] / f.value;
-        }
-        let mut rhs = DVector::from_element(m, T::zero());
-        for (j, &k) in self.index.iter().enumerate() {
-            if k != NONE {
-                rhs[k] = b[j];
+/// A sparse matrix factorised: the whole system's LU, or with its fixed
+/// unknowns substituted out first, the reduced system's.
+pub(crate) struct SparseFactor<'a, T: MnaScalar> {
+    layout: Arc<Layout>,
+    values: Cow<'a, [T]>,
+    fixed: Arc<FixedSet>,
+    /// Each fixed unknown's partner's coefficient in its row.
+    partner_coef: Vec<T>,
+    /// The numeric LU and its symbolic LU's id; `None` when substituting
+    /// leaves no unknowns.
+    lu: Option<(u64, NumericLu<usize, T>)>,
+}
+
+impl<'a, T: MnaScalar> SparseFactor<'a, T> {
+    fn new(layout: Arc<Layout>, values: Cow<'a, [T]>) -> Result<Self, SimError> {
+        let fixed = layout.fixed_set(&values);
+        let mut partner_coef = Vec::new();
+        let lu = match &fixed.reduction {
+            None => {
+                let symbolic = layout
+                    .symbolic
+                    .get_or_init(|| symbolic_lu(&layout.pattern))
+                    .as_ref()
+                    .ok_or(SimError::SingularMatrix)?;
+                let numeric = factorize(symbolic, &layout.pattern, &values, None)?;
+                Some((symbolic.id, numeric))
             }
-        }
-        // One pass: the reduced matrix, the known unknowns moved to the
-        // right, and each partner's coefficient in its row.
-        let mut reduced = vec![T::zero(); self.pattern.row_idx().len()];
-        let mut partner_acc: Vec<T> = fixed.iter().map(|f| b[f.known]).collect();
-        let mut partner_coef = vec![T::zero(); fixed.len()];
-        for (&(_, _, s), &action) in layout.entries.iter().zip(&self.actions) {
-            let v = values[s];
-            match action {
-                Action::Reduced(k) => reduced[k] = v,
-                Action::Rhs(row, c) => rhs[row] -= v * x[c],
-                Action::PartnerCoef(i) => partner_coef[i] += v,
-                Action::PartnerTerm(..) | Action::Drop => {}
-            }
-        }
-        if m > 0 {
-            let symbolic = self.symbolic.as_ref().ok_or(SimError::SingularMatrix)?;
-            let y = factor_and_solve(
-                symbolic,
-                SparseColMatRef::new(self.pattern.as_ref(), &reduced),
-                &rhs,
-            )?;
-            for (j, &k) in self.index.iter().enumerate() {
-                if k != NONE {
-                    x[j] = y[k];
+            Some(reduction) => {
+                partner_coef = vec![T::zero(); fixed.fixed.len()];
+                for &(s, i) in &reduction.partner_coefs {
+                    partner_coef[i] += values[s];
+                }
+                if reduction.pattern.nrows() > 0 {
+                    let symbolic = reduction
+                        .symbolic
+                        .as_ref()
+                        .ok_or(SimError::SingularMatrix)?;
+                    let numeric = factorize(
+                        symbolic,
+                        &reduction.pattern,
+                        &values,
+                        Some(&reduction.reduced),
+                    )?;
+                    Some((symbolic.id, numeric))
+                } else {
+                    None
                 }
             }
+        };
+        Ok(Self {
+            layout,
+            values,
+            fixed,
+            partner_coef,
+            lu,
+        })
+    }
+
+    fn into_owned(mut self) -> SparseFactor<'static, T> {
+        SparseFactor {
+            layout: self.layout.clone(),
+            values: Cow::Owned(std::mem::take(&mut self.values).into_owned()),
+            fixed: self.fixed.clone(),
+            partner_coef: std::mem::take(&mut self.partner_coef),
+            lu: self.lu.take(),
         }
-        for (&(_, _, s), &action) in layout.entries.iter().zip(&self.actions) {
-            if let Action::PartnerTerm(i, c) = action {
-                partner_acc[i] -= values[s] * x[c];
+    }
+
+    /// The symbolic and numeric LU of the system factorised: the whole
+    /// one or the reduced one.
+    fn lu(&self) -> Result<(&Symbolic, &NumericLu<usize, T>), SimError> {
+        let symbolic = match &self.fixed.reduction {
+            Some(reduction) => reduction.symbolic.as_ref(),
+            None => self.layout.symbolic.get().and_then(Option::as_ref),
+        };
+        match (symbolic, &self.lu) {
+            (Some(symbolic), Some((_, numeric))) => Ok((symbolic, numeric)),
+            _ => Err(SimError::SingularMatrix),
+        }
+    }
+
+    fn solve(&self, b: &DVector<T>, transpose: bool) -> Result<DVector<T>, SimError> {
+        let Some(reduction) = &self.fixed.reduction else {
+            let (symbolic, numeric) = self.lu()?;
+            let mut x = b.clone();
+            with_workspace(|work| {
+                solve_in_place(work, symbolic, numeric, x.as_mut_slice(), transpose);
+            });
+            return Ok(x);
+        };
+        let lu = if reduction.pattern.nrows() > 0 {
+            Some(self.lu()?)
+        } else {
+            None
+        };
+        let mut x = DVector::from_element(self.layout.size, T::zero());
+        with_workspace(|work| {
+            let mut rhs = std::mem::take(&mut work.rhs);
+            let mut acc = std::mem::take(&mut work.acc);
+            rhs.clear();
+            rhs.extend(reduction.unknowns.iter().map(|&j| b[j]));
+            acc.clear();
+            acc.extend(self.fixed.fixed.iter().map(|f| b[f.known]));
+            if transpose {
+                self.reduced_transpose(work, reduction, lu, b, &mut rhs, &mut acc, &mut x);
+            } else {
+                self.reduced(work, reduction, lu, b, &mut rhs, &mut acc, &mut x);
+            }
+            work.rhs = rhs;
+            work.acc = acc;
+        });
+        Ok(x)
+    }
+
+    /// `A x = b` with the fixed unknowns substituted first. `rhs` and `acc`
+    /// start as `b` at the reduced unknowns and at each `known`.
+    #[allow(clippy::too_many_arguments)]
+    fn reduced(
+        &self,
+        work: &mut Workspace<T>,
+        reduction: &Reduction,
+        lu: Option<(&Symbolic, &NumericLu<usize, T>)>,
+        b: &DVector<T>,
+        rhs: &mut [T],
+        acc: &mut [T],
+        x: &mut DVector<T>,
+    ) {
+        let (values, fixed) = (&self.values, &self.fixed.fixed);
+        for f in fixed {
+            x[f.known] = b[f.row] / values[f.slot];
+        }
+        for &(s, row, c) in &reduction.rhs_terms {
+            rhs[row] -= values[s] * x[c];
+        }
+        if let Some((symbolic, numeric)) = lu {
+            solve_in_place(work, symbolic, numeric, rhs, false);
+            for (&j, &y) in reduction.unknowns.iter().zip(rhs.iter()) {
+                x[j] = y;
             }
         }
-        for (i, f) in fixed.iter().enumerate() {
-            x[f.row] = partner_acc[i] / partner_coef[i];
+        for &(s, i, c) in &reduction.partner_terms {
+            acc[i] -= values[s] * x[c];
         }
-        Ok(x)
+        for ((f, &acc), &coef) in fixed.iter().zip(acc.iter()).zip(&self.partner_coef) {
+            x[f.row] = acc / coef;
+        }
+    }
+
+    /// `Aᵀ y = b` with the fixed unknowns substituted first. In `Aᵀ` the
+    /// roles swap: the partner's column (one entry, in `known`'s row) fixes
+    /// `y[known]`, and `known`'s column, the fixing entry's row, is where
+    /// `y[row]` is found last.
+    #[allow(clippy::too_many_arguments)]
+    fn reduced_transpose(
+        &self,
+        work: &mut Workspace<T>,
+        reduction: &Reduction,
+        lu: Option<(&Symbolic, &NumericLu<usize, T>)>,
+        b: &DVector<T>,
+        rhs: &mut [T],
+        acc: &mut [T],
+        y: &mut DVector<T>,
+    ) {
+        let (values, fixed) = (&self.values, &self.fixed.fixed);
+        for (f, &coef) in fixed.iter().zip(&self.partner_coef) {
+            y[f.known] = b[f.row] / coef;
+        }
+        for &(s, known, k) in &reduction.transpose_rhs_terms {
+            rhs[k] -= values[s] * y[known];
+        }
+        if let Some((symbolic, numeric)) = lu {
+            solve_in_place(work, symbolic, numeric, rhs, true);
+            for (&j, &z) in reduction.unknowns.iter().zip(rhs.iter()) {
+                y[j] = z;
+            }
+        }
+        for &(s, row, i) in &reduction.transpose_partner_terms {
+            acc[i] -= values[s] * y[row];
+        }
+        for (f, &acc) in fixed.iter().zip(acc.iter()) {
+            y[f.row] = acc / values[f.slot];
+        }
+    }
+}
+
+impl<T: MnaScalar> Drop for SparseFactor<'_, T> {
+    /// Hands the numeric LU back to the thread's [`Workspace`], for the
+    /// next factorisation of the same pattern to refactor in place.
+    fn drop(&mut self) {
+        if let Some((id, numeric)) = self.lu.take() {
+            with_workspace::<T, _>(|work| {
+                work.numeric = numeric;
+                work.symbolic = id;
+            });
+        }
     }
 }
 
@@ -716,7 +905,8 @@ fn symbolic_lu(pattern: &SymbolicSparseColMat<usize>) -> Option<Symbolic> {
 }
 
 /// A numeric LU and scratch memory, kept between factorisations on a
-/// thread so a refactor allocates nothing once they're big enough.
+/// thread so a refactor or a solve allocates nothing once they're big
+/// enough.
 struct Workspace<T> {
     numeric: NumericLu<usize, T>,
     /// The id of the symbolic LU `numeric` was last factorised with: faer
@@ -725,6 +915,12 @@ struct Workspace<T> {
     symbolic: u64,
     stack: MemBuffer,
     stack_bytes: usize,
+    /// The reduced matrix's values, gathered from the full one's.
+    gathered: Vec<T>,
+    /// A reduced solve's right-hand side, solved in place.
+    rhs: Vec<T>,
+    /// A reduced solve's fixed rows, summed up.
+    acc: Vec<T>,
 }
 
 impl<T: MnaScalar> Workspace<T> {
@@ -734,6 +930,9 @@ impl<T: MnaScalar> Workspace<T> {
             symbolic: 0,
             stack: MemBuffer::new(StackReq::EMPTY),
             stack_bytes: 0,
+            gathered: Vec::new(),
+            rhs: Vec::new(),
+            acc: Vec::new(),
         }
     }
 
@@ -753,60 +952,87 @@ thread_local! {
     static WORKSPACES: RefCell<[Option<Box<dyn Any>>; 2]> = const { RefCell::new([None, None]) };
 }
 
-fn factor_and_solve<T: MnaScalar>(
+/// Runs `f` on this thread's [`Workspace`] for `T`, taken out while it
+/// runs, or on a fresh one if there's none (a thread shutting down).
+fn with_workspace<T: MnaScalar, R>(f: impl FnOnce(&mut Workspace<T>) -> R) -> R {
+    let kind = layout_kind::<T>();
+    let mut work = WORKSPACES
+        .try_with(|cache| {
+            let taken = cache.try_borrow_mut().ok()?[kind].take()?;
+            taken.downcast::<Workspace<T>>().ok()
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| Box::new(Workspace::new()));
+    let result = f(&mut work);
+    let _ = WORKSPACES.try_with(|cache| {
+        if let Ok(mut cache) = cache.try_borrow_mut() {
+            cache[kind] = Some(work);
+        }
+    });
+    result
+}
+
+/// The numeric LU of the matrix with `pattern` and `values` (or with the
+/// values at slots `gather` of `values`), refactored in place in the
+/// thread's workspace when its last one had the same symbolic LU.
+fn factorize<T: MnaScalar>(
     symbolic: &Symbolic,
-    mat: SparseColMatRef<'_, usize, T>,
-    b: &DVector<T>,
-) -> Result<DVector<T>, SimError> {
-    WORKSPACES.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let slot = &mut cache[layout_kind::<T>()];
-        if !slot.as_ref().is_some_and(|w| w.is::<Workspace<T>>()) {
-            *slot = Some(Box::new(Workspace::<T>::new()));
+    pattern: &SymbolicSparseColMat<usize>,
+    values: &[T],
+    gather: Option<&[usize]>,
+) -> Result<NumericLu<usize, T>, SimError> {
+    with_workspace(|work: &mut Workspace<T>| {
+        let par = faer::get_global_parallelism();
+        let req = symbolic
+            .lu
+            .factorize_numeric_lu_scratch::<T>(par, Default::default());
+        let mut numeric = std::mem::take(&mut work.numeric);
+        if work.symbolic != symbolic.id {
+            numeric = NumericLu::new();
         }
-        match slot.as_mut().and_then(|w| w.downcast_mut::<Workspace<T>>()) {
-            Some(work) => factor_and_solve_in(work, symbolic, mat, b),
-            None => factor_and_solve_in(&mut Workspace::new(), symbolic, mat, b),
-        }
+        // Taken: the factor gives it back, with its id, when dropped.
+        work.symbolic = 0;
+        let mut gathered = std::mem::take(&mut work.gathered);
+        let values = match gather {
+            Some(slots) => {
+                gathered.clear();
+                gathered.extend(slots.iter().map(|&s| values[s]));
+                &gathered
+            }
+            None => values,
+        };
+        let factored = symbolic.lu.factorize_numeric_lu(
+            &mut numeric,
+            SparseColMatRef::new(pattern.as_ref(), values),
+            par,
+            work.stack(req),
+            Default::default(),
+        );
+        work.gathered = gathered;
+        factored.map_err(|_| SimError::SingularMatrix)?;
+        Ok(numeric)
     })
 }
 
-fn factor_and_solve_in<T: MnaScalar>(
+/// Solves the factorised system, or its transpose, for `x` in place.
+fn solve_in_place<T: MnaScalar>(
     work: &mut Workspace<T>,
     symbolic: &Symbolic,
-    mat: SparseColMatRef<'_, usize, T>,
-    b: &DVector<T>,
-) -> Result<DVector<T>, SimError> {
-    let size = mat.nrows();
+    numeric: &NumericLu<usize, T>,
+    x: &mut [T],
+    transpose: bool,
+) {
     let par = faer::get_global_parallelism();
-    let req = StackReq::any_of(&[
-        symbolic
-            .lu
-            .factorize_numeric_lu_scratch::<T>(par, Default::default()),
-        symbolic.lu.solve_in_place_scratch::<T>(1, par),
-    ]);
-    // Taken out so the factor can borrow it while the scratch is borrowed.
-    let mut numeric = std::mem::take(&mut work.numeric);
-    if work.symbolic != symbolic.id {
-        numeric = NumericLu::new();
-        work.symbolic = symbolic.id;
-    }
-    let result = (|| {
-        let stack = work.stack(req);
-        let lu = symbolic
-            .lu
-            .factorize_numeric_lu(&mut numeric, mat, par, stack, Default::default())
-            .map_err(|_| SimError::SingularMatrix)?;
-        let mut x = faer::Mat::<T>::from_fn(size, 1, |i, _| b[i]);
-        lu.solve_in_place_with_conj(Conj::No, x.as_mut(), par, work.stack(req));
-        Ok(DVector::from_fn(size, |i, _| x[(i, 0)]))
-    })();
-    if result.is_ok() {
-        work.numeric = numeric;
+    let req = symbolic.lu.solve_in_place_scratch::<T>(1, par);
+    let lu = LuRef::new_unchecked(&symbolic.lu, numeric);
+    let n = x.len();
+    let x = faer::MatMut::from_column_major_slice_mut(x, n, 1);
+    if transpose {
+        lu.solve_transpose_in_place_with_conj(Conj::No, x, par, work.stack(req));
     } else {
-        work.symbolic = 0;
+        lu.solve_in_place_with_conj(Conj::No, x, par, work.stack(req));
     }
-    result
 }
 
 /// Modified Nodal Analysis system.
@@ -833,9 +1059,19 @@ impl MnaSystem {
     }
 
     /// Total dimension of the system (n + m).
-    #[cfg(test)]
     pub fn size(&self) -> usize {
         self.b.len()
+    }
+
+    /// Zeros the system for the next assembly, as [`MnaSystem::new`] of
+    /// its size would, keeping a dense matrix's memory.
+    pub(crate) fn clear(&mut self) {
+        match &mut self.a.storage {
+            // Through the slice, a memset: nalgebra's `fill` goes entry by entry.
+            Storage::Dense(m) => m.as_mut_slice().fill(0.0),
+            _ => self.a = MnaMatrix::sparse(self.a.size),
+        }
+        self.b.as_mut_slice().fill(0.0);
     }
 
     /// Solve Ax = b: LU with partial pivoting, dense or sparse.
@@ -997,8 +1233,9 @@ mod tests {
 
     /// `n` nodes on a chain to ground, every one also tied to node 0, a
     /// rail that `sources` grounded voltage sources hold (node 0 and nodes
-    /// 1.. for the rest), and one floating source between the last two
-    /// nodes. Unknowns: `n` nodes, then one branch per source.
+    /// 10, 20, .. for the rest), a few one-way couplings, and one floating
+    /// source between the last two nodes. Unknowns: `n` nodes, then one
+    /// branch per source.
     fn hub_system<T: MnaScalar>(
         n: usize,
         sources: usize,
@@ -1021,11 +1258,19 @@ mod tests {
                 a[(i + 1, i)] -= gc;
             }
         }
+        // Couplings one way only, as a controlled source stamps, so that
+        // Aᵀ ≠ A: into the rail's row, from a held node's column, between
+        // two held nodes and between two free ones.
+        for (r, c) in [(0, 5), (7, 10), (10, 0), (20, 30)] {
+            a[(r, c)] += g(r + c) * T::from_real(0.5);
+        }
         let mut b = DVector::from_element(n + sources + 1, T::zero());
         for s in 0..sources {
             let (node, k) = (if s == 0 { 0 } else { 10 * s }, n + s);
+            // A branch row scaled by 2, so its entry differs from the
+            // branch current's in the node row.
             a[(node, k)] += one;
-            a[(k, node)] += one;
+            a[(k, node)] += one + one;
             b[k] = g(s) * T::from_real(1e3 + s as f64);
         }
         // A floating source between the last two nodes: not grounded, so it
@@ -1055,19 +1300,28 @@ mod tests {
                 y[i]
             );
         }
-        // And transposed, as the adjoint analyses solve it.
-        let (xt, yt) = (
-            dense.transpose().solve(&b).unwrap(),
-            sparse.transpose().solve(&b).unwrap(),
-        );
-        for i in 0..size {
-            let scale = xt[i].abs().max(1e-12);
-            assert!(
-                (xt[i] - yt[i]).abs() <= 1e-10 * scale,
-                "transposed {i}: {:?} vs {:?}",
-                xt[i],
-                yt[i]
-            );
+        // And transposed, as the adjoint analyses solve it: from the same
+        // factor, against an LU of the transpose itself.
+        let reference = dense.to_dense().transpose().lu().solve(&b).unwrap();
+        for (what, yt) in [
+            (
+                "dense",
+                dense.factor().unwrap().solve_transpose(&b).unwrap(),
+            ),
+            (
+                "sparse",
+                sparse.factor().unwrap().solve_transpose(&b).unwrap(),
+            ),
+        ] {
+            for i in 0..size {
+                let scale = reference[i].abs().max(1e-12);
+                assert!(
+                    (reference[i] - yt[i]).abs() <= 1e-10 * scale,
+                    "{what} transposed {i}: {:?} vs {:?}",
+                    reference[i],
+                    yt[i]
+                );
+            }
         }
     }
 
@@ -1080,6 +1334,115 @@ mod tests {
         assert_hub_matches_dense(|i| {
             Complex64::new(1e-3 * (1.0 + (i % 7) as f64), 1e-4 * (i % 5) as f64)
         });
+    }
+
+    /// With nothing to substitute out, the transpose solves from the whole
+    /// system's factor, and a factor solved again gives the same answer.
+    #[test]
+    fn a_factor_solves_its_transpose() {
+        let n = 150;
+        let mut a = MnaMatrix::<f64>::sparse(n);
+        for i in 0..n {
+            a[(i, i)] += 2e-3 + 1e-5 * i as f64;
+            if i + 1 < n {
+                a[(i, i + 1)] -= 1e-3;
+                a[(i + 1, i)] -= 1.5e-3;
+            }
+            if i + 7 < n {
+                a[(i, i + 7)] += 2e-4;
+            }
+        }
+        let b = DVector::from_fn(n, |i, _| 1e-3 * (1.0 + (i % 11) as f64));
+        let lu = a.factor().unwrap();
+        assert!(matches!(&lu, Factor::Sparse(f) if f.fixed.reduction.is_none()));
+        let reference = a.to_dense().transpose().lu().solve(&b).unwrap();
+        let y = lu.solve_transpose(&b).unwrap();
+        for i in 0..n {
+            assert_relative_eq!(reference[i], y[i], max_relative = 1e-10);
+        }
+        let x = lu.solve(&b).unwrap();
+        assert_eq!(lu.solve(&b).unwrap(), x);
+        assert_eq!(a.solve(&b).unwrap(), x);
+    }
+
+    /// The fixed unknowns found for one assembly are reused by the next
+    /// only while the same entries hold zero: a branch row that gains a
+    /// second entry stops fixing its node, and one that loses it again
+    /// fixes it again.
+    #[test]
+    fn fixed_unknowns_follow_the_entries_that_hold_zero() {
+        let n = 150;
+        let assemble = |coupling: f64| {
+            let mut a = MnaMatrix::<f64>::sparse(n + 1);
+            for i in 0..n {
+                a[(i, i)] += 2e-3 + 1e-5 * i as f64;
+                if i + 1 < n {
+                    a[(i, i + 1)] -= 1e-3;
+                    a[(i + 1, i)] -= 1e-3;
+                }
+            }
+            a[(0, n)] += 1.0;
+            a[(n, 0)] += 1.0;
+            a[(n, 5)] += coupling;
+            let b = DVector::from_fn(n + 1, |i, _| if i == n { 5.0 } else { 1e-4 });
+            (a, b)
+        };
+        for coupling in [0.0, 0.5, 0.5, 0.0, 0.0] {
+            let (a, b) = assemble(coupling);
+            let lu = a.factor().unwrap();
+            let Factor::Sparse(f) = &lu else {
+                panic!("a sparse factor")
+            };
+            assert_eq!(f.fixed.fixed.len(), usize::from(coupling == 0.0));
+            assert_matches_dense(&a, &b);
+            let reference = a.to_dense().transpose().lu().solve(&b).unwrap();
+            let y = lu.solve_transpose(&b).unwrap();
+            for i in 0..=n {
+                assert_relative_eq!(reference[i], y[i], max_relative = 1e-10, epsilon = 1e-14);
+            }
+        }
+    }
+
+    /// A cleared system is a fresh one: refilled, it solves to the same
+    /// bits, dense or sparse.
+    #[test]
+    fn a_cleared_system_solves_as_a_fresh_one() {
+        let fill = |sys: &mut MnaSystem, k: f64| {
+            let n = sys.size();
+            for i in 0..n {
+                for j in 0..n {
+                    let v = ((i * 31 + j * 17) as f64).sin() + k;
+                    sys.a[(i, j)] += if i == j { 1e-3 * v } else { v };
+                }
+                sys.b[i] = (i as f64).sin() + k;
+            }
+        };
+        let mut reused = MnaSystem::new(40, 2);
+        for k in [0.0, 0.25, 1.5] {
+            reused.clear();
+            fill(&mut reused, k);
+            let mut fresh = MnaSystem::new(40, 2);
+            fill(&mut fresh, k);
+            assert_eq!(reused.solve().unwrap(), fresh.solve().unwrap());
+        }
+        reused.clear();
+        assert_eq!(reused.a.to_dense(), DMatrix::zeros(42, 42));
+        assert!(reused.b.iter().all(|&v| v == 0.0));
+        let (a, b) = ladder(150, 1e-3);
+        let expected = a.solve(&b).unwrap();
+        let mut sparse = MnaSystem::new(150, 1);
+        for _ in 0..2 {
+            sparse.clear();
+            let (a, b) = ladder(150, 1e-3);
+            sparse.a = a;
+            sparse.b = b;
+            assert_eq!(sparse.solve().unwrap(), expected);
+        }
+        sparse.clear();
+        assert!(matches!(
+            sparse.a.storage,
+            Storage::Replay { cursor: 0, .. }
+        ));
     }
 
     /// Two sources fixing one node over-determine it: still singular, not
@@ -1228,6 +1591,196 @@ mod tests {
             a[(1, 1)] = 1.0;
             let b = DVector::from_vec(vec![1.0, f64::INFINITY]);
             assert!(matches!(a.solve(&b), Err(SimError::InvalidSolution)));
+        }
+    }
+
+    /// `lu`'s solves of `a` and of `aᵀ` against dense LUs of each.
+    fn assert_factor_solves<T: MnaScalar + std::fmt::Debug>(
+        a: &DMatrix<T>,
+        lu: &Factor<'_, T>,
+        b: &DVector<T>,
+    ) {
+        for (what, reference, x) in [
+            (
+                "forward",
+                a.clone().lu().solve(b).unwrap(),
+                lu.solve(b).unwrap(),
+            ),
+            (
+                "transposed",
+                a.transpose().lu().solve(b).unwrap(),
+                lu.solve_transpose(b).unwrap(),
+            ),
+        ] {
+            for i in 0..b.len() {
+                let scale = reference[i].abs().max(1e-12);
+                assert!(
+                    (reference[i] - x[i]).abs() <= 1e-10 * scale,
+                    "{what} {i}: {:?} vs {:?}",
+                    reference[i],
+                    x[i]
+                );
+            }
+        }
+    }
+
+    /// A complex sparse system with nothing to substitute out solves its
+    /// transpose unconjugated, as the adjoint analyses need.
+    #[test]
+    fn a_complex_factor_solves_its_transpose() {
+        let n = 150;
+        let mut a = MnaMatrix::<Complex64>::sparse(n);
+        for i in 0..n {
+            a[(i, i)] += Complex64::new(2e-3 + 1e-5 * i as f64, 1e-3);
+            if i + 1 < n {
+                a[(i, i + 1)] -= Complex64::new(1e-3, 2e-4);
+                a[(i + 1, i)] -= Complex64::new(1.5e-3, -3e-4);
+            }
+        }
+        let b = DVector::from_fn(n, |i, _| Complex64::new(1e-3 * (i % 5) as f64, 1e-4));
+        assert_factor_solves(&a.to_dense(), &a.factor().unwrap(), &b);
+    }
+
+    /// Grounded sources holding every node: substituting them out leaves
+    /// no unknowns to factorise, both ways.
+    #[test]
+    fn every_unknown_fixed_solves_without_a_factor() {
+        fn check<T: MnaScalar + std::fmt::Debug>(g: impl Fn(usize) -> T) {
+            let n = 60;
+            let mut a = MnaMatrix::<T>::sparse(2 * n);
+            for i in 0..n {
+                a[(i, i)] += g(i);
+                if i + 1 < n {
+                    a[(i, i + 1)] -= g(i + n);
+                }
+                a[(i, n + i)] += T::one();
+                a[(n + i, i)] += g(i + 2 * n);
+            }
+            let b = DVector::from_fn(2 * n, |i, _| g(i + 3 * n));
+            assert_factor_solves(&a.to_dense(), &a.factor().unwrap(), &b);
+        }
+        check(|i| 1.0 + (i % 7) as f64);
+        check(|i| Complex64::new(1.0 + (i % 7) as f64, 0.1 * (i % 3) as f64));
+    }
+
+    /// Factors of one layout alive at once on a thread, each refactoring
+    /// the numeric LU another handed back: every one keeps its own values,
+    /// with fixed unknowns substituted out and without.
+    #[test]
+    fn live_factors_of_one_layout_keep_their_own_values() {
+        let (n, sources) = (150, 3);
+        let size = n + sources + 1;
+        for rail in [false, true] {
+            let assemble = |scale: f64| {
+                let mut a = MnaMatrix::<f64>::sparse(size);
+                let g = |i: usize| scale * 1e-3 * (1.0 + (i % 7) as f64);
+                let b = hub_system(n, sources, g, &mut a);
+                if !rail {
+                    // A branch row with a second entry fixes nothing.
+                    for s in 0..sources {
+                        a[(n + s, n - 3)] += 1.0;
+                    }
+                }
+                (a, b)
+            };
+            let (a1, b1) = assemble(1.0);
+            let f1 = a1.factor().unwrap();
+            let (a2, b2) = assemble(3.0);
+            let f2 = a2.factor().unwrap();
+            assert_factor_solves(&a1.to_dense(), &f1, &b1);
+            drop(f1);
+            let (a3, b3) = assemble(5.0);
+            let f3 = a3.factor().unwrap();
+            assert_factor_solves(&a2.to_dense(), &f2, &b2);
+            assert_factor_solves(&a3.to_dense(), &f3, &b3);
+            drop(f2);
+            assert_factor_solves(&a3.to_dense(), &f3, &b3);
+            // An owned factor outlives the (replayed) matrix it came from.
+            let (a4, b4) = assemble(7.0);
+            let dense = a4.to_dense();
+            let f4 = a4.factor().unwrap().into_owned();
+            drop(a4);
+            assert_factor_solves(&dense, &f4, &b4);
+            assert_factor_solves(&a3.to_dense(), &f3, &b3);
+        }
+    }
+
+    /// The same entries holding zero but the fixing entries' values
+    /// changing between assemblies: each solve divides by its own.
+    #[test]
+    fn fixing_entries_take_each_assemblys_values() {
+        let n = 150;
+        for k in [1.0, 2.0, -0.5, 10.0] {
+            let mut a = MnaMatrix::<f64>::sparse(n + 1);
+            for i in 0..n {
+                a[(i, i)] += 2e-3 + 1e-5 * i as f64;
+                if i + 1 < n {
+                    a[(i, i + 1)] -= 1e-3;
+                    a[(i + 1, i)] -= 1.2e-3;
+                }
+            }
+            a[(0, n)] += 1.0 / k;
+            a[(n, 0)] += k;
+            let b = DVector::from_fn(n + 1, |i, _| if i == n { 5.0 } else { 1e-4 });
+            assert_factor_solves(&a.to_dense(), &a.factor().unwrap(), &b);
+        }
+    }
+
+    /// A singular dense matrix factorises (nalgebra's LU doesn't check)
+    /// but fails to solve either way.
+    #[test]
+    fn a_singular_dense_factor_fails_both_ways() {
+        let mut a = MnaMatrix::<f64>::dense(3);
+        a[(0, 0)] = 1.0;
+        a[(2, 2)] = 1.0;
+        let b = DVector::from_element(3, 1.0);
+        let lu = a.factor().unwrap();
+        assert!(matches!(lu.solve(&b), Err(SimError::SingularMatrix)));
+        assert!(matches!(
+            lu.solve_transpose(&b),
+            Err(SimError::SingularMatrix)
+        ));
+    }
+
+    /// No unknowns: both solves give nothing.
+    #[test]
+    fn an_empty_factor_solves_to_nothing() {
+        let empty = DVector::<f64>::from_element(0, 0.0);
+        for a in [MnaMatrix::<f64>::dense(0), MnaMatrix::<f64>::sparse(0)] {
+            let lu = a.factor().unwrap();
+            assert_eq!(lu.solve(&empty).unwrap().len(), 0);
+            assert_eq!(lu.solve_transpose(&empty).unwrap().len(), 0);
+            assert_eq!(lu.into_owned().solve_transpose(&empty).unwrap().len(), 0);
+        }
+    }
+
+    /// One layout whose fixed unknowns come and go between assemblies, a
+    /// factor of each kept alive: a later assembly finding other fixed
+    /// unknowns leaves the earlier factors' solves as they were.
+    #[test]
+    fn live_factors_keep_their_fixed_unknowns() {
+        let n = 150;
+        let assemble = |coupling: f64, scale: f64| {
+            let mut a = MnaMatrix::<f64>::sparse(n + 1);
+            for i in 0..n {
+                a[(i, i)] += scale * (2e-3 + 1e-5 * i as f64);
+                if i + 1 < n {
+                    a[(i, i + 1)] -= scale * 1e-3;
+                    a[(i + 1, i)] -= scale * 0.8e-3;
+                }
+            }
+            a[(0, n)] += 1.0;
+            a[(n, 0)] += 2.0;
+            a[(n, 5)] += coupling;
+            let b = DVector::from_fn(n + 1, |i, _| if i == n { 5.0 } else { 1e-4 });
+            (a.to_dense(), a.factor().unwrap().into_owned(), b)
+        };
+        let kept: Vec<_> = [(0.0, 1.0), (0.5, 2.0), (0.0, 3.0), (0.5, 4.0), (0.0, 5.0)]
+            .into_iter()
+            .map(|(coupling, scale)| assemble(coupling, scale))
+            .collect();
+        for (a, lu, b) in kept.iter().rev() {
+            assert_factor_solves(a, lu, b);
         }
     }
 }

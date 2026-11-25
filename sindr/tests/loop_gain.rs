@@ -1,6 +1,6 @@
 //! Loop gain and stability margins against closed-form op-amp loops.
 
-use sindr::element::{Capacitor, OpAmp, Resistor, VoltageSource};
+use sindr::element::{Capacitor, OpAmp, Resistor, Vcvs, VoltageSource};
 use std::f64::consts::PI;
 
 use num_complex::Complex64;
@@ -174,6 +174,107 @@ fn three_pole_loop_margins_through_a_loaded_output() {
     // Stable, with margins in the range this loop is designed for.
     assert!(pm > 10.0 && pm < 60.0, "{pm}");
     assert!(gm > 0.0, "{gm}");
+}
+
+/// A follower whose feedback runs through eight buffered RC sections at
+/// 1 kHz: nine poles, so at the gain crossover (about 2 kHz) the phase is
+/// past −540°. The margin is that phase plus 180° wrapped into one turn,
+/// about −50° (unstable), not the −410° it read before it was wrapped.
+#[test]
+fn phase_margin_past_minus_540_degrees_wraps_into_one_turn() {
+    const SECTIONS: usize = 8;
+    let rc = 1.0 / (2.0 * PI * 1e3);
+    let mut parts = vec![opamp(0.0), probe("x", "out")];
+    let mut from = "x".to_string();
+    for k in 1..=SECTIONS {
+        let (a, b) = (format!("a{k}"), format!("b{k}"));
+        let to = if k == SECTIONS { "fb".to_string() } else { b };
+        parts.push(r(&format!("R{k}"), &from, &a, 1e3));
+        parts.push(c(&format!("C{k}"), &a, "0", rc / 1e3));
+        parts.push(CircuitElement::Vcvs(Vcvs {
+            id: format!("E{k}"),
+            nodes: [to.as_str().into(), "0".into()],
+            control_nodes: [a.as_str().into(), "0".into()],
+            gain: 1.0,
+        }));
+        from = to;
+    }
+    let lg = solve_loop_gain(
+        &circuit(parts),
+        &LoopGainConfig::new("Vprobe", 1.0, 1e5, 401),
+    )
+    .unwrap();
+
+    let t = |f: f64| {
+        let w = 2.0 * PI * f;
+        A0 / Complex64::new(1.0, w * tau()) / Complex64::new(1.0, w * rc).powi(SECTIONS as i32)
+    };
+    let phase = |f: f64| {
+        let w = 2.0 * PI * f;
+        -(w * tau()).atan().to_degrees() - SECTIONS as f64 * (w * rc).atan().to_degrees()
+    };
+    let fc = root(1e2, 1e5, |f| t(f).norm().ln());
+    assert_eq!(lg.gain_crossovers.len(), 1);
+    assert!(((lg.gain_crossovers[0] - fc) / fc).abs() < 1e-9);
+    assert!(phase(fc) < -540.0, "{}", phase(fc));
+
+    let pm = 180.0 + phase(fc) + 360.0;
+    assert!(pm > -180.0 && pm < 0.0, "{pm}");
+    let got = lg.phase_margin_deg.unwrap();
+    assert!((got - pm).abs() < 1e-6, "{got} vs {pm}");
+    // The phase passes −180° and −540° below the crossover, where |T| > 1.
+    assert_eq!(lg.phase_crossovers.len(), 2);
+    assert!(lg.gain_margin_db.unwrap() < 0.0);
+}
+
+/// An AC-coupled loop crosses unity gain twice: low, with a phase lead
+/// of nearly 90°, and high, with a lag of nearly 90°. Each is about 90°
+/// from instability, so the margin is that, not the −90° that adding 180°
+/// to the lead and wrapping it gives.
+#[test]
+fn a_band_pass_loop_has_its_margin_at_both_crossovers() {
+    // High-pass at 1 Hz, gain −1000, low-pass at 1 kHz.
+    let (r1, c1) = (1e3, 1.0 / (2.0 * PI * 1e3));
+    let (r2, c2) = (1e3, 1.0 / (2.0 * PI * 1e6));
+    let parts = vec![
+        probe("fb", "drv"),
+        c("C1", "fb", "hp", c1),
+        r("R1", "hp", "0", r1),
+        CircuitElement::Vcvs(Vcvs {
+            id: "E1".into(),
+            nodes: ["x".into(), "0".into()],
+            control_nodes: ["hp".into(), "0".into()],
+            gain: -1000.0,
+        }),
+        r("R2", "x", "lp", r2),
+        c("C2", "lp", "0", c2),
+        CircuitElement::Vcvs(Vcvs {
+            id: "E2".into(),
+            nodes: ["drv".into(), "0".into()],
+            control_nodes: ["lp".into(), "0".into()],
+            gain: 1.0,
+        }),
+    ];
+    let lg = solve_loop_gain(
+        &circuit(parts),
+        &LoopGainConfig::new("Vprobe", 1e-5, 1e8, 1301),
+    )
+    .unwrap();
+    assert_eq!(lg.gain_crossovers.len(), 2, "{:?}", lg.gain_crossovers);
+    // T = 1000·(s·τ1)/(1 + s·τ1)/(1 + s·τ2); its phase at each crossover.
+    let phase = |f: f64| {
+        let (w1, w2) = (2.0 * PI * f * r1 * c1, 2.0 * PI * f * r2 * c2);
+        90.0 - w1.atan().to_degrees() - w2.atan().to_degrees()
+    };
+    let margins: Vec<f64> = lg
+        .gain_crossovers
+        .iter()
+        .map(|&f| 180.0 - phase(f).abs())
+        .collect();
+    let want = margins.iter().copied().fold(f64::INFINITY, f64::min);
+    assert!((want - 90.06).abs() < 0.01, "{want}");
+    let got = lg.phase_margin_deg.unwrap();
+    assert!((got - want).abs() < 1e-6, "{got} vs {want}");
 }
 
 #[test]

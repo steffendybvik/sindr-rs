@@ -1,0 +1,7 @@
+* corner library
+.LIB TT
+Rtt a 0 1k
+.ENDL
+.LIB FF
+Rff a 0 1
+.ENDL

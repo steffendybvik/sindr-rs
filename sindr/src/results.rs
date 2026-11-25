@@ -16,7 +16,7 @@ use sindr_devices::bjt::BjtRegion;
 use sindr_devices::mosfet::MosfetRegion;
 
 use crate::circuit::Circuit;
-use crate::node_map::NodeMap;
+use crate::node_map::{NodeMap, Terminals};
 
 /// Per-component voltage, current, and power.
 ///
@@ -86,11 +86,13 @@ pub struct MosfetResult {
     /// Drain–source voltage (V).
     pub vds: f64,
     /// Drain current (A), into the drain: positive for a conducting NMOS,
-    /// negative for a PMOS.
+    /// negative for a PMOS, and the other way round in reverse mode (the
+    /// drain pulled past the source).
     pub id_current: f64,
     /// Total dissipation (W).
     pub power: f64,
-    /// Operating region. Serialises as `"cutoff"`, `"triode"` or
+    /// Operating region; in reverse mode, that of the device with drain and
+    /// source swapped. Serialises as `"cutoff"`, `"triode"` or
     /// `"saturation"`, as the string it replaced did.
     pub region: MosfetRegion,
 }
@@ -688,7 +690,8 @@ pub(crate) fn extract_results(
     node_voltages.insert(circuit.ground_node.clone(), 0.0);
 
     let layout = Layout::new(circuit);
-    let reported = Reported::collect(circuit, node_map, &layout, solution, None);
+    let terminals = Terminals::new(circuit, node_map);
+    let reported = Reported::collect(circuit, node_map, (&layout, &terminals), solution, None);
     SimulationResult {
         node_voltages,
         branch_currents: reported.branch_currents,

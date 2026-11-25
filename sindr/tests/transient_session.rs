@@ -670,3 +670,118 @@ fn progress_before_tstart_has_no_step() {
     .unwrap();
     assert!(before > 0 && after > 0);
 }
+
+/// Everything a snapshot holds, ordered, for comparing two exactly.
+type Flat = (
+    f64,
+    Vec<(String, f64)>,
+    Vec<(String, f64, f64, f64)>,
+    Vec<(String, f64)>,
+    Vec<(String, f64)>,
+);
+
+fn flat(s: &TimestepSnapshot) -> Flat {
+    let sorted = |m: &std::collections::HashMap<String, f64>| {
+        let mut v: Vec<_> = m.iter().map(|(k, x)| (k.clone(), *x)).collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    };
+    (
+        s.time,
+        sorted(&s.node_voltages),
+        s.component_results
+            .iter()
+            .map(|c| (c.id.clone(), c.voltage_across, c.current_through, c.power))
+            .collect(),
+        sorted(&s.junction_temperatures),
+        sorted(&s.state_of_charge),
+    )
+}
+
+/// Steps one session that keeps its steps and one that doesn't through the
+/// same toggles: the latest step reads the same in both, whether it's read
+/// before a change or only after it.
+fn latest_step_is_the_same_kept_or_not(circuit: &Circuit) {
+    let config = TransientConfig::new(6e-3, 50e-6);
+    let mut kept = TransientSession::new(circuit, &config).unwrap();
+    let mut unkept = TransientSession::new(circuit, &config).unwrap();
+    unkept.keep_steps(false);
+    for k in 1..=6 {
+        let t = k as f64 * 1e-3;
+        kept.advance_to(t).unwrap();
+        unkept.advance_to(t).unwrap();
+        if k % 2 == 0 {
+            assert_eq!(
+                flat(unkept.last_step().unwrap()),
+                flat(kept.last_step().unwrap())
+            );
+        }
+        let level = if k % 3 == 1 { 5.0 } else { 0.0 };
+        kept.set_source("PIN", level).unwrap();
+        unkept.set_source("PIN", level).unwrap();
+        assert_eq!(
+            flat(unkept.last_step().unwrap()),
+            flat(kept.last_step().unwrap())
+        );
+        assert_eq!(unkept.current("R1"), kept.current("R1"));
+    }
+    assert_eq!(unkept.drain_steps().count(), 0);
+    assert!(kept.drain_steps().count() > 6);
+}
+
+#[test]
+fn a_step_not_kept_reads_as_a_kept_one() {
+    use sindr::element::{Diode, Vccs};
+    let mut circuit = rc(None);
+    circuit.components.extend([
+        CircuitElement::Diode(Diode {
+            id: "D1".into(),
+            nodes: ["out".into(), "0".into()],
+            temperature: 300.15,
+            model: Some(sindr::DiodeModel {
+                cjo: 1e-9,
+                tt: 1e-6,
+                ..Default::default()
+            }),
+        }),
+        CircuitElement::Vccs(Vccs {
+            id: "G1".into(),
+            nodes: ["g".into(), "0".into()],
+            control_nodes: ["out".into(), "0".into()],
+            gm: 1e-3,
+        }),
+        CircuitElement::Resistor(Resistor {
+            id: "RG".into(),
+            nodes: ["g".into(), "0".into()],
+            resistance: 1e3,
+        }),
+        CircuitElement::SwitchSpdt(SwitchSpdt {
+            id: "SW1".into(),
+            nodes: ["c".into(), "pin".into(), "0".into()],
+            position: SpdtPosition::A,
+        }),
+        CircuitElement::Resistor(Resistor {
+            id: "R3".into(),
+            nodes: ["c".into(), "0".into()],
+            resistance: 1e3,
+        }),
+    ]);
+    latest_step_is_the_same_kept_or_not(&circuit);
+
+    // A battery's step is built as it's taken.
+    let mut circuit = rc(None);
+    circuit
+        .components
+        .push(CircuitElement::Battery(sindr::element::Battery {
+            id: "B1".into(),
+            nodes: ["b".into(), "0".into()],
+            params: sindr::battery::BatteryParams::constant(3.0, 1.0, 0.1),
+            state_of_charge: 1.0,
+        }));
+    circuit.components.push(CircuitElement::Resistor(Resistor {
+        id: "RL".into(),
+        nodes: ["b".into(), "0".into()],
+        resistance: 1e3,
+    }));
+    latest_step_is_the_same_kept_or_not(&circuit);
+}

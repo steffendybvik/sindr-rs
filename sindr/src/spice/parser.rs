@@ -98,17 +98,24 @@ fn ident(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
         .parse_next(input)
 }
 
-/// Node name: SPICE allows nodes that are pure digits (`0`, `12`) or
-/// identifiers, plus `.` for hierarchical names that subckt instances may
-/// reference. Letters and digits may be any Unicode ones (`å`, `µ`), as
-/// ngspice reads them.
+/// Node name: as in ngspice, any run of characters up to a separator
+/// (whitespace, `=`, `(`, `)` or `,`), so schematic exporters' `/in` and
+/// `Net-_R1-Pad2_` are names, and so are `0`, `12`, `x1.out` and `å`.
+/// Braces and quotes end one too: they open expressions.
 fn node_name(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
     take_while(1.., |c: char| {
-        c.is_alphanumeric() || c == '_' || c == '.' || c == '#'
+        !c.is_whitespace() && !matches!(c, '=' | '(' | ')' | ',' | '{' | '}' | '\'' | '"')
     })
     .with_span()
     .map(|(s, span): (&str, Range<usize>)| (s.to_string(), span))
     .parse_next(input)
+}
+
+/// A `.model`, `.subckt` or device model name. ngspice takes any token
+/// here, so part numbers that start with a digit (`1n4148`, `2n3904`,
+/// `74hc04`) are names, not numbers.
+fn model_name(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
+    node_name(input)
 }
 
 /// Parse a numeric literal (with SI suffix) into [`ParamExpr::Number`].
@@ -147,9 +154,22 @@ fn param_assign(input: &mut Input<'_>) -> ModalResult<(String, ParamExpr)> {
 // Precedence (low → high):
 //   1. add  / sub          (left-assoc)
 //   2. mul  / div          (left-assoc)
-//   3. pow  (`^`)          (right-assoc)
-//   4. unary minus
-//   5. atom: number | ident | `(expr)`
+//   3. leading unary minus (first in the expression or after `(`)
+//   4. pow  (`^` or `**`)  (right-assoc; its exponent may be negated)
+//   5. unary minus right after `+ - * /` or another unary minus
+//   6. atom: number | ident | `(expr)`
+//
+// This is ngspice 47's `.param` grammar: a leading minus is looser than
+// `^` (`-2^2` is −4, `(-3^2)` is −9), but a minus right after an operator
+// negates the operand it sits on (`2*-3^2` is 18, `1 - -3^2` is −8). A
+// minus in an exponent stays looser than the `^` after it, so `2^-3^2` is
+// 2^−9; sindr's `^` is right-associative, ngspice's left (`2^3^2` is 512
+// here, 64 in ngspice, and ngspice's `2^-3^2` is (2^−3)^2). ngspice's tight
+// minus before a name or `(` is unreliable (`2*-x^2` with x=3 gives
+// 0.222); sindr reads it as (−x)^2.
+//
+// `B` sources differ: ngspice and sindr's behavioural expressions keep
+// every unary minus looser than `^`, so `V=2*-3^2` is −18 in both.
 
 /// Deepest nesting of `(`, unary minus and `^` an expression may have. The
 /// grammar recurses once per level, so an unbounded depth would let a long run
@@ -191,8 +211,6 @@ fn expr_atom(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     alt((
         // `(expr)`
         delimited(('(', ws), expr_add.map(|e| e), (ws, ')')),
-        // unary minus
-        preceded(('-', ws), expr_atom).map(|e| ParamExpr::Neg(Box::new(e))),
         // numeric literal
         number_expr.map(|(e, _)| e),
         // identifier reference
@@ -201,22 +219,50 @@ fn expr_atom(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     .parse_next(input)
 }
 
+/// A leading unary minus, looser than `^`: `-2^2` is `-(2^2)`.
+fn expr_unary(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
+    ws(input)?;
+    if opt('-').parse_next(input)?.is_some() {
+        let _depth = DepthGuard::enter(input)?;
+        return Ok(ParamExpr::Neg(Box::new(expr_pow(input)?)));
+    }
+    expr_pow(input)
+}
+
+/// An atom with any minus signs in front of it, which bind tighter than
+/// `^`: the base of a power, and the operand after a binary operator.
+fn expr_signed_atom(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
+    ws(input)?;
+    if opt('-').parse_next(input)?.is_some() {
+        // Only a minus nests, so only it counts towards the depth cap.
+        let _depth = DepthGuard::enter(input)?;
+        return Ok(ParamExpr::Neg(Box::new(expr_signed_atom(input)?)));
+    }
+    expr_atom(input)
+}
+
 fn expr_pow(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
     let _depth = DepthGuard::enter(input)?;
-    let lhs = expr_atom(input)?;
+    let lhs = expr_signed_atom(input)?;
     ws(input)?;
-    if opt('^').parse_next(input)?.is_some() {
-        // Right-associative recursion.
+    if opt(alt(("**", "^"))).parse_next(input)?.is_some() {
+        // Right-associative, and the exponent may be negated: `2^-2`.
         ws(input)?;
-        let rhs = expr_pow(input)?;
+        let rhs = expr_unary(input)?;
         Ok(ParamExpr::Pow(Box::new(lhs), Box::new(rhs)))
     } else {
         Ok(lhs)
     }
 }
 
-fn expr_mul(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
-    let mut acc = expr_pow(input)?;
+/// A product; `leading` says whether it starts the expression (or a `(`),
+/// where a minus is looser than `^`, rather than following a `+` or `-`.
+fn expr_mul(input: &mut Input<'_>, leading: bool) -> ModalResult<ParamExpr> {
+    let mut acc = if leading {
+        expr_unary(input)?
+    } else {
+        expr_pow(input)?
+    };
     loop {
         ws(input)?;
         let op = opt(alt(('*', '/'))).parse_next(input)?;
@@ -237,19 +283,19 @@ fn expr_mul(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
 }
 
 fn expr_add(input: &mut Input<'_>) -> ModalResult<ParamExpr> {
-    let mut acc = expr_mul(input)?;
+    let mut acc = expr_mul(input, true)?;
     loop {
         ws(input)?;
         let op = opt(alt(('+', '-'))).parse_next(input)?;
         match op {
             Some('+') => {
                 ws(input)?;
-                let rhs = expr_mul(input)?;
+                let rhs = expr_mul(input, false)?;
                 acc = ParamExpr::BinOp(Box::new(acc), BinOp::Add, Box::new(rhs));
             }
             Some('-') => {
                 ws(input)?;
-                let rhs = expr_mul(input)?;
+                let rhs = expr_mul(input, false)?;
                 acc = ParamExpr::BinOp(Box::new(acc), BinOp::Sub, Box::new(rhs));
             }
             _ => return Ok(acc),
@@ -512,7 +558,8 @@ fn parse_poly(input: &mut Input<'_>) -> ModalResult<RawElement> {
     Ok(element_line(id, prefix, id_span, nodes, body, end))
 }
 
-/// Parse `R / L / C` passive: `<id> n+ n- <value>`.
+/// Parse `R / L / C` passive: `<id> n+ n- <value> [name=val ...] [flag ...]`.
+/// Which instance parameters mean something is the lowering pass's call.
 fn parse_passive(input: &mut Input<'_>) -> ModalResult<RawElement> {
     let (id, prefix, id_span) = element_id(input)?;
     ws(input)?;
@@ -521,16 +568,16 @@ fn parse_passive(input: &mut Input<'_>) -> ModalResult<RawElement> {
     let (n_neg, _) = node_name(input)?;
     ws(input)?;
     let (value, val_span) = value_expr(input)?;
-    ws(input)?;
-    // Strict mode: any trailing tokens are an error.
-    if !input.is_empty() {
-        return Err(ErrMode::from_input(input));
-    }
+    let (params, flags) = word_tail(input)?;
     Ok(RawElement {
         id,
         prefix,
         nodes: vec![n_pos, n_neg],
-        body: RawElementBody::Passive { value },
+        body: RawElementBody::Passive {
+            value,
+            params,
+            flags,
+        },
         span: Span {
             start: id_span.start,
             end: val_span.end,
@@ -558,7 +605,7 @@ fn parse_waveform(input: &mut Input<'_>) -> ModalResult<Option<RawWaveform>> {
     if keyword("pulse").parse_next(input).is_ok() {
         ws(input)?;
         let args = paren_value_list(input)?;
-        if args.len() != 7 {
+        if !(2..=7).contains(&args.len()) {
             return Err(ErrMode::from_input(input));
         }
         return Ok(Some(RawWaveform::Pulse(args)));
@@ -567,7 +614,7 @@ fn parse_waveform(input: &mut Input<'_>) -> ModalResult<Option<RawWaveform>> {
     if keyword("sin").parse_next(input).is_ok() {
         ws(input)?;
         let args = paren_value_list(input)?;
-        if !(3..=5).contains(&args.len()) {
+        if !(3..=6).contains(&args.len()) {
             return Err(ErrMode::from_input(input));
         }
         return Ok(Some(RawWaveform::Sin(args)));
@@ -686,7 +733,8 @@ fn parse_source(input: &mut Input<'_>, kind: SourceKind) -> ModalResult<RawEleme
     })
 }
 
-/// Parse `D` diode: `<id> n_anode n_cathode <model>`.
+/// Parse `D` diode: `<id> n_anode n_cathode <model> [area] [name=val ...]
+/// [flag ...]`.
 fn parse_diode(input: &mut Input<'_>) -> ModalResult<RawElement> {
     let (id, prefix, id_span) = element_id(input)?;
     ws(input)?;
@@ -694,16 +742,20 @@ fn parse_diode(input: &mut Input<'_>) -> ModalResult<RawElement> {
     ws(input)?;
     let (n_k, _) = node_name(input)?;
     ws(input)?;
-    let (model, _) = ident(input)?;
+    let (model, _) = model_name(input)?;
     ws(input)?;
-    if !input.is_empty() {
-        return Err(ErrMode::from_input(input));
-    }
+    let area = opt(value_expr).parse_next(input)?.map(|(e, _)| e);
+    let (params, flags) = word_tail(input)?;
     Ok(RawElement {
         id,
         prefix,
         nodes: vec![n_a, n_k],
-        body: RawElementBody::Diode { model },
+        body: RawElementBody::Diode {
+            model,
+            area,
+            params,
+            flags,
+        },
         span: Span {
             start: id_span.start,
             end: id_span.end,
@@ -819,6 +871,20 @@ fn parse_jfet(input: &mut Input<'_>) -> ModalResult<RawElement> {
     })
 }
 
+/// [`instance_tail`] where every flag is a word: a stray number after an
+/// R, L or C value or a diode's area is a syntax error, not a flag.
+#[allow(clippy::type_complexity)]
+fn word_tail(input: &mut Input<'_>) -> ModalResult<(Vec<(String, ParamExpr)>, Vec<String>)> {
+    let (params, flags) = instance_tail(input)?;
+    if flags
+        .iter()
+        .any(|f| !f.starts_with(|c: char| c.is_alphabetic()))
+    {
+        return Err(ErrMode::from_input(input));
+    }
+    Ok((params, flags))
+}
+
 /// The rest of a device line after its model name: `name=val` pairs and
 /// bare flags, in any order, to the end of the line.
 #[allow(clippy::type_complexity)]
@@ -863,6 +929,8 @@ fn parse_subckt_instance(input: &mut Input<'_>) -> ModalResult<RawElement> {
         input.reset(&cp);
         // Otherwise consume one bare token.
         match node_name(input) {
+            // ngspice's `params:` before the overrides.
+            Ok((tok, _)) if tok == "params:" => {}
             Ok((tok, _)) => tokens.push(tok),
             Err(_) => break,
         }
@@ -902,7 +970,7 @@ fn dot_card_kind(input: &mut Input<'_>) -> ModalResult<(String, Range<usize>)> {
 /// Parse `.subckt NAME [ports...] [param=default ...]`.
 fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
-    let (name, _) = ident(input)?;
+    let (name, _) = model_name(input)?;
     let mut ports: Vec<String> = Vec::new();
     let mut defaults: Vec<(String, ParamExpr)> = Vec::new();
     loop {
@@ -917,6 +985,8 @@ fn parse_card_subckt(input: &mut Input<'_>) -> ModalResult<RawCard> {
         }
         input.reset(&cp);
         match node_name(input) {
+            // ngspice's `params:` before the defaults.
+            Ok((p, _)) if p == "params:" => {}
             Ok((p, _)) => ports.push(p),
             Err(_) => break,
         }
@@ -939,7 +1009,7 @@ fn parse_card_ends(input: &mut Input<'_>) -> ModalResult<RawCard> {
     let name = if input.is_empty() {
         None
     } else {
-        opt(ident).parse_next(input)?.map(|(s, _)| s)
+        opt(model_name).parse_next(input)?.map(|(s, _)| s)
     };
     ws(input)?;
     Ok(RawCard::Ends(name))
@@ -948,7 +1018,7 @@ fn parse_card_ends(input: &mut Input<'_>) -> ModalResult<RawCard> {
 /// Parse `.model NAME KIND [(] k=v ... [)]`. Parens are optional (vendor-tolerant).
 fn parse_card_model(input: &mut Input<'_>) -> ModalResult<RawCard> {
     ws(input)?;
-    let (name, name_span) = ident(input)?;
+    let (name, name_span) = model_name(input)?;
     ws(input)?;
     let (kind, _) = ident(input)?;
     ws(input)?;
@@ -1730,7 +1800,9 @@ fn parse_one_card_local(text: &str) -> Result<RawCard, LocalError> {
                 });
             }
             "end" => {
-                // Top-level `.end` terminates the deck — caller may treat as EOF.
+                // The preprocessor stops at the deck's own `.end`, so this is
+                // an included file's, which is skipped: the lines after it
+                // are read on, as in ngspice.
                 return Err(LocalError::Empty);
             }
             other => {
@@ -1900,11 +1972,18 @@ pub(crate) fn parse(pre: &Preprocessed) -> Result<Vec<RawCard>, SpiceParseError>
     parse_with_options(pre, true, &mut warnings)
 }
 
+/// The lenient-mode warning for a deck's `.control` blocks, given once.
+const CONTROL_SKIPPED: &str =
+    "`.control` … `.endc` skipped: sindr doesn't run ngspice's control scripts; \
+     run the deck's analyses from `ParsedNetlist::analyses`";
+
 /// Parse a [`Preprocessed`] netlist into a flat `Vec<RawCard>`.
 ///
 /// In strict mode (default), `UnknownDevice`, `UnsupportedDevice`, and
 /// `UnknownCard` are fatal. In lenient mode they downgrade to
 /// [`crate::spice::error::ParseWarning`]s and the offending card is dropped.
+/// `.control` … `.endc` blocks are skipped in both, with one warning in
+/// lenient mode.
 pub(crate) fn parse_with_options(
     pre: &Preprocessed,
     strict: bool,
@@ -1913,8 +1992,26 @@ pub(crate) fn parse_with_options(
     let mut top: Vec<RawCard> = Vec::new();
     // Stack of in-progress subckts and their declaring line (for diagnostics).
     let mut stack: Vec<(RawSubckt, LogicalLine)> = Vec::new();
+    // Inside a `.control` … `.endc` block: ngspice's script, not netlist.
+    let mut in_control = false;
 
     for line in &pre.lines {
+        let first = line.text.split_whitespace().next();
+        if in_control {
+            in_control = first != Some(".endc");
+            continue;
+        }
+        if first == Some(".control") {
+            in_control = true;
+            if !strict && !warnings.iter().any(|w| w.message == CONTROL_SKIPPED) {
+                warnings.push(crate::spice::error::ParseWarning {
+                    message: CONTROL_SKIPPED.to_string(),
+                    span: Some((line.byte_range.start, line.byte_range.len()).into()),
+                    file: Some(line.file.to_string()),
+                });
+            }
+            continue;
+        }
         let card = match parse_one_card_local(&line.text) {
             Ok(c) => anchor_to_line(c, line),
             Err(LocalError::Empty) => continue,
@@ -2116,7 +2213,7 @@ mod tests {
         assert_eq!(el.prefix, 'r');
         assert_eq!(el.nodes, vec!["a".to_string(), "b".to_string()]);
         match el.body {
-            RawElementBody::Passive { value } => {
+            RawElementBody::Passive { value, .. } => {
                 assert!((must_num(&value) - 1000.0).abs() < 1e-9);
             }
             _ => panic!(),
@@ -2129,7 +2226,7 @@ mod tests {
         let RawCard::Element(el) = card else { panic!() };
         assert_eq!(el.prefix, 'c');
         match el.body {
-            RawElementBody::Passive { value } => {
+            RawElementBody::Passive { value, .. } => {
                 assert!((must_num(&value) - 4.7e-6).abs() < 1e-12);
             }
             _ => panic!(),
@@ -2218,8 +2315,8 @@ mod tests {
 
     #[test]
     fn elements_pulse_arity_error() {
-        // 3 args instead of 7 — should fail.
-        let result = parse_one_card_local("vclk clk 0 pulse(0 5 0)");
+        // PULSE needs at least v1 and v2.
+        let result = parse_one_card_local("vclk clk 0 pulse(0)");
         assert!(result.is_err(), "expected arity error, got {result:?}");
     }
 
@@ -2230,7 +2327,7 @@ mod tests {
         assert_eq!(el.prefix, 'd');
         assert_eq!(el.nodes, vec!["a".to_string(), "k".to_string()]);
         match el.body {
-            RawElementBody::Diode { model } => assert_eq!(model, "dmod"),
+            RawElementBody::Diode { model, .. } => assert_eq!(model, "dmod"),
             _ => panic!(),
         }
     }

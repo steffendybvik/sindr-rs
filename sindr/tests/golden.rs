@@ -1067,6 +1067,16 @@ fn dc_power_mosfet_body() {
     check_dc_deck("dc_power_mosfet_body", "vd", -3.0, 0.0);
 }
 
+/// FETs wired with drain and source swapped: each conducts in reverse
+/// mode, the lower end of its channel acting as the source, through the
+/// triode and saturation regions. The MOSFETs' bodies sit at their
+/// labelled sources, forward-biased against the ends acting as sources, so
+/// the body effect's forward-bias branch is checked too.
+#[test]
+fn dc_fet_reverse() {
+    check_dc_deck("dc_fet_reverse", "vr", 0.0, 12.0);
+}
+
 /// The body-diode deck parsed: its MOSFET card switches the built-in
 /// junction off (`IS=1e-30`) and the explicit `D1` does the conducting.
 #[test]

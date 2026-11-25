@@ -406,7 +406,7 @@ pub use transient::{
 pub use validation::validate_circuit;
 pub use waveform::Waveform;
 
-/// This crate's version, as in its `Cargo.toml` (`"0.3.0"`). Record it
+/// This crate's version, as in its `Cargo.toml`, such as `"0.3.1"`. Record it
 /// next to saved results, so a rerun can tell a change in the design from a
 /// change in the engine. [`devices::VERSION`] is the device crate's.
 ///
@@ -766,18 +766,25 @@ pub(crate) fn solve_dc_circuit(
     dc: &Circuit,
     opts: &SolverOptions,
 ) -> Result<SimulationResult, SimError> {
-    let node_map = NM::from_circuit(dc);
+    solve_dc_circuit_on(dc, &NM::from_circuit(dc), opts)
+}
+
+/// [`solve_dc_circuit`] with `node_map` built from `dc` or from a circuit
+/// with the same nodes, so a sweep builds it once.
+pub(crate) fn solve_dc_circuit_on(
+    dc: &Circuit,
+    node_map: &NM,
+    opts: &SolverOptions,
+) -> Result<SimulationResult, SimError> {
     let num_nodes = node_map.num_nodes();
     let num_vsources = dc.count_voltage_sources();
     if dc.has_nonlinear_elements() {
-        newton_raphson::solve_nonlinear(dc, &node_map, num_nodes, num_vsources, opts)
+        newton_raphson::solve_nonlinear(dc, node_map, num_nodes, num_vsources, opts)
     } else {
         let mut system = MnaSystem::new(num_nodes, num_vsources);
-        stamp::stamp_circuit(dc, &mut system, &node_map, None)?;
+        stamp::stamp_circuit(dc, &mut system, node_map, None)?;
         let solution = system.solve()?;
-        Ok(results::extract_results(
-            dc, &node_map, &solution, num_nodes,
-        ))
+        Ok(results::extract_results(dc, node_map, &solution, num_nodes))
     }
 }
 

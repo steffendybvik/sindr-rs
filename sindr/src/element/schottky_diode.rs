@@ -10,7 +10,7 @@ use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
 #[cfg(feature = "spice")]
-use crate::spice::export::{nominal, shockley, Deck, ExportError};
+use crate::spice::export::{shockley, Deck, ExportError};
 
 /// Schottky diode: lower forward voltage (~0.3V) than silicon diode.
 /// nodes: [anode, cathode]
@@ -36,7 +36,7 @@ impl Device for SchottkyDiode {
 
     fn report(&self, r: &mut Report<'_>) {
         let params = crate::device_params::schottky(self.temperature);
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         r.port(&self.id, v, sindr_devices::diode::diode_current(v, &params));
     }
 
@@ -88,8 +88,8 @@ impl Device for SchottkyDiode {
 
     #[cfg(feature = "spice")]
     fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
-        nominal(&self.id, self.temperature)?;
+        // Its IS scales with silicon's EG and XTI, a D card's defaults.
         let model = shockley(crate::device_params::schottky(sindr_devices::diode::T_NOM));
-        deck.diode(&self.id, name, &self.nodes, model)
+        deck.diode(&self.id, name, &self.nodes, model, self.temperature)
     }
 }

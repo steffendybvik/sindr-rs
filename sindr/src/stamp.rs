@@ -9,7 +9,7 @@
 //! iteration as the operating point moves.
 //!
 //! [`stamp_circuit`] is the DC dispatcher used by every analysis path; the
-//! helpers several elements share (`stamp_resistor`, `stamp_voltage_source`,
+//! helpers several elements share (`stamp_resistor_at`, `stamp_voltage_source_at`,
 //! the transient's `stamp_companion_at`, …) are also exposed for the
 //! transient and AC pipelines.
 
@@ -20,6 +20,7 @@ use sindr_devices::diode::{self, DiodeParams};
 use crate::circuit::Circuit;
 use crate::element::{layout::Layout, DcStamp};
 use crate::error::SimError;
+#[cfg(test)]
 use crate::handle::NodeId;
 use crate::mna::MnaSystem;
 use crate::node_map::{NodeMap, Terminals};
@@ -79,20 +80,8 @@ pub(crate) fn stamp_circuit_with(
 ///   A[p,p] += g,  A[q,q] += g,  A[p,q] -= g,  A[q,p] -= g
 /// ```
 /// Ground entries (where index is `None`) are skipped.
-pub fn stamp_resistor(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[NodeId; 2],
-    resistance: f64,
-) {
-    stamp_resistor_at(
-        system,
-        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
-        resistance,
-    );
-}
-
-/// [`stamp_resistor`] between matrix indices (`None` is ground).
+///
+/// Terminals are matrix indices (`None` is ground).
 pub(crate) fn stamp_resistor_at(
     system: &mut MnaSystem,
     [p, q]: [Option<usize>; 2],
@@ -121,22 +110,8 @@ pub(crate) fn stamp_resistor_at(
 /// ```text
 ///   A[p,k] += 1, A[q,k] -= 1, A[k,p] += 1, A[k,q] -= 1, b[k] = voltage
 /// ```
-pub fn stamp_voltage_source(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[NodeId; 2],
-    voltage: f64,
-    branch: usize,
-) {
-    stamp_voltage_source_at(
-        system,
-        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
-        voltage,
-        branch,
-    );
-}
-
-/// [`stamp_voltage_source`] between matrix indices (`None` is ground).
+///
+/// Terminals are matrix indices (`None` is ground).
 pub(crate) fn stamp_voltage_source_at(
     system: &mut MnaSystem,
     [p, q]: [Option<usize>; 2],
@@ -171,20 +146,8 @@ pub(crate) fn stamp_voltage_source_at(
 ///   b[to]   += current   (current enters the to-node)
 ///   b[from] -= current   (current leaves the from-node)
 /// ```
-pub fn stamp_current_source(
-    system: &mut MnaSystem,
-    node_map: &NodeMap,
-    nodes: &[NodeId; 2],
-    current: f64,
-) {
-    stamp_current_source_at(
-        system,
-        [node_map.index(&nodes[0]), node_map.index(&nodes[1])],
-        current,
-    );
-}
-
-/// [`stamp_current_source`] between matrix indices (`None` is ground).
+///
+/// Terminals are matrix indices (`None` is ground).
 pub(crate) fn stamp_current_source_at(
     system: &mut MnaSystem,
     [from, to]: [Option<usize>; 2],
@@ -1266,12 +1229,17 @@ mod tests {
         let node_map = NodeMap::from_circuit(&circuit);
         let idx = |n: &str| node_map.index(n).unwrap();
 
-        // (kind, vg, vd, vs): saturation and triode for each channel type.
+        // (kind, vg, vd, vs): saturation and triode for each channel type,
+        // forward and reverse.
         let cases = [
             (JfetKind::NChannel, 4.0, 8.0, 5.0),
             (JfetKind::NChannel, 4.0, 5.5, 5.0),
+            (JfetKind::NChannel, 4.0, 2.0, 5.0),
+            (JfetKind::NChannel, 4.0, 4.5, 5.0),
             (JfetKind::PChannel, 6.0, 2.0, 5.0),
             (JfetKind::PChannel, 6.0, 4.5, 5.0),
+            (JfetKind::PChannel, 6.0, 8.0, 5.0),
+            (JfetKind::PChannel, 6.0, 5.5, 5.0),
         ];
         for (kind, vg, vd, vs) in cases {
             let vp = match kind {
@@ -1324,8 +1292,9 @@ mod tests {
 
     /// Stamping at `v` and evaluating at `v` gives the device's terminal
     /// currents, so the stamped Jacobian columns must match a finite
-    /// difference of those currents. Covers PMOS with its source at the
-    /// supply (body at ground, so forward-biased past PHI) and NMOS.
+    /// difference of those currents. Covers PMOS and NMOS, each also in
+    /// reverse mode (drain past the source), where the body tied to the
+    /// labelled source is forward-biased against the end acting as one.
     #[test]
     fn mosfet_stamp_is_newton_consistent() {
         use sindr_devices::mosfet::{MosfetKind, MosfetParams};
@@ -1335,13 +1304,18 @@ mod tests {
             vto: 0.7,
             ..MosfetParams::default_nmos()
         };
-        // (kind, [vg, vd, vs]) across saturation and triode.
+        // (kind, [vg, vd, vs]) across saturation and triode, forward and
+        // reverse.
         let cases = [
             (MosfetKind::Pmos, [2.0, 1.0, 5.0]),
             (MosfetKind::Pmos, [0.0, 4.5, 5.0]),
             (MosfetKind::Pmos, [1.0, 0.0, 3.0]),
+            (MosfetKind::Pmos, [1.0, 3.0, 0.0]),
+            (MosfetKind::Pmos, [0.0, 3.3, 3.0]),
             (MosfetKind::Nmos, [3.0, 5.0, 0.5]),
             (MosfetKind::Nmos, [2.0, 0.2, -1.0]),
+            (MosfetKind::Nmos, [2.0, 0.0, 3.0]),
+            (MosfetKind::Nmos, [3.3, 0.0, 0.4]),
         ];
         for (kind, bias) in cases {
             let circuit = Circuit {

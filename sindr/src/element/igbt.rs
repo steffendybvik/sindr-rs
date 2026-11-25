@@ -33,9 +33,9 @@ impl Device for Igbt {
 
     /// Its collector: `Vce`, `Ic` and the dissipation.
     fn report(&self, r: &mut Report<'_>) {
-        let vg = r.v(&self.nodes[0]);
-        let vc = r.v(&self.nodes[1]);
-        let ve = r.v(&self.nodes[2]);
+        let vg = r.v(0);
+        let vc = r.v(1);
+        let ve = r.v(2);
         let vce = vc - ve;
         let comp = sindr_devices::igbt::igbt_companion(vg - ve, vce, &self.params);
         r.component(&self.id, vce, comp.ids, (comp.ids * vce).abs());

@@ -58,6 +58,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::circuit::{Circuit, CircuitElement, SpdtPosition};
 use crate::element::{
@@ -68,7 +69,7 @@ use crate::error::{ConfigKind, SimError};
 use crate::results::{TimestepSnapshot, TransientStats};
 use crate::solver::SolverOptions;
 use crate::transient::{
-    waveform_breakpoints, Flow, StepState, Stepper, TransientConfig, TransientProgress,
+    waveform_breakpoints, Flow, StepState, Stepped, Stepper, TransientConfig, TransientProgress,
 };
 
 /// A transient held open between calls: advance it, change its inputs,
@@ -92,7 +93,7 @@ pub struct TransientSession {
     /// Steps taken and not yet drained.
     steps: Vec<TimestepSnapshot>,
     /// The latest step, when it isn't the last of `steps`.
-    last: Option<TimestepSnapshot>,
+    last: Option<Latest>,
     keep: bool,
     /// Set by an error the session can't step past.
     failed: Option<f64>,
@@ -100,6 +101,18 @@ pub struct TransientSession {
     pins: Vec<Pin>,
     /// What each pin's input reads at the time reached.
     readings: Vec<LogicLevel>,
+}
+
+/// The latest step when it isn't kept: most callers never read it, so
+/// it's built when first read.
+// A session holds one, so its size doesn't matter; boxing would allocate
+// every step.
+#[allow(clippy::large_enum_variant)]
+enum Latest {
+    Built(TimestepSnapshot),
+    /// Built from the stepper's state, which the next step or edit moves
+    /// on: [`TransientSession::settle`] builds it before either.
+    Pending(Stepped, OnceLock<TimestepSnapshot>),
 }
 
 /// A digital pin the session drives and reads.
@@ -381,7 +394,38 @@ impl TransientSession {
 
     /// The latest step taken, kept or not; `None` before the first.
     pub fn last_step(&self) -> Option<&TimestepSnapshot> {
-        self.last.as_ref().or(self.steps.last())
+        match &self.last {
+            Some(Latest::Built(snapshot)) => Some(snapshot),
+            Some(Latest::Pending(stepped, built)) => {
+                Some(built.get_or_init(|| self.folded(self.stepper.build_snapshot(stepped))))
+            }
+            None => self.steps.last(),
+        }
+    }
+
+    /// `snapshot` with composites folded back.
+    fn folded(&self, mut snapshot: TimestepSnapshot) -> TimestepSnapshot {
+        if let Some(folder) = self
+            .composites
+            .as_ref()
+            .and_then(crate::composite::StepFolder::new)
+        {
+            folder.fold(&mut snapshot);
+        }
+        snapshot
+    }
+
+    /// Builds the latest step if it's still pending, before the state it's
+    /// built from moves on.
+    fn settle(&mut self) {
+        self.last = match self.last.take() {
+            Some(Latest::Pending(stepped, built)) => {
+                Some(Latest::Built(built.into_inner().unwrap_or_else(|| {
+                    self.folded(self.stepper.build_snapshot(&stepped))
+                })))
+            }
+            last => last,
+        };
     }
 
     /// Whether to keep each step for [`drain_steps`](Self::drain_steps)
@@ -394,7 +438,7 @@ impl TransientSession {
     /// Take the steps kept since the last call, oldest first.
     pub fn drain_steps(&mut self) -> std::vec::Drain<'_, TimestepSnapshot> {
         if self.last.is_none() {
-            self.last = self.steps.last().cloned();
+            self.last = self.steps.last().cloned().map(Latest::Built);
         }
         self.steps.drain(..)
     }
@@ -636,6 +680,7 @@ impl TransientSession {
         if self.stepper.circuit.components[k] == element {
             return Ok(());
         }
+        self.settle();
         self.stepper.edit(k, element);
         Ok(())
     }
@@ -703,28 +748,24 @@ impl TransientSession {
     }
 
     fn take_step(&mut self, until: f64) -> Result<(), SimError> {
-        let mut snapshot = match self.stepper.step(until) {
-            Ok(snapshot) => snapshot,
+        let stepped = match self.stepper.step(until) {
+            Ok(stepped) => stepped,
             Err(e) => {
                 self.failed = Some(self.time());
                 return Err(e);
             }
         };
-        if let Some(folder) = self
-            .composites
-            .as_ref()
-            .and_then(crate::composite::StepFolder::new)
-        {
-            folder.fold(&mut snapshot);
-        }
         for (reading, p) in self.readings.iter_mut().zip(&self.pins) {
             *reading = p.pin.reads(p.volts(&self.stepper), Some(*reading));
         }
         if self.keep && self.stepper.recording() {
+            let snapshot = self.folded(self.stepper.snapshot(stepped));
             self.steps.push(snapshot);
             self.last = None;
+        } else if stepped.built {
+            self.last = Some(Latest::Built(self.folded(self.stepper.snapshot(stepped))));
         } else {
-            self.last = Some(snapshot);
+            self.last = Some(Latest::Pending(stepped, OnceLock::new()));
         }
         Ok(())
     }
@@ -745,7 +786,7 @@ impl TransientSession {
     fn rewind(&mut self, saved: Saved) {
         self.stepper.rewind(saved.state);
         self.steps.truncate(saved.steps);
-        self.last = saved.last;
+        self.last = saved.last.map(Latest::Built);
         self.readings = saved.readings;
     }
 

@@ -13,6 +13,7 @@ use crate::element::{
 };
 use crate::handle::ComponentId;
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use nalgebra::{DMatrix, DVector};
@@ -20,7 +21,7 @@ use num_complex::Complex64;
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::error::{ConfigKind, SimError};
-use crate::mna::MnaMatrix;
+use crate::mna::{Factor, MnaMatrix};
 use crate::node_map::{NodeMap, Terminals};
 
 /// Frequency sweep spacing.
@@ -132,6 +133,19 @@ pub struct AcPoint {
     /// node (always 0).
     #[cfg_attr(feature = "schemars", schemars(with = "HashMap<String, [f64; 2]>"))]
     pub node_voltages: HashMap<String, Complex64>,
+    /// Complex branch currents (A) of every component that introduces a
+    /// current unknown (voltage sources, controlled voltage sources,
+    /// op-amps, comparators, behavioural voltage sources, regulators),
+    /// keyed by component id, with [`SimulationResult::branch_currents`]'
+    /// sign convention: a source delivering power reads negative. It lists
+    /// the same components as [`solve_op`]'s `branch_currents`; a
+    /// transient's lists independent voltage sources only.
+    ///
+    /// [`SimulationResult::branch_currents`]: crate::SimulationResult::branch_currents
+    /// [`solve_op`]: crate::solve_op
+    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "schemars", schemars(with = "HashMap<String, [f64; 2]>"))]
+    pub branch_currents: HashMap<String, Complex64>,
 }
 
 impl AcPoint {
@@ -158,6 +172,15 @@ impl AcPoint {
             let gain = v.norm() / source_magnitude;
             20.0 * gain.log10()
         })
+    }
+
+    /// The complex branch current of component `id` (A), with the sign
+    /// convention of [`AcPoint::branch_currents`]. `None` when `id` has no
+    /// branch current (resistors, capacitors, inductors and other parts
+    /// without a current unknown) or isn't in the circuit.
+    pub fn branch_current(&self, id: impl AsRef<str>) -> Option<Complex64> {
+        let id = id.as_ref();
+        self.branch_currents.get(id).copied()
     }
 
     /// Phase of a node's voltage in degrees, in (−180°, 180°]: relative to
@@ -216,6 +239,39 @@ impl AcResult {
             .collect()
     }
 
+    /// A component's complex branch current as `(frequency in Hz, I)` pairs,
+    /// one per point; see [`AcPoint::branch_current`]. Empty when `id` has
+    /// no branch current.
+    ///
+    /// ```
+    /// use sindr::{solve_ac, AcConfig, Circuit, CircuitElement};
+    /// use sindr::element::{Capacitor, Resistor, VoltageSource};
+    ///
+    /// // The input current of an RC low-pass: −V/(R + 1/(jωC)), negative
+    /// // because V1 delivers it.
+    /// let circuit = Circuit::new("0", vec![
+    ///     CircuitElement::VoltageSource(VoltageSource { id: "V1".into(), nodes: ["in".into(), "0".into()], voltage: 0.0, waveform: None }),
+    ///     CircuitElement::Resistor(Resistor { id: "R1".into(), nodes: ["in".into(), "out".into()], resistance: 1e3 }),
+    ///     CircuitElement::Capacitor(Capacitor { id: "C1".into(), nodes: ["out".into(), "0".into()], capacitance: 1e-6 }),
+    /// ]);
+    /// let ac = solve_ac(&circuit, &AcConfig::new("V1", 1.0, 1e5, 51))?;
+    ///
+    /// // Far above the corner, C is a short: −1 V / 1 kΩ.
+    /// let (f, i) = *ac.branch_current_curve("V1").last().unwrap();
+    /// assert_eq!(f, 1e5);
+    /// assert!((i.re + 1e-3).abs() < 1e-6 && i.im.abs() < 2e-6);
+    /// assert!(ac.branch_current_curve("R1").is_empty());
+    /// # Ok::<(), sindr::SimError>(())
+    /// ```
+    ///
+    pub fn branch_current_curve(&self, id: impl AsRef<str>) -> Vec<(f64, Complex64)> {
+        let id = id.as_ref();
+        self.points
+            .iter()
+            .filter_map(|p| p.branch_current(id).map(|i| (p.frequency, i)))
+            .collect()
+    }
+
     /// A node's voltage magnitude as `(frequency in Hz, |V| in V)` pairs,
     /// one per point; [`AcResult::gain_curve`] has it in dB.
     pub fn magnitude_curve(&self, node: impl AsRef<str>) -> Vec<(f64, f64)> {
@@ -258,6 +314,8 @@ pub(crate) struct SmallSignalModel {
     conductances: Vec<Conductance>,
     layout: Layout,
     terminals: Terminals,
+    /// Branch row of each independent voltage source, by id.
+    vsource_branches: HashMap<String, usize>,
 }
 
 /// Linearises `circuit`'s nonlinear elements at the DC operating point.
@@ -274,10 +332,23 @@ pub(crate) fn linearize_at_dc(
                 .linearise(&AcBias::new(&terminals, k, dc_solution))
         })
         .collect();
+    let layout = Layout::new(circuit);
+    let vsource_branches = circuit
+        .components
+        .iter()
+        .enumerate()
+        .filter_map(|(k, c)| match c {
+            CircuitElement::VoltageSource(VoltageSource { id, .. }) => {
+                Some((id.clone(), node_map.num_nodes() + layout.branch(k)))
+            }
+            _ => None,
+        })
+        .collect();
     SmallSignalModel {
         conductances,
-        layout: Layout::new(circuit),
+        layout,
         terminals,
+        vsource_branches,
     }
 }
 
@@ -483,13 +554,16 @@ pub(crate) fn bias_point_with_result(
 /// The linearised (small-signal) MNA system of `circuit` at angular
 /// frequency `omega`, with every source zero: `b` is left for the caller
 /// to excite.
-pub(crate) struct SmallSignalSystem {
+pub(crate) struct SmallSignalSystem<'m> {
     a: MnaMatrix<Complex64>,
     /// Branch row of each independent voltage source, by id.
-    vsource_branches: HashMap<String, usize>,
+    vsource_branches: &'m HashMap<String, usize>,
+    /// `a` factorised on the first solve, for every later one (an adjoint
+    /// included) to reuse.
+    lu: OnceCell<Factor<'static, Complex64>>,
 }
 
-impl SmallSignalSystem {
+impl SmallSignalSystem<'_> {
     /// Size of the system: node rows, then branch rows.
     pub(crate) fn size(&self) -> usize {
         self.a.size()
@@ -502,27 +576,35 @@ impl SmallSignalSystem {
 
     /// Solves `A x = b` for the given excitation.
     pub(crate) fn solve(&self, b: &DVector<Complex64>) -> Result<DVector<Complex64>, SimError> {
-        self.a.solve(b)
+        self.factor()?.solve(b)
     }
 
-    /// Solves `Aᵀ x = b`: the adjoint system.
+    /// Solves `Aᵀ x = b`: the adjoint system, from the same factor.
     pub(crate) fn solve_transpose(
         &self,
         b: &DVector<Complex64>,
     ) -> Result<DVector<Complex64>, SimError> {
-        self.a.transpose().solve(b)
+        self.factor()?.solve_transpose(b)
+    }
+
+    fn factor(&self) -> Result<&Factor<'static, Complex64>, SimError> {
+        if let Some(lu) = self.lu.get() {
+            return Ok(lu);
+        }
+        let lu = self.a.factor()?.into_owned();
+        Ok(self.lu.get_or_init(|| lu))
     }
 }
 
 /// Builds the small-signal system of `circuit` at `omega` (rad/s),
 /// linearised around `dc_solution` through `ss_models`.
-pub(crate) fn small_signal_system(
+pub(crate) fn small_signal_system<'m>(
     circuit: &Circuit,
     node_map: &NodeMap,
     dc_solution: &DVector<f64>,
-    ss_models: &SmallSignalModel,
+    ss_models: &'m SmallSignalModel,
     omega: f64,
-) -> SmallSignalSystem {
+) -> SmallSignalSystem<'m> {
     build_small_signal(
         circuit,
         node_map,
@@ -564,9 +646,7 @@ pub(crate) fn small_signal_pencil(
     // At s = j every stamp g + s·c is (g, c) with no rounding, which
     // subtracting A(0) from A(1) would not give for a small c beside a
     // large g.
-    let a1 = at(Complex64::new(0.0, 1.0));
-    let vsource_branches = a1.vsource_branches;
-    let a1 = a1.a.to_dense();
+    let a1 = at(Complex64::new(0.0, 1.0)).a.to_dense();
     let g = a1.map(|z| z.re);
     let c = a1.map(|z| z.im);
     // Every stamp is affine in s, so A(0) = G and A(2j) = G + 2j·C.
@@ -586,7 +666,7 @@ pub(crate) fn small_signal_pencil(
     Ok(SmallSignalPencil {
         g,
         c,
-        vsource_branches,
+        vsource_branches: ss_models.vsource_branches.clone(),
     })
 }
 
@@ -594,14 +674,14 @@ pub(crate) fn small_signal_pencil(
 /// stamps that aren't affine in `s` take extra unknowns instead (see
 /// [`SmallSignalPencil`]); without it the system is the plain node and
 /// branch one AC solves.
-fn build_small_signal(
+fn build_small_signal<'m>(
     circuit: &Circuit,
     node_map: &NodeMap,
     dc_solution: &DVector<f64>,
-    ss_models: &SmallSignalModel,
+    ss_models: &'m SmallSignalModel,
     s: Complex64,
     pencil: bool,
-) -> SmallSignalSystem {
+) -> SmallSignalSystem<'m> {
     let num_nodes = node_map.num_nodes();
     let num_vsources = circuit.count_voltage_sources();
     let extra: usize = if pencil {
@@ -614,7 +694,6 @@ fn build_small_signal(
         0
     };
     let mut a = MnaMatrix::zeros(num_nodes + num_vsources + extra);
-    let mut vsource_branches = HashMap::new();
     // The next free extra unknown of the pencil form.
     let mut aux = num_nodes + num_vsources;
     debug_assert_eq!(ss_models.layout, Layout::new(circuit));
@@ -630,7 +709,6 @@ fn build_small_signal(
             s,
             pencil,
             &mut aux,
-            &mut vsource_branches,
         );
         component.device().stamp_ac(&mut stamp);
     }
@@ -641,7 +719,8 @@ fn build_small_signal(
 
     SmallSignalSystem {
         a,
-        vsource_branches,
+        vsource_branches: &ss_models.vsource_branches,
+        lu: OnceCell::new(),
     }
 }
 
@@ -762,14 +841,33 @@ pub(crate) fn solve_ac_with(
                 node_voltages.insert(name.to_string(), solution[i]);
             }
         }
-        crate::composite::strip_nodes(original, &mut node_voltages);
+
+        // The same branch currents as DC's `branch_currents`: each element's
+        // first branch row, when it exposes one.
+        let branch_currents = circuit
+            .components
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.device().exposes_branch_current())
+            .map(|(k, c)| {
+                let row = num_nodes + ss_models.layout.branch(k);
+                (c.device().id().to_string(), solution[row])
+            })
+            .collect();
 
         points.push(AcPoint {
             frequency: freq,
             node_voltages,
+            branch_currents,
         });
     }
 
+    crate::composite::strip_nodes(
+        original,
+        points
+            .iter_mut()
+            .flat_map(|p| [&mut p.node_voltages, &mut p.branch_currents]),
+    );
     Ok(AcResult {
         points,
         config: config.clone(),
@@ -1385,5 +1483,87 @@ mod tests {
             gain.norm(),
             gm * 1_000.0
         );
+    }
+
+    /// The source of an RC low-pass carries `−V/Z` with `Z = R + 1/(jωC)`:
+    /// negative, as in DC, since it delivers the current.
+    #[test]
+    fn source_branch_current_is_minus_v_over_z() {
+        let (r, c) = (1e3, 1e-6);
+        let circuit = with(vec![
+            vsrc("VIN", "in", 0.0),
+            res("R1", "in", "out", r),
+            CircuitElement::Capacitor(Capacitor {
+                id: "C1".into(),
+                nodes: ["out".into(), "0".into()],
+                capacitance: c,
+            }),
+        ]);
+        let ac = solve_ac(&circuit, &AcConfig::new("VIN", 10.0, 1e4, 5)).unwrap();
+        let curve = ac.branch_current_curve("VIN");
+        assert_eq!(curve.len(), 5);
+        for (point, &(f, i)) in ac.points.iter().zip(&curve) {
+            let omega = 2.0 * std::f64::consts::PI * f;
+            let z = Complex64::new(r, -1.0 / (omega * c));
+            let expected = -Complex64::new(1.0, 0.0) / z;
+            assert!(
+                (i - expected).norm() < 1e-12 * expected.norm(),
+                "{f} Hz: {i} vs {expected}"
+            );
+            assert_eq!(point.branch_current("VIN"), Some(i));
+        }
+        // Like DC's: only elements with a current unknown have one.
+        assert_eq!(ac.points[0].branch_current("R1"), None);
+        assert_eq!(ac.points[0].branch_current("C1"), None);
+        assert!(ac.branch_current_curve("nope").is_empty());
+    }
+
+    /// An op-amp's branch current is the current into its output pin: the
+    /// opposite of what it drives into RL and RF.
+    #[test]
+    fn op_amp_branch_current_balances_its_output_node() {
+        let (r1, rf, rl) = (1e3, 10e3, 2e3);
+        let circuit = with(vec![
+            vsrc("VIN", "in", 0.0),
+            res("R1", "in", "fb", r1),
+            res("RF", "fb", "out", rf),
+            res("RL", "out", "0", rl),
+            CircuitElement::OpAmp(OpAmp {
+                id: "U1".into(),
+                nodes: ["0".into(), "fb".into(), "out".into()],
+                v_pos: 15.0,
+                v_neg: -15.0,
+                model: Some(crate::circuit::OpAmpModel::default()),
+            }),
+        ]);
+        let config = AcConfig::new("VIN", 1e3, 1e3, 1).with_spacing(FrequencySpacing::Linear);
+        let point = &solve_ac(&circuit, &config).unwrap().points[0];
+        let (out, fb) = (point.node_voltages["out"], point.node_voltages["fb"]);
+        let driven = out / rl + (out - fb) / rf;
+        let i = point.branch_current("U1").unwrap();
+        assert!(
+            (i + driven).norm() < 1e-9 * driven.norm(),
+            "{i} vs {}",
+            -driven
+        );
+    }
+
+    /// A composite's parts stay inside it: a DC motor's sense source and
+    /// back-EMF have branch rows, but no `M1#…` key comes out.
+    #[test]
+    fn composite_parts_have_no_branch_current() {
+        let circuit = with(vec![
+            vsrc("VIN", "in", 0.0),
+            CircuitElement::DcMotor(crate::element::DcMotor {
+                id: "M1".into(),
+                nodes: ["in".into(), "0".into()],
+                params: crate::element::DcMotorParams::new(2.0, 0.02),
+            }),
+        ]);
+        let config = AcConfig::new("VIN", 1e3, 1e3, 1).with_spacing(FrequencySpacing::Linear);
+        let point = &solve_ac(&circuit, &config).unwrap().points[0];
+        let mut ids: Vec<&str> = point.branch_currents.keys().map(String::as_str).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["VIN"]);
     }
 }

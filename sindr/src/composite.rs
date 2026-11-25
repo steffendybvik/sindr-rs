@@ -647,6 +647,31 @@ fn recipes(circuit: &Circuit) -> Vec<Recipe<'_>> {
 ///
 /// `circuit` is the caller's, before flattening or lowering.
 pub(crate) fn fold(circuit: &Circuit, result: &mut SimulationResult) {
+    fold_all(circuit, [result]);
+}
+
+/// [`fold`] on every point of a sweep, flattening `circuit` and building
+/// its recipes once.
+pub(crate) fn fold_all<'r>(
+    circuit: &Circuit,
+    results: impl IntoIterator<Item = &'r mut SimulationResult>,
+) {
+    let Ok(flat) = circuit.flattened() else {
+        return;
+    };
+    if let Some(folder) = StepFolder::new(&flat) {
+        for result in results {
+            folder.fold_result(result);
+        }
+    }
+}
+
+/// Removes the composites' internal nodes from each of `maps`. `circuit`
+/// is the caller's, before flattening or lowering.
+pub(crate) fn strip_nodes<'m, V: 'm>(
+    circuit: &Circuit,
+    maps: impl IntoIterator<Item = &'m mut HashMap<String, V>>,
+) {
     let Ok(flat) = circuit.flattened() else {
         return;
     };
@@ -654,18 +679,8 @@ pub(crate) fn fold(circuit: &Circuit, result: &mut SimulationResult) {
     if recipes.is_empty() {
         return;
     }
-    fold_one(
-        &recipes,
-        &result.node_voltages,
-        &mut result.component_results,
-        &mut result.motors,
-    );
-    strip(&recipes, &mut result.node_voltages);
-    strip(&recipes, &mut result.branch_currents);
-    if let Some(tran) = &mut result.transient {
-        for step in &mut tran.timesteps {
-            fold_step(&recipes, step);
-        }
+    for map in maps {
+        strip(&recipes, map);
     }
 }
 
@@ -695,19 +710,28 @@ impl<'a> StepFolder<'a> {
     pub(crate) fn fold(&self, step: &mut TimestepSnapshot) {
         fold_step(&self.0, step);
     }
+
+    fn fold_result(&self, result: &mut SimulationResult) {
+        let recipes = &self.0;
+        fold_one(
+            recipes,
+            &result.node_voltages,
+            &mut result.component_results,
+            &mut result.motors,
+        );
+        strip(recipes, &mut result.node_voltages);
+        strip(recipes, &mut result.branch_currents);
+        if let Some(tran) = &mut result.transient {
+            for step in &mut tran.timesteps {
+                fold_step(recipes, step);
+            }
+        }
+    }
 }
 
 /// Removes the internal nodes or parts (`<id>#…`) of every composite.
 fn strip<V>(circuit_recipes: &[Recipe<'_>], map: &mut HashMap<String, V>) {
     map.retain(|key, _| !is_internal(circuit_recipes, key));
-}
-
-/// Removes the composites' internal nodes from `map`. `circuit` is the
-/// caller's, before flattening or lowering.
-pub(crate) fn strip_nodes<V>(circuit: &Circuit, map: &mut HashMap<String, V>) {
-    if let Ok(flat) = circuit.flattened() {
-        strip(&recipes(&flat), map);
-    }
 }
 
 fn is_internal(recipes: &[Recipe<'_>], key: &str) -> bool {

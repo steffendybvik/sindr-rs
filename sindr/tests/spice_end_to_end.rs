@@ -98,6 +98,27 @@ fn parse_file_bjt_amplifier_solves() {
     );
 }
 
+/// Part numbers that start with a digit are model and subckt names, as in
+/// ngspice. ngspice solves this deck to v(b) = 0.6884151 V.
+#[test]
+fn model_and_subckt_names_may_start_with_a_digit() {
+    let deck = "* part numbers\n\
+                .subckt 74x a b\nR1 a b 1k\n.ends 74x\n\
+                V1 a 0 5\nR1 a b 1k\nD1 b 0 1n4148\nX1 b 0 74x\n\
+                Q1 c b2 0 2n3904\nV2 c 0 5\nR2 c b2 100k\n\
+                .model 1n4148 d(is=1e-14)\n\
+                .model 2n3904 npn(bf=100)\n\
+                .op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let op = sindr::solve_circuit(&netlist.circuit).unwrap();
+    assert_relative_eq!(op.node_voltages["b"], 0.688_415_1, max_relative = 1e-4);
+    assert!(netlist
+        .circuit
+        .components
+        .iter()
+        .any(|c| matches!(c, CircuitElement::Bjt(Bjt { id, .. }) if id == "q1")));
+}
+
 #[test]
 fn parse_file_subckt_flattening() {
     let nl = parse_file(fixture_path("subckt_filter.cir")).expect("parse subckt_filter");
@@ -314,6 +335,118 @@ fn one_shot_pulse_fires_in_a_parsed_transient() {
     assert_eq!(v_at(45e-6), 0.0);
 }
 
+/// A delayed SIN holds `vo + va·sin(phase)` until its delay, so the
+/// transient starts from that operating point, and then runs as ngspice's
+/// `vo + va·e^(−θ(t−td))·sin(2πf(t−td) + phase)`.
+#[test]
+fn delayed_sin_starts_at_its_delay_in_a_parsed_transient() {
+    let src = "* delayed sin\n\
+               V1 in 0 SIN(0.5 1 1k 0.25m 200 30)\n\
+               V2 b 0 SIN(0 1 1k 0.25m)\n\
+               R1 in 0 1k\n\
+               R2 b 0 1k\n\
+               R3 in c 1k\n\
+               C1 c 0 1u\n\
+               .tran 1u 1m\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let config = nl.analyses[0].transient_config().expect(".tran config");
+    let tran = sindr::solve_transient(&nl.circuit, &config)
+        .expect("solve")
+        .transient
+        .expect("transient data");
+    let v_at = |node: &str, t: f64| {
+        let step = tran
+            .timesteps
+            .iter()
+            .min_by(|a, b| (a.time - t).abs().total_cmp(&(b.time - t).abs()))
+            .unwrap();
+        assert!((step.time - t).abs() < 1e-9, "no step at {t}");
+        step.node_voltages[node]
+    };
+    // Before the delay: 0.5 + sin(30°) and 0. The capacitor starts
+    // charged to that, so it doesn't move until the delay.
+    for t in [tran.timesteps[0].time, 0.1e-3, 0.2e-3] {
+        assert_relative_eq!(v_at("in", t), 1.0, epsilon = 1e-9);
+        assert_relative_eq!(v_at("c", t), 1.0, epsilon = 1e-9);
+        assert_relative_eq!(v_at("b", t), 0.0, epsilon = 1e-12);
+    }
+    // Values ngspice 47 reports for the same deck.
+    assert_relative_eq!(v_at("in", 0.5e-3), 1.32379, epsilon = 1e-5);
+    assert_relative_eq!(v_at("in", 0.8e-3), -0.165732, epsilon = 1e-5);
+    // A quarter period after the delay, the undamped sine peaks.
+    assert_relative_eq!(v_at("b", 0.5e-3), 1.0, epsilon = 1e-9);
+}
+
+/// PULSE's missing arguments default as in ngspice: no delay, edges of the
+/// `.tran` TSTEP, and a width and period of its TSTOP.
+#[test]
+fn pulse_defaults_its_missing_arguments_from_the_tran() {
+    let src = "* short pulses\n\
+               V1 a 0 PULSE(0 1 0.1m)\n\
+               V2 b 0 PULSE(0 1)\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               .tran 10u 1m\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let waveform = |i: usize| match &nl.circuit.components[i] {
+        CircuitElement::VoltageSource(VoltageSource {
+            waveform: Some(w), ..
+        }) => w.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        waveform(0),
+        sindr::Waveform::Pulse {
+            v1: 0.0,
+            v2: 1.0,
+            delay: 0.1e-3,
+            // `10u`, as the SI suffix scales it.
+            rise_time: 10.0 * 1e-6,
+            fall_time: 10.0 * 1e-6,
+            pulse_width: 1e-3,
+            period: 1e-3,
+        }
+    );
+    let config = nl.analyses[0].transient_config().expect(".tran config");
+    let tran = sindr::solve_transient(&nl.circuit, &config)
+        .expect("solve")
+        .transient
+        .expect("transient data");
+    let v_at = |node: &str, t: f64| tran.voltage_at(node, t).unwrap();
+    // Values ngspice 47 reports for the same deck.
+    assert_eq!(v_at("a", 0.05e-3), 0.0);
+    assert_relative_eq!(v_at("a", 0.105e-3), 0.5, epsilon = 1e-9);
+    assert_relative_eq!(v_at("a", 0.5e-3), 1.0, epsilon = 1e-12);
+    assert_relative_eq!(v_at("a", 0.999e-3), 1.0, epsilon = 1e-12);
+    assert_relative_eq!(v_at("b", 0.05e-3), 1.0, epsilon = 1e-12);
+    assert_relative_eq!(v_at("b", 0.999e-3), 1.0, epsilon = 1e-12);
+
+    // With no `.tran`, the edges are ideal and the pulse stays high.
+    let nl = parse_str("* no tran\nV1 a 0 PULSE(0 1 0.1m)\nR1 a 0 1k\n.op\n.end\n").unwrap();
+    let CircuitElement::VoltageSource(VoltageSource {
+        waveform: Some(w), ..
+    }) = &nl.circuit.components[0]
+    else {
+        panic!("expected a voltage source");
+    };
+    assert_eq!(
+        *w,
+        sindr::Waveform::Pulse {
+            v1: 0.0,
+            v2: 1.0,
+            delay: 0.1e-3,
+            rise_time: 0.0,
+            fall_time: 0.0,
+            pulse_width: f64::INFINITY,
+            period: 0.0,
+        }
+    );
+    assert_eq!(w.evaluate(0.05e-3), 0.0);
+    assert_eq!(w.evaluate(1.0), 1.0);
+}
+
 #[test]
 fn subckt_structure_survives_parsing() {
     let nl = parse_file(fixture_path("subckt_filter.cir")).expect("parse subckt_filter");
@@ -352,6 +485,121 @@ fn identical_instances_share_one_block() {
     let nl = parse_str(src).expect("parse");
     assert_eq!(nl.circuit.blocks.len(), 1);
     assert!(nl.circuit.instances.iter().all(|i| i.block == "half"));
+}
+
+#[test]
+fn numbered_blocks_skip_a_subckt_of_that_name() {
+    let src = "* names\n\
+               X1 a 0 s v=1\n\
+               X2 b 0 s_2\n\
+               X3 c 0 s v=2\n\
+               X4 d 0 s v=3\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               R4 d 0 1k\n\
+               .subckt s p q v=1\n\
+               V1 p q {v}\n\
+               .ends\n\
+               .subckt s_2 p q\n\
+               R1 p q 1k\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let placed: Vec<&str> = nl
+        .circuit
+        .instances
+        .iter()
+        .map(|i| i.block.as_str())
+        .collect();
+    assert_eq!(placed, ["s", "s_2", "s_3", "s_4"]);
+}
+
+#[test]
+fn zero_and_minus_zero_bodies_share_one_block() {
+    let src = "* signed zero\n\
+               X1 a 0 src v=0\n\
+               X2 b 0 src v=-0\n\
+               X3 c 0 src v=1\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               .subckt src p q v=1\n\
+               V1 p q {v}\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let placed: Vec<&str> = nl
+        .circuit
+        .instances
+        .iter()
+        .map(|i| i.block.as_str())
+        .collect();
+    assert_eq!(placed, ["src", "src", "src_2"]);
+}
+
+/// `1` and `-1` print alike once the sign is dropped, so their bodies land
+/// in one hash bucket; they still differ, and get a block each.
+#[test]
+fn bodies_that_differ_only_in_sign_get_their_own_blocks() {
+    let src = "* signed\n\
+               X1 a 0 src v=1\n\
+               X2 b 0 src v=-1\n\
+               X3 c 0 src v=1\n\
+               X4 d 0 src v=-1\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               R4 d 0 1k\n\
+               .subckt src p q v=1\n\
+               V1 p q {v}\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let placed: Vec<&str> = nl
+        .circuit
+        .instances
+        .iter()
+        .map(|i| i.block.as_str())
+        .collect();
+    assert_eq!(placed, ["src", "src_2", "src", "src_2"]);
+    assert_eq!(nl.circuit.blocks.len(), 2);
+}
+
+/// Each block lists only its own instance's children, in deck order;
+/// outer bodies with equal children share a block, and the inner body
+/// both outers bind alike is one block.
+#[test]
+fn nested_instances_group_under_their_own_parent() {
+    let src = "* nested sharing\n\
+               X1 a 0 outer v=1\n\
+               X2 b 0 outer v=1\n\
+               X3 c 0 outer v=2\n\
+               R1 a 0 1k\n\
+               R2 b 0 1k\n\
+               R3 c 0 1k\n\
+               .subckt outer p q v=1\n\
+               XA p m inner w={v}\n\
+               XB m q inner w=5\n\
+               .ends\n\
+               .subckt inner p q w=1\n\
+               R1 p q {w}\n\
+               .ends\n\
+               .end\n";
+    let nl = parse_str(src).expect("parse");
+    let c = &nl.circuit;
+    let placed: Vec<&str> = c.instances.iter().map(|i| i.block.as_str()).collect();
+    assert_eq!(placed[0], placed[1]);
+    assert_ne!(placed[0], placed[2]);
+    let (shared, other) = (&c.blocks[placed[0]], &c.blocks[placed[2]]);
+    for block in [shared, other] {
+        let ids: Vec<&str> = block.instances.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["xa", "xb"]);
+    }
+    assert_eq!(shared.instances[1].block, other.instances[1].block);
+    assert_ne!(shared.instances[0].block, other.instances[0].block);
+    // Two outer bodies and three inner ones (w = 1, 2 and 5).
+    assert_eq!(c.blocks.len(), 5);
 }
 
 #[test]
@@ -569,4 +817,39 @@ fn non_ascii_node_names() {
     let op = sindr::solve_circuit(&netlist.circuit).unwrap();
     assert_relative_eq!(op.node_voltages["µ"], 0.5, max_relative = 1e-9);
     assert_relative_eq!(op.node_voltages["å"], 1.0, max_relative = 1e-9);
+}
+
+/// Node names run to a separator, as in ngspice, so a schematic
+/// exporter's `/in` and `Net-_R1-Pad2_` read as written, and `$` after a
+/// space starts a comment. ngspice 47 solves this ladder to the same
+/// voltages.
+#[test]
+fn exported_node_names_and_dollar_comments() {
+    let deck = "* exported\nV1 /in 0 1 $ supply\n\
+                R1 /in Net-_R1-Pad2_ 1k ; another\n\
+                R2 Net-_R1-Pad2_ a+b 1k\n\
+                R3 a+b n$x 1k\t$ tab\n\
+                R4 n$x 0 1k $comment with $ inside\n.op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let op = sindr::solve_circuit(&netlist.circuit).unwrap();
+    for (node, want) in [
+        ("/in", 1.0),
+        ("net-_r1-pad2_", 0.75),
+        ("a+b", 0.5),
+        ("n$x", 0.25),
+    ] {
+        assert_relative_eq!(op.node_voltages[node], want, max_relative = 1e-9);
+    }
+}
+
+/// ngspice's `params:` keyword before a subckt's defaults and an
+/// instance's overrides.
+#[test]
+fn params_keyword_on_subckt_and_instance_lines() {
+    let deck = "* p\n.subckt div top bot params: r=1k\nR1 top mid {r}\nR2 mid bot {r}\n.ends\n\
+                V1 a 0 1\nX1 a 0 div params: r=2k\n.op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let op = sindr::solve_circuit(&netlist.circuit).unwrap();
+    // ngspice 47: i(v1) = -2.5e-4.
+    assert_relative_eq!(op.current("v1").unwrap().abs(), 2.5e-4, max_relative = 1e-9);
 }

@@ -163,6 +163,92 @@ fn a_param_may_refer_to_its_earlier_value() {
     assert_eq!(resistance(&parse_str(deck).unwrap(), "r1"), 2e3);
 }
 
+/// Evaluates `{expr}` through `.param` (with `x=3`) and reads it back off a
+/// source.
+fn param_value(expr: &str) -> f64 {
+    let deck = format!("* p\n.param x=3\n.param v={{{expr}}}\nV1 a 0 {{v}}\nR1 a 0 1\n.end\n");
+    let netlist = parse_str(&deck).unwrap();
+    match element(&netlist, "v1") {
+        CircuitElement::VoltageSource(VoltageSource { voltage, .. }) => *voltage,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A leading unary minus (or one right after `(`) is looser than `^`, as
+/// in ngspice 47's `.param`: `{-2^2}` is -4, `{(-3^2)}` is -9.
+#[test]
+fn power_binds_tighter_than_a_leading_minus() {
+    for (expr, want) in [
+        ("-2^2", -4.0),
+        ("-2**2", -4.0),
+        ("(-3^2)", -9.0),
+        ("2^-2", 0.25),
+        ("-2^-2", -0.25),
+        ("(-2)^2", 4.0),
+        ("2*-3", -6.0),
+        ("-x^2", -9.0),
+        ("-3^2*2", -18.0),
+        ("-3^2+1", -8.0),
+    ] {
+        assert_eq!(param_value(expr), want, "{{{expr}}}");
+    }
+}
+
+/// A minus right after a binary operator (or another unary minus) negates
+/// the operand it sits on, tighter than `^`: ngspice 47 gives these for
+/// `.param`.
+#[test]
+fn a_minus_after_an_operator_binds_tighter_than_power() {
+    for (expr, want) in [
+        ("2*-3^2", 18.0),
+        ("1+-3^2", 10.0),
+        ("1 - -3^2", -8.0),
+        ("1 - - 3^2", -8.0),
+        ("2/-2^2", 0.5),
+        ("2*- 3^2", 18.0),
+        ("2*-3**2", 18.0),
+        ("1 - -2^2", -3.0),
+        ("- -3^2", -9.0),
+        ("--2^2", -4.0),
+        ("2*- -3^2", 18.0),
+        ("2*-3*2", -12.0),
+        ("4/-2/2", -1.0),
+    ] {
+        assert_eq!(param_value(expr), want, "{{{expr}}}");
+    }
+}
+
+/// `B` sources keep every unary minus looser than `^`, as ngspice 47's do:
+/// `V=2*-3^2` is -18 there, not the 18 of `.param`.
+#[test]
+fn a_b_source_minus_is_always_looser_than_power() {
+    for (expr, want) in [
+        ("-2^2", -4.0),
+        ("2^-2", 0.25),
+        ("2*-3^2", -18.0),
+        ("1+-3^2", -8.0),
+        ("1 - -3^2", 10.0),
+        ("2/-2^2", -0.5),
+        ("2^-3^2", 2f64.powi(-9)),
+    ] {
+        let b = sindr::expression::Expression::parse(expr)
+            .unwrap()
+            .evaluate(&[]);
+        assert_eq!(b, want, "B source {expr}");
+    }
+}
+
+/// sindr's `^` is right-associative, ngspice's left (it gives 64 for
+/// `{2**3**2}` and (2^-3)^2 for `{2^-3^2}`); a minus in an exponent stays
+/// looser than the `^` after it.
+#[test]
+fn power_is_right_associative() {
+    assert_eq!(param_value("2^3^2"), 512.0);
+    assert_eq!(param_value("2**3**2"), 512.0);
+    assert_eq!(param_value("2^-3^2"), 2f64.powi(-9));
+    assert_eq!(param_value("2^-x^2"), 2f64.powi(-9));
+}
+
 // ----- Elements -------------------------------------------------------------
 
 /// A Q line's optional substrate node is dropped with a warning (in both
@@ -189,46 +275,49 @@ fn bjt_substrate_node_is_dropped_with_a_warning() {
     }
 }
 
-/// `SIN(vo va f td theta)`: the delay becomes a phase of −2π·f·td; a
-/// damping factor sindr can't model is an error in strict mode and dropped
-/// with a warning in lenient mode.
+/// `SIN(vo va f td theta phase)`: held at `vo + va·sin(phase)` until
+/// `td`, then a sine starting there and decaying at `theta`; the phase is
+/// in degrees, as in ngspice.
 #[test]
-fn sin_delay_becomes_phase_and_damping_is_refused() {
-    let deck = "* s\nV1 a 0 SIN(0.5 2 1k 0.25m 3)\nR1 a 0 1k\n.end\n";
-    let err = parse_str(deck).unwrap_err();
-    match &err {
-        SpiceParseError::Syntax { message, .. } => {
-            assert_eq!(message, "SIN damping factor (theta) is not supported")
-        }
-        other => panic!("{other:?}"),
-    }
-
-    let netlist = parse_str_with_options(deck, lenient()).unwrap();
-    assert_eq!(warnings(&netlist), ["SIN damping factor (theta) ignored"]);
+fn sin_reads_delay_damping_and_phase() {
+    let deck = "* s\nV1 a 0 SIN(0.5 2 1k 0.25m 3 30)\nR1 a 0 1k\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert!(netlist.warnings.is_empty());
     match element(&netlist, "v1") {
         CircuitElement::VoltageSource(VoltageSource {
             waveform:
-                Some(Waveform::Sine {
+                Some(Waveform::DampedSine {
                     amplitude,
                     frequency,
                     offset,
+                    delay,
+                    damping,
                     phase,
                 }),
             ..
         }) => {
             assert_eq!((*amplitude, *frequency, *offset), (2.0, 1e3, 0.5));
-            // A quarter period late is −π/2.
+            assert_eq!((*delay, *damping), (0.25e-3, 3.0));
             assert!(
-                (phase + std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+                (phase - std::f64::consts::PI / 6.0).abs() < 1e-15,
                 "{phase}"
             );
         }
         other => panic!("{other:?}"),
     }
 
-    // A zero damping factor is no damping: nothing to refuse.
-    let undamped = "* s\nV1 a 0 SIN(0 1 1k 0 0)\nR1 a 0 1k\n.end\n";
-    assert!(parse_str(undamped).unwrap().warnings.is_empty());
+    // No delay and no damping is a plain sine, its phase in radians.
+    let plain = "* s\nV1 a 0 SIN(0 1 1k 0 0 90)\nR1 a 0 1k\n.end\n";
+    match element(&parse_str(plain).unwrap(), "v1") {
+        CircuitElement::VoltageSource(VoltageSource {
+            waveform: Some(Waveform::Sine { phase, .. }),
+            ..
+        }) => assert_eq!(*phase, std::f64::consts::FRAC_PI_2),
+        other => panic!("{other:?}"),
+    }
+
+    let seven = "* s\nV1 a 0 SIN(0 1 1k 0 0 0 1)\nR1 a 0 1k\n.end\n";
+    assert!(parse_str(seven).is_err());
 }
 
 /// `.noise` reads all three sweep kinds, and an optional points-per-summary
@@ -270,6 +359,79 @@ fn continuation_lines() {
         &deck[span.offset()..span.offset() + span.len()],
         "+ R9 a 0 5"
     );
+}
+
+/// The deck ends at its `.end`: whatever follows, cards or prose, isn't
+/// read. An included file's `.end` is skipped and the rest of that file
+/// read, as ngspice 47 does.
+#[test]
+fn nothing_after_end_is_read() {
+    let deck = "* e\nV1 a 0 1\nR1 a 0 1k\n.op\n.END\nR2 a 0 1k\nthis is junk\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert!(netlist.circuit.components.iter().all(|c| c.id() != "r2"));
+    assert_eq!(netlist.circuit.components.len(), 2);
+
+    let dir = temp_dir("end");
+    std::fs::write(dir.join("part.lib"), "* part\nR2 a 0 2k\n.end\nR4 a 0 4k\n").unwrap();
+    std::fs::write(
+        dir.join("top.cir"),
+        "* top\nV1 a 0 1\n.include part.lib\nR1 a 0 1k\n.end\nR3 a 0 1k\n",
+    )
+    .unwrap();
+    let netlist = parse_file(dir.join("top.cir")).unwrap();
+    assert_eq!(resistance(&netlist, "r1"), 1e3);
+    assert_eq!(resistance(&netlist, "r2"), 2e3);
+    assert_eq!(resistance(&netlist, "r4"), 4e3);
+    assert!(netlist.circuit.components.iter().all(|c| c.id() != "r3"));
+}
+
+/// A `.control` … `.endc` block is ngspice's script, not netlist: it's
+/// skipped in strict mode too, and named once in a lenient warning.
+#[test]
+fn control_blocks_are_skipped() {
+    let deck = "* c\nV1 a 0 1\nR1 a 0 1k\n.control\nrun\ntran 1u 1m\n\
+                let x = v(a) * 2\nprint x\n.endc\nR2 a 0 2k\n\
+                .control\nquit\n.endc\n.op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert_eq!(resistance(&netlist, "r2"), 2e3);
+    assert_eq!(netlist.analyses.len(), 1);
+    assert!(netlist.warnings.is_empty());
+
+    let netlist = parse_str_with_options(deck, lenient()).unwrap();
+    assert_eq!(netlist.circuit.components.len(), 3);
+    let warned = warnings(&netlist);
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(warned[0].contains("`.control`"), "{warned:?}");
+
+    // An unclosed block runs to the end of the deck.
+    let deck = "* c\nV1 a 0 1\nR1 a 0 1k\n.control\nrun\n.end\n";
+    assert_eq!(parse_str(deck).unwrap().circuit.components.len(), 2);
+}
+
+/// A `$` comment set off by a comma takes the comma with it: ngspice 47
+/// solves each of these decks to v(y) = 0.5.
+#[test]
+fn a_dollar_comment_after_a_comma_drops_the_comma() {
+    for line in [
+        "R3 in y 1k,$ hi",
+        "R3 in y 1k, $ hi",
+        "R3 in y 1k,,$ hi",
+        "R3 in y,$ hi\n+ 1k",
+    ] {
+        let deck = format!("* c\nV1 in 0 1\n{line}\nR4 y 0 1k\n.op\n.end\n");
+        for options in [ParseOptions::default(), lenient()] {
+            let netlist =
+                parse_str_with_options(&deck, options).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(resistance(&netlist, "r3"), 1e3, "{line}");
+            assert!(
+                netlist.warnings.is_empty(),
+                "{line}: {:?}",
+                warnings(&netlist)
+            );
+            let op = sindr::solve_op(&netlist.circuit).unwrap();
+            assert!((op.voltage("y").unwrap() - 0.5).abs() < 1e-9, "{line}");
+        }
+    }
 }
 
 /// sindr reads `.subckt` only at the top level. One inside a `.subckt`
@@ -536,4 +698,144 @@ fn another_nominal_temperature_is_refused() {
           are at TNOM=27)"
         ]
     );
+}
+
+// ----- instance parameters ---------------------------------------------------
+
+/// `m`, `scale` and `tc1`/`tc2` at an instance `temp` or `dtemp` set an R
+/// line's value as ngspice does; these are the resistances ngspice 47
+/// reports for the same lines (`temp` wins over `dtemp`).
+#[test]
+fn resistor_instance_parameters_set_its_value() {
+    let deck = "* r\nV1 a 0 1\n\
+                R1 a 0 1k m=2\n\
+                R2 a 0 1k tc1=0.01 tc2=1e-4 temp=77\n\
+                R3 a 0 1k tc1=0.01 dtemp=10\n\
+                R4 a 0 1k scale=3\n\
+                R5 a 0 1k tc1=0.01 temp=77 dtemp=10\n\
+                R6 a 0 1k tc1=0.01\n\
+                .op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    for (id, want) in [
+        ("r1", 500.0),
+        ("r2", 1750.0),
+        ("r3", 1100.0),
+        ("r4", 3000.0),
+        ("r5", 1500.0),
+        ("r6", 1000.0),
+    ] {
+        assert!(
+            (resistance(&netlist, id) - want).abs() < 1e-9,
+            "{id}: {}",
+            resistance(&netlist, id)
+        );
+    }
+}
+
+/// A D line's area, `m`, `temp` and `dtemp`, against the currents ngspice
+/// 47 solves for the same lines across 1 V.
+#[test]
+fn diode_area_multiplier_and_temperature() {
+    let deck = "* d\nV2 d 0 1\n\
+                D1 d 0 dmod 2\n\
+                D2 d 0 dmod m=3\n\
+                D3 d 0 dmod temp=77\n\
+                D4 d 0 dmod dtemp=50\n\
+                D5 d 0 dmod area=2 pj=1u\n\
+                .model dmod d(is=1e-14 rs=10 ibv=1e-3 bv=50)\n.op\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    let op = sindr::solve_op(&netlist.circuit).unwrap();
+    for (id, want) in [
+        ("d1", 0.052_113_7),
+        ("d2", 0.078_166_9),
+        ("d3", 0.032_917_8),
+        ("d4", 0.032_917_8),
+        ("d5", 0.052_113_7),
+    ] {
+        let got = op.current(id).unwrap();
+        assert!(
+            (got - want).abs() < 1e-4 * want,
+            "{id}: {got} A, ngspice {want} A"
+        );
+    }
+    match element(&netlist, "d1") {
+        CircuitElement::Diode(Diode { model: Some(m), .. }) => {
+            assert_eq!((m.is, m.rs, m.ibv), (2e-14, 5.0, 2e-3));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// `IC=` on C and L lines, with `m` and `scale`, start a `uic` transient
+/// where ngspice 47 starts it: at 1 ms v(a) = 1.43306, i(l1) = 5.13417e-4
+/// and v(c) = 0.367879. Without `uic` ngspice ignores them, and so does
+/// sindr.
+#[test]
+fn capacitor_and_inductor_initial_conditions_apply_with_uic() {
+    let lines = "C1 a 0 1u ic=2 m=2 tc1=0.01 dtemp=50\nR1 a 0 1k\n\
+                 L1 b 0 1m ic=1m m=2 scale=3\nR2 b 0 1\n\
+                 C2 0 c 1u ic=-1\nR3 c 0 1k\n";
+    let run = |tran: &str| {
+        let deck = format!("* ic\n{lines}{tran}\n.end\n");
+        let netlist = parse_str(&deck).unwrap();
+        let config = netlist.transient_config().unwrap();
+        let result = sindr::solve_transient(&netlist.circuit, &config).unwrap();
+        let tran = result.transient.unwrap();
+        (
+            tran.voltage_at("a", 1e-3).unwrap(),
+            tran.current_at("l1", 1e-3).unwrap(),
+            tran.voltage_at("c", 1e-3).unwrap(),
+        )
+    };
+    let (va, il, vc) = run(".tran 1u 2m uic");
+    assert!((va - 1.433_06).abs() < 2e-3, "v(a) {va}");
+    assert!((il.abs() - 5.134_17e-4).abs() < 2e-6, "i(l1) {il}");
+    assert!((vc - 0.367_879).abs() < 1e-3, "v(c) {vc}");
+    let (va, il, vc) = run(".tran 1u 2m");
+    assert!(va.abs() < 1e-9 && il.abs() < 1e-9 && vc.abs() < 1e-9);
+}
+
+/// What sindr can't honour on an instance line is an error naming it in
+/// strict mode and a warning in lenient mode.
+#[test]
+fn unsupported_instance_parameters_are_named() {
+    for (line, name) in [
+        ("R1 a 0 1k noisy=0", "NOISY"),
+        ("R1 a 0 1k ic=1", "IC"),
+        ("C1 a 0 1u cmod", "CMOD"),
+        ("D1 a 0 dmod off", "OFF"),
+        ("D1 a 0 dmod ic=0.6", "IC"),
+        ("C1 a b 1u ic=1\nR2 b 0 1k", "neither end"),
+        (
+            "L1 a 0 1m ic=1\nL2 b 0 1m\nR2 b 0 1\nK1 l1 l2 0.9",
+            "coupled",
+        ),
+    ] {
+        let deck = format!("* u\nV1 a 0 1\nR9 a 0 1k\n{line}\n.model dmod d\n.end\n");
+        let err = parse_str(&deck).unwrap_err().to_string();
+        assert!(err.contains(name), "{line}: {err}");
+        let netlist = parse_str_with_options(&deck, lenient()).unwrap();
+        assert!(
+            warnings(&netlist).iter().any(|w| w.contains(name)),
+            "{line}: {:?}",
+            warnings(&netlist)
+        );
+    }
+    for line in ["R1 a 0 1k m=0", "D1 a 0 dmod -1", "D1 a 0 dmod temp=-300"] {
+        let deck = format!("* u\nV1 a 0 1\nR9 a 0 1k\n{line}\n.model dmod d\n.end\n");
+        assert!(parse_str_with_options(&deck, lenient()).is_err(), "{line}");
+    }
+}
+
+/// `IC=` inside a subckt lands under the flattened names.
+#[test]
+fn initial_conditions_inside_a_subckt_use_flattened_names() {
+    let deck = "* s\n.subckt cell p\nR1 p n 1k\nC1 n 0 1u ic=2\nL1 n 0 1m ic=1m\n.ends\n\
+                V1 a 0 1\nX1 a cell\n.tran 1u 1m uic\n.end\n";
+    let netlist = parse_str(deck).unwrap();
+    assert_eq!(netlist.uic_voltages.get("x1.n"), Some(&2.0));
+    assert_eq!(netlist.uic_currents.get("x1.l1"), Some(&1e-3));
+    let config = netlist.transient_config().unwrap();
+    assert_eq!(config.initial_voltages.get("x1.n"), Some(&2.0));
+    assert_eq!(config.initial_currents.get("x1.l1"), Some(&1e-3));
 }

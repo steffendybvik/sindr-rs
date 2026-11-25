@@ -68,7 +68,7 @@ impl Device for Behavioural {
     /// output's is its expression's value, NaN where it can't be
     /// evaluated.
     fn report(&self, r: &mut Report<'_>) {
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         let i = match self.output {
             BehaviouralOutput::Current => behavioural_linearisation(
                 &self.id,

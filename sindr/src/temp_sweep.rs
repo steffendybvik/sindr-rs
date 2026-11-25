@@ -1,11 +1,13 @@
 //! Temperature sweep analysis.
 //!
-//! Varies junction temperature across a range and solves the circuit at each
-//! temperature point. IS is re-scaled using the SPICE formula at each step,
-//! and the thermal voltage follows the temperature.
+//! Varies junction temperature across a range and solves the operating
+//! point at each temperature. IS is re-scaled using the SPICE formula at
+//! each step, and the thermal voltage follows the temperature.
 //!
-//! Mirrors the dc_sweep.rs pattern exactly: clones the circuit, mutates the
-//! temperature field on all IS-bearing components, and calls solve_circuit.
+//! Follows dc_sweep.rs: each point is solved on the circuit's DC equivalent
+//! (capacitors open, inductors shorted, sources at t = 0) with the
+//! temperature field of every IS-bearing component set, and Newton–Raphson
+//! starts from the previous point's node voltages.
 
 use crate::circuit::{Circuit, CircuitElement};
 use crate::element::{Bjt, Diode, Led, Photodiode, SchottkyDiode, ZenerDiode};
@@ -20,7 +22,10 @@ use crate::results::SimulationResult;
 pub struct TempSweepPoint {
     /// Temperature for this point (Kelvin).
     pub temperature: f64,
-    /// Simulation result at this temperature.
+    /// The operating point at this temperature, as [`solve_op`] gives it.
+    /// Its `transient` is always `None`.
+    ///
+    /// [`solve_op`]: crate::solve_op
     pub result: SimulationResult,
 }
 
@@ -105,13 +110,25 @@ impl TempSweepConfig {
     }
 }
 
-/// Sweeps junction temperature across a range and solves the circuit at
-/// each step.
+/// Sweeps junction temperature across a range and solves the operating
+/// point at each step.
 ///
 /// At each temperature, the saturation current `IS` of every IS-bearing
 /// component (BJT, diode, LED, Zener, Schottky, photodiode) is rescaled
 /// using the SPICE temperature formula, and its thermal voltage set to kT/q,
 /// before solving. The base circuit is not modified.
+///
+/// Each point is the DC operating point, as [`solve_op`] solves it and
+/// SPICE's `.temp` with `.op` or `.dc` does: capacitors open, inductors
+/// shorted and every waveform source at its t = 0 value. Earlier versions
+/// ran a circuit with a capacitor, inductor or waveform as a transient from
+/// uncharged capacitors at each point, as [`solve_circuit`] does, and
+/// reported its end state. Each point's Newton–Raphson starts from the
+/// previous point's node voltages, as [`dc_sweep`] does.
+///
+/// [`solve_op`]: crate::solve_op
+/// [`solve_circuit`]: crate::solve_circuit
+/// [`dc_sweep`]: fn@crate::dc_sweep
 ///
 /// `temperature` here is junction temperature — the thermistor's own
 /// temperature input is independent.
@@ -126,8 +143,8 @@ impl TempSweepConfig {
 ///
 /// - [`SimError::InvalidConfig`] if `num_points < 2` or above 10⁷, or either endpoint
 ///   is not finite or not above 0 K
-/// - Any [`SimError`] from solving at one of the temperatures (propagated
-///   immediately)
+/// - Any [`SimError`] from validating the circuit, or from solving at one
+///   of the temperatures (propagated immediately)
 ///
 /// # Example
 ///
@@ -197,32 +214,28 @@ pub(crate) fn temperature_sweep_with(
         }
     }
 
+    crate::validation::validate_circuit(circuit)?;
+
     let step_size = (temp_end - temp_start) / (num_steps as f64 - 1.0);
-    let mut points = Vec::with_capacity(num_steps);
+    let mut points: Vec<TempSweepPoint> = Vec::with_capacity(num_steps);
+    // Only temperatures change from point to point: the nodes stay.
+    let mut work = crate::dc_equivalent(circuit);
+    let node_map = crate::node_map::NodeMap::from_circuit(&work);
+    let mut point_opts = opts.clone();
 
     for i in 0..num_steps {
         let t = temp_start + i as f64 * step_size;
-        let mut sweep_circuit = circuit.clone();
+        let at = |e: SimError| e.at(crate::SolvePoint::Temperature { kelvin: t });
 
         // Scale IS for all temperature-sensitive components
-        for component in &mut sweep_circuit.components {
+        for component in &mut work.components {
             match component {
-                CircuitElement::Bjt(Bjt { temperature, .. }) => {
-                    *temperature = t;
-                }
-                CircuitElement::Diode(Diode { temperature, .. }) => {
-                    *temperature = t;
-                }
-                CircuitElement::Led(Led { temperature, .. }) => {
-                    *temperature = t;
-                }
-                CircuitElement::ZenerDiode(ZenerDiode { temperature, .. }) => {
-                    *temperature = t;
-                }
-                CircuitElement::SchottkyDiode(SchottkyDiode { temperature, .. }) => {
-                    *temperature = t;
-                }
-                CircuitElement::Photodiode(Photodiode { temperature, .. }) => {
+                CircuitElement::Bjt(Bjt { temperature, .. })
+                | CircuitElement::Diode(Diode { temperature, .. })
+                | CircuitElement::Led(Led { temperature, .. })
+                | CircuitElement::ZenerDiode(ZenerDiode { temperature, .. })
+                | CircuitElement::SchottkyDiode(SchottkyDiode { temperature, .. })
+                | CircuitElement::Photodiode(Photodiode { temperature, .. }) => {
                     *temperature = t;
                 }
                 _ => {}
@@ -232,25 +245,30 @@ pub(crate) fn temperature_sweep_with(
         // A self-heated part sits in an ambient at the swept temperature.
         // The circuit is flat here: a block's parts, a variant's included,
         // are top-level parts under their instance path.
-        let thermals = sweep_circuit
-            .parts
-            .values_mut()
-            .filter_map(|p| p.thermal.as_mut());
+        let thermals = work.parts.values_mut().filter_map(|p| p.thermal.as_mut());
         for thermal in thermals {
             thermal.ambient = t;
         }
 
-        let result = crate::solve_circuit_with(&sweep_circuit, opts)
-            .map_err(|e| e.at(crate::SolvePoint::Temperature { kelvin: t }))?;
+        if let Some(previous) = points.last() {
+            point_opts
+                .nodeset
+                .clone_from(&previous.result.node_voltages);
+        }
+        let solve = |dc: &Circuit| crate::solve_dc_circuit_on(dc, &node_map, &point_opts);
+        let mut result = match crate::thermal::Heated::from_circuit(&work).map_err(at)? {
+            Some(heated) => crate::thermal::solve_dc(&work, &heated, solve),
+            None => solve(&work),
+        }
+        .map_err(at)?;
+        crate::strip_secondary_windings(&mut result);
         points.push(TempSweepPoint {
             temperature: t,
             result,
         });
     }
 
-    for point in &mut points {
-        crate::composite::fold(original, &mut point.result);
-    }
+    crate::composite::fold_all(original, points.iter_mut().map(|p| &mut p.result));
     Ok(TempSweepResult {
         start: temp_start,
         stop: temp_end,
@@ -396,5 +414,93 @@ mod tests {
         };
         let result = temperature_sweep(&circuit, &TempSweepConfig::new(300.0, 400.0, 1));
         assert!(result.is_err(), "Should error with num_steps < 2");
+    }
+
+    /// A 5 V source into three 10 kΩ / 10 µF RC sections and a diode,
+    /// optionally through an inductor and with a sine on the source.
+    fn rc_ladder_into_diode(reactive_extras: bool) -> Circuit {
+        use crate::element::{Capacitor, Diode, Inductor};
+        let mut components = vec![CircuitElement::VoltageSource(VoltageSource {
+            id: "V1".into(),
+            nodes: ["n0".into(), "0".into()],
+            voltage: 5.0,
+            // Zero at t = 0, so the operating point sees 5 V.
+            waveform: reactive_extras.then_some(crate::waveform::Waveform::Sine {
+                amplitude: 1.0,
+                frequency: 1e3,
+                offset: 0.0,
+                phase: 0.0,
+            }),
+        })];
+        for k in 1..=3 {
+            components.push(CircuitElement::Resistor(Resistor {
+                id: format!("R{k}"),
+                nodes: [format!("n{}", k - 1).into(), format!("n{k}").into()],
+                resistance: 10e3,
+            }));
+            components.push(CircuitElement::Capacitor(Capacitor {
+                id: format!("C{k}"),
+                nodes: [format!("n{k}").into(), "0".into()],
+                capacitance: 10e-6,
+            }));
+        }
+        let anode = if reactive_extras {
+            components.push(CircuitElement::Inductor(Inductor {
+                id: "L1".into(),
+                nodes: ["n3".into(), "a".into()],
+                inductance: 1e-3,
+                saturation: None,
+            }));
+            "a"
+        } else {
+            "n3"
+        };
+        components.push(CircuitElement::Diode(Diode {
+            id: "D1".into(),
+            nodes: [anode.into(), "0".into()],
+            temperature: 300.15,
+            model: None,
+        }));
+        Circuit::new("0", components)
+    }
+
+    /// Each point is the operating point at its temperature, not the end of
+    /// a power-on transient: the ladder's capacitors were still charging
+    /// after 5 τ of one section (0.4 mV, 1.6 % of the diode current off).
+    #[test]
+    fn each_point_is_the_operating_point() {
+        for extras in [false, true] {
+            let circuit = rc_ladder_into_diode(extras);
+            let sweep =
+                temperature_sweep(&circuit, &TempSweepConfig::new(250.0, 400.0, 7)).unwrap();
+            assert_eq!(sweep.points.len(), 7);
+            for point in &sweep.points {
+                let mut at_t = circuit.clone();
+                for c in &mut at_t.components {
+                    if let CircuitElement::Diode(d) = c {
+                        d.temperature = point.temperature;
+                    }
+                }
+                let op = crate::solve_op(&at_t).unwrap();
+                assert!(point.result.transient.is_none());
+                // To Newton's tolerance: the sweep starts each point from
+                // the last, `solve_op` from scratch.
+                for (node, v) in &op.node_voltages {
+                    let got = point.result.node_voltages[node];
+                    assert!(
+                        (got - v).abs() < 1e-6,
+                        "{node} at {} K: {got} vs {v}",
+                        point.temperature
+                    );
+                }
+                let current = |r: &SimulationResult| r.component("D1").unwrap().current_through;
+                let (got, want) = (current(&point.result), current(&op));
+                assert!((got - want).abs() <= 1e-6 * want.abs(), "{got} vs {want}");
+                if extras {
+                    let il = point.result.branch_current("L1").unwrap();
+                    assert!((il - want).abs() <= 1e-6 * want.abs(), "i(L1) {il}");
+                }
+            }
+        }
     }
 }

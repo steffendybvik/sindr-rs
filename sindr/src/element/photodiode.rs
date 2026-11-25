@@ -39,7 +39,7 @@ impl Device for Photodiode {
 
     /// Its dark current less the photocurrent.
     fn report(&self, r: &mut Report<'_>) {
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         let dark = crate::device_params::photodiode_dark(self.temperature);
         let i_dark = sindr_devices::diode::diode_current(v, &dark);
         let responsivity = crate::device_params::photodiode(self.temperature).responsivity;

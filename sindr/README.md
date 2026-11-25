@@ -132,7 +132,7 @@ CircuitElement::CurrentSource(CurrentSource { id, nodes: [NodeId; 2], current: f
 
 `nodes[0]` is the positive terminal for voltage sources. A current source's current flows through it from `nodes[0]` to `nodes[1]`: it is drawn out of `nodes[0]` and pushed into `nodes[1]`, as SPICE's `I` does.
 
-A `Waveform` (sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
+A `Waveform` (sine, damped sine, pulse, square, triangle, PWM, PWL) on any source triggers transient analysis. See [`waveform.rs`](src/waveform.rs) for the `Waveform` enum.
 
 ### Battery
 
@@ -319,6 +319,8 @@ CircuitElement::Jfet(Jfet {
 
 A JFET's `parasitic_caps` are SPICE's gate junctions: CGS and CGD at zero bias, each `C0/(1 − v/PB)^M` at its junction voltage and continued linearly above `FC·PB`, with SPICE's defaults `PB = 1`, `M = 0.5`, `FC = 0.5`. Transient integrates their charge; AC and noise take the capacitance at the bias point.
 
+A FET's channel is symmetric. When the drain is pulled past the source (below it for NMOS and N-channel JFETs, above it for PMOS and P-channel), the device is solved in reverse mode, as SPICE does: the lower end of the channel acts as the source, so a pass gate conducts whichever end is labelled the drain, and its drain current comes out negative. A MOSFET's region is then the swapped device's, and its body, tied to the labelled source, is forward-biased against the end acting as the source, which lowers its threshold through `gamma`.
+
 A MOSFET's `body_diode` is a SPICE diode card (`DiodeModel`) from source to drain for NMOS, drain to source for PMOS. It conducts when a bridge or inductive load pulls the drain past the source with the channel off. Every analysis solves it as a `Diode` named `<id>.body`, which is where its current shows in the results; `bv` on it sets the part's avalanche voltage.
 
 `BjtKind`, `BjtRegion`, `MosfetKind`, `MosfetRegion`, `JfetKind`, `IgbtParams` and `VaractorParams` are re-exported from `sindr` directly. `BjtParasiticCaps`, `MosfetParasiticCaps` and `JfetParasiticCaps` live in `sindr::circuit`, and `MosfetParams` in `sindr_devices::mosfet`.
@@ -403,7 +405,7 @@ CircuitElement::Behavioural(Behavioural { id, nodes: [n+, n-], output: Behaviour
 
 A behavioural source's `expr` is `Expression::parse("v(a)*v(b)")?` and the like: `v(n)`, `v(n,m)`, `i(source)` (the branch current of a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source), `time`, arithmetic, comparisons, `c ? a : b` and ngspice's functions (`exp`, `tanh`, `limit`, `min`, `u`, …). `BehaviouralOutput::Voltage` holds `V(n+) − V(n-)` at the expression; `Current` drives it from `n+` to `n-`. Newton gets the exact Jacobian by automatic differentiation; AC linearises at the bias point. In JSON the expression is its text: `{"type": "behavioural", "output": "voltage", "expr": "v(a)*v(b)", …}`.
 
-`control_source` is the `id` of the voltage source whose branch current is sensed, positive from its `+` terminal through it to `-`, as in SPICE.
+`control_source` is the `id` of the voltage source whose branch current is sensed, positive from its `+` terminal through it to `-`, as in SPICE. It must name an element with a branch current (a voltage source, VCVS, CCVS, op-amp, regulator or behavioural voltage source); one that isn't in the circuit, or that has no branch current such as a resistor, is refused as `SimError::InvalidComponent` before any analysis runs.
 
 The current sources follow SPICE's `G` and `F` and sindr's own `CurrentSource`: a positive `I_out` flows through the source from `out_from` to `out_to`, so it is drawn out of `out_from` and pushed into `out_to`.
 
@@ -539,8 +541,8 @@ Every accessor returns `None` for a name the result doesn't have. Names are exac
 |--------|---------|
 | `TimestepSnapshot` | `voltage(node)`, `current(id)`, `component(id)` |
 | `TransientData` | `node_voltage_curve(node)` and `component_current_curve(id)` as `(t, value)`; `voltage_at(node, t)`, `current_at(id, t)`, interpolated |
-| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, source_magnitude)` |
-| `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°) as `(Hz, value)` |
+| `AcPoint` | `voltage(node)` (complex), `magnitude(node)`, `phase_deg(node)`, `gain_db(node, source_magnitude)`, `branch_current(id)` (complex) |
+| `AcResult` | `node_voltage_curve(node)` (complex), `magnitude_curve`, `gain_curve` (dB), `phase_curve` (°), `branch_current_curve(id)` (complex) as `(Hz, value)` |
 | `DcSweepResult`, `TempSweepResult` | `node_voltage_curve(node)`, `component_current_curve(id)` as `(sweep value, value)`; each point's `result` has the accessors above |
 
 The fields behind them stay public:
@@ -668,7 +670,7 @@ let hit = sim.run_until(10.0, &[Event::crosses("int0", 2.5, Edge::Rising)])?;
 
 ### Which engine produced a result
 
-`sindr::VERSION` (and `sindr::devices::VERSION`) is the crate's version as a string, such as `"0.3.0"`. Store it with saved results, so a rerun can tell a change in the design from a change in the engine.
+`sindr::VERSION` (and `sindr::devices::VERSION`) is the crate's version as a string, such as `"0.3.1"`. Store it with saved results, so a rerun can tell a change in the design from a change in the engine.
 
 ## AC analysis
 
@@ -805,7 +807,7 @@ println!("phase margin {:?}°, gain margin {:?} dB", lg.phase_margin_deg, lg.gai
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`T` is the return ratio, positive at low frequency for negative feedback. Each point has `gain` (complex), `gain_db()` and the phase unwrapped along the sweep, so the sweep must be dense enough that the phase moves less than 180° between points. Crossovers are refined by bisection on `T` itself, so the margins don't depend on the grid. The phase margin is the smallest over every 0 dB crossing, the gain margin the smallest over every −180° crossing; each is `None` when there is no crossing in the sweep.
+`T` is the return ratio, positive at low frequency for negative feedback. Each point has `gain` (complex), `gain_db()` and the phase unwrapped along the sweep, so the sweep must be dense enough that the phase moves less than 180° between points. Crossovers are refined by bisection on `T` itself, so the margins don't depend on the grid. The phase margin is `180° + ∠T` wrapped into (−180°, 180°], the smallest over every 0 dB crossing, the gain margin the smallest over every −180° crossing; each is `None` when there is no crossing in the sweep.
 
 ## DC sweep
 
@@ -846,7 +848,7 @@ A parsed `.dc` card gives its axes with `analysis.dc_axes()`.
 
 ## Temperature sweep
 
-Solve a circuit at a series of junction temperatures and collect `solve_circuit`'s result at each: for a circuit with capacitors, inductors or waveforms that's a transient's end state, not the DC operating point. Useful for BJT Ic vs. temperature curves and thermal characterisation.
+Solve the DC operating point at a series of junction temperatures, as `solve_op` solves it (capacitors open, inductors shorted, waveform sources at their t = 0 value), each point's Newton–Raphson starting from the previous point's solution as in `dc_sweep`. Useful for BJT Ic vs. temperature curves and thermal characterisation.
 
 ```rust,no_run
 # use sindr::*;
@@ -873,7 +875,7 @@ pub struct TempSweepResult {
 
 pub struct TempSweepPoint {
     pub temperature: f64,              // K
-    pub result:      SimulationResult, // solve_circuit's result at this temperature
+    pub result:      SimulationResult, // the operating point at this temperature (transient: None)
 }
 ```
 

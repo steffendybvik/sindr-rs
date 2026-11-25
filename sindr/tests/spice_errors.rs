@@ -375,7 +375,7 @@ fn malformed_lines_are_syntax_errors_over_the_line() {
     for (line, what) in [
         // Trailing tokens after the value or model.
         ("R2 a 0 1k 2k", "malformed `r` element"),
-        ("D2 a 0 dm extra", "malformed `d` element"),
+        ("D2 a 0 dm 1 2", "malformed `d` element"),
         ("E1 a 0 a 0 2 extra", "malformed `e` element"),
         // Too few nodes for the letter.
         ("R2 a 1k", "malformed `r` element"),
@@ -389,9 +389,13 @@ fn malformed_lines_are_syntax_errors_over_the_line() {
         ("V2 b 0 ac1", "malformed `v` element"),
         ("V2 b 0 ac {", "malformed `v` element"),
         // Waveform argument counts SPICE3 defines.
-        ("V2 b 0 PULSE(0 1 0)", "malformed `v` element"),
+        ("V2 b 0 PULSE(0)", "malformed `v` element"),
+        (
+            "V2 b 0 PULSE(0 1 0 1n 1n 1u 2u 3u)",
+            "malformed `v` element",
+        ),
         ("V2 b 0 SIN(0 1)", "malformed `v` element"),
-        ("V2 b 0 SIN(0 1 1k 0 0 7)", "malformed `v` element"),
+        ("V2 b 0 SIN(0 1 1k 0 0 7 1)", "malformed `v` element"),
         ("V2 b 0 PWL(0 1 1m)", "malformed `v` element"),
         // Directives.
         (".tran 1u", "malformed `.tran` directive"),

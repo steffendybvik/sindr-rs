@@ -138,9 +138,13 @@ pub struct LoopGainResult {
     /// Frequencies (Hz) where the unwrapped phase of `T` crosses −180°
     /// (or −540°, …), lowest first.
     pub phase_crossovers: Vec<f64>,
-    /// Phase margin (degrees): `180° + ∠T` at the gain crossover, the
-    /// smallest over all of them. `None` when `|T|` never crosses 1 in the
-    /// sweep.
+    /// Phase margin (degrees): at each gain crossover, how far `∠T` is from
+    /// −180° (or another odd multiple of 180°), positive on the stable side,
+    /// in (−180°, 180°]; the smallest over all of them. A crossover past
+    /// −540° of unwrapped phase is a margin of a few degrees either side of
+    /// zero, not one below −360°, and a crossover with a phase lead (the
+    /// low one of an AC-coupled loop) is measured to +180°. `None` when
+    /// `|T|` never crosses 1 in the sweep.
     pub phase_margin_deg: Option<f64>,
     /// Gain margin (dB): `−20·log₁₀|T|` at the phase crossover, the
     /// smallest over all of them. `None` when the phase never reaches
@@ -303,7 +307,7 @@ pub(crate) fn solve_loop_gain_with(
                 Ok(probe.at(f)?.norm().ln())
             })?;
             let phase = unwrap_near(probe.at(f)?, lo.phase_deg);
-            let pm = 180.0 + phase;
+            let pm = phase_margin(phase);
             phase_margin_deg = Some(phase_margin_deg.map_or(pm, |m| m.min(pm)));
             gain_crossovers.push(f);
         }
@@ -372,6 +376,21 @@ impl Probe<'_> {
     }
 }
 
+/// `deg` moved by whole turns into (−180°, 180°].
+fn wrap_degrees(deg: f64) -> f64 {
+    deg - ((deg - 180.0) / 360.0).ceil() * 360.0
+}
+
+/// The phase margin at a gain crossover whose unwrapped phase is `phase`:
+/// how far the phase is from the nearest −180° + k·360°, positive on the
+/// stable side. Below −180° that's `180° + phase` moved by whole turns; a
+/// phase above 0° (the low crossover of an AC-coupled loop) is measured to
+/// +180°, so a lead of 90° is a margin of 90°, not −90°.
+fn phase_margin(phase: f64) -> f64 {
+    let pm = 180.0 + phase;
+    wrap_degrees(if pm > 180.0 { 360.0 - pm } else { pm })
+}
+
 /// The phase of `z` (degrees), the one of its branches nearest `near`.
 fn unwrap_near(z: Complex64, near: f64) -> f64 {
     let phase = z.arg().to_degrees();
@@ -412,4 +431,46 @@ fn bisect(
     } else {
         0.5 * (lo + hi)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{phase_margin, wrap_degrees};
+
+    #[test]
+    fn phase_margin_measures_to_the_nearest_odd_half_turn() {
+        for (phase, want) in [
+            (-90.0, 90.0),
+            (-135.0, 45.0),
+            (-200.0, -20.0),
+            // A phase lead at the low crossover of an AC-coupled loop.
+            (90.0, 90.0),
+            (170.0, 10.0),
+            (200.0, -20.0),
+            // Past −540° of unwrapped phase.
+            (-591.6, -51.6),
+            (-360.0, 180.0),
+        ] {
+            let got = phase_margin(phase);
+            assert!((got - want).abs() < 1e-9, "{phase}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn wrap_degrees_lands_in_the_half_open_turn() {
+        for (deg, want) in [
+            (0.0, 0.0),
+            (180.0, 180.0),
+            (-180.0, 180.0),
+            (-20.0, -20.0),
+            // 180° + a crossover phase of −560°.
+            (-380.0, -20.0),
+            (-560.0 + 180.0 - 360.0, -20.0),
+            (540.0, 180.0),
+            (190.0, -170.0),
+        ] {
+            let got = wrap_degrees(deg);
+            assert!((got - want).abs() < 1e-12, "{deg}: {got} vs {want}");
+        }
+    }
 }

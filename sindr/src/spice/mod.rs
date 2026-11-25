@@ -23,6 +23,12 @@
 //! [`ParsedNetlist::options`]; [`ParsedNetlist::solver`] runs the deck's
 //! analyses with them.
 //!
+//! A node name runs to the next separator (whitespace, `=`, `(`, `)` or
+//! `,`), as in ngspice, so a schematic exporter's `/in` and
+//! `Net-_R1-Pad2_` read as written. A comment is a `*` line, or runs from
+//! `;`, or from a `$` at the start of a line or after whitespace or a
+//! comma, to the end of the line; the commas before that `$` go with it.
+//!
 //! The module is the `spice` feature, on by default like every feature.
 //! A build that turns the defaults off (`default-features = false`) keeps
 //! it by listing it: `features = ["spice"]`.
@@ -214,14 +220,40 @@
 //! Numbers take SPICE's case-insensitive suffixes: `t` (1e12), `g` (1e9),
 //! `meg` (1e6), `k` (1e3), `m` (1e-3), `mil` (25.4e-6), `u` (1e-6),
 //! `n` (1e-9), `p` (1e-12), `f` (1e-15) and `a` (1e-18). Letters after the
-//! suffix are ignored, so `4.7uF` is 4.7e-6. `{…}` expressions may nest
-//! at most 256 levels deep. A value that evaluates to NaN or ±∞ (`1e400`,
+//! suffix are ignored, so `4.7uF` is 4.7e-6. In a `{…}` expression `^`
+//! (or `**`) binds tighter than a leading unary minus (first in the
+//! expression or after `(`), so `{-2^2}` is −4 and `{2^-2}` is 0.25, but a
+//! minus right after another operator negates its operand first, so
+//! `{2*-3^2}` is 18 and `{1 - -3^2}` is −8, as in ngspice 47's `.param`.
+//! `B` sources differ, in ngspice and in sindr alike: every unary minus
+//! there is looser than `^`, so `V=2*-3^2` is −18. sindr's `^` is
+//! right-associative, unlike ngspice's: `{2^3^2}` is 512 (ngspice 64), and
+//! `{2^-3^2}` is 2^−9 (ngspice (2^−3)^2).
+//! Expressions may nest at most 256 levels deep. A value that evaluates to NaN or ±∞ (`1e400`,
 //! `{1/0}`) is an error at its line.
 //!
 //! Analysis cards are checked as they are read: a `.dc` must sweep one or
 //! two different voltage or current sources the deck defines, each with a
 //! non-zero step that moves from start towards stop; an `.ac` needs `fstart <= fstop`, and
 //! `fstart > 0` for `dec`/`oct`.
+//!
+//! # Instance parameters
+//!
+//! R, L and C lines take ngspice's `m` (parallel copies: R and L divided
+//! by it, C multiplied), `scale`, and `tc1` and `tc2`, which scale the
+//! value by `1 + tc1·ΔT + tc2·ΔT²` at the line's `temp` (°C, ΔT from
+//! 27 °C) or `dtemp` (ΔT itself; ignored beside `temp`). The value is fixed
+//! when the deck is read, so a resistor's noise stays at 27 °C. `IC=` on a
+//! C or L line sets where a `uic` transient starts
+//! ([`ParsedNetlist::uic_voltages`], [`ParsedNetlist::uic_currents`]); a
+//! capacitor's needs one end at ground, and a coupled `L` takes none.
+//!
+//! A D line's area (`D1 a k dmod 2`, or `area=`) and `m` multiply `IS`,
+//! `CJO` and `IBV` and divide `RS`, and its `temp` or `dtemp` sets the
+//! junction temperature. `pj` only scales sidewall parameters sindr's
+//! diode doesn't have, so it's dropped. `OFF`, a diode's `IC=` and any
+//! other instance parameter or flag on these lines are errors in strict
+//! mode and warnings in lenient mode, naming them.
 //!
 //! # Strictness and warnings
 //!
@@ -244,6 +276,13 @@
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! A `.control` … `.endc` block is ngspice's script, not netlist, so it's
+//! skipped in either mode (with one warning in lenient mode): run the
+//! deck's [`analyses`](ParsedNetlist::analyses) instead. The deck ends at
+//! its `.end`, as the ngspice manual has it; nothing after it is read
+//! (ngspice 47 itself reads on). An included file's `.end` is skipped and
+//! the rest of that file is read, as in ngspice.
 //!
 //! # Diagnostics
 //!
@@ -346,6 +385,16 @@ pub struct ParsedNetlist {
     /// those inside `.subckt` bodies included under their flattened ids.
     /// [`Self::ac_config`] drives `.ac` from them.
     pub ac_stimuli: Vec<AcStimulus>,
+    /// `IC=` on `C` lines with one end at ground, as the voltage (V) of
+    /// the other end, keyed by flattened node name. ngspice applies them
+    /// only with `uic`, and so does [`Self::transient_config`], over the
+    /// deck's `.ic` values.
+    pub uic_voltages: HashMap<String, f64>,
+    /// `IC=` on `L` lines (A), keyed by flattened inductor id, flowing from
+    /// the line's first node to its second. Like [`Self::uic_voltages`],
+    /// [`Self::transient_config`] applies them only with `uic`, as
+    /// [`initial_currents`](crate::TransientConfig::initial_currents).
+    pub uic_currents: HashMap<String, f64>,
     /// Non-fatal warnings collected in lenient mode. Always empty when
     /// [`ParseOptions::strict`] is `true`.
     pub warnings: Vec<ParseWarning>,
@@ -378,9 +427,10 @@ impl ParsedNetlist {
     /// `.tran`, with its `.ic` cards as
     /// [`initial_voltages`](crate::TransientConfig::initial_voltages), so
     /// the run starts as ngspice's does: from the operating point with the
-    /// `.ic` nodes held, or with `uic` from the `.ic` values alone. `None`
-    /// without a `.tran`. See [`AnalysisRequest::transient_config`] for the
-    /// rest of the card.
+    /// `.ic` nodes held, or with `uic` from the `.ic` values alone. With
+    /// `uic`, `IC=` on C and L lines ([`Self::uic_voltages`],
+    /// [`Self::uic_currents`]) applies too. `None` without a `.tran`. See
+    /// [`AnalysisRequest::transient_config`] for the rest of the card.
     ///
     /// ```
     /// use sindr::spice::parse_str;
@@ -400,7 +450,14 @@ impl ParsedNetlist {
         self.analyses
             .iter()
             .find_map(AnalysisRequest::transient_config)
-            .map(|config| config.with_initial_voltages(self.initial_conditions.clone()))
+            .map(|mut config| {
+                let mut voltages = self.initial_conditions.clone();
+                if config.start == crate::TransientStart::InitialConditions {
+                    voltages.extend(self.uic_voltages.clone());
+                    config.initial_currents.clone_from(&self.uic_currents);
+                }
+                config.with_initial_voltages(voltages)
+            })
     }
 
     /// The [`AcConfig`](crate::ac_analysis::AcConfig) for the deck's first

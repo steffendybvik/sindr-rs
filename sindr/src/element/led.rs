@@ -10,7 +10,7 @@ use crate::noise::NoiseSources;
 use crate::ratings::{RatingKind, RatingProbe};
 
 #[cfg(feature = "spice")]
-use crate::spice::export::{nominal, shockley, Deck, ExportError};
+use crate::spice::export::{shockley, Deck, ExportError};
 
 /// LED. `nodes: [anode, cathode]`. Forward voltage drop depends on
 /// `color` (e.g. `"red"` ≈ 1.8 V, `"blue"` ≈ 3.2 V).
@@ -41,7 +41,7 @@ impl Device for Led {
 
     fn report(&self, r: &mut Report<'_>) {
         let params = crate::device_params::led(&self.color, self.temperature);
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         r.port(&self.id, v, sindr_devices::diode::diode_current(v, &params));
     }
 
@@ -93,11 +93,15 @@ impl Device for Led {
 
     #[cfg(feature = "spice")]
     fn write_spice(&self, deck: &mut Deck<'_>, name: &str) -> Result<(), ExportError> {
-        nominal(&self.id, self.temperature)?;
-        let model = shockley(crate::device_params::led(
+        let mut model = shockley(crate::device_params::led(
             &self.color,
             sindr_devices::diode::T_NOM,
         ));
-        deck.diode(&self.id, name, &self.nodes, model)
+        // Away from 27 °C the card carries the colour's EG, which its IS
+        // scales with; at 27 °C it reads as it always has.
+        if (self.temperature - sindr_devices::diode::T_NOM).abs() > 1e-6 {
+            model.eg = crate::device_params::led_color_eg(&self.color);
+        }
+        deck.diode(&self.id, name, &self.nodes, model, self.temperature)
     }
 }

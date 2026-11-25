@@ -59,9 +59,9 @@ impl Device for Mosfet {
     /// Its drain: `Vds`, `Id` and the dissipation, and after a DC solve
     /// `Vgs` and the operating region.
     fn report(&self, r: &mut Report<'_>) {
-        let vg = r.v(&self.nodes[0]);
-        let vd = r.v(&self.nodes[1]);
-        let vs = r.v(&self.nodes[2]);
+        let vg = r.v(0);
+        let vd = r.v(1);
+        let vs = r.v(2);
         let comp = crate::device_params::mosfet_op(self.kind, &self.params, vg, vd, vs);
         let id_current = match self.kind {
             MosfetKind::Nmos => comp.id,
@@ -259,7 +259,13 @@ impl Device for Mosfet {
                 MosfetKind::Nmos => (s, d),
                 MosfetKind::Pmos => (d, s),
             };
-            deck.diode(id, &diode_name, &[anode, cathode], diode)?;
+            deck.diode(
+                id,
+                &diode_name,
+                &[anode, cathode],
+                diode,
+                sindr_devices::diode::T_NOM,
+            )?;
         }
         Ok(())
     }

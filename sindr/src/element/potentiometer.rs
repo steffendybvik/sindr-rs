@@ -33,7 +33,7 @@ impl Device for Potentiometer {
 
     /// The voltage across the whole track, end to end; no current.
     fn report(&self, r: &mut Report<'_>) {
-        let v = r.across(&self.nodes[0], &self.nodes[2]);
+        let v = r.across(0, 2);
         r.component(&self.id, v, 0.0, 0.0);
     }
 

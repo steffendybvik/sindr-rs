@@ -1,0 +1,12 @@
+* corner library: each corner pulls in the shared models section
+.lib tt
+.lib "corner_lib.cir" mos
+Rtt a 0 1k
+.endl
+.lib ff
+.lib "corner_lib.cir" mos
+Rff a 0 1
+.endl
+.lib mos
+.model nch nmos (vto=0.7 kp=1e-4)
+.endl

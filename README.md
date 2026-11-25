@@ -82,7 +82,7 @@ Each analysis but `.tf` is checked against [ngspice](https://ngspice.sourceforge
 | Analysis | Cases | Worst relative error | Worst other |
 |---|---|---|---|
 | Operating point | 22 | 7e-6 | — |
-| DC sweep | 9 | 4e-5 | — |
+| DC sweep | 10 | 4e-5 | — |
 | Temperature sweep | 4 | 8e-7 | — |
 | AC | 15 | 3e-6 | 1e-4° phase |
 | Diode charge (AC) | 2 | 2e-4 | — |
@@ -177,7 +177,7 @@ cargo run --example parse_netlist
 
 ## Status
 
-`0.3.0`, [published on crates.io](https://crates.io/crates/sindr). Until 1.0, a breaking change bumps the minor version (`0.4.0`) and anything else the patch (`0.3.1`), so `sindr = "0.3"` never breaks on `cargo update`. The road to 1.0 is in [`ROADMAP.md`](./ROADMAP.md).
+`0.3.1`, [published on crates.io](https://crates.io/crates/sindr). Until 1.0, a breaking change bumps the minor version (`0.4.0`) and anything else the patch (`0.3.2`), so `sindr = "0.3"` never breaks on `cargo update`. The road to 1.0 is in [`ROADMAP.md`](./ROADMAP.md).
 
 ## Scope & limitations
 

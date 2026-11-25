@@ -47,7 +47,7 @@ impl Device for Battery {
             return;
         }
         let (g, i_hist) = crate::battery_state::dc_norton(&self.params, self.state_of_charge);
-        let v = r.across(&self.nodes[0], &self.nodes[1]);
+        let v = r.across(0, 1);
         r.port(&self.id, v, g * v + i_hist);
         r.state_of_charge(&self.id, self.state_of_charge);
     }

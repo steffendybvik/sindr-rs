@@ -47,7 +47,8 @@ pub enum Waveform {
         rise_time: f64, // rise time (s)
         /// Fall time from `v2` back to `v1` (s).
         fall_time: f64, // fall time (s)
-        /// Width of the high portion of the pulse (s).
+        /// Width of the high portion of the pulse (s). Infinite means the
+        /// pulse doesn't fall.
         pulse_width: f64, // pulse width (s)
         /// Repetition period (s). Zero, negative or non-finite means a
         /// single pulse, as SPICE reads a zero period.
@@ -106,6 +107,30 @@ pub enum Waveform {
         /// value is V or A, matching the source it drives.
         points: Vec<(f64, f64)>,
     },
+
+    /// SPICE's `SIN(vo va freq td theta phase)`: a sine that starts at
+    /// `delay` and decays at `damping`. Until `delay` it holds
+    /// `offset + amplitude·sin(phase)`; from then on it is
+    /// `offset + amplitude·e^(−damping·(t − delay))·sin(2π·frequency·(t − delay) + phase)`.
+    #[cfg_attr(feature = "serde", serde(rename = "damped_sine"))]
+    DampedSine {
+        /// Peak amplitude at `delay` (V or A).
+        amplitude: f64,
+        /// Frequency (Hz).
+        frequency: f64,
+        /// DC offset added to the sine (V or A). Default 0.
+        #[cfg_attr(feature = "serde", serde(default))]
+        offset: f64,
+        /// Time the sine starts (s). Default 0.
+        #[cfg_attr(feature = "serde", serde(default))]
+        delay: f64,
+        /// Decay rate of the amplitude (1/s), SPICE's `theta`. Default 0.
+        #[cfg_attr(feature = "serde", serde(default))]
+        damping: f64,
+        /// Phase at `delay` (radians). Default 0.
+        #[cfg_attr(feature = "serde", serde(default))]
+        phase: f64,
+    },
 }
 
 /// Most breakpoints [`Waveform::breakpoints`] returns.
@@ -127,6 +152,21 @@ impl Waveform {
                 offset,
                 phase,
             } => offset + amplitude * (2.0 * PI * frequency * t + phase).sin(),
+
+            Waveform::DampedSine {
+                amplitude,
+                frequency,
+                offset,
+                delay,
+                damping,
+                phase,
+            } => {
+                if t < *delay {
+                    return offset + amplitude * phase.sin();
+                }
+                let t = t - delay;
+                offset + amplitude * (-damping * t).exp() * (2.0 * PI * frequency * t + phase).sin()
+            }
 
             Waveform::Pulse {
                 v1,
@@ -246,8 +286,8 @@ impl Waveform {
     }
 
     /// Times in `(0, t_end)` (s) where this waveform has a corner or a jump:
-    /// pulse edges, square/PWM transitions, triangle peaks, PWL points. A sine
-    /// has none. Sorted; at most [`MAX_BREAKPOINTS`] of them.
+    /// pulse edges, square/PWM transitions, triangle peaks, PWL points, a
+    /// damped sine's start. A plain sine has none. Sorted; at most [`MAX_BREAKPOINTS`] of them.
     ///
     /// The transient stepper lands a step exactly on each one, so a fast
     /// edge between two steps isn't stepped over.
@@ -298,6 +338,7 @@ impl Waveform {
         };
         match self {
             Waveform::Sine { .. } => {}
+            Waveform::DampedSine { delay, .. } => out.push(*delay),
             Waveform::Pulse {
                 delay,
                 rise_time,
@@ -333,7 +374,7 @@ impl Waveform {
     /// frequency that isn't positive.
     pub fn period(&self) -> Option<f64> {
         match self {
-            Waveform::Sine { frequency, .. } => {
+            Waveform::Sine { frequency, .. } | Waveform::DampedSine { frequency, .. } => {
                 if *frequency > 0.0 {
                     Some(1.0 / frequency)
                 } else {
@@ -624,6 +665,34 @@ mod tests {
         assert_relative_eq!(pulse.period().unwrap(), 2e-3, epsilon = 1e-15);
     }
 
+    /// SPICE's SIN: held at `vo + va·sin(φ)` until `td`, then a sine that
+    /// starts there with phase `φ` and decays at `θ`.
+    #[test]
+    fn damped_sine_follows_spice_sin() {
+        let (vo, va, f, td, theta, phi) = (0.5, 1.0, 1e3, 0.25e-3, 200.0, PI / 6.0);
+        let w = Waveform::DampedSine {
+            amplitude: va,
+            frequency: f,
+            offset: vo,
+            delay: td,
+            damping: theta,
+            phase: phi,
+        };
+        for t in [0.0, 0.1e-3, 0.25e-3] {
+            assert_relative_eq!(w.evaluate(t), 1.0, epsilon = 1e-12);
+        }
+        let spice =
+            |t: f64| vo + va * (-theta * (t - td)).exp() * (2.0 * PI * f * (t - td) + phi).sin();
+        for t in [0.3e-3, 0.5e-3, 0.8e-3, 2.0e-3] {
+            assert_relative_eq!(w.evaluate(t), spice(t), epsilon = 1e-12);
+        }
+        // ngspice 47 on `SIN(0.5 1 1k 0.25m 200 30)`.
+        assert_relative_eq!(w.evaluate(0.5e-3), 1.32379, epsilon = 1e-5);
+        assert_relative_eq!(w.evaluate(0.8e-3), -0.165732, epsilon = 1e-5);
+        assert_eq!(w.breakpoints(1e-3), vec![td]);
+        assert!(w.breakpoints(0.2e-3).is_empty());
+    }
+
     #[test]
     fn pwl_returns_an_interior_breakpoint_exactly() {
         let w = Waveform::Pwl {
@@ -660,6 +729,14 @@ mod tests {
                     offset: 0.0,
                     phase: 0.0,
                 },
+                Waveform::DampedSine {
+                    amplitude: 1.0,
+                    frequency,
+                    offset: 0.0,
+                    delay: 1e-3,
+                    damping: 10.0,
+                    phase: 0.0,
+                },
             ]
         };
         for w in kinds(250.0) {
@@ -683,6 +760,26 @@ mod tests {
                 frequency: 1000.0,
                 offset: 0.0,
                 duty: 0.5,
+            }
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn damped_sine_fields_default_to_zero_in_json() {
+        let w: Waveform = serde_json::from_str(
+            r#"{"type":"damped_sine","amplitude":1.0,"frequency":1000.0,"delay":1e-3}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            w,
+            Waveform::DampedSine {
+                amplitude: 1.0,
+                frequency: 1000.0,
+                offset: 0.0,
+                delay: 1e-3,
+                damping: 0.0,
+                phase: 0.0,
             }
         );
     }

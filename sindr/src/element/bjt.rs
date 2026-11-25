@@ -61,9 +61,9 @@ impl Device for Bjt {
     /// Its collector: `Vce`, `Ic` and the collector dissipation, and after
     /// a DC solve every terminal's values and the operating region.
     fn report(&self, r: &mut Report<'_>) {
-        let vb = r.v(&self.nodes[0]);
-        let vc = r.v(&self.nodes[1]);
-        let ve = r.v(&self.nodes[2]);
+        let vb = r.v(0);
+        let vc = r.v(1);
+        let ve = r.v(2);
         let sign = match self.kind {
             BjtKind::Npn => 1.0,
             BjtKind::Pnp => -1.0,

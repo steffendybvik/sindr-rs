@@ -5,8 +5,8 @@
 
 use sindr::ac_analysis::{solve_ac, AcConfig};
 use sindr::element::{
-    Capacitor, CurrentSource, Inductor, OpAmp, Resistor, Transformer, Vccs, VoltageSource,
-    ZenerDiode,
+    Capacitor, Cccs, Ccvs, CurrentSource, Inductor, OpAmp, Resistor, Transformer, Vccs,
+    VoltageSource, ZenerDiode,
 };
 use sindr::DcSweepAxis;
 use sindr::{
@@ -349,6 +349,75 @@ fn controlled_source_gain_that_is_not_finite() {
     every_analysis_fails(&circuit, expect_invalid_component("G1", "gm"));
 }
 
+/// A CCCS and a CCVS driving `b`, each reading the current of `control`.
+fn current_controlled(control: &str) -> [Circuit; 2] {
+    let cccs = CircuitElement::Cccs(Cccs {
+        id: "F1".into(),
+        nodes: ["0".into(), "b".into()],
+        control_source: control.into(),
+        alpha: 2.0,
+    });
+    let ccvs = CircuitElement::Ccvs(Ccvs {
+        id: "H1".into(),
+        nodes: ["b".into(), "0".into()],
+        control_source: control.into(),
+        rm: 1e3,
+    });
+    [cccs, ccvs].map(|source| {
+        Circuit::new(
+            "0",
+            vec![
+                v("V1", "a", "0", 1.0),
+                r("R1", "a", "0", 1e3),
+                r("R2", "b", "0", 1e3),
+                source,
+            ],
+        )
+    })
+}
+
+/// A control source that isn't there used to solve as zero output.
+#[test]
+fn current_controlled_source_with_a_missing_control() {
+    for (circuit, id) in current_controlled("V9").iter().zip(["F1", "H1"]) {
+        every_analysis_fails(circuit, |analysis, err| match err {
+            SimError::InvalidComponent { id: got, reason } => {
+                assert_eq!(got, id, "{analysis}");
+                assert!(reason.starts_with("control_source"), "{reason}");
+                assert!(reason.contains("`V9` isn't in the circuit"), "{reason}");
+            }
+            other => panic!("{analysis}: expected InvalidComponent, got {other:?}"),
+        });
+    }
+}
+
+/// A resistor has no branch row, so there's no current to read from it.
+#[test]
+fn current_controlled_source_reading_a_resistor() {
+    for (circuit, id) in current_controlled("R1").iter().zip(["F1", "H1"]) {
+        every_analysis_fails(circuit, |analysis, err| match err {
+            SimError::InvalidComponent { id: got, reason } => {
+                assert_eq!(got, id, "{analysis}");
+                assert!(reason.starts_with("control_source"), "{reason}");
+                assert!(reason.contains("`R1` has no branch current"), "{reason}");
+            }
+            other => panic!("{analysis}: expected InvalidComponent, got {other:?}"),
+        });
+    }
+}
+
+/// With its control a voltage source, each solves. V1's branch current
+/// is -1 mA (SPICE's sign: into its + terminal), so F1 pushes -2 mA into
+/// `b` through R2 and H1 holds `b` at -1 V.
+#[test]
+fn current_controlled_source_reading_a_voltage_source() {
+    for (circuit, want) in current_controlled("V1").iter().zip([-2.0, -1.0]) {
+        validate_circuit(circuit).expect("V1 has a branch current");
+        let vb = solve_circuit(circuit).expect("solves").node_voltages["b"];
+        assert!((vb - want).abs() < 1e-9, "v(b) = {vb}, want {want}");
+    }
+}
+
 #[test]
 fn transformer_inductance_that_is_zero() {
     let circuit = Circuit::new(
@@ -401,6 +470,31 @@ fn zener_without_a_breakdown_voltage_is_rejected() {
             }
             other => panic!("{analysis}: expected InvalidComponent, got {other:?}"),
         });
+    }
+}
+
+/// A zener's temperature is checked on the zener itself, when the circuit
+/// is validated, and on the diode it is lowered to, when it is solved:
+/// both name the zener.
+#[test]
+fn zener_temperature_that_is_not_positive() {
+    for temperature in [0.0, -10.0, f64::NAN] {
+        let circuit = Circuit::new(
+            "0",
+            vec![
+                v("V1", "in", "0", 12.0),
+                r("R1", "in", "k", 1e3),
+                CircuitElement::ZenerDiode(ZenerDiode {
+                    id: "DZ1".into(),
+                    nodes: ["0".into(), "k".into()],
+                    vz: 5.1,
+                    temperature,
+                }),
+            ],
+        );
+        let check = expect_invalid_component("DZ1", "temperature");
+        check("validate", validate_circuit(&circuit).unwrap_err());
+        every_analysis_fails(&circuit, &check);
     }
 }
 

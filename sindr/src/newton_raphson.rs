@@ -7,7 +7,7 @@
 
 use crate::element::{
     Behavioural, Bjt, Comparator, CurrentSource, Diode, Igbt, Led, Mosfet, OpAmp, Photodiode,
-    Resistor, SchottkyDiode, SwitchingRegulator, VoltageRegulator, VoltageSource, ZenerDiode,
+    SchottkyDiode, SwitchingRegulator, VoltageRegulator, VoltageSource, ZenerDiode,
 };
 use nalgebra::DVector;
 
@@ -295,12 +295,14 @@ fn nr_inner(
             }
         }
     }
+    let layout = Layout::new(circuit);
+    let terminals = Terminals::new(circuit, node_map);
     let size = num_nodes + num_vsources;
     let mut v_prev = match v_init {
         Some(v) => v.clone(),
         None => {
             let mut v = DVector::zeros(size);
-            init_bjt_voltages(circuit, node_map, &mut v);
+            init_bjt_voltages(circuit, node_map, (&layout, &terminals), &mut v);
             v
         }
     };
@@ -316,8 +318,6 @@ fn nr_inner(
 
     let diode_info = collect_diode_info(circuit, node_map);
     let igbt_info = collect_igbt_info(circuit, node_map);
-    let layout = Layout::new(circuit);
-    let terminals = Terminals::new(circuit, node_map);
     let debug_nr = std::env::var("DEBUG_NR").is_ok();
     let mut last_step = (f64::INFINITY, None);
     // The iterate `v_prev` stepped from, to shorten a step that lands where
@@ -327,8 +327,10 @@ fn nr_inner(
     let mut overflow: Option<SimError> = None;
     let mut recent: Option<SimError> = None;
     let mut halvings = 0;
+    // One system, cleared for each iteration: no matrix to allocate.
+    let mut system = MnaSystem::new(num_nodes, num_vsources);
     for _iteration in 0..opts.max_iterations {
-        let mut system = MnaSystem::new(num_nodes, num_vsources);
+        system.clear();
         let stamped = if v_base.is_none() {
             stamp_first(
                 circuit,
@@ -336,7 +338,6 @@ fn nr_inner(
                 node_map,
                 (&layout, &terminals),
                 &v_prev,
-                (num_nodes, num_vsources),
             )
         } else {
             stamp::stamp_circuit_with(
@@ -443,7 +444,6 @@ fn stamp_first(
     node_map: &NodeMap,
     (layout, terminals): (&Layout, &Terminals),
     v: &DVector<f64>,
-    (num_nodes, num_vsources): (usize, usize),
 ) -> Result<(), SimError> {
     let mut off: Option<Circuit> = None;
     loop {
@@ -459,7 +459,7 @@ fn stamp_first(
             Err(SimError::NotFinite { component, .. })
                 if switch_off(off.get_or_insert_with(|| circuit.clone()), &component) =>
             {
-                *system = MnaSystem::new(num_nodes, num_vsources);
+                system.clear();
             }
             other => return other,
         }
@@ -808,8 +808,12 @@ pub(crate) fn apply_voltage_limiting(
         // The standard SPICE limiter only clamps forward-bias overshoots.
         // In saturation transitions, a junction voltage can swing far negative
         // (e.g., B-E goes from 0.7V to -0.3V), turning off the junction and
-        // destabilizing the solver. Clamp the step to prevent this.
-        if info.is_bjt {
+        // destabilizing the solver. Clamp the step to prevent this. A
+        // reverse-biased junction moving toward zero and staying reverse
+        // biased has no exponential to overshoot: clamping it there walks a
+        // collector that starts at its rail down 0.26 V an iteration.
+        let toward_zero_in_reverse = v_d_old < v_d_limited && v_d_limited <= 0.0;
+        if info.is_bjt && !toward_zero_in_reverse {
             let max_step = 10.0 * info.n * info.vt; // ~0.26V
             let step = v_d_limited - v_d_old;
             if step.abs() > max_step {
@@ -1061,7 +1065,12 @@ pub(crate) fn convergence_failed(
 ///
 /// This dramatically improves convergence for saturation and PNP circuits
 /// by starting the NR iteration near the physical solution.
-fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector<f64>) {
+fn init_bjt_voltages(
+    circuit: &Circuit,
+    node_map: &NodeMap,
+    (layout, terminals): (&Layout, &Terminals),
+    v_prev: &mut DVector<f64>,
+) {
     const VBE_GUESS: f64 = 0.65;
 
     let has_nonlinear = circuit.components.iter().any(|c| {
@@ -1078,41 +1087,23 @@ fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector
         return;
     }
 
-    // Step 1: Solve the linear subcircuit to get baseline node voltages.
-    // This gives us the supply rail voltages and resistor divider biases.
+    // Step 1: Solve the circuit with its nonlinear devices left out (no
+    // `v_prev`) to get the supply rails and resistor divider biases. Every
+    // linear element stamps, with the branch rows the solve itself uses, so
+    // a VCVS, op-amp or regulator doesn't leave an empty row that makes
+    // this solve singular.
     let num_nodes = node_map.num_nodes();
-    let num_vsources = circuit.count_voltage_sources();
-    let mut system = MnaSystem::new(num_nodes, num_vsources);
-
-    // Stamp only linear components (skip nonlinear ones)
-    let mut vsource_index: usize = 0;
-    for component in &circuit.components {
-        match component {
-            CircuitElement::Resistor(Resistor {
-                nodes, resistance, ..
-            }) if *resistance > 0.0 => {
-                stamp::stamp_resistor(&mut system, node_map, nodes, *resistance);
-            }
-            CircuitElement::VoltageSource(VoltageSource { nodes, voltage, .. }) => {
-                let branch = num_nodes + vsource_index;
-                stamp::stamp_voltage_source(&mut system, node_map, nodes, *voltage, branch);
-                vsource_index += 1;
-            }
-            CircuitElement::CurrentSource(CurrentSource { nodes, current, .. }) => {
-                stamp::stamp_current_source(&mut system, node_map, nodes, *current);
-            }
-            _ => {} // Skip BJTs, diodes, etc.
-        }
-    }
-
-    // Add Gmin shunts to prevent singularity for floating BJT nodes
-    add_gmin_shunts(&mut system, num_nodes);
-
-    if let Ok(linear_solution) = system.solve() {
-        // Copy the linear solution as our initial guess
-        for i in 0..v_prev.len().min(linear_solution.len()) {
-            v_prev[i] = linear_solution[i];
-        }
+    let mut system = MnaSystem::new(num_nodes, v_prev.len() - num_nodes);
+    let linear = stamp::stamp_circuit_with(circuit, &mut system, node_map, layout, terminals, None)
+        .and_then(|()| {
+            // Gmin shunts keep a node only nonlinear devices reach from floating.
+            add_gmin_shunts(&mut system, num_nodes);
+            system.solve()
+        });
+    // No guess (a behavioural source not finite at 0 V, say) leaves the
+    // all-zero start.
+    if let Ok(linear_solution) = linear {
+        v_prev.copy_from(&linear_solution);
     }
 
     // Step 2: Adjust base voltages for BJT Vbe guess
@@ -1181,6 +1172,7 @@ fn init_bjt_voltages(circuit: &Circuit, node_map: &NodeMap, v_prev: &mut DVector
 mod tests {
     use super::*;
     use crate::circuit::CircuitElement;
+    use crate::element::Resistor;
 
     fn diode_resistor_circuit(vsource: f64) -> Circuit {
         Circuit {
@@ -1206,6 +1198,140 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// A divider-biased NPN common-emitter stage on a 12 V rail, its
+    /// collector buffered by a VCVS into a load. The VCVS's branch row has
+    /// nothing in it unless the starting guess stamps it.
+    fn biased_npn_with_buffer() -> Circuit {
+        let r = |id: &str, a: &str, b: &str, resistance: f64| {
+            CircuitElement::Resistor(Resistor {
+                id: id.into(),
+                nodes: [a.into(), b.into()],
+                resistance,
+            })
+        };
+        Circuit::new(
+            "0",
+            vec![
+                CircuitElement::VoltageSource(VoltageSource {
+                    id: "V1".into(),
+                    nodes: ["vcc".into(), "0".into()],
+                    voltage: 12.0,
+                    waveform: None,
+                }),
+                r("R1", "vcc", "b", 47e3),
+                r("R2", "b", "0", 10e3),
+                r("RC", "vcc", "c", 4.7e3),
+                r("RE", "e", "0", 1e3),
+                CircuitElement::Bjt(Bjt {
+                    id: "Q1".into(),
+                    nodes: ["b".into(), "c".into(), "e".into()],
+                    kind: BjtKind::Npn,
+                    bf: 100.0,
+                    temperature: 300.15,
+                    parasitic_caps: None,
+                    model: None,
+                }),
+                CircuitElement::Vcvs(crate::element::Vcvs {
+                    id: "E1".into(),
+                    nodes: ["out".into(), "0".into()],
+                    control_nodes: ["c".into(), "0".into()],
+                    gain: 1.0,
+                }),
+                r("RL", "out", "0", 10e3),
+            ],
+        )
+    }
+
+    /// The first guess solves every linear element, VCVS included, with
+    /// the BJT left out: the rail at its source value, the buffer's output
+    /// following the collector, and each branch current in its own row.
+    #[test]
+    fn starting_guess_solves_the_linear_elements() {
+        let circuit = biased_npn_with_buffer();
+        let node_map = NodeMap::from_circuit(&circuit);
+        let layout = Layout::new(&circuit);
+        let n = node_map.num_nodes();
+        let mut v = DVector::zeros(n + circuit.count_voltage_sources());
+        init_bjt_voltages(
+            &circuit,
+            &node_map,
+            (&layout, &Terminals::new(&circuit, &node_map)),
+            &mut v,
+        );
+        let at = |node: &str| v[node_map.index(node).unwrap()];
+        assert!((at("vcc") - 12.0).abs() < 1e-12, "vcc {}", at("vcc"));
+        // The BJT is open, so only gmin pulls the collector off the rail.
+        assert!((at("c") - 12.0).abs() < 1e-6, "c {}", at("c"));
+        assert_eq!(at("out"), at("c"));
+        // The base is nudged to one Vbe over the emitter.
+        assert!((at("b") - at("e") - 0.65).abs() < 1e-12);
+        // V1 feeds the divider (12 V / 57 kΩ), E1 the load (12 V / 10 kΩ).
+        let v1 = v[n + layout.branch(0)];
+        let e1 = v[n + layout.branch(6)];
+        assert!((v1 + 12.0 / 57e3).abs() < 1e-9, "i(V1) {v1}");
+        assert!((e1 + 12.0 / 10e3).abs() < 1e-9, "i(E1) {e1}");
+    }
+
+    /// With the rail and buffer in its first guess, the stage settles in a
+    /// handful of iterations, buffered or not; it took 21 and 31.
+    #[test]
+    fn biased_npn_settles_quickly_with_or_without_a_buffer() {
+        let buffered = biased_npn_with_buffer();
+        let mut plain = buffered.clone();
+        plain.components.truncate(6);
+        let opts = SolverOptions {
+            max_iterations: 6,
+            ..SolverOptions::default()
+        };
+        for circuit in [&buffered, &plain] {
+            let node_map = NodeMap::from_circuit(circuit);
+            let n = node_map.num_nodes();
+            let (result, _) = nr_inner(
+                circuit,
+                &node_map,
+                n,
+                circuit.count_voltage_sources(),
+                None,
+                None,
+                0.0,
+                &opts,
+            )
+            .expect("converges in 6 iterations");
+            let reference = crate::solve_circuit(circuit).unwrap();
+            for (node, v) in &reference.node_voltages {
+                assert!((result.node_voltages[node] - v).abs() < 1e-6, "{node}");
+            }
+        }
+    }
+
+    /// A reverse-biased junction moving toward zero has no exponential to
+    /// overshoot, so the BJT step clamp lets it go; one moving further into
+    /// reverse is still clamped (`backward_bjt_step_keeps_its_step_clamp`).
+    #[test]
+    fn reverse_bjt_junction_moves_freely_toward_zero() {
+        let n = 1.0;
+        let info = [DiodeLimitInfo {
+            anode_idx: Some(0),
+            cathode_idx: Some(1),
+            v_crit: diode::critical_voltage(1e-14, n, diode::V_T),
+            n,
+            vt: diode::V_T,
+            correction_node: Some(CorrectionTarget::Cathode),
+            is_bjt: true,
+            zener_vz: None,
+            breakdown: None,
+            held: [false; 2],
+        }];
+        // Base-collector from −11.35 V to −3.8 V: unclamped.
+        let v_prev = DVector::from_vec(vec![0.65, 12.0]);
+        let v_new = DVector::from_vec(vec![2.0, 5.8]);
+        assert_eq!(apply_voltage_limiting(&v_new, &v_prev, &info), v_new);
+        // Into forward bias it is still clamped to 10·n·V_T.
+        let v_new = DVector::from_vec(vec![2.0, 0.5]);
+        let v = apply_voltage_limiting(&v_new, &v_prev, &info);
+        assert!((v[0] - v[1] - (0.65 - 12.0 + 10.0 * n * diode::V_T)).abs() < 1e-12);
     }
 
     #[test]

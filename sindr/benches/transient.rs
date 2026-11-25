@@ -1,14 +1,17 @@
 //! Transient cost: an RC ladder at 10 to 1 000 stages over a fixed span,
 //! a 50 Hz half-wave rectifier with a filter cap over five cycles
-//! (diode switching each cycle, so step control and Newton both work), and
-//! a transient session a microcontroller drives for 10 s at 1 kHz.
+//! (diode switching each cycle, so step control and Newton both work), 100
+//! and 1 000 charge-storing diodes switching off one source, a transient
+//! session a microcontroller drives for 10 s at 1 kHz, and CSV export of the
+//! ladder's waveforms.
 //!
 //!     cargo bench -p sindr --bench transient
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use sindr::element::{Capacitor, Diode, Resistor, VoltageSource};
 use sindr::{
-    solve_transient, Circuit, CircuitElement, TransientConfig, TransientSession, Waveform,
+    solve_transient, Circuit, CircuitElement, DiodeModel, TransientConfig, TransientSession,
+    Waveform,
 };
 
 fn r(id: String, a: String, b: String, resistance: f64) -> CircuitElement {
@@ -84,6 +87,37 @@ fn rectifier() -> Circuit {
     )
 }
 
+/// 5 V, 10 kHz through 1 kΩ into each of `n` diodes with junction
+/// capacitance and transit time, so every one stores charge.
+fn charged_diodes(n: usize) -> Circuit {
+    let model = DiodeModel {
+        cjo: 4e-12,
+        tt: 10e-9,
+        ..Default::default()
+    };
+    let mut components = vec![CircuitElement::VoltageSource(VoltageSource {
+        id: "V1".into(),
+        nodes: ["ac".into(), "0".into()],
+        voltage: 0.0,
+        waveform: Some(Waveform::Sine {
+            amplitude: 5.0,
+            frequency: 10e3,
+            offset: 0.0,
+            phase: 0.0,
+        }),
+    })];
+    for i in 1..=n {
+        components.push(r(format!("R{i}"), "ac".into(), format!("a{i}"), 1e3));
+        components.push(CircuitElement::Diode(Diode {
+            id: format!("D{i}"),
+            nodes: [format!("a{i}").into(), "0".into()],
+            temperature: 300.15,
+            model: Some(model),
+        }));
+    }
+    Circuit::new("0", components)
+}
+
 fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("transient_rc_ladder");
     group.sample_size(10);
@@ -105,6 +139,18 @@ fn bench(c: &mut Criterion) {
     group.bench_function("5_cycles", |b| {
         b.iter(|| solve_transient(&circuit, &config).unwrap())
     });
+    group.finish();
+
+    let mut group = c.benchmark_group("transient_charged_diodes");
+    group.sample_size(10);
+    // One cycle at 2 µs: 50 steps before step control.
+    let config = TransientConfig::new(100e-6, 2e-6);
+    for n in [100, 1_000] {
+        let circuit = charged_diodes(n);
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| solve_transient(&circuit, &config).unwrap())
+        });
+    }
     group.finish();
 }
 
@@ -151,5 +197,20 @@ fn bench_session(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench, bench_session);
+fn bench_to_csv(c: &mut Criterion) {
+    let mut group = c.benchmark_group("transient_to_csv");
+    group.sample_size(10);
+    for stages in [100, 1_000] {
+        let data = solve_transient(&rc_ladder(stages), &TransientConfig::new(20e-6, 100e-9))
+            .unwrap()
+            .transient
+            .unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(stages), &stages, |b, _| {
+            b.iter(|| data.to_csv())
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench, bench_session, bench_to_csv);
 criterion_main!(benches);
