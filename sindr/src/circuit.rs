@@ -22,8 +22,8 @@ use crate::element::{
     Battery, Behavioural, Bjt, Capacitor, Cccs, Ccvs, Comparator, Crystal, CurrentSource, DcMotor,
     DigitalPin, Diode, FerriteBead, Fuse, Igbt, Inductor, Jfet, Led, LogicGate, Mosfet, OpAmp,
     Photodiode, Photoresistor, Potentiometer, Pushbutton, Relay, Resistor, SchottkyDiode, Switch,
-    SwitchSpdt, Thermistor, Transformer, Varactor, Vccs, Vcvs, VoltageRegulator, VoltageSource,
-    ZenerDiode,
+    SwitchSpdt, SwitchingRegulator, Thermistor, Transformer, Varactor, Vccs, Vcvs,
+    VoltageRegulator, VoltageSource, ZenerDiode,
 };
 use crate::expression::Expression;
 use crate::handle::{ComponentId, NodeId};
@@ -576,6 +576,12 @@ pub enum CircuitElement {
     #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
     VoltageRegulator(VoltageRegulator),
 
+    /// Averaged switching regulator (buck, boost): holds the output at
+    /// `voltage` above its ground pin and draws what power balance asks from
+    /// the input, without simulating the switching.
+    #[cfg_attr(feature = "serde", serde(rename = "switching_regulator"))]
+    SwitchingRegulator(SwitchingRegulator),
+
     /// Single-pole double-throw switch: `nodes: [common, a, b]`.
     #[cfg_attr(feature = "serde", serde(rename = "switch_spdt"))]
     SwitchSpdt(SwitchSpdt),
@@ -659,6 +665,7 @@ element_from!(
     Transformer,
     Fuse,
     VoltageRegulator,
+    SwitchingRegulator,
     SwitchSpdt,
     Crystal,
     FerriteBead,
@@ -1503,6 +1510,13 @@ mod tests {
                 voltage: 5.0,
                 model: None,
             }),
+            CircuitElement::SwitchingRegulator(SwitchingRegulator {
+                id: "SMPS".into(),
+                nodes: n("SMPS"),
+                topology: Default::default(),
+                voltage: 5.0,
+                model: Default::default(),
+            }),
             CircuitElement::SwitchSpdt(SwitchSpdt {
                 id: "SW".into(),
                 nodes: n("SW"),
@@ -1547,7 +1561,7 @@ mod tests {
     #[test]
     fn mutable_accessors_reach_the_fields_the_readers_read() {
         let elements = every_element();
-        assert_eq!(elements.len(), 37, "one of every CircuitElement");
+        assert_eq!(elements.len(), 38, "one of every CircuitElement");
         for mut element in elements {
             let id = element.id().to_string();
             let nodes = element.nodes().to_vec();

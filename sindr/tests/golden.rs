@@ -2625,3 +2625,85 @@ fn tran_exported_dc_motor() {
     }
     check.finish();
 }
+
+/// The averaged buck's operating point against a switched synchronous buck
+/// in ngspice (`tran_switched_buck.cir`), averaged over its last 20
+/// periods once settled. The averaged model isn't fitted to it: its set
+/// voltage is `D·Vin` less the conduction drop, and its efficiency the
+/// conduction loss of the inductor current's RMS (DC plus the model's own
+/// ripple estimate) in the switch and inductor resistance. So this checks
+/// power balance and the ripple estimate against real switching. The
+/// switched deck has no sindr twin (sindr has no averaged-converter SPICE
+/// line), so the `.cir` is read by ngspice only.
+#[test]
+fn tran_switched_buck() {
+    use sindr::element::SwitchingRegulator;
+    use sindr::{ConverterParams, ConverterTopology};
+    let case = "tran_switched_buck";
+    let golden = Golden::load(case);
+    let (vin, duty, f, l, r_load) = (12.0, 5.0 / 12.0, 200e3, 22e-6, 5.0);
+    // Either switch's 20 mΩ plus the inductor's 30 mΩ carries the current
+    // all period.
+    let r_on = 20e-3 + 30e-3;
+    let v_set = duty * vin * r_load / (r_load + r_on);
+    let i_out = v_set / r_load;
+    let mut model = ConverterParams {
+        switching_frequency: Some(f),
+        inductance: Some(l),
+        ..Default::default()
+    };
+    let ripple = model
+        .ripple_current(ConverterTopology::Buck, vin, v_set)
+        .unwrap();
+    let p_out = v_set * i_out;
+    let loss = (i_out * i_out + ripple * ripple / 12.0) * r_on;
+    model.efficiency = p_out / (p_out + loss);
+    let c = circuit(vec![
+        vsource("vin", "in", "0", vin),
+        CircuitElement::SwitchingRegulator(SwitchingRegulator {
+            id: "u1".into(),
+            nodes: ["in".into(), "out".into(), "0".into()],
+            topology: ConverterTopology::Buck,
+            voltage: v_set,
+            model,
+        }),
+        resistor("rload", "out", "0", r_load),
+    ]);
+    let r = solve_circuit(&c).unwrap();
+    let at = |name| golden.column(name)[0];
+    // ngspice ran long enough to settle: the 20 periods before agree.
+    assert!((at("vbefore") - at("vout")).abs() < 1e-5);
+    let mut check = Check::new(case);
+    // The switched output sits 270 µV lower (5e-5): its 1 ns edges and
+    // dead time trim the duty a little.
+    check.value(
+        "v(out)",
+        r.node_voltages["out"],
+        at("vout"),
+        Tol {
+            rel: 2e-4,
+            abs: 0.0,
+        },
+    );
+    // Power balance at that efficiency gives the input current to 2e-5.
+    check.value(
+        "i(vin)",
+        r.branch_currents["vin"],
+        at("iin"),
+        Tol {
+            rel: 2e-4,
+            abs: 0.0,
+        },
+    );
+    // The ripple estimate is 0.3 % under the switched inductor's.
+    check.value(
+        "ripple",
+        ripple,
+        at("iripple"),
+        Tol {
+            rel: 0.01,
+            abs: 0.0,
+        },
+    );
+    check.finish();
+}

@@ -254,6 +254,12 @@ pub(crate) fn regulator_pieces_settled(
                 return false;
             }
         }
+        if let CircuitElement::SwitchingRegulator(sw) = component {
+            let pins = regulator_pins(terminals, k);
+            if sw.region_at(pins, branch, v_prev) != sw.region_at(pins, branch, v_new) {
+                return false;
+            }
+        }
         branch += component.branch_slots();
     }
     true
@@ -278,8 +284,8 @@ fn regulator_pieces_at(
     (piece, ramp)
 }
 
-/// Shorten a Newton step from `v_prev` to `v_new` so that no regulator
-/// passes more than one edge of its piecewise characteristic. Returns
+/// Shorten a Newton step from `v_prev` to `v_new` so that no regulator,
+/// linear or switching, passes more than one edge of its piecewise characteristic. Returns
 /// whether the step was shortened: a shortened iterate is not a Newton
 /// solution, so it must not count as converged.
 ///
@@ -321,12 +327,17 @@ pub(crate) fn limit_regulator_step(
                     }
                     e
                 };
-                for (a, b) in edges(v_prev).into_iter().zip(edges(v_new)) {
-                    let side = |e: f64| (e > 0.0, e < 0.0);
-                    if a.is_finite() && b.is_finite() && side(a) != side(b) {
-                        crossings.push(a / (a - b));
-                    }
-                }
+                push_crossings(&mut crossings, edges(v_prev), edges(v_new));
+            }
+        }
+        if let CircuitElement::SwitchingRegulator(sw) = component {
+            let pins = regulator_pins(terminals, k);
+            if sw.region_at(pins, branch, v_prev) != sw.region_at(pins, branch, v_new) {
+                push_crossings(
+                    &mut crossings,
+                    sw.edges_at(pins, branch, v_prev),
+                    sw.edges_at(pins, branch, v_new),
+                );
             }
         }
         branch += component.branch_slots();
@@ -344,6 +355,17 @@ pub(crate) fn limit_regulator_step(
     let alpha = 0.5 * (first + next);
     *v_new = v_prev + (&*v_new - v_prev) * alpha;
     true
+}
+
+/// The fractions of a step at which edges `a` (at its start) and `b` (at
+/// its end) change sign.
+fn push_crossings<const N: usize>(crossings: &mut Vec<f64>, a: [f64; N], b: [f64; N]) {
+    for (a, b) in a.into_iter().zip(b) {
+        let side = |e: f64| (e > 0.0, e < 0.0);
+        if a.is_finite() && b.is_finite() && side(a) != side(b) {
+            crossings.push(a / (a - b));
+        }
+    }
 }
 
 /// Stamp a linear regulator `[in, out, gnd]` on the piece of its

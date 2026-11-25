@@ -46,6 +46,17 @@ built-in values, a photodiode's current source against
 responsivity × irradiance). A parameter the card leaves out is compared at
 its SPICE default. A new Rust-built case must use it too.
 
+### An averaged model against a switched one
+
+`tran_switched_buck` is a synchronous buck with real switches, a body diode
+and an LC filter, run by ngspice only (sindr has no SPICE line for its
+averaged converter). Its `.ctl` averages the output voltage and input
+current over the last 20 periods with `meas` and writes them as one row.
+The test builds a `SwitchingRegulator` whose set voltage and efficiency
+come from the deck's resistances (conduction loss of the inductor
+current's RMS), not from the golden, and checks its DC operating point and
+ripple estimate against the switched averages.
+
 ### Decks with their own `.tran`
 
 `tran_ic_op`, `tran_ic_uic` and `tran_tstart` keep the `.tran` and `.ic`

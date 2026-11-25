@@ -646,7 +646,9 @@ The pole and slew limit act in transient and AC runs. An op-amp doesn't count as
 #### Sensors / misc
 
 ```rust,ignore
-use sindr::element::{Fuse, Photoresistor, Potentiometer, Relay, Thermistor, VoltageRegulator};
+use sindr::element::{
+    Fuse, Photoresistor, Potentiometer, Relay, SwitchingRegulator, Thermistor, VoltageRegulator,
+};
 CircuitElement::Photoresistor(Photoresistor { id, nodes: [NodeId; 2], light_level: f64 }) // 0.0 (dark, ~1 MΩ) – 1.0 (bright, ~1 kΩ)
 CircuitElement::Thermistor(Thermistor { id, nodes: [NodeId; 2], temperature: f64 }) // Kelvin, default 298.15 K (25 °C)
 CircuitElement::Potentiometer(Potentiometer { id, nodes: [top, wiper, bottom], resistance: f64, position: f64 }) // position 0.0–1.0
@@ -659,11 +661,20 @@ CircuitElement::Relay(Relay {
 })
 CircuitElement::Fuse(Fuse { id, nodes: [NodeId; 2], rating: f64, blown: bool }) // 1 mΩ intact, 1 GΩ blown; rating is display-only
 CircuitElement::VoltageRegulator(VoltageRegulator { id, nodes: [input, output, gnd], voltage: f64, model: Option<RegulatorParams> })
+CircuitElement::SwitchingRegulator(SwitchingRegulator {
+    id,
+    nodes: [input, output, gnd],
+    topology: ConverterTopology, // Buck (default) or Boost
+    voltage: f64,                // set output (V), positive
+    model: ConverterParams,      // default ideal
+})
 ```
 
 When `inductance > 0`, the relay coil is modeled as an RL circuit in transient analysis (L stamped as an inductor companion). This triggers transient automatically.
 
 `VoltageRegulator` is a linear regulator. With headroom it holds `voltage` above its ground pin (a negative `voltage` is a negative regulator such as a 7905: the same characteristic mirrored, with the input below ground and the output current flowing in at the output pin); without it the output follows the input down by the dropout; past the current limit it holds the current, short circuits included. It draws its output current plus its quiescent current from the input. `model: None` is ideal (no dropout, no quiescent current, no limit) but still never puts out more than it gets in. `RegulatorParams` sets `dropout` (V, plus `dropout_resistance` Ω for one that grows with load), `quiescent_current`, `current_limit`, `line_regulation` (V/V) and `output_resistance` (Ω, load regulation). `RegulatorParams::lm7805()` and `RegulatorParams::ams1117()` are datasheet presets. Its result is the pass element: `voltage_across` is `Vin − Vout`, `current_through` the output current, and `power` the dissipation `(Vin − Vout)·Iout + Vin·Iq`, which the ratings checks and self-heating use. In AC, input ripple reaches the output through line regulation (all of it in dropout). Foldback and thermal shutdown are not modelled.
+
+`SwitchingRegulator` is an averaged buck or boost converter: its behaviour over a switching period, with no switching edges, so a "5 V buck module" solves as fast as a linear regulator. It holds `voltage` above its ground pin and draws what power balance asks from the input, `Iin = Vout·Iout / (η·Vin)` plus `quiescent_current`. A buck out of headroom follows its input down by `dropout` (plus `dropout_resistance`·Iout). A boost whose input is above its set point passes the input through, less the same drop. Past `current_limit` the output falls, so the current stays within 1 % of the limit. Below `uvlo` it's off: output open and nothing drawn. `ConverterParams` sets `efficiency` (constant) or `efficiency_curve` (`[output current, efficiency]` points, interpolated), and `switching_frequency` and `inductance` only for `ripple_current`, the inductor's peak-to-peak ripple estimate. `converter::feedback_voltage(vref, r_top, r_bottom)` gives the set voltage from a feedback divider. Its result is the output: `voltage_across` is `Vout`, `current_through` the output current, and `power` the loss `Vin·Iin − Vout·Iout`, which the ratings checks and self-heating use. Its voltage rating is checked against the input. In AC it rejects input ripple while regulating, and its input is the negative resistance `−Pin/Vin²` of a constant-power load. There's no output ripple, control loop or soft start, and it has no SPICE export.
 
 ### Hierarchy and part data
 
@@ -1553,7 +1564,7 @@ Status: `0.3.0`, before 1.0. Anything below may change.
 - DC, nonlinear DC (Newton-Raphson), transient (Gear-2 (default), trapezoidal or backward Euler), AC, noise, transfer function (`.tf`), DC and AC sensitivity (`.sens`), pole-zero (`.pz`), loop gain and stability margins, DC sweep, temperature sweep
 - Passives, sources, switches, controlled sources, op-amp / comparator macromodels, transformer, crystal, ferrite bead, digital I/O pin (IBIS parametric buffer), logic gates at the analog level (thresholds, a pin's output stage, propagation delay)
 - Diode family (Si, LED, Zener, Schottky, photodiode, varactor), BJT (Ebers-Moll), MOSFET (Level-1), IGBT, JFET
-- Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
+- Thermistor, photoresistor, potentiometer, relay, fuse, linear voltage regulator (dropout, quiescent current, current limit, line and load regulation), averaged buck and boost converter (power balance, efficiency over load, current limit, dropout, UVLO), battery (open-circuit voltage by state of charge, series resistance, optional RC pair)
 - Programmatic Rust API + serde JSON for circuits and results
 
 If your problem is "given an analog topology built in Rust, what are the node voltages and branch currents (possibly over time, frequency, or temperature)?", sindr is in scope.
@@ -1581,7 +1592,7 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 #### Netlist & ecosystem
 
 - **SPICE netlist import: partial.** The `spice` feature (`sindr::spice`, on by default) parses a practical subset of SPICE3f5 decks — R, L, C, V, I, D, Q, M, J, B (behavioural, with the `VALUE` form of E/G and the `POLY` form of E/G/F/H), X, linear E/G/F/H, K (two coupled inductors; no three-winding coupling), plus `.subckt`, `.global`, `.model`, `.tran`, `.dc`, `.ac`, `.tf`, `.sens`, `.noise`, `.pz`, `.meas`, `.four`, `.op`, `.ic`, `.nodeset`, `.options`, `.param`, `.include`, `.lib` — into a `Circuit`. `.options` reads `RELTOL`, `VNTOL`, `TRTOL` and `ITL1`; any other option is rejected in strict mode and ignored with a warning in lenient mode. V and I lines take `[DC] v`, `AC [mag [phase]]` and a `PULSE`/`SIN`/`PWL` waveform in any order; `ParsedNetlist::ac_config` drives `.ac` from the one V line with an `AC` spec, so a deck with an `AC` spec on an I line or on several sources needs its `AcConfig` set by hand (AC analysis drives a single voltage source). Full SPICE3 coverage and the `TABLE`/`LAPLACE` forms of E/G/F/H are **not** implemented. `.model` cards are read only for what sindr's models have: `IS`, `N`, `RS`, `CJO`, `VJ`, `M`, `FC`, `TT`, `BV`, `IBV`, `KF`, `AF`, `EG`, `XTI` on diodes and `IS`, `BF`, `BR`, `NF`, `NR`, `VAF`, `KF`, `AF`, `EG`, `XTI` on BJTs. `EG` and `XTI` set how `IS` follows temperature, as SPICE's `IS(T)`; `TNOM` is read only at 27 °C, the temperature sindr's values are at. Temperature moves `IS` and the thermal voltage only: `VJ`, `CJO` and `BF` (`XTB`) stay at their 27 °C values. Anything else (BJT junction capacitance, Gummel–Poon high-injection terms) is rejected in strict mode and ignored with a warning in lenient mode. Vendor model libraries that rely on BSIM / Gummel-Poon model cards remain unreachable.
-- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, M, J, B, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. A MOSFET with flicker noise, IGBT, zener, op-amp, comparator, relay, photodiode, varactor and regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
+- **SPICE netlist export: partial.** `sindr::spice::to_netlist` writes R, L, C, V, I, D, Q, M, J, B, E, G, F, H and transformers (as L–L–K), plus exact equivalents for switches, fuses, potentiometers, photoresistors, thermistors, LEDs and Schottky diodes. A MOSFET with flicker noise, IGBT, zener, op-amp, comparator, relay, photodiode, varactor, regulator and switching regulator have no export, and neither does a junction away from 27 °C or a BJT with parasitic capacitances. No analysis cards or `AC` specs are written. sindr's parser reads every line it writes back.
 - **Hierarchy: definitions with evaluated values only.** `Circuit` has blocks, instances, global nets and part data, and the `spice` parser keeps `.subckt` structure. Blocks hold evaluated values, not parameter expressions, so a subckt whose instances bind different `.param`s becomes one block per distinct body (`name`, `name_2`, …). Reference designators are per block definition, with no per-instance annotation.
 - **Model cards: Shockley and Ebers–Moll subsets only.** `Diode` and `Bjt` take a `DiodeModel` / `BjtModel` (which a SPICE `.model` card fills in), but there are no BSIM / Gummel-Poon / VBIC / HICUM models, MOSFET and JFET take level-1 `NMOS`/`PMOS` and `NJF`/`PJF` cards (a JFET's `VTO`, `BETA` and gate capacitances `CGS`, `CGD`, `PB`, `M`, `FC`), and the other devices take only their Rust parameter structs. A manufacturer card matches sindr's behaviour only when it uses no parameters beyond those. A diode's charge sits across its terminals in transient, at the junction voltage the diode current sets across RS; the drop the charging current itself makes across RS is left out, which matters only for large RS. AC is exact (RS in series with the junction). CJO and VJ don't scale with temperature, and the reverse leakage between 0 and breakdown is Shockley's `−IS` rather than ngspice's cubic. The BJT's Early effect (`VAF`) is `ic·(1 + vce/VAF)`, not SPICE's Gummel–Poon base charge, and `VAR` isn't modelled.
 - **Behavioural sources are expressions, not a device language.** `CircuitElement::Behavioural` (SPICE's `B`) is one voltage or current set by an expression of node voltages, branch currents and time. There is no Verilog-A, no internal state or charge (`ddt`, `idt`), and no XSPICE code models; a new device with its own state means writing a Rust companion model. Steps and comparisons in an expression have zero slope, so a hard switch can stall Newton where a smooth one (`tanh`) converges. An expression has no device limiting (SPICE's `pnjlim`): an exponential written as a `B` source is reached by halving steps that overflow and then source stepping, so it takes more iterations than the built-in diode, and an expression's value is good to the solver's `reltol` rather than to rounding.
@@ -1612,7 +1623,8 @@ These are gaps a SPICE user would reasonably expect. They are plausible addition
 
 - **Op-amp macromodel: single pole.** `OpAmpModel` gives open-loop gain, a dominant pole from GBW, slew rate, output resistance, input offset and bias current, and a rail clamp. There is no second pole or phase margin, no output current limit, no supply current, no input common-mode range, no noise and no CMRR/PSRR. Vendor op-amp models can't be loaded. Without a `model` the op-amp is a gain-1e5 VCVS with no rail clamp.
 - **Batteries are an equivalent circuit, with no chemistry.** `Battery` has an open-circuit voltage curve, a series resistance and one RC pair. Capacity doesn't fall at high current (Peukert) or in the cold, resistance doesn't rise as the cell empties, and there's no aging, self-discharge, charging limit or hysteresis between charge and discharge curves. A battery is noiseless in `.noise`, and SPICE export refuses it.
-- **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, positive or negative (a negative `voltage` mirrors the characteristic, for a 79xx), but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. It has no control loop either, so its output capacitor's value and ESR don't affect stability (an LDO that oscillates without its output capacitor on a real board is stable here) and don't change the load-step response; capacitors on a regulator show up only as inrush and hold-up. Its temperature doesn't feed back: self-heating reports its junction temperature, but its output doesn't drift with it. No references, adjustable regulators (LM317 with its divider) or DC-DC controllers.
+- **Regulators are linear and piecewise.** `VoltageRegulator` has dropout, quiescent current, a current limit and line and load regulation, positive or negative (a negative `voltage` mirrors the characteristic, for a 79xx), but no foldback, thermal shutdown, PSRR that falls with frequency, or start-up behaviour. It has no control loop either, so its output capacitor's value and ESR don't affect stability (an LDO that oscillates without its output capacitor on a real board is stable here) and don't change the load-step response; capacitors on a regulator show up only as inrush and hold-up. Its temperature doesn't feed back: self-heating reports its junction temperature, but its output doesn't drift with it. No references or adjustable regulators (LM317 with its divider).
+- **Switching converters are averaged.** `SwitchingRegulator` (buck, boost) is its average over a switching period: no output ripple (only a `ripple_current` estimate), no control loop or compensation, so no load-step ringing or loop stability, no soft start, discontinuous-conduction mode, foldback or thermal shutdown. In a transient it reaches each operating point at once. Its efficiency is what you give it, not derived from switch and inductor losses. No buck-boost, flyback or inverting topologies; the switched circuit, built from switches, diodes and an inductor, covers those.
 - **MOSFET is Level 1 only.** No BSIM (3 / 4 / 6 / -CMG), no EKV, no PSP. Short-channel effects, velocity saturation, mobility degradation and gate leakage are absent.
 - **MOSFETs have three terminals, with the body tied to the source** (as in a discrete part), so the body effect (`gamma`, `phi`) never applies in a circuit. There's no fourth body terminal for IC-style biasing to a rail.
 - **BJT is Ebers-Moll with optional Early voltage.** No Gummel-Poon, no VBIC, no HICUM. No high-injection, base-width modulation in saturation, charge-storage beyond the optional Cbe/Cbc parasitic caps.
@@ -2363,6 +2375,12 @@ pub enum CircuitElement {
     /// quiescent current from the input.
     #[cfg_attr(feature = "serde", serde(rename = "voltage_regulator"))]
     VoltageRegulator(VoltageRegulator),
+
+    /// Averaged switching regulator (buck, boost): holds the output at
+    /// `voltage` above its ground pin and draws what power balance asks from
+    /// the input, without simulating the switching.
+    #[cfg_attr(feature = "serde", serde(rename = "switching_regulator"))]
+    SwitchingRegulator(SwitchingRegulator),
 
     /// Single-pole double-throw switch: `nodes: [common, a, b]`.
     #[cfg_attr(feature = "serde", serde(rename = "switch_spdt"))]
@@ -4277,6 +4295,8 @@ pub use switch::Switch;
 
 pub use switch_spdt::SwitchSpdt;
 
+pub use switching_regulator::SwitchingRegulator;
+
 pub use thermistor::Thermistor;
 
 pub use transformer::Transformer;
@@ -4557,6 +4577,47 @@ pub struct SwitchSpdt {
     /// Which throw the common terminal is switched to.
     #[cfg_attr(feature = "serde", serde(default))]
     pub position: SpdtPosition,
+}
+```
+
+## `sindr/src/element/switching_regulator.rs`
+
+An averaged switching regulator (buck, boost): its behaviour over a
+switching period, without the switching edges.
+
+```rust
+/// Averaged switching regulator: a buck or boost converter modelled by its
+/// average over a switching period, so a 5 V module simulates in
+/// milliseconds instead of resolving every edge.
+///
+/// The output holds `voltage` above the ground pin, behind a current limit
+/// and a dropout (a buck out of headroom follows its input down; a boost
+/// whose input is above its set point passes it through). The input draws
+/// what power balance asks, `Vout·Iout / (η·Vin)`, plus the quiescent
+/// current. Below the under-voltage lockout it's off: output open, nothing
+/// drawn. `model` holds efficiency (constant or over load), limit, dropout,
+/// lockout, and the switching frequency and inductor for a ripple estimate;
+/// see `sindr_devices::converter`. Its result is its output voltage, its
+/// output current and the power it loses.
+///
+/// There is no switching ripple, loop response or soft start: in a
+/// transient it reaches each new operating point at once.
+///
+/// `nodes: [input, output, gnd]`
+pub struct SwitchingRegulator {
+    /// Unique component identifier.
+    pub id: String,
+    /// Terminals `[input, output, gnd]`.
+    pub nodes: [NodeId; 3], // [input, output, gnd]
+    /// Buck or boost.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub topology: ConverterTopology,
+    /// Regulated output voltage (V) from the ground pin, positive. From a
+    /// feedback divider: `sindr_devices::converter::feedback_voltage`.
+    pub voltage: f64,
+    /// Efficiency, limit, dropout and lockout. The default is ideal.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub model: ConverterParams,
 }
 ```
 
@@ -12639,6 +12700,202 @@ pub fn bjt_derivatives(vbe: f64, vbc: f64, params: &BjtParams) -> BjtDerivatives
 pub fn detect_region(vbe: f64, vbc: f64) -> BjtRegion { … }
 ```
 
+## `sindr-devices/src/converter.rs`
+
+Averaged switching regulator (buck, boost): the converter's behaviour
+over a switching period, without its switching edges.
+
+The output is a piecewise-linear function of the input voltage and the
+output current, both measured from the converter's ground pin. A buck:
+
+```text
+regulating: Vout = V
+dropout:    Vout = Vin − Vdo − Rdo·Iout     (full duty, out of headroom)
+```
+
+whichever is lower. A boost can't hold its output below its input, which
+reaches the output through its inductor and diode:
+
+```text
+regulating:   Vout = V
+pass-through: Vout = Vin − Vdo − Rdo·Iout   (input above the set point)
+```
+
+whichever is higher. Past the current limit the regulated output falls
+steeply, so the current stays within 1 % of the limit (a boost's
+pass-through path isn't limited, as a real one's isn't). Below the
+under-voltage lockout the converter is off and its output open.
+
+The input draws what power balance asks: `Iin = Vout·Iout / (η·Vin)`, plus
+the quiescent current while it runs. Power sent back into the output
+(`Vout·Iout < 0`) returns to the input less the same losses.
+
+```rust
+/// The least input a converter runs from (V), whatever its UVLO: below it
+/// power balance would ask an unbounded input current.
+pub const MIN_INPUT: f64 = 0.1;
+
+/// Which converter it is.
+pub enum ConverterTopology {
+    /// Step-down: the output is at most the input, less the dropout.
+    #[default]
+    Buck,
+    /// Step-up: the output is at least the input, less the diode drop.
+    Boost,
+}
+
+/// Averaged converter parameters. [`Default`] is ideal: 100 % efficient,
+/// no dropout, no limit, no lockout above [`MIN_INPUT`], no quiescent
+/// current.
+///
+/// Set the fields you need and fill the rest with `..Default::default()`,
+/// so a field added in a later release doesn't break the literal.
+pub struct ConverterParams {
+    /// Efficiency, `Pout / Pin` (0 to 1], used when `efficiency_curve` is
+    /// empty.
+    pub efficiency: f64,
+    /// Efficiency over load: `[output current (A), efficiency]` points in
+    /// rising current, interpolated linearly and held flat past either
+    /// end. Empty uses the constant `efficiency`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub efficiency_curve: Vec<[f64; 2]>,
+    /// Output current limit (A). `None` is unlimited.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current_limit: Option<f64>,
+    /// A buck's dropout: the least `Vin − Vout` it regulates with (V). A
+    /// boost's drop from input to output when the input is above its set
+    /// point (its diode).
+    pub dropout: f64,
+    /// Rise in that drop per ampere of output current (Ω).
+    pub dropout_resistance: f64,
+    /// Under-voltage lockout (V): below this input the converter is off and
+    /// its output open. [`MIN_INPUT`] at least.
+    pub uvlo: f64,
+    /// Current drawn from the input while it runs (A), on top of what power
+    /// balance asks.
+    pub quiescent_current: f64,
+    /// Switching frequency (Hz). Not simulated: it sets the ripple estimate
+    /// ([`ConverterParams::ripple_current`]) only.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub switching_frequency: Option<f64>,
+    /// The converter's inductor (H), for the ripple estimate only.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub inductance: Option<f64>,
+}
+
+impl ConverterParams {
+    /// The efficiency at output current `iout` (A, either direction), and
+    /// its slope `dη/d|Iout|`.
+    pub fn efficiency_at(&self, iout: f64) -> (f64, f64) { … }
+
+    /// The input below which the converter is off (V).
+    pub fn lockout(&self) -> f64 { … }
+
+    /// Peak-to-peak inductor ripple current (A) at `vin` and `vout` (from
+    /// the ground pin), in continuous conduction: `Vout·(1 − D)/(L·f)` for
+    /// a buck, `Vin·D/(L·f)` for a boost. `None` without a switching
+    /// frequency and an inductance, or where the topology can't run (a buck
+    /// asked for more than its input).
+    pub fn ripple_current(&self, topology: ConverterTopology, vin: f64, vout: f64) -> Option<f64> { … }
+}
+
+/// The output voltage a feedback divider sets: `vref·(1 + r_top/r_bottom)`,
+/// with `r_top` from the output to the feedback pin and `r_bottom` from it
+/// to ground.
+pub fn feedback_voltage(vref: f64, r_top: f64, r_bottom: f64) -> f64 { … }
+
+/// Which part of its characteristic a converter is on.
+pub enum ConverterRegion {
+    /// Below its lockout: off, output open, nothing drawn.
+    Off,
+    /// Holding its set voltage.
+    Regulating,
+    /// A buck out of headroom, or a boost whose input is above its set
+    /// point: the output follows the input.
+    Dropout,
+}
+
+/// The converter's output on one linear piece: open when `region` is
+/// [`ConverterRegion::Off`], else `Vout = offset + d_vin·Vin + d_iout·Iout`,
+/// all from the ground pin.
+pub struct ConverterPiece {
+    /// Constant term (V).
+    pub offset: f64,
+    /// ∂Vout/∂Vin (V/V).
+    pub d_vin: f64,
+    /// ∂Vout/∂Iout (Ω), zero or negative.
+    pub d_iout: f64,
+    /// Off, regulating or in dropout.
+    pub region: ConverterRegion,
+    /// `true` when past the current limit.
+    pub limiting: bool,
+}
+
+impl ConverterPiece {
+    /// The output voltage this piece gives at `vin`, `iout`.
+    pub fn vout(&self, vin: f64, iout: f64) -> f64 { … }
+}
+
+/// The piece of a converter set to `voltage` (positive) that applies at
+/// input `vin` (V, from the ground pin) and output current `iout` (A, out
+/// of the output pin).
+pub fn converter_piece(
+    params: &ConverterParams,
+    topology: ConverterTopology,
+    voltage: f64,
+    vin: f64,
+    iout: f64,
+) -> ConverterPiece { … }
+
+/// Where a converter changes piece, as signed distances at input `vin` and
+/// output current `iout` (from the ground pin). [`converter_piece`] switches
+/// only where one of these changes sign. Each is linear in `vin` and
+/// `iout`, so a straight step between two operating points crosses each at
+/// most once. An edge the parameters don't have is `+∞`.
+pub fn converter_edges(
+    params: &ConverterParams,
+    topology: ConverterTopology,
+    voltage: f64,
+    vin: f64,
+    iout: f64,
+) -> [f64; 5] { … }
+
+/// The current a converter draws into its input pin (out at its ground
+/// pin), linearised: `i` at the operating point and its partials.
+pub struct InputCurrent {
+    /// Input current (A).
+    pub i: f64,
+    /// ∂Iin/∂Vin (S).
+    pub d_vin: f64,
+    /// ∂Iin/∂Vout (S).
+    pub d_vout: f64,
+    /// ∂Iin/∂Iout (A/A).
+    pub d_iout: f64,
+}
+
+/// The input current a converter draws at `vin`, `vout` and `iout` (from
+/// the ground pin) on `region`: power balance, `Vout·Iout / (η·Vin)`, plus
+/// the quiescent current, or nothing when it's off. Power flowing back
+/// (`Vout·Iout < 0`) reaches the input as `η·Vout·Iout / Vin`.
+pub fn converter_input(
+    params: &ConverterParams,
+    region: ConverterRegion,
+    vin: f64,
+    vout: f64,
+    iout: f64,
+) -> InputCurrent { … }
+
+/// Power a converter dissipates (W): what it draws, `Vin·Iin`, less what
+/// it delivers, `Vout·Iout`.
+pub fn converter_dissipation(
+    params: &ConverterParams,
+    region: ConverterRegion,
+    vin: f64,
+    vout: f64,
+    iout: f64,
+) -> f64 { … }
+```
+
 ## `sindr-devices/src/datasheet.rs`
 
 Datasheet figures a device model can be fitted to.
@@ -13374,6 +13631,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod battery;
 
 pub mod bjt;
+
+pub mod converter;
 
 pub mod datasheet;
 
