@@ -1464,4 +1464,194 @@ mod tests {
             assert!(matches!(a.solve(&b), Err(SimError::InvalidSolution)));
         }
     }
+
+    /// `lu`'s solves of `a` and of `aᵀ` against dense LUs of each.
+    fn assert_factor_solves<T: MnaScalar + std::fmt::Debug>(
+        a: &DMatrix<T>,
+        lu: &Factor<'_, T>,
+        b: &DVector<T>,
+    ) {
+        for (what, reference, x) in [
+            (
+                "forward",
+                a.clone().lu().solve(b).unwrap(),
+                lu.solve(b).unwrap(),
+            ),
+            (
+                "transposed",
+                a.transpose().lu().solve(b).unwrap(),
+                lu.solve_transpose(b).unwrap(),
+            ),
+        ] {
+            for i in 0..b.len() {
+                let scale = reference[i].abs().max(1e-12);
+                assert!(
+                    (reference[i] - x[i]).abs() <= 1e-10 * scale,
+                    "{what} {i}: {:?} vs {:?}",
+                    reference[i],
+                    x[i]
+                );
+            }
+        }
+    }
+
+    /// A complex sparse system with nothing to substitute out solves its
+    /// transpose unconjugated, as the adjoint analyses need.
+    #[test]
+    fn a_complex_factor_solves_its_transpose() {
+        let n = 150;
+        let mut a = MnaMatrix::<Complex64>::sparse(n);
+        for i in 0..n {
+            a[(i, i)] += Complex64::new(2e-3 + 1e-5 * i as f64, 1e-3);
+            if i + 1 < n {
+                a[(i, i + 1)] -= Complex64::new(1e-3, 2e-4);
+                a[(i + 1, i)] -= Complex64::new(1.5e-3, -3e-4);
+            }
+        }
+        let b = DVector::from_fn(n, |i, _| Complex64::new(1e-3 * (i % 5) as f64, 1e-4));
+        assert_factor_solves(&a.to_dense(), &a.factor().unwrap(), &b);
+    }
+
+    /// Grounded sources holding every node: substituting them out leaves
+    /// no unknowns to factorise, both ways.
+    #[test]
+    fn every_unknown_fixed_solves_without_a_factor() {
+        fn check<T: MnaScalar + std::fmt::Debug>(g: impl Fn(usize) -> T) {
+            let n = 60;
+            let mut a = MnaMatrix::<T>::sparse(2 * n);
+            for i in 0..n {
+                a[(i, i)] += g(i);
+                if i + 1 < n {
+                    a[(i, i + 1)] -= g(i + n);
+                }
+                a[(i, n + i)] += T::one();
+                a[(n + i, i)] += g(i + 2 * n);
+            }
+            let b = DVector::from_fn(2 * n, |i, _| g(i + 3 * n));
+            assert_factor_solves(&a.to_dense(), &a.factor().unwrap(), &b);
+        }
+        check(|i| 1.0 + (i % 7) as f64);
+        check(|i| Complex64::new(1.0 + (i % 7) as f64, 0.1 * (i % 3) as f64));
+    }
+
+    /// Factors of one layout alive at once on a thread, each refactoring
+    /// the numeric LU another handed back: every one keeps its own values,
+    /// with fixed unknowns substituted out and without.
+    #[test]
+    fn live_factors_of_one_layout_keep_their_own_values() {
+        let (n, sources) = (150, 3);
+        let size = n + sources + 1;
+        for rail in [false, true] {
+            let assemble = |scale: f64| {
+                let mut a = MnaMatrix::<f64>::sparse(size);
+                let g = |i: usize| scale * 1e-3 * (1.0 + (i % 7) as f64);
+                let b = hub_system(n, sources, g, &mut a);
+                if !rail {
+                    // A branch row with a second entry fixes nothing.
+                    for s in 0..sources {
+                        a[(n + s, n - 3)] += 1.0;
+                    }
+                }
+                (a, b)
+            };
+            let (a1, b1) = assemble(1.0);
+            let f1 = a1.factor().unwrap();
+            let (a2, b2) = assemble(3.0);
+            let f2 = a2.factor().unwrap();
+            assert_factor_solves(&a1.to_dense(), &f1, &b1);
+            drop(f1);
+            let (a3, b3) = assemble(5.0);
+            let f3 = a3.factor().unwrap();
+            assert_factor_solves(&a2.to_dense(), &f2, &b2);
+            assert_factor_solves(&a3.to_dense(), &f3, &b3);
+            drop(f2);
+            assert_factor_solves(&a3.to_dense(), &f3, &b3);
+            // An owned factor outlives the (replayed) matrix it came from.
+            let (a4, b4) = assemble(7.0);
+            let dense = a4.to_dense();
+            let f4 = a4.factor().unwrap().into_owned();
+            drop(a4);
+            assert_factor_solves(&dense, &f4, &b4);
+            assert_factor_solves(&a3.to_dense(), &f3, &b3);
+        }
+    }
+
+    /// The same entries holding zero but the fixing entries' values
+    /// changing between assemblies: each solve divides by its own.
+    #[test]
+    fn fixing_entries_take_each_assemblys_values() {
+        let n = 150;
+        for k in [1.0, 2.0, -0.5, 10.0] {
+            let mut a = MnaMatrix::<f64>::sparse(n + 1);
+            for i in 0..n {
+                a[(i, i)] += 2e-3 + 1e-5 * i as f64;
+                if i + 1 < n {
+                    a[(i, i + 1)] -= 1e-3;
+                    a[(i + 1, i)] -= 1.2e-3;
+                }
+            }
+            a[(0, n)] += 1.0 / k;
+            a[(n, 0)] += k;
+            let b = DVector::from_fn(n + 1, |i, _| if i == n { 5.0 } else { 1e-4 });
+            assert_factor_solves(&a.to_dense(), &a.factor().unwrap(), &b);
+        }
+    }
+
+    /// A singular dense matrix factorises (nalgebra's LU doesn't check)
+    /// but fails to solve either way.
+    #[test]
+    fn a_singular_dense_factor_fails_both_ways() {
+        let mut a = MnaMatrix::<f64>::dense(3);
+        a[(0, 0)] = 1.0;
+        a[(2, 2)] = 1.0;
+        let b = DVector::from_element(3, 1.0);
+        let lu = a.factor().unwrap();
+        assert!(matches!(lu.solve(&b), Err(SimError::SingularMatrix)));
+        assert!(matches!(
+            lu.solve_transpose(&b),
+            Err(SimError::SingularMatrix)
+        ));
+    }
+
+    /// No unknowns: both solves give nothing.
+    #[test]
+    fn an_empty_factor_solves_to_nothing() {
+        let empty = DVector::<f64>::from_element(0, 0.0);
+        for a in [MnaMatrix::<f64>::dense(0), MnaMatrix::<f64>::sparse(0)] {
+            let lu = a.factor().unwrap();
+            assert_eq!(lu.solve(&empty).unwrap().len(), 0);
+            assert_eq!(lu.solve_transpose(&empty).unwrap().len(), 0);
+            assert_eq!(lu.into_owned().solve_transpose(&empty).unwrap().len(), 0);
+        }
+    }
+
+    /// One layout whose fixed unknowns come and go between assemblies, a
+    /// factor of each kept alive: a later assembly finding other fixed
+    /// unknowns leaves the earlier factors' solves as they were.
+    #[test]
+    fn live_factors_keep_their_fixed_unknowns() {
+        let n = 150;
+        let assemble = |coupling: f64, scale: f64| {
+            let mut a = MnaMatrix::<f64>::sparse(n + 1);
+            for i in 0..n {
+                a[(i, i)] += scale * (2e-3 + 1e-5 * i as f64);
+                if i + 1 < n {
+                    a[(i, i + 1)] -= scale * 1e-3;
+                    a[(i + 1, i)] -= scale * 0.8e-3;
+                }
+            }
+            a[(0, n)] += 1.0;
+            a[(n, 0)] += 2.0;
+            a[(n, 5)] += coupling;
+            let b = DVector::from_fn(n + 1, |i, _| if i == n { 5.0 } else { 1e-4 });
+            (a.to_dense(), a.factor().unwrap().into_owned(), b)
+        };
+        let kept: Vec<_> = [(0.0, 1.0), (0.5, 2.0), (0.0, 3.0), (0.5, 4.0), (0.0, 5.0)]
+            .into_iter()
+            .map(|(coupling, scale)| assemble(coupling, scale))
+            .collect();
+        for (a, lu, b) in kept.iter().rev() {
+            assert_factor_solves(a, lu, b);
+        }
+    }
 }
