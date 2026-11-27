@@ -181,10 +181,13 @@ impl Waveform {
                     return *v1;
                 }
                 // SPICE reads a zero (or unset) period as a single pulse.
-                let t_rel = if *period > 0.0 && period.is_finite() {
-                    (t - delay) % period
+                // Like ngspice, wrap only past the period, so a pulse whose
+                // period is TSTOP holds v2 at TSTOP instead of restarting.
+                let t_rel = t - delay;
+                let t_rel = if *period > 0.0 && period.is_finite() && t_rel > *period {
+                    t_rel - period * (t_rel / period).floor()
                 } else {
-                    t - delay
+                    t_rel
                 };
                 if t_rel < *rise_time {
                     // Rising edge
