@@ -7689,8 +7689,9 @@ pub struct LoopGainPoint {
     /// The loop gain `T(j·2πf)`.
     #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub gain: Complex64,
-    /// Phase of `T` (degrees), unwrapped along the sweep from the first
-    /// point's value in (−180°, 180°].
+    /// Phase of `T` (degrees), unwrapped along the sweep. The first point's
+    /// turn is picked from the slope of `|T|` there (`|T| ∝ f^k` is near
+    /// `90°·k`), so a sweep starting past a double pole starts below −180°.
     pub phase_deg: f64,
 }
 

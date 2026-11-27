@@ -113,8 +113,9 @@ pub struct LoopGainPoint {
     /// The loop gain `T(j·2πf)`.
     #[cfg_attr(feature = "schemars", schemars(with = "[f64; 2]"))]
     pub gain: Complex64,
-    /// Phase of `T` (degrees), unwrapped along the sweep from the first
-    /// point's value in (−180°, 180°].
+    /// Phase of `T` (degrees), unwrapped along the sweep. The first point's
+    /// turn is picked from the slope of `|T|` there (`|T| ∝ f^k` is near
+    /// `90°·k`), so a sweep starting past a double pole starts below −180°.
     pub phase_deg: f64,
 }
 
@@ -286,7 +287,7 @@ pub(crate) fn solve_loop_gain_with(
         let gain = probe.at(f)?;
         let phase_deg = match points.last() {
             Some(prev) => unwrap_near(gain, prev.phase_deg),
-            None => gain.arg().to_degrees(),
+            None => first_phase(gain, probe.at(f * SLOPE_STEP)?),
         };
         points.push(LoopGainPoint {
             frequency: f,
@@ -391,6 +392,23 @@ fn phase_margin(phase: f64) -> f64 {
     wrap_degrees(if pm > 180.0 { 360.0 - pm } else { pm })
 }
 
+/// Frequency ratio over which [`first_phase`] reads the slope of `|T|`.
+const SLOPE_STEP: f64 = 1.01;
+
+/// The unwrapped phase of the sweep's first point `t`, with `t_next` the
+/// gain at [`SLOPE_STEP`] times its frequency. The principal value can be a
+/// turn off: past a double pole, −190° reads as +170°. Bode's gain–phase
+/// relation picks the turn: `|T| ∝ f^k` has a phase near `90°·k`. The phase
+/// is put within (−270°, +90°] of that, so a sign inversion counts as a lag
+/// (−180°) rather than a lead.
+fn first_phase(t: Complex64, t_next: Complex64) -> f64 {
+    let k = (t_next.norm() / t.norm()).ln() / SLOPE_STEP.ln();
+    // A resonance's slope is steep but says nothing past a half turn.
+    let estimate = (90.0 * k).clamp(-270.0, 180.0);
+    let phase = t.arg().to_degrees();
+    phase - ((phase - estimate - 90.0) / 360.0).ceil() * 360.0
+}
+
 /// The phase of `z` (degrees), the one of its branches nearest `near`.
 fn unwrap_near(z: Complex64, near: f64) -> f64 {
     let phase = z.arg().to_degrees();
@@ -435,7 +453,37 @@ fn bisect(
 
 #[cfg(test)]
 mod tests {
-    use super::{phase_margin, wrap_degrees};
+    use super::{first_phase, phase_margin, wrap_degrees, SLOPE_STEP};
+    use num_complex::Complex64;
+
+    #[test]
+    fn first_phase_takes_the_turn_the_slope_points_to() {
+        // `T = k0·(j·f)^n / (1 + j·f)^m`, its true phase and slope known.
+        let t = |f: f64, k0: f64, n: i32, m: i32| {
+            let jf = Complex64::new(0.0, f);
+            k0 * jf.powi(n) / (Complex64::new(1.0, 0.0) + jf).powi(m)
+        };
+        for (f, k0, n, m, want) in [
+            // Past a triple pole's −180°: reads +170° as a principal value.
+            (2.0, 1.0, 0, 3, -3.0 * 2.0_f64.atan().to_degrees()),
+            (0.01, 1.0, 0, 1, -0.01_f64.atan().to_degrees()),
+            // A coupling capacitor's lead, and two of them.
+            (0.01, 1.0, 1, 0, 90.0),
+            (0.01, 1.0, 2, 0, 180.0),
+            // Below a double integrator's −180°.
+            (0.01, 1.0, -2, 1, -180.0 - 0.01_f64.atan().to_degrees()),
+            // Negative real at low frequency: a lag, whichever side of the
+            // real axis it starts.
+            (0.01, -1.0, 0, 1, -180.0 - 0.01_f64.atan().to_degrees()),
+            (0.01, -1.0, 0, -1, -180.0 + 0.01_f64.atan().to_degrees()),
+        ] {
+            let got = first_phase(t(f, k0, n, m), t(f * SLOPE_STEP, k0, n, m));
+            assert!(
+                (got - want).abs() < 1e-9,
+                "{f} {k0} {n} {m}: {got} vs {want}"
+            );
+        }
+    }
 
     #[test]
     fn phase_margin_measures_to_the_nearest_odd_half_turn() {

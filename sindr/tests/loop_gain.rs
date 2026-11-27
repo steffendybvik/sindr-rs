@@ -227,6 +227,72 @@ fn phase_margin_past_minus_540_degrees_wraps_into_one_turn() {
     assert!(lg.gain_margin_db.unwrap() < 0.0);
 }
 
+/// `T = K·E·(…)`: the probe, `sections` RC low-passes of time constant
+/// `rc` each buffered by a VCVS, and `gain` on the first buffer. With the
+/// probe's sign convention an inverting `gain` is a positive `T`.
+fn rc_chain(gain: f64, sections: usize, rc: f64) -> Circuit {
+    let mut parts = vec![probe("fb", "drv")];
+    let mut from = "fb".to_string();
+    for k in 1..=sections {
+        let (a, out) = (
+            format!("a{k}"),
+            if k == sections {
+                "drv".to_string()
+            } else {
+                format!("x{k}")
+            },
+        );
+        parts.push(r(&format!("R{k}"), &from, &a, 1e3));
+        parts.push(c(&format!("C{k}"), &a, "0", rc / 1e3));
+        parts.push(CircuitElement::Vcvs(Vcvs {
+            id: format!("E{k}"),
+            nodes: [out.as_str().into(), "0".into()],
+            control_nodes: [a.as_str().into(), "0".into()],
+            gain: if k == 1 { gain } else { 1.0 },
+        }));
+        from = out;
+    }
+    circuit(parts)
+}
+
+/// A sweep that starts past −180°, three poles in: the first point's
+/// principal phase is about +170°, which unwrapped from there made the
+/// crossover near −260° read as a +100° lead, a margin of +80°. It is −80°.
+#[test]
+fn a_sweep_starting_past_minus_180_degrees_keeps_the_margin_sign() {
+    let (k, rc) = (5000.0, 1.0 / (2.0 * PI * 1e3));
+    let lg = solve_loop_gain(
+        &rc_chain(-k, 3, rc),
+        &LoopGainConfig::new("Vprobe", 2e3, 1e6, 301),
+    )
+    .unwrap();
+    let phase = |f: f64| -3.0 * (2.0 * PI * f * rc).atan().to_degrees();
+    assert!(phase(2e3) < -180.0);
+    let fc = root(2e3, 1e6, |f| {
+        (k / (1.0 + (2.0 * PI * f * rc).powi(2)).powf(1.5)).ln()
+    });
+    let want = 180.0 + phase(fc);
+    assert!(want < -70.0, "{want}");
+    let got = lg.phase_margin_deg.unwrap();
+    assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+}
+
+/// Positive feedback, `T = −K/(1 + s·τ)` with `K > 1`: at low frequency T
+/// is negative real, a lag of 180°, so the margin at the crossover is
+/// negative. Read as +180° it was the same size, positive.
+#[test]
+fn a_negative_real_loop_gain_has_a_negative_margin() {
+    let (k, rc) = (10.0, 1.0 / (2.0 * PI * 1e3));
+    let lg = solve_loop_gain(
+        &rc_chain(k, 1, rc),
+        &LoopGainConfig::new("Vprobe", 1.0, 1e6, 301),
+    )
+    .unwrap();
+    let want = -((k * k - 1.0_f64).sqrt()).atan().to_degrees();
+    let got = lg.phase_margin_deg.unwrap();
+    assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+}
+
 /// An AC-coupled loop crosses unity gain twice: low, with a phase lead
 /// of nearly 90°, and high, with a lag of nearly 90°. Each is about 90°
 /// from instability, so the margin is that, not the −90° that adding 180°
