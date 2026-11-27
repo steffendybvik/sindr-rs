@@ -1,0 +1,80 @@
+name: PR checks
+
+# Never checks out the PR's code: the freeze file comes from the base branch.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+    branches: [main, "v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release-scope:
+    name: release scope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.base_ref }}
+          sparse-checkout: .github
+      - name: Frozen branches take only the types their freeze file lists
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE: ${{ github.base_ref }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          set -euo pipefail
+          freeze=.github/freeze
+          if [ ! -f "$freeze" ]; then
+            echo "$BASE isn't frozen."
+            exit 0
+          fi
+          allowed=$(grep -v '^[[:space:]]*#' "$freeze" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+          has_label() { case " $LABELS " in *" $1 "*) return 0 ;; esac; return 1; }
+          if has_label freeze-exception; then
+            echo "Labelled freeze-exception: let through."
+            exit 0
+          fi
+          re='^([a-z]+)(\([^)]*\))?(!)?: '
+          if [[ ! "$TITLE" =~ $re ]]; then
+            echo "::error::The title isn't type(scope): subject, so its type can't be checked against the freeze."
+            exit 1
+          fi
+          type=${BASH_REMATCH[1]}
+          if [ -n "${BASH_REMATCH[3]}" ] || has_label breaking; then
+            echo "::error::$BASE takes no breaking changes."
+            exit 1
+          fi
+          case " $allowed " in
+            *" $type "*) echo "A $type PR is allowed on frozen $BASE ($allowed)." ;;
+            *)
+              echo "::error::$BASE takes only: $allowed."
+              exit 1
+              ;;
+          esac
+
+  owner-approved:
+    name: owner approved
+    runs-on: ubuntu-latest
+    steps:
+      - name: Opened by the owner, or approved by them at this commit
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          OWNER: ${{ github.repository_owner }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          if [ "$AUTHOR" = "$OWNER" ]; then
+            echo "Opened by the owner."
+            exit 0
+          fi
+          if [ "$ACTION" = labeled ] && [ "$LABEL" = owner-approved ] && [ "$SENDER" = "$OWNER" ]; then
+            echo "Approved by the owner at this commit."
+            exit 0
+          fi
+          echo "::error::Waiting for a maintainer review."
+          exit 1
