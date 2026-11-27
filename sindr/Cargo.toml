@@ -1,6 +1,6 @@
 [package]
 name = "sindr"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 rust-version = "1.89"
 description = "Embeddable circuit simulator checked against ngspice: operating point, transient, AC, noise, DC and temperature sweeps, .tf, .sens, ratings and spec checks, SPICE import and export. Native and wasm32."

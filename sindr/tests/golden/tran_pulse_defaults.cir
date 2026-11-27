@@ -1,0 +1,6 @@
+tran: a two-argument PULSE takes tr = tf = TSTEP and pw = per = TSTOP, so it holds v2 through TSTOP
+V1 a 0 pulse(0 5)
+R1 a b 1k
+R2 b 0 1k
+.tran 1n 10n
+.end

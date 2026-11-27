@@ -275,12 +275,15 @@ pub struct MosfetCompanion {
 
 /// Compute threshold voltage with body effect.
 ///
-/// Vth = VTO + GAMMA * (sqrt(PHI - Vbs) - sqrt(PHI))
+/// Vth = VTO + GAMMA * (S(Vbs) - sqrt(PHI)), where
+///
+/// - S = sqrt(PHI - Vbs) for Vbs <= 0, and
+/// - S = max(sqrt(PHI) - Vbs / (2·sqrt(PHI)), 0) for Vbs > 0.
 ///
 /// For NMOS with Vbs <= 0: Vth increases (harder to turn on). With the body
 /// forward-biased (Vbs > 0) the sqrt is continued along its tangent at
-/// Vbs = 0, `sqrt(PHI) − Vbs/(2·sqrt(PHI))`, floored at 0 (from Vbs = 2·PHI
-/// on), as SPICE's Level 1 does; Vth then no longer depends on Vbs.
+/// Vbs = 0, floored at 0 (from Vbs = 2·PHI on), as SPICE's Level 1 does;
+/// Vth then no longer depends on Vbs.
 /// For PMOS, caller passes sign-adjusted Vbs and
 /// [`MosfetParams::in_nmos_frame`] parameters. With the body tied to the
 /// source, as in sindr, Vbs = 0 and Vth = VTO, except in reverse mode (see
