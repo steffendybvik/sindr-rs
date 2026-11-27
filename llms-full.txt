@@ -1445,7 +1445,7 @@ Pure electronics device physics companion models for MNA circuit simulation.
 | `battery` | Battery | Open-circuit voltage by state of charge, series resistance, optional RC pair; Li-ion and CR2032 presets |
 | `diode` | Silicon diode | Shockley companion with series resistance, temperature IS scaling, SPICE `BV`/`IBV` breakdown and junction charge (`CJO`, `VJ`, `M`, `FC`, `TT`) |
 | `bjt` | BJT (NPN/PNP) | Ebers-Moll companion with Early voltage |
-| `mosfet` | MOSFET (NMOS/PMOS) | Level-1 companion; body effect when called with a `vbs` (in a sindr circuit the body is tied to the source) |
+| `mosfet` | MOSFET (NMOS/PMOS) | Level-1 companion; body effect when called with a `vbs` (in a sindr circuit the body is tied to the source, so it applies only in reverse mode, `vds < 0`) |
 | `jfet` | JFET (N/P-channel) | Shichman-Hodges |
 | `igbt` | IGBT | MOSFET square-law collector current, blocks reverse V_CE |
 | `led` | LED | Diode with colour-dependent forward voltage |
@@ -14073,12 +14073,15 @@ pub struct MosfetCompanion {
 
 /// Compute threshold voltage with body effect.
 ///
-/// Vth = VTO + GAMMA * (sqrt(PHI - Vbs) - sqrt(PHI))
+/// Vth = VTO + GAMMA * (S(Vbs) - sqrt(PHI)), where
+///
+/// - S = sqrt(PHI - Vbs) for Vbs <= 0, and
+/// - S = max(sqrt(PHI) - Vbs / (2·sqrt(PHI)), 0) for Vbs > 0.
 ///
 /// For NMOS with Vbs <= 0: Vth increases (harder to turn on). With the body
 /// forward-biased (Vbs > 0) the sqrt is continued along its tangent at
-/// Vbs = 0, `sqrt(PHI) − Vbs/(2·sqrt(PHI))`, floored at 0 (from Vbs = 2·PHI
-/// on), as SPICE's Level 1 does; Vth then no longer depends on Vbs.
+/// Vbs = 0, floored at 0 (from Vbs = 2·PHI on), as SPICE's Level 1 does;
+/// Vth then no longer depends on Vbs.
 /// For PMOS, caller passes sign-adjusted Vbs and
 /// [`MosfetParams::in_nmos_frame`] parameters. With the body tied to the
 /// source, as in sindr, Vbs = 0 and Vth = VTO, except in reverse mode (see
