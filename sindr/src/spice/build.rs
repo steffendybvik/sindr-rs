@@ -1042,6 +1042,15 @@ fn diode_instance(
     const KEYS: &[&str] = &["area", "m", "temp", "dtemp", "pj"];
     let values = instance_params(raw, params, KEYS, scope, strict, warnings)?;
     fet_flags(raw, flags, strict, warnings)?;
+    if area.is_some() && values.contains_key("area") {
+        // ngspice refuses the line; lenient mode keeps the positional one.
+        unsupported(
+            format!("`{}`: area given both positionally and as `AREA=`", raw.id),
+            &raw.span.file,
+            strict,
+            warnings,
+        )?;
+    }
     let area = match area {
         Some(expr) => eval_or_lift(expr, scope)?,
         None => values.get("area").copied().unwrap_or(1.0),
