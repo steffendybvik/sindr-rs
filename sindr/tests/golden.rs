@@ -1625,6 +1625,16 @@ fn tran_ic_uic() {
     assert!(tran.timesteps[0].node_voltages["b"] < 1e-2);
 }
 
+/// A two-argument PULSE runs with pw = per = TSTOP from the deck's `.tran`,
+/// and holds v2 at TSTOP: ngspice wraps only once past the period.
+#[test]
+fn tran_pulse_defaults() {
+    let tran = check_deck_tran("tran_pulse_defaults", &["v(a)", "v(b)"]);
+    let last = tran.timesteps.last().unwrap();
+    assert!((last.time - 10e-9).abs() < 1e-15);
+    assert!((last.node_voltages["a"] - 5.0).abs() < 1e-9);
+}
+
 /// `.tran … tstart`: integrated from 0, so the pulse train has charged C1
 /// for 1.25 ms, but kept only from there on. sindr's first step lands on
 /// tstart; ngspice's first saved point is its first step past it.
