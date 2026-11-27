@@ -681,6 +681,8 @@ fn check_token(what: &'static str, name: &str) -> Result<(), ExportError> {
         "it contains SPICE punctuation"
     } else if name.starts_with(['.', '+']) {
         "SPICE reads a line starting with `.` or `+` as a card or continuation"
+    } else if name.starts_with('$') {
+        "ngspice reads a token starting with `$` as a comment"
     } else {
         return Ok(());
     };

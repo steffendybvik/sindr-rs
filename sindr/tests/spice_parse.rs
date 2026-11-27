@@ -403,9 +403,20 @@ fn control_blocks_are_skipped() {
     assert_eq!(warned.len(), 1, "{warned:?}");
     assert!(warned[0].contains("`.control`"), "{warned:?}");
 
-    // An unclosed block runs to the end of the deck.
-    let deck = "* c\nV1 a 0 1\nR1 a 0 1k\n.control\nrun\n.end\n";
-    assert_eq!(parse_str(deck).unwrap().circuit.components.len(), 2);
+    // An unclosed block would take the rest of the deck with it: refused in
+    // strict mode, named in a lenient warning.
+    let deck = "* c\nV1 a 0 1\nR1 a 0 1k\n.control\nrun\nR2 a 0 1k\n.tran 1n 1u\n.end\n";
+    let err = parse_str(deck).unwrap_err().to_string();
+    assert!(err.contains("unclosed `.control`"), "{err}");
+    let netlist = parse_str_with_options(deck, lenient()).unwrap();
+    assert_eq!(netlist.circuit.components.len(), 2);
+    assert!(
+        warnings(&netlist)
+            .iter()
+            .any(|w| w.contains("unclosed `.control`")),
+        "{:?}",
+        warnings(&netlist)
+    );
 }
 
 /// A `$` comment set off by a comma takes the comma with it: ngspice 47
@@ -762,6 +773,27 @@ fn diode_area_multiplier_and_temperature() {
         CircuitElement::Diode(Diode { model: Some(m), .. }) => {
             assert_eq!((m.is, m.rs, m.ibv), (2e-14, 5.0, 2e-3));
         }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A positional area and `area=` on one D line: ngspice 47 refuses the
+/// line, so strict mode does too; lenient mode keeps the positional one.
+#[test]
+fn diode_area_given_twice() {
+    let deck = "* d\nV2 d 0 1\nD1 d 0 dmod 2 area=3\n.model dmod d(is=1e-14)\n.op\n.end\n";
+    let err = parse_str(deck).unwrap_err().to_string();
+    assert!(err.contains("area given both"), "{err}");
+    let netlist = parse_str_with_options(deck, lenient()).unwrap();
+    assert!(
+        warnings(&netlist)
+            .iter()
+            .any(|w| w.contains("area given both")),
+        "{:?}",
+        warnings(&netlist)
+    );
+    match element(&netlist, "d1") {
+        CircuitElement::Diode(Diode { model: Some(m), .. }) => assert_eq!(m.is, 2e-14),
         other => panic!("{other:?}"),
     }
 }

@@ -1983,7 +1983,8 @@ const CONTROL_SKIPPED: &str =
 /// `UnknownCard` are fatal. In lenient mode they downgrade to
 /// [`crate::spice::error::ParseWarning`]s and the offending card is dropped.
 /// `.control` … `.endc` blocks are skipped in both, with one warning in
-/// lenient mode.
+/// lenient mode. A `.control` with no `.endc` is an error in strict mode,
+/// since the rest of the deck would go with it, and a warning in lenient.
 pub(crate) fn parse_with_options(
     pre: &Preprocessed,
     strict: bool,
@@ -1992,17 +1993,19 @@ pub(crate) fn parse_with_options(
     let mut top: Vec<RawCard> = Vec::new();
     // Stack of in-progress subckts and their declaring line (for diagnostics).
     let mut stack: Vec<(RawSubckt, LogicalLine)> = Vec::new();
-    // Inside a `.control` … `.endc` block: ngspice's script, not netlist.
-    let mut in_control = false;
+    // The `.control` line of the block we're in: ngspice's script, not netlist.
+    let mut in_control: Option<&LogicalLine> = None;
 
     for line in &pre.lines {
         let first = line.text.split_whitespace().next();
-        if in_control {
-            in_control = first != Some(".endc");
+        if in_control.is_some() {
+            if first == Some(".endc") {
+                in_control = None;
+            }
             continue;
         }
         if first == Some(".control") {
-            in_control = true;
+            in_control = Some(line);
             if !strict && !warnings.iter().any(|w| w.message == CONTROL_SKIPPED) {
                 warnings.push(crate::spice::error::ParseWarning {
                     message: CONTROL_SKIPPED.to_string(),
@@ -2050,6 +2053,22 @@ pub(crate) fn parse_with_options(
             RawCard::Global(nets) => top.push(RawCard::Global(nets)),
             other => push_card(&mut top, &mut stack, other),
         }
+    }
+
+    if let Some(line) = in_control {
+        let message = "unclosed `.control`: everything after it is read as ngspice's script";
+        if strict {
+            return Err(SpiceParseError::Syntax {
+                message: message.to_string(),
+                src: NamedSource::new(&*line.file, (*line.src).clone()),
+                bad_span: (line.byte_range.start, line.byte_range.len()).into(),
+            });
+        }
+        warnings.push(crate::spice::error::ParseWarning {
+            message: message.to_string(),
+            span: Some((line.byte_range.start, line.byte_range.len()).into()),
+            file: Some(line.file.to_string()),
+        });
     }
 
     if let Some((sub, open_line)) = stack.pop() {

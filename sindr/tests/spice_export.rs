@@ -419,6 +419,8 @@ fn names_spice_cannot_hold_are_rejected() {
         ("R1", "f(x)"),
         ("R1", "GND"),
         ("R1", ".a"),
+        // ngspice reads `$b` as a comment, so the line loses its node.
+        ("R1", "$b"),
         ("", "a"),
     ] {
         let err = to_netlist(&one_resistor(id, a, "0"), "t").unwrap_err();
